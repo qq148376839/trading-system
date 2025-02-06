@@ -2,7 +2,9 @@
 from core.strategy import TradingStrategy
 from decimal import Decimal
 from longport.openapi import TradeContext, OrderType, OrderSide, TimeInForceType
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
+from typing import Tuple, Optional
 
 class AutoTrader:
     def __init__(self, trading_system):
@@ -299,3 +301,70 @@ class AutoTrader:
         except Exception as e:
             self.ts.logger.error("TRADE", f"检查交易时段失败: {str(e)}")
             return False
+
+    def get_next_trading_time(self, market: str) -> Optional[Tuple[datetime, datetime]]:
+        """
+        获取下一个交易时段
+        
+        Args:
+            market: 市场代码 (US/HK)
+            
+        Returns:
+            Tuple[datetime, datetime]: (开始时间, 结束时间)
+            如果当天没有更多交易时段则返回 None
+        """
+        try:
+            trading_sessions = self.ts.quote_ctx.trading_session()
+            now = datetime.now()
+            today = now.date()
+            
+            for session in trading_sessions.market_trade_session:
+                if session.market == market:
+                    for period in session.trade_session:
+                        # 转换时间格式 (HHMM -> datetime)
+                        start_time = datetime.combine(
+                            today,
+                            datetime.strptime(str(period.beg_time), '%H%M').time()
+                        )
+                        end_time = datetime.combine(
+                            today,
+                            datetime.strptime(str(period.end_time), '%H%M').time()
+                        )
+                        
+                        # 如果当前时间在交易时段内，返回当前时段
+                        if start_time <= now <= end_time:
+                            return (now, end_time)
+                        
+                        # 如果是未来的交易时段，返回该时段
+                        if now < start_time:
+                            return (start_time, end_time)
+            
+            return None
+            
+        except Exception as e:
+            self.ts.logger.error("TRADE", f"获取交易时段失败: {str(e)}")
+            return None
+
+    def get_wait_time(self, market: str) -> int:
+        """
+        计算到下一个交易时段的等待时间（秒）
+        
+        Args:
+            market: 市场代码 (US/HK)
+            
+        Returns:
+            int: 需要等待的秒数，如果当天没有更多交易时段则返回到第二天开盘的等待时间
+        """
+        next_session = self.get_next_trading_time(market)
+        now = datetime.now()
+        
+        if next_session:
+            start_time, _ = next_session
+            if start_time > now:
+                return int((start_time - now).total_seconds())
+            return 0
+            
+        # 如果当天没有更多交易时段，计算到下一个交易日的等待时间
+        tomorrow = now + timedelta(days=1)
+        tomorrow = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
+        return int((tomorrow - now).total_seconds())

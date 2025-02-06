@@ -4,6 +4,10 @@ from utils.risk_manager import RiskManager
 from utils.notifier import EmailNotifier
 from longport.openapi import Config as LongPortConfig, QuoteContext, TradeContext
 import mysql.connector
+import os
+import json
+from datetime import datetime, timedelta
+from core.token_manager import TokenManager
 
 class TradingSystem:
     """
@@ -36,13 +40,8 @@ class TradingSystem:
         # 加载配置
         self.config = config or {}
         
-        # 从配置中获取数据库配置
-        self.db_config = self.config.get('DATABASE', {
-            'host': 'localhost',
-            'user': 'your_username',
-            'password': 'your_password',
-            'database': 'trading_db'
-        })
+        # 设置基础路径
+        self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         
         # 初始化数据库连接
         self.db = self._init_database()
@@ -71,9 +70,75 @@ class TradingSystem:
             mysql.connector.connection.MySQLConnection: 数据库连接对象
         """
         try:
-            return mysql.connector.connect(**self.db_config)
+            # 1. 检查配置文件路径
+            db_config_path = os.path.join(self.base_dir, 'configs', 'database_config.json')
+            print(f"\n=== 数据库初始化信息 ===")
+            print(f"当前工作目录: {os.getcwd()}")
+            print(f"基础目录: {self.base_dir}")
+            print(f"尝试加载数据库配置: {db_config_path}")
+            
+            if not os.path.exists(db_config_path):
+                # 尝试从当前目录加载
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                alt_config_path = os.path.join(current_dir, '..', 'configs', 'database_config.json')
+                print(f"主配置路径不存在，尝试备用路径: {alt_config_path}")
+                
+                if os.path.exists(alt_config_path):
+                    db_config_path = alt_config_path
+                    print("使用备用配置路径")
+                else:
+                    raise FileNotFoundError(f"数据库配置文件不存在，已尝试路径:\n1. {db_config_path}\n2. {alt_config_path}")
+            
+            # 2. 读取配置文件
+            print(f"\n正在读取配置文件: {db_config_path}")
+            with open(db_config_path, 'r', encoding='utf-8') as f:
+                file_content = f.read()
+                print(f"文件原始内容: {file_content}")
+                self.db_config = json.loads(file_content)
+                
+            # 3. 检查配置内容
+            required_fields = ['host', 'user', 'password', 'database']
+            missing_fields = [field for field in required_fields if field not in self.db_config]
+            if missing_fields:
+                raise ValueError(f"配置文件缺少必要字段: {', '.join(missing_fields)}")
+                
+            # 4. 打印配置信息（隐藏敏感信息）
+            safe_config = self.db_config.copy()
+            if 'password' in safe_config:
+                safe_config['password'] = '******'
+            print(f"解析后的配置信息: {safe_config}")
+            print(f"配置类型: {type(self.db_config)}")
+            print(f"配置字段: {list(self.db_config.keys())}")
+            
+            # 5. 尝试连接
+            print("\n正在尝试连接数据库...")
+            try:
+                # 打印每个参数的类型
+                for key, value in self.db_config.items():
+                    print(f"{key}: {type(value)}")
+                    
+                conn = mysql.connector.connect(**self.db_config)
+                print("数据库连接成功!")
+                return conn
+            except mysql.connector.Error as e:
+                error_messages = {
+                    1045: "用户名或密码错误",
+                    1049: "数据库不存在",
+                    2003: "无法连接到数据库服务器",
+                    2005: "未知主机",
+                }
+                error_code = e.errno if hasattr(e, 'errno') else None
+                error_msg = error_messages.get(error_code, str(e))
+                raise Exception(f"数据库连接失败 (错误代码: {error_code}): {error_msg}\n原始错误: {str(e)}")
+                
+        except FileNotFoundError as e:
+            print(f"\n❌ 配置文件错误: {str(e)}")
+            raise
+        except json.JSONDecodeError as e:
+            print(f"\n❌ 配置文件格式错误: {str(e)}")
+            raise
         except Exception as e:
-            print(f"数据库连接失败: {str(e)}")
+            print(f"\n❌ 其他错误: {str(e)}")
             raise
         
     def _init_trading_config(self):

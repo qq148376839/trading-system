@@ -1,7 +1,8 @@
 # strategy.py
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
+from sklearn.metrics import make_scorer, accuracy_score, precision_score
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -22,13 +23,18 @@ class TradingStrategy:
             trading_system: 交易系统实例
         """
         self.ts = trading_system
-        self.model = RandomForestRegressor(
-            n_estimators=100,
-            max_depth=10,
-            random_state=42
-        )
+        # 初始化时添加更多参数
+        self.model_params = {
+            'n_estimators': 100,
+            'max_depth': 10,
+            'min_samples_split': 5,
+            'random_state': 42
+        }
+        self.model = RandomForestRegressor(**self.model_params)
         self.scaler = StandardScaler()
         self.cost_calculator = CostCalculator()
+        self.last_optimization = None
+        self.optimization_interval = timedelta(days=7)  # 每周优化一次
         
     def get_historical_data(self, symbol, days=30):
         """获取历史数据"""
@@ -52,29 +58,40 @@ class TradingStrategy:
             return []
         
     def calculate_technical_indicators(self, data):
-        """计算技术指标"""
+        """增强版技术指标计算"""
         df = data.copy()
         
-        # 计算基本技术指标
+        # 基础趋势指标
         df['MA5'] = talib.MA(df['close_price'], timeperiod=5)
         df['MA20'] = talib.MA(df['close_price'], timeperiod=20)
+        df['MA60'] = talib.MA(df['close_price'], timeperiod=60)
+        
+        # 动量指标
         df['RSI'] = talib.RSI(df['close_price'], timeperiod=14)
-        macd, macdsignal, macdhist = talib.MACD(df['close_price'])
-        df['MACD'] = macd
-        df['MACD_SIGNAL'] = macdsignal
-        df['MACD_HIST'] = macdhist
+        df['MACD'], df['MACD_SIGNAL'], df['MACD_HIST'] = talib.MACD(df['close_price'])
         
-        # 删除NaN值
-        df = df.dropna()
+        # 波动性指标
+        df['ATR'] = talib.ATR(df['high_price'], df['low_price'], df['close_price'], timeperiod=14)
+        df['BBANDS_UPPER'], df['BBANDS_MIDDLE'], df['BBANDS_LOWER'] = talib.BBANDS(
+            df['close_price'], 
+            timeperiod=20
+        )
         
-        # 构建特征矩阵
-        features = df[[
-            'MA5', 'MA20', 'RSI', 'MACD', 
-            'MACD_SIGNAL', 'MACD_HIST', 
-            'volume'
-        ]].values
+        # 成交量指标
+        df['OBV'] = talib.OBV(df['close_price'], df['volume'])
+        df['AD'] = talib.AD(
+            df['high_price'], 
+            df['low_price'], 
+            df['close_price'], 
+            df['volume']
+        )
         
-        return features
+        # 自定义指标
+        df['VOL_MA5'] = talib.MA(df['volume'], timeperiod=5)
+        df['PRICE_CHANGE'] = df['close_price'].pct_change()
+        df['VOL_CHANGE'] = df['volume'].pct_change()
+        
+        return df
         
     def analyze_stock(self, symbol):
         """分析股票并生成交易信号"""
@@ -358,3 +375,81 @@ class TradingStrategy:
                 signals.append(signal)
         
         return signals
+
+    def optimize_model_parameters(self, X, y):
+        """优化随机森林参数"""
+        try:
+            # 检查是否需要优化
+            now = datetime.now()
+            if (self.last_optimization and 
+                now - self.last_optimization < self.optimization_interval):
+                return
+
+            self.ts.logger.info("STRATEGY", "开始优化模型参数...")
+            
+            # 定义参数网格
+            param_grid = {
+                'n_estimators': [50, 100, 200],
+                'max_depth': [5, 10, 15],
+                'min_samples_split': [2, 5, 10],
+                'min_samples_leaf': [1, 2, 4]
+            }
+            
+            # 使用时间序列交叉验证
+            tscv = TimeSeriesSplit(n_splits=5)
+            
+            # 定义评分标准
+            scoring = {
+                'accuracy': make_scorer(accuracy_score),
+                'precision': make_scorer(precision_score)
+            }
+            
+            # 网格搜索
+            grid_search = GridSearchCV(
+                estimator=RandomForestRegressor(),
+                param_grid=param_grid,
+                cv=tscv,
+                scoring=scoring,
+                refit='precision',
+                n_jobs=-1
+            )
+            
+            grid_search.fit(X, y)
+            
+            # 更新最优参数
+            self.model_params = grid_search.best_params_
+            self.model = RandomForestRegressor(**self.model_params)
+            self.last_optimization = now
+            
+            # 记录优化结果
+            self.ts.logger.info(
+                "STRATEGY", 
+                f"模型参数优化完成，最优参数: {self.model_params}"
+            )
+            
+        except Exception as e:
+            self.ts.logger.error(
+                "STRATEGY", 
+                f"模型参数优化失败: {str(e)}"
+            )
+
+    def feature_engineering(self, data):
+        """特征工程"""
+        df = data.copy()
+        
+        # 计算价格趋势特征
+        df['TREND_5'] = (df['close_price'] - df['MA5']) / df['MA5']
+        df['TREND_20'] = (df['close_price'] - df['MA20']) / df['MA20']
+        
+        # 计算波动性特征
+        df['VOLATILITY'] = df['ATR'] / df['close_price']
+        df['BB_POSITION'] = (df['close_price'] - df['BBANDS_LOWER']) / (df['BBANDS_UPPER'] - df['BBANDS_LOWER'])
+        
+        # 计算成交量特征
+        df['VOLUME_TREND'] = df['volume'] / df['VOL_MA5']
+        
+        # 添加时间特征
+        df['DAY_OF_WEEK'] = pd.to_datetime(df.index).dayofweek
+        df['MONTH'] = pd.to_datetime(df.index).month
+        
+        return df

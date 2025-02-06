@@ -34,16 +34,19 @@ def init_database():
         # API配置表
         """
         CREATE TABLE IF NOT EXISTS api_config (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            app_key VARCHAR(100) NOT NULL,
-            app_secret VARCHAR(100) NOT NULL,
-            access_token TEXT NOT NULL,
-            account_type ENUM('SIMULATION', 'REAL') NOT NULL,
-            is_active BOOLEAN DEFAULT FALSE,
-            expire_time DATETIME NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        );
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    account_type ENUM('SIMULATION', 'REAL') NOT NULL,
+    app_key VARCHAR(100) NOT NULL,
+    app_secret VARCHAR(100) NOT NULL,
+    access_token TEXT NOT NULL,
+    expire_time DATETIME NOT NULL,
+    issued_at DATETIME NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_account_type (account_type),
+    INDEX idx_expire_time (expire_time)
+);
         """,
         
         # 交易记录表
