@@ -1,0 +1,8 @@
+resend
+longport-python
+mysql-connector-python
+pandas
+numpy
+scikit-learn
+ta-lib
+python-dotenv 

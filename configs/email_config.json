@@ -1,0 +1,5 @@
+{
+    "resend_api_key": "your_resend_api_key",
+    "sender_email": "onboarding@resend.dev",
+    "receiver_email": "your_email@example.com"
+} 
