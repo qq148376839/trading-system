@@ -11,18 +11,33 @@ from decimal import Decimal
 from .cost_calculator import CostCalculator, Market
 from .models.signal import TradeSignal
 import traceback
+import logging
+import os
+import json
+from utils.logger import DBLogger
 
 class TradingStrategy:
     """交易策略类"""
     
-    def __init__(self, trading_system):
+    def __init__(self, config):
         """
         初始化交易策略
         
         参数:
-            trading_system: 交易系统实例
+            config: 配置对象
         """
-        self.ts = trading_system
+        self.config = config
+        self.logger = DBLogger(config.get('db_connection'))
+        self.ts = None  # Assuming a trading_system instance is set up elsewhere
+        self.stock_pools = config.get('TRADING', {}).get('stock_pools', {})
+        self.stock_names = {}
+        
+        # 加载股票名称
+        stock_names_path = os.path.join(os.getcwd(), 'configs', 'stock_names.json')
+        if os.path.exists(stock_names_path):
+            with open(stock_names_path, 'r', encoding='utf-8') as f:
+                self.stock_names = json.load(f)
+        
         # 初始化时添加更多参数
         self.model_params = {
             'n_estimators': 100,
@@ -54,7 +69,7 @@ class TradingStrategy:
             return data
             
         except Exception as e:
-            self.ts.logger.error("STRATEGY", f"获取 {symbol} 历史数据时发生错误: {str(e)}")
+            self.logger.error("STRATEGY", f"获取 {symbol} 历史数据时发生错误: {str(e)}")
             return []
         
     def calculate_technical_indicators(self, data):
@@ -108,7 +123,7 @@ class TradingStrategy:
             data = cursor.fetchall()
             
             if not data:
-                self.ts.logger.warning("STRATEGY", f"没有找到 {symbol} 的市场数据")
+                self.logger.warning("STRATEGY", f"没有找到 {symbol} 的市场数据")
                 return {'action': 'HOLD', 'quantity': 0, 'price': 0}
             
             # 这里实现你的交易策略逻辑
@@ -173,7 +188,7 @@ class TradingStrategy:
                 all_targets.append(future_returns)
             
             if not all_features:
-                self.ts.logger.warning("MODEL", "没有足够的训练数据")
+                self.logger.warning("MODEL", "没有足够的训练数据")
                 return False
                 
             # 合并所有股票的数据
@@ -195,12 +210,12 @@ class TradingStrategy:
             train_score = self.model.score(X_train, y_train)
             test_score = self.model.score(X_test, y_test)
             
-            self.ts.logger.info("MODEL", f"模型训练完成，训练集 R2: {train_score:.4f}, 测试集 R2: {test_score:.4f}")
+            self.logger.info("MODEL", f"模型训练完成，训练集 R2: {train_score:.4f}, 测试集 R2: {test_score:.4f}")
             
             return True
             
         except Exception as e:
-            self.ts.logger.error("MODEL", f"模型训练失败: {str(e)}")
+            self.logger.error("MODEL", f"模型训练失败: {str(e)}")
             return False
             
     def _get_training_data(self, symbol):
@@ -287,7 +302,7 @@ class TradingStrategy:
             return predicted_return
             
         except Exception as e:
-            self.ts.logger.error("MODEL", f"预测失败: {str(e)}")
+            self.logger.error("MODEL", f"预测失败: {str(e)}")
             return None
 
     def analyze_market(self, symbols, market_data, account_balance):
@@ -385,7 +400,7 @@ class TradingStrategy:
                 now - self.last_optimization < self.optimization_interval):
                 return
 
-            self.ts.logger.info("STRATEGY", "开始优化模型参数...")
+            self.logger.info("STRATEGY", "开始优化模型参数...")
             
             # 定义参数网格
             param_grid = {
@@ -422,13 +437,13 @@ class TradingStrategy:
             self.last_optimization = now
             
             # 记录优化结果
-            self.ts.logger.info(
+            self.logger.info(
                 "STRATEGY", 
                 f"模型参数优化完成，最优参数: {self.model_params}"
             )
             
         except Exception as e:
-            self.ts.logger.error(
+            self.logger.error(
                 "STRATEGY", 
                 f"模型参数优化失败: {str(e)}"
             )
@@ -453,3 +468,37 @@ class TradingStrategy:
         df['MONTH'] = pd.to_datetime(df.index).month
         
         return df
+
+    def should_trade(self, market_data):
+        """
+        交易策略判断
+        :param market_data: 市场数据
+        :return: (bool, str) 是否交易及交易方向 ('buy'/'sell')
+        """
+        try:
+            # 这里实现您的交易逻辑
+            current_price = market_data.get('last_done', 0)
+            if current_price > 0:
+                self.logger.info("STRATEGY", f"检测到交易信号: {market_data}")
+                return True
+            return False
+            
+        except Exception as e:
+            self.logger.error("STRATEGY", f"策略执行出错: {str(e)}")
+            return False
+            
+    def _ai_sector_strategy(self, market_data):
+        # AI板块策略实现
+        pass
+        
+    def _auto_drive_strategy(self, market_data):
+        # 自动驾驶板块策略实现
+        pass
+        
+    def _energy_sector_strategy(self, market_data):
+        # 能源板块策略实现
+        pass
+        
+    def _robot_sector_strategy(self, market_data):
+        # 机器人板块策略实现
+        pass

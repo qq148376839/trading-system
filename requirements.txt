@@ -1,8 +1,22 @@
-resend
-longport-python
+# API相关
+longport-sdk
+
+# 数据库
 mysql-connector-python
+
+# 配置管理
+watchdog
+jsonschema
+
+# 邮件通知
+resend
+
+# 日期时间处理
+python-dateutil
+
+# 数据处理
 pandas
 numpy
-scikit-learn
-ta-lib
-python-dotenv 
+
+# 类型提示
+typing-extensions 
