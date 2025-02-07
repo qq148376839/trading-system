@@ -99,4 +99,22 @@ class AsyncTrader:
                 await asyncio.sleep(300)  # 每5分钟更新一次
             except Exception as e:
                 self.ts.logger.error("TRADE", f"更新市场数据时发生错误: {str(e)}")
-                await asyncio.sleep(5) 
+                await asyncio.sleep(5)
+
+    async def check_risk(self, order):
+        """检查订单风险"""
+        try:
+            # 获取实时报价
+            quote = await self.ts.quote_ctx.get_realtime_quote([order.symbol])
+            if not quote or len(quote) == 0:
+                self.ts.logger.error("RISK", f"无法获取 {order.symbol} 的实时报价")
+                return False
+            
+            market_data = quote[0]
+            
+            # 使用风险管理器进行检查
+            return self.ts.check_risk_limits(order.symbol, market_data)
+            
+        except Exception as e:
+            self.ts.logger.error("RISK", f"检查订单风险时发生错误: {str(e)}")
+            return False 

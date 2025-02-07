@@ -1,12 +1,6 @@
 import json
 from core.trading_system import TradingSystem
-from core.strategy import TradingStrategy
-from core.data_collector import DataCollector
-from core.trader import AutoTrader
-from utils.logger import DBLogger
 import time
-from core.models.signal import TradeSignal
-from datetime import datetime
 from utils.market_time import MarketTime
 import logging
 import os
@@ -22,72 +16,84 @@ def setup_logging():
 def load_config(config_dir='configs'):
     """加载所有配置文件"""
     config = {}
+    required_configs = {
+        'database_config.json': 'DATABASE',
+        'trading_config.json': None,
+        'risk_config.json': 'RISK',
+        'email_config.json': 'EMAIL'
+    }
     
-    # 加载数据库配置
-    with open(f'{config_dir}/database_config.json', 'r', encoding='utf-8') as f:
-        config['DATABASE'] = json.load(f)
-    
-    # 加载交易配置
-    trading_config_path = os.path.join(config_dir, 'trading_config.json')
-    if os.path.exists(trading_config_path):
-        with open(trading_config_path, 'r') as f:
-            trading_config = json.load(f)
-            config.update(trading_config)
-    
-    # 加载风险配置
-    with open(f'{config_dir}/risk_config.json', 'r', encoding='utf-8') as f:
-        config['RISK'] = json.load(f)
-    
-    # 加载邮件配置
-    with open(f'{config_dir}/email_config.json', 'r', encoding='utf-8') as f:
-        config['EMAIL'] = json.load(f)
+    for config_file, config_key in required_configs.items():
+        file_path = os.path.join(config_dir, config_file)
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if config_key:
+                    config[config_key] = data
+                else:
+                    config.update(data)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"配置文件未找到: {file_path}")
+        except json.JSONDecodeError:
+            raise ValueError(f"配置文件格式错误: {file_path}")
     
     return config
 
 def main():
     logger = setup_logging()
-    ts = TradingSystem()
-    market_time = MarketTime()
     
     try:
+        # 初始化配置
+        config = load_config()
+        ts = TradingSystem(config)
+        market_time = MarketTime()
+        
         while True:
             try:
-                # 获取市场数据
-                if not ts.symbols:
-                    logger.warning("交易标的列表为空，请检查配置")
-                    time.sleep(60)
+                # 检查是否在交易时间
+                if not market_time.is_trading_time():
+                    logger.info("当前不在交易时间，等待下一个交易时段")
+                    time.sleep(300)  # 5分钟检查一次
                     continue
-                    
+                
+                # 检查交易标的
+                if not ts.symbols:
+                    logger.error("交易标的列表为空，请检查配置")
+                    time.sleep(300)
+                    continue
+                
+                # 获取市场数据
                 logger.debug(f"准备获取以下标的的市场数据: {ts.symbols}")
                 market_data = ts.get_market_data(ts.symbols)
                 
                 if not market_data:
                     logger.warning("未获取到市场数据，等待下次尝试...")
-                    time.sleep(60)  # 等待1分钟后重试
+                    time.sleep(60)
                     continue
                 
-                # 执行策略
+                # 执行策略和交易
                 signals = ts.execute_strategy(market_data)
                 if signals:
-                    # 执行交易
                     ts.execute_trades(signals)
                 
-                # 更新持仓信息
+                # 更新持仓和风险检查
                 ts.update_positions()
+                risk_results = ts.check_risk_limits(ts.symbols, market_data)
                 
-                # 风险检查
-                ts.check_risk()
+                # 处理风险警告
+                if risk_results:
+                    ts.handle_risk_warnings(risk_results)
                 
-                # 等待下一个周期
                 time.sleep(ts.config.get('interval', 60))
                 
             except Exception as e:
-                logger.error(f"循环中发生错误: {str(e)}")
-                time.sleep(60)  # 发生错误时等待1分钟
+                logger.error(f"循环中发生错误: {str(e)}", exc_info=True)
+                time.sleep(60)
                 
-    except KeyboardInterrupt:
-        logger.info("程序被用户中断")
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("正在关闭交易系统...")
         ts.cleanup()
+        logger.info("交易系统已安全关闭")
 
 if __name__ == "__main__":
     main()

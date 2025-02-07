@@ -12,16 +12,16 @@ class RiskManager:
             trading_system: 交易系统实例
         """
         self.trading_system = trading_system
-        self.logger = trading_system.logger  # 使用trading_system的logger
-        # 从配置字典中获取风险配置
-        self.risk_config = self.trading_system.config.get('RISK', {})
+        self.logger = trading_system.logger
+        # 使用 config_manager 替代 config
+        self.risk_config = self.trading_system.config_manager.get_risk_config()
         
         # 设置风险参数，如果配置中没有则使用默认值
         self.stop_loss = self.risk_config.get('stop_loss', -0.1)
         self.take_profit = self.risk_config.get('take_profit', 0.15)
         self.max_daily_loss = self.risk_config.get('max_daily_loss', 0.05)
-        self.max_position_loss = self.risk_config.get('max_position_loss', 0.15)
-        self.volatility_threshold = self.risk_config.get('volatility_threshold', 0.03)
+        self.max_position_loss = self.risk_config.get('max_position_loss', -0.15)
+        self.volatility_threshold = self.risk_config.get('volatility_threshold', 0.02)
         
     def check_position_risk(self, symbol, quantity, price):
         """
@@ -121,10 +121,48 @@ class RiskManager:
         finally:
             cursor.close()
 
-    def check_risk(self, symbol, price, quantity):
+    def check_risk(self, symbol, market_data):
+        """
+        综合风险检查
+        
+        Args:
+            symbol: 交易标的代码
+            market_data: 市场数据
+        
+        Returns:
+            bool: 是否通过风险检查
+        """
         try:
-            # 风险检查逻辑
-            self.logger.info("RISK", f"执行风险检查: {symbol}, 价格: {price}, 数量: {quantity}")
-            # ... 其他代码 ...
+            self.logger.debug("RISK", f"开始检查 {symbol} 的风险控制限制")
+            
+            # 检查持仓止损
+            position_loss = self.trading_system.calculate_position_loss(symbol, market_data)
+            self.logger.debug("RISK", f"{symbol} 当前持仓亏损: {position_loss}")
+            
+            if position_loss <= self.stop_loss:
+                self.logger.warning("RISK", f"{symbol} 触发止损限制")
+                self._record_risk_event("STOP_LOSS", symbol, "HIGH", 
+                    f"持仓亏损 {position_loss:.2%} 超过止损限制 {self.stop_loss:.2%}")
+                return False
+            
+            # 检查日内亏损
+            if not self.check_daily_loss():
+                self._record_risk_event("DAILY_LOSS", symbol, "HIGH", 
+                    f"触发日内最大亏损限制 {self.max_daily_loss:.2%}")
+                return False
+            
+            # 检查波动率
+            volatility = self.trading_system.calculate_volatility(market_data)
+            self.logger.debug("RISK", f"{symbol} 当前波动率: {volatility}")
+            
+            if volatility >= self.volatility_threshold:
+                self.logger.warning("RISK", f"{symbol} 波动率超过阈值")
+                self._record_risk_event("HIGH_VOLATILITY", symbol, "MEDIUM", 
+                    f"波动率 {volatility:.2%} 超过阈值 {self.volatility_threshold:.2%}")
+                return False
+            
+            return True
+            
         except Exception as e:
-            self.logger.error("RISK", f"风险检查失败: {str(e)}") 
+            self.logger.error("RISK", f"风险检查失败: {str(e)}")
+            return False 

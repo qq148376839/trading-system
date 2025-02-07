@@ -1,7 +1,9 @@
 {
-    "host": "localhost",
-    "user": "trading_user",
-    "password": "qwer1234!",
-    "database": "trading_db",
-    "port": 3306
-} 
+    "database": {
+        "host": "localhost",
+        "user": "trading_user",
+        "password": "qwer1234!",
+        "database": "trading_db",
+        "port": 3306
+    }
+}

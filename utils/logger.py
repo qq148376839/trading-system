@@ -72,6 +72,15 @@ class DBLogger:
         """记录警告级别日志"""
         self._log("WARNING", module, message)
     
-    def error(self, module, message):
-        """记录错误级别日志"""
-        self._log("ERROR", module, message) 
+    def error(self, module, message, exc_info=False):
+        """
+        记录错误级别日志
+        
+        Args:
+            module: 模块名
+            message: 日志消息
+            exc_info: 是否包含异常信息
+        """
+        self._log("ERROR", module, message)
+        if exc_info:
+            self.console_logger.exception(message) 

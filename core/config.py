@@ -90,10 +90,18 @@ class ConfigManager:
                     },
                     "max_daily_loss": {
                         "type": "number",
+                        "minimum": 0
+                    },
+                    "max_position_loss": {
+                        "type": "number",
                         "maximum": 0
+                    },
+                    "volatility_threshold": {
+                        "type": "number",
+                        "minimum": 0
                     }
                 },
-                "required": ["stop_loss", "take_profit", "max_daily_loss"]
+                "required": ["stop_loss", "take_profit", "max_daily_loss", "max_position_loss", "volatility_threshold"]
             },
             "email": {
                 "type": "object",

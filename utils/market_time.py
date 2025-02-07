@@ -1,5 +1,7 @@
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import pytz
+from typing import Optional, Dict, Union
+import pandas as pd
 
 class MarketTime:
     """市场交易时间管理器"""
@@ -8,7 +10,6 @@ class MarketTime:
         # 设置时区
         self.hk_tz = pytz.timezone('Asia/Hong_Kong')
         self.us_tz = pytz.timezone('America/New_York')
-        self.cn_tz = pytz.timezone('Asia/Shanghai')
         
         # 定义各市场交易时间
         self.market_hours = {
@@ -37,6 +38,31 @@ class MarketTime:
                 }
             }
         }
+        
+        # 加载节假日数据
+        self._load_holidays()
+    
+    def _load_holidays(self) -> None:
+        """加载各市场节假日数据"""
+        # 这里应该从数据库或配置文件加载节假日信息
+        self.holidays = {
+            'HK': set(),  # 港股节假日集合
+            'US': set()   # 美股节假日集合
+        }
+    
+    def _validate_symbol(self, symbol: str) -> str:
+        """验证股票代码格式并返回市场代码"""
+        try:
+            market = symbol.split('.')[-1].upper()
+            if market not in ['US', 'HK']:
+                raise ValueError(f"不支持的市场: {market}")
+            return market
+        except Exception as e:
+            raise ValueError(f"无效的股票代码格式: {symbol}") from e
+    
+    def _is_holiday(self, market: str, date: datetime) -> bool:
+        """检查是否为节假日"""
+        return date.date() in self.holidays[market]
     
     def is_market_open(self, symbol: str) -> bool:
         """
@@ -47,18 +73,27 @@ class MarketTime:
             
         Returns:
             bool: 是否在交易时间
+            
+        Raises:
+            ValueError: 当股票代码格式无效或市场不支持时
         """
-        market = symbol.split('.')[-1]
-        if market not in ['US', 'HK']:
+        market = self._validate_symbol(symbol)
+        
+        # 获取市场当前时间
+        tz = self.us_tz if market == 'US' else self.hk_tz
+        current = datetime.now(tz)
+        
+        # 检查是否为节假日
+        if self._is_holiday(market, current):
+            return False
+        
+        # 检查是否为周末
+        if current.weekday() in [5, 6]:
             return False
             
-        # 获取市场当前时间
-        current_time = datetime.now(
-            self.us_tz if market == 'US' else self.hk_tz
-        ).time()
+        current_time = current.time()
         
         if market == 'HK':
-            # 检查港股市场时间
             morning = self.market_hours['HK']['morning']
             afternoon = self.market_hours['HK']['afternoon']
             return (
@@ -66,7 +101,6 @@ class MarketTime:
                 (afternoon['start'] <= current_time <= afternoon['end'])
             )
         else:  # US市场
-            # 检查美股市场时间（包括盘前盘后）
             regular = self.market_hours['US']['regular']
             pre = self.market_hours['US']['pre_market']
             after = self.market_hours['US']['after_market']
@@ -76,7 +110,7 @@ class MarketTime:
                 (after['start'] <= current_time <= after['end'])
             )
     
-    def get_next_market_open(self, symbol: str) -> datetime:
+    def get_next_market_open(self, symbol: str) -> Optional[datetime]:
         """
         获取下一个交易时段的开始时间
         
@@ -85,57 +119,62 @@ class MarketTime:
             
         Returns:
             datetime: 下一个交易时段的开始时间
-        """
-        market = symbol.split('.')[-1]
-        if market not in ['US', 'HK']:
-            return None
             
+        Raises:
+            ValueError: 当股票代码格式无效或市场不支持时
+        """
+        market = self._validate_symbol(symbol)
         tz = self.us_tz if market == 'US' else self.hk_tz
         current = datetime.now(tz)
         
+        # 获取下一个交易时间
+        next_open = self._calculate_next_open(market, current)
+        
+        # 确保不是节假日
+        while self._is_holiday(market, next_open) or next_open.weekday() in [5, 6]:
+            next_open += timedelta(days=1)
+            next_open = self._calculate_next_open(market, next_open)
+            
+        return next_open
+    
+    def _calculate_next_open(self, market: str, current: datetime) -> datetime:
+        """计算下一个开市时间"""
         if market == 'HK':
             if current.time() < self.market_hours['HK']['morning']['start']:
-                # 当天早市开始
-                next_open = current.replace(
+                return current.replace(
                     hour=self.market_hours['HK']['morning']['start'].hour,
                     minute=self.market_hours['HK']['morning']['start'].minute,
-                    second=0
+                    second=0,
+                    microsecond=0
                 )
             elif current.time() < self.market_hours['HK']['afternoon']['start']:
-                # 当天下午开市
-                next_open = current.replace(
+                return current.replace(
                     hour=self.market_hours['HK']['afternoon']['start'].hour,
                     minute=self.market_hours['HK']['afternoon']['start'].minute,
-                    second=0
+                    second=0,
+                    microsecond=0
                 )
             else:
-                # 下一个交易日早市
-                next_open = (current + timedelta(days=1)).replace(
+                next_day = current + timedelta(days=1)
+                return next_day.replace(
                     hour=self.market_hours['HK']['morning']['start'].hour,
                     minute=self.market_hours['HK']['morning']['start'].minute,
-                    second=0
+                    second=0,
+                    microsecond=0
                 )
         else:  # US市场
             if current.time() < self.market_hours['US']['pre_market']['start']:
-                # 当天盘前开始
-                next_open = current.replace(
+                return current.replace(
                     hour=self.market_hours['US']['pre_market']['start'].hour,
                     minute=self.market_hours['US']['pre_market']['start'].minute,
-                    second=0
-                )
-            elif current.time() < self.market_hours['US']['regular']['start']:
-                # 当天常规交易时段开始
-                next_open = current.replace(
-                    hour=self.market_hours['US']['regular']['start'].hour,
-                    minute=self.market_hours['US']['regular']['start'].minute,
-                    second=0
+                    second=0,
+                    microsecond=0
                 )
             else:
-                # 下一个交易日盘前
-                next_open = (current + timedelta(days=1)).replace(
+                next_day = current + timedelta(days=1)
+                return next_day.replace(
                     hour=self.market_hours['US']['pre_market']['start'].hour,
                     minute=self.market_hours['US']['pre_market']['start'].minute,
-                    second=0
-                )
-                
-        return next_open 
+                    second=0,
+                    microsecond=0
+                ) 

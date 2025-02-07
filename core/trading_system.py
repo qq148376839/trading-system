@@ -5,15 +5,14 @@ from longport.openapi import Config as LongPortConfig, QuoteContext, TradeContex
 import mysql.connector
 import os
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from core.token_manager import TokenManager
 import time
 import logging
 from core.strategy import TradingStrategy
-from core.data_collector import DataCollector
 from core.config import ConfigManager
-from decimal import Decimal
-from typing import Dict, Optional, List
+from typing import Dict
+from core.trader import AutoTrader
 
 class TradingSystem:
     """
@@ -65,6 +64,9 @@ class TradingSystem:
             self.quote_ctx = QuoteContext(self.longport_config)
             self.trade_ctx = TradeContext(self.longport_config)
             
+            # 初始化交易者实例
+            self.trader = AutoTrader(self)
+            
             # 初始化其他组件
             self.token_manager = TokenManager(self)
             self.risk_manager = RiskManager(self)
@@ -72,6 +74,17 @@ class TradingSystem:
             
             # 初始化交易相关配置
             self._init_trading_params()
+            
+            # 初始化持仓信息
+            self.positions = {}
+            
+            # 初始化交易策略
+            self.strategy = TradingStrategy(self.config_manager)
+            self.strategy.ts = self  # 设置trading system引用
+            
+            self.last_trade_time = {}
+            self.position_avg_price = 0
+            self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             
             self.logger.info("INIT", "交易系统初始化完成")
             
@@ -89,9 +102,38 @@ class TradingSystem:
         """
         try:
             db_config = self.config_manager.get('database')
-            return mysql.connector.connect(**db_config)
+            
+            # 添加调试日志
+            print("数据库配置:", db_config)  # 临时添加打印语句，方便调试
+            
+            # 获取实际的数据库配置（内层配置）
+            if isinstance(db_config, dict) and 'database' in db_config:
+                db_config = db_config['database']
+            
+            if not isinstance(db_config, dict):
+                raise ValueError(f"数据库配置必须是字典类型，当前类型: {type(db_config)}")
+            
+            # 确保所有必需的配置项都存在
+            required_keys = ['host', 'user', 'password', 'database', 'port']
+            for key in required_keys:
+                if key not in db_config:
+                    raise ValueError(f"数据库配置缺少必需的键: {key}")
+            
+            # 确保配置值的类型正确
+            if not isinstance(db_config['port'], int):
+                raise ValueError(f"端口必须是整数类型，当前类型: {type(db_config['port'])}")
+            
+            # 尝试连接数据库
+            return mysql.connector.connect(
+                host=db_config['host'],
+                user=db_config['user'],
+                password=db_config['password'],
+                database=db_config['database'],
+                port=db_config['port']
+            )
+            
         except Exception as e:
-            raise Exception(f"初始化数据库连接失败: {str(e)}")
+            raise Exception(f"初始化数据库连接失败: {str(e)}\n数据库配置: {db_config}")
         
     def _init_trading_config(self) -> LongPortConfig:
         """
@@ -162,20 +204,47 @@ class TradingSystem:
 
     def _init_trading_params(self):
         """初始化交易参数"""
-        trading_config = self.config_manager.get('trading')
-        self.stock_pools = trading_config.get('stock_pools', {})
-        self.trade_params = trading_config.get('trade_params', {})
-        
-        # 订阅行情
-        symbols = [symbol for pool in self.stock_pools.values() for symbol in pool]
-        if symbols:
-            self.quote_ctx.subscribe(
-                symbols=symbols,
-                sub_types=[SubType.Quote],
-                is_first_push=True
-            )
-            self.logger.info("MARKET", f"成功订阅 {len(symbols)} 个股票的行情")
+        try:
+            trading_config = self.config_manager.get('trading')
+            if not trading_config:
+                raise ValueError("未找到交易配置")
             
+            required_params = ['stock_pools', 'trade_params']
+            for param in required_params:
+                if param not in trading_config:
+                    raise ValueError(f"缺少必需的配置项: {param}")
+                
+            self.stock_pools = trading_config['stock_pools']
+            self.trade_params = trading_config['trade_params']
+            
+            # 验证交易参数
+            required_trade_params = ['min_trade_interval', 'max_position_per_stock']
+            for param in required_trade_params:
+                if param not in self.trade_params:
+                    raise ValueError(f"缺少必需的交易参数: {param}")
+                
+            # 初始化 symbols 列表
+            self.symbols = []
+            for pool in self.stock_pools.values():
+                if isinstance(pool, list):
+                    self.symbols.extend(pool)
+            self.symbols = list(set(self.symbols))  # 去重
+            
+            # 订阅行情
+            if self.symbols:
+                self.quote_ctx.subscribe(
+                    symbols=self.symbols,
+                    sub_types=[SubType.Quote],
+                    is_first_push=True
+                )
+                self.logger.info("MARKET", f"成功订阅 {len(self.symbols)} 个股票的行情")
+            else:
+                self.logger.warning("MARKET", "交易标的列表为空，请检查配置")
+            
+        except Exception as e:
+            self.logger.error("INIT", f"初始化交易参数失败: {str(e)}")
+            raise
+
     def update_trading_config(self):
         """更新交易系统配置"""
         try:
@@ -385,149 +454,74 @@ class TradingSystem:
 
     def check_risk_limits(self, symbol, market_data):
         """检查风险控制限制"""
-        try:
-            self.logger.debug("RISK", f"开始检查 {symbol} 的风险控制限制")
-            
-            # 检查止损
-            position_loss = self.calculate_position_loss(symbol, market_data)
-            self.logger.debug("RISK", f"{symbol} 当前持仓亏损: {position_loss}")
-            
-            if position_loss <= self.risk_config.get('stop_loss', -0.1):
-                self.logger.warning("RISK", f"{symbol} 触发止损限制")
-                return False
-                
-            # 检查日内亏损
-            daily_loss = self.calculate_daily_loss()
-            self.logger.debug("RISK", f"当前日内总亏损: {daily_loss}")
-            
-            if daily_loss <= self.risk_config.get('max_daily_loss', -0.05):
-                self.logger.warning("RISK", "触发日内最大亏损限制")
-                return False
-                
-            # 检查波动率
-            volatility = self.calculate_volatility(market_data)
-            self.logger.debug("RISK", f"{symbol} 当前波动率: {volatility}")
-            
-            if volatility >= self.risk_config.get('volatility_threshold', 0.03):
-                self.logger.warning("RISK", f"{symbol} 波动率超过阈值")
-                return False
-                
-            return True
-            
-        except Exception as e:
-            self.logger.error("RISK", f"风险检查出错: {str(e)}", exc_info=True)
-            return False 
+        return self.risk_manager.check_risk(symbol, market_data)
 
-    def calculate_position_loss(self, symbol, market_data):
-        """
-        计算持仓亏损
-        """
-        try:
-            self.logger.debug("CALC", f"计算 {symbol} 的持仓亏损")
-            self.logger.debug("CALC", f"市场数据: {market_data}")
-            
-            # 获取当前持仓信息
-            position = self.get_position(symbol)
-            if not position:
-                self.logger.debug("CALC", f"{symbol} 没有持仓")
-                return 0
-            
-            # 从market_data中获取当前价格
-            current_price = market_data.last_done
-            if not current_price:
-                self.logger.warning("CALC", f"无法获取 {symbol} 的当前价格")
-                return 0
-            
-            # 计算损益
-            avg_cost = position.get('average_cost', 0)
-            if avg_cost == 0:
-                self.logger.warning("CALC", f"{symbol} 的平均成本为0")
-                return 0
-            
-            loss_rate = (current_price - avg_cost) / avg_cost
-            self.logger.debug("CALC", f"{symbol} 当前亏损率: {loss_rate:.2%}")
-            
-            return loss_rate
-            
-        except Exception as e:
-            self.logger.error("CALC", f"计算持仓亏损时出错: {str(e)}", exc_info=True)
-            return 0
+    def _calculate_position_value(self, position, current_price):
+        """计算持仓市值"""
+        quantity = position.get('quantity', 0)
+        if quantity == 0:
+            return 0, 0
+        
+        avg_cost = position.get('cost_price', 0)
+        current_value = quantity * current_price
+        initial_value = quantity * avg_cost
+        return current_value, initial_value
 
-    def calculate_daily_loss(self):
-        """
-        计算日内总亏损
-        """
+    def calculate_position_loss(self, market_data):
+        """计算单个持仓亏损"""
         try:
-            self.logger.debug("CALC", "计算日内总亏损")
+            current_price = float(market_data['last_done'])
+            position = self.get_position(market_data['symbol'])
+            current_value, initial_value = self._calculate_position_value(position, current_price)
             
-            # 获取今日所有持仓的市值变化
-            total_value = 0
-            initial_value = 0
-            
-            for symbol in self.symbols:
-                position = self.get_position(symbol)
-                if not position:
-                    continue
-                
-                quantity = position.get('quantity', 0)
-                avg_cost = position.get('average_cost', 0)
-                
-                if quantity == 0 or avg_cost == 0:
-                    continue
-                
-                # 获取当前价格
-                try:
-                    current_data = self.quote_ctx.realtime_quote([symbol])
-                    if not current_data:
-                        continue
-                    current_price = current_data[0].last_done
-                except Exception as e:
-                    self.logger.error("CALC", f"获取 {symbol} 当前价格失败: {str(e)}")
-                    continue
-                
-                # 计算市值变化
-                current_value = quantity * current_price
-                initial_value += quantity * avg_cost
-                total_value += current_value
-                
             if initial_value == 0:
                 return 0
             
-            daily_return = (total_value - initial_value) / initial_value
-            self.logger.debug("CALC", f"日内收益率: {daily_return:.2%}")
-            
-            return daily_return
+            return (initial_value - current_value) / initial_value
             
         except Exception as e:
-            self.logger.error("CALC", f"计算日内亏损时出错: {str(e)}", exc_info=True)
+            self.logger.error("CALC", f"计算持仓亏损时出错: {str(e)}")
+            return 0
+
+    def calculate_daily_loss(self):
+        """计算日内总亏损"""
+        try:
+            total_current_value = 0
+            total_initial_value = 0
+            
+            for symbol in self.symbols:
+                current_data = self.quote_ctx.realtime_quote([symbol])
+                if not current_data:
+                    continue
+                
+                current_price = current_data[0].last_done
+                position = self.get_position(symbol)
+                
+                current_value, initial_value = self._calculate_position_value(position, current_price)
+                total_current_value += current_value
+                total_initial_value += initial_value
+                
+            if total_initial_value == 0:
+                return 0
+            
+            return (total_initial_value - total_current_value) / total_initial_value
+            
+        except Exception as e:
+            self.logger.error("CALC", f"计算日内亏损时出错: {str(e)}")
             return 0
 
     def calculate_volatility(self, market_data):
-        """
-        计算波动率
-        """
+        """计算波动率"""
         try:
-            self.logger.debug("CALC", "计算波动率")
-            self.logger.debug("CALC", f"市场数据: {market_data}")
-            
-            # 从market_data中获取价格信息
-            high_price = market_data.high
-            low_price = market_data.low
-            last_price = market_data.last_done
-            
-            if not all([high_price, low_price, last_price]):
-                self.logger.warning("CALC", "价格数据不完整")
-                return 0
-            
-            # 计算当日波动率
-            volatility = (high_price - low_price) / last_price
-            self.logger.debug("CALC", f"当前波动率: {volatility:.2%}")
-            
-            return volatility
-            
+            if isinstance(market_data, dict):
+                high_price = float(market_data['high'])
+                low_price = float(market_data['low'])
+                if high_price and low_price:
+                    return (high_price - low_price) / low_price
+            return 0
         except Exception as e:
-            self.logger.error("CALC", f"计算波动率时出错: {str(e)}", exc_info=True)
-            return 0 
+            self.logger.error(f"计算波动率时出错: {e}")
+            return 0
 
     def execute_strategy(self, market_data):
         """
@@ -591,11 +585,8 @@ class TradingSystem:
             int: 交易数量
         """
         try:
-            # 获取账户余额
-            balance = float(self.get_account_balance())
-            
-            # 获取每个标的的最大仓位比例
-            max_position = self.config.get('trade_params', {}).get('max_position_per_stock', 0.2)
+            balance = float(self.trader.get_account_balance())
+            max_position = self.config_manager.get('trading', {}).get('trade_params', {}).get('max_position_per_stock', 0.2)
             
             # 计算最大可用资金
             max_amount = balance * max_position
