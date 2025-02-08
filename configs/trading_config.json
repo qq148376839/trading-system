@@ -35,5 +35,18 @@
         "max_position_per_stock": 0.2,
         "max_daily_trades": 10,
         "min_trade_interval": 300
+    },
+    "lstm_strategy": {
+        "lookback_period": 20,
+        "prediction_period": 5,
+        "batch_size": 32,
+        "epochs": 100,
+        "lstm_units": [64, 32, 16],
+        "dropout_rate": 0.2,
+        "learning_rate": 0.001,
+        "train_test_split": 0.8,
+        "features": ["open", "high", "low", "close", "volume"],
+        "model_path": "models/lstm_model",
+        "scaler_path": "models/feature_scaler.pkl"
     }
 } 

@@ -1,5 +1,5 @@
 # API相关
-longport-sdk
+longport
 
 # 数据库
 mysql-connector-python
@@ -19,4 +19,8 @@ pandas
 numpy
 
 # 类型提示
-typing-extensions 
+typing-extensions
+
+# 新增依赖
+requests
+python-dotenv 

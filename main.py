@@ -1,99 +1,126 @@
 import json
-from core.trading_system import TradingSystem
-import time
-from utils.market_time import MarketTime
 import logging
-import os
+from pathlib import Path
+from longport.openapi import Config, QuoteContext, TradeContext, SubType
+from data.market_data import MarketDataManager
+from strategies.strategy_manager import StrategyManager
+from trading.trading_executor import TradingExecutor
+from risk_management.risk_controller import RiskController
+from notification.email_notifier import EmailNotifier
+from datetime import datetime
+import time
 
-def setup_logging():
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s [%(levelname)s] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    return logging.getLogger(__name__)
+# 设置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-def load_config(config_dir='configs'):
-    """加载所有配置文件"""
-    config = {}
-    required_configs = {
-        'database_config.json': 'DATABASE',
-        'trading_config.json': None,
-        'risk_config.json': 'RISK',
-        'email_config.json': 'EMAIL'
-    }
-    
-    for config_file, config_key in required_configs.items():
-        file_path = os.path.join(config_dir, config_file)
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if config_key:
-                    config[config_key] = data
-                else:
-                    config.update(data)
-        except FileNotFoundError:
-            raise FileNotFoundError(f"配置文件未找到: {file_path}")
-        except json.JSONDecodeError:
-            raise ValueError(f"配置文件格式错误: {file_path}")
-    
-    return config
-
-def main():
-    logger = setup_logging()
-    
-    try:
-        # 初始化配置
-        config = load_config()
-        ts = TradingSystem(config)
-        market_time = MarketTime()
+class TradingSystem:
+    def __init__(self):
+        self.config = self._load_configs()
+        self.market_data = MarketDataManager(self.config['database'])
+        self.market_data.init_connection()
         
-        while True:
-            try:
-                # 检查是否在交易时间
-                if not market_time.is_trading_time():
-                    logger.info("当前不在交易时间，等待下一个交易时段")
-                    time.sleep(300)  # 5分钟检查一次
-                    continue
+        # 从数据库获取API配置
+        api_config = self.market_data.get_api_config()
+        self.longport_config = Config(
+            app_key=api_config['app_key'],
+            app_secret=api_config['app_secret'],
+            access_token=api_config['access_token']
+        )
+        
+        # 初始化其他组件
+        self.quote_ctx = QuoteContext(self.longport_config)
+        self.trade_ctx = TradeContext(self.longport_config)
+        self.market_data.set_quote_context(self.quote_ctx)
+        self.risk_controller = RiskController(self.config['risk'])
+        self.email_notifier = EmailNotifier(self.config['email'])
+        self.trading_executor = TradingExecutor(
+            self.trade_ctx,
+            self.risk_controller,
+            self.email_notifier,
+            self.config['trading']
+        )
+        self.strategy_manager = StrategyManager(
+            self.market_data,
+            self.trading_executor
+        )
+
+    def _load_configs(self):
+        """加载所有配置文件"""
+        config_dir = Path("configs")
+        configs = {}
+        
+        config_files = {
+            'database': 'database_config.json',
+            'email': 'email_config.json',
+            'trading': 'trading_config.json',
+            'risk': 'risk_config.json'
+        }
+        
+        for key, filename in config_files.items():
+            with open(config_dir / filename, 'r') as f:
+                configs[key] = json.load(f)
+        
+        return configs
+
+    def start(self):
+        """启动交易系统"""
+        logger.info("启动交易系统...")
+        try:
+            # 订阅行情
+            symbols = []
+            for pool in self.config['trading']['stock_pools'].values():
+                symbols.extend(pool)
+            
+            logger.info(f"正在订阅股票: {symbols}")
+            
+            # 设置行情回调
+            self.quote_ctx.set_on_quote(self._on_quote_callback)
+            
+            # 订阅股票的实时行情
+            self.quote_ctx.subscribe(symbols, [SubType.Quote])
+            
+            # 启动策略管理器
+            self.strategy_manager.start()
+            
+            logger.info("交易系统启动成功")
+            
+            # 保持程序运行
+            while True:
+                time.sleep(1)
                 
-                # 检查交易标的
-                if not ts.symbols:
-                    logger.error("交易标的列表为空，请检查配置")
-                    time.sleep(300)
-                    continue
-                
-                # 获取市场数据
-                logger.debug(f"准备获取以下标的的市场数据: {ts.symbols}")
-                market_data = ts.get_market_data(ts.symbols)
-                
-                if not market_data:
-                    logger.warning("未获取到市场数据，等待下次尝试...")
-                    time.sleep(60)
-                    continue
-                
-                # 执行策略和交易
-                signals = ts.execute_strategy(market_data)
-                if signals:
-                    ts.execute_trades(signals)
-                
-                # 更新持仓和风险检查
-                ts.update_positions()
-                risk_results = ts.check_risk_limits(ts.symbols, market_data)
-                
-                # 处理风险警告
-                if risk_results:
-                    ts.handle_risk_warnings(risk_results)
-                
-                time.sleep(ts.config.get('interval', 60))
-                
-            except Exception as e:
-                logger.error(f"循环中发生错误: {str(e)}", exc_info=True)
-                time.sleep(60)
-                
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("正在关闭交易系统...")
-        ts.cleanup()
-        logger.info("交易系统已安全关闭")
+        except Exception as e:
+            logger.error(f"系统启动失败: {str(e)}")
+            self.email_notifier.send_alert("交易系统启动失败", str(e))
+            raise
+
+    def _on_quote_callback(self, symbol: str, quote: dict):
+        """行情数据回调处理"""
+        try:
+            # 转发行情数据给策略管理器
+            self.strategy_manager.on_quote_update(symbol, quote)
+        except Exception as e:
+            logger.error(f"处理行情数据失败 {symbol}: {str(e)}")
+
+    def refresh_token(self):
+        """刷新访问令牌"""
+        try:
+            # 调用长桥SDK的刷新token接口
+            new_token = self.longport_config.refresh_token()
+            
+            # 更新数据库中的token信息
+            self.market_data.update_access_token(
+                account_type='SIMULATION',  # 或 'REAL'
+                access_token=new_token['access_token'],
+                expire_time=datetime.fromtimestamp(new_token['expire_time'])
+            )
+            
+            logger.info("访问令牌刷新成功")
+            
+        except Exception as e:
+            logger.error(f"刷新访问令牌失败: {str(e)}")
+            self.email_notifier.send_alert("Token刷新失败", str(e))
 
 if __name__ == "__main__":
-    main()
+    system = TradingSystem()
+    system.start()

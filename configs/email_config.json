@@ -1,8 +1,6 @@
 {
-    "email": {
-        "enabled": true, 
-        "resend_api_key": "re_Wx5ASjNG_H51utaGzG8zEV7dpkawTgEcU",
-        "sender_email": "onboarding@resend.dev",
-        "recipient_email": "148376839@qq.com"
-    }
+    "enabled": true, 
+    "resend_api_key": "re_Wx5ASjNG_H51utaGzG8zEV7dpkawTgEcU",
+    "sender_email": "onboarding@resend.dev",
+    "recipient_email": "q148376839@gmail.com"
 }
