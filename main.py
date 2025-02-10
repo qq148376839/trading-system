@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 class TradingSystem:
     def __init__(self):
         self.config = self._load_configs()
+        logger.info(f"加载的交易配置: {self.config.get('trading', {})}")  # 添加配置日志
         self.market_data = MarketDataManager(self.config['database'])
         self.market_data.init_connection()
         
@@ -36,6 +37,7 @@ class TradingSystem:
         self.email_notifier = EmailNotifier(self.config['email'])
         self.trading_executor = TradingExecutor(
             self.trade_ctx,
+            self.quote_ctx,  # 添加这行
             self.risk_controller,
             self.email_notifier,
             self.config['trading']
@@ -85,10 +87,16 @@ class TradingSystem:
             
             logger.info("交易系统启动成功")
             
-            # 保持程序运行
-            while True:
-                time.sleep(1)
-                
+            # 保持程序运行，添加优雅退出机制
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                logger.info("接收到退出信号，正在关闭交易系统...")
+                # 清理订阅
+                self.quote_ctx.unsubscribe(symbols, [SubType.Quote])
+                logger.info("交易系统已安全退出")
+            
         except Exception as e:
             logger.error(f"系统启动失败: {str(e)}")
             self.email_notifier.send_alert("交易系统启动失败", str(e))
@@ -97,8 +105,22 @@ class TradingSystem:
     def _on_quote_callback(self, symbol: str, quote: dict):
         """行情数据回调处理"""
         try:
+            # 创建quote的副本，避免在迭代过程中修改原字典
+            quote_copy = {
+                'symbol': symbol,
+                'last_done': quote.last_done,
+                'open': quote.open,
+                'high': quote.high,
+                'low': quote.low,
+                'timestamp': quote.timestamp,
+                'volume': quote.volume,
+                'turnover': quote.turnover,
+                'trade_status': quote.trade_status
+            }
+            
             # 转发行情数据给策略管理器
-            self.strategy_manager.on_quote_update(symbol, quote)
+            self.strategy_manager.on_quote_update(symbol, quote_copy)
+            
         except Exception as e:
             logger.error(f"处理行情数据失败 {symbol}: {str(e)}")
 

@@ -2,9 +2,8 @@ import pytest
 import json
 from pathlib import Path
 from datetime import datetime, timedelta, date
-from longport.openapi import Period, CalcIndex, AdjustType, QuoteContext, TradeContext, OrderSide, OrderType, TimeInForceType, Config, SubType
-from decimal import Decimal
-from unittest.mock import Mock, patch
+from longport.openapi import QuoteContext, TradeContext
+from unittest.mock import Mock
 
 from data.market_data import MarketDataManager
 from strategies.macd_strategy import MACDStrategy
@@ -12,7 +11,6 @@ from strategies.rsi_strategy import RSIStrategy
 from trading.trading_executor import TradingExecutor
 from risk_management.risk_controller import RiskController
 from notification.email_notifier import EmailNotifier
-from main import TradingSystem
 from strategies.lstm_strategy import LSTMStrategy
 
 @pytest.fixture
@@ -238,6 +236,10 @@ def test_trading_executor(mock_trade_context, mock_configs):
         mock_configs['trading']
     )
     
+    # 模拟账户余额和持仓信息
+    mock_trade_context.account_balance = Mock(return_value={'cash': 100000})
+    mock_trade_context.positions = Mock(return_value=[])
+    
     # 测试执行交易
     trading_executor.execute_trade('AAPL.US', 1, 150.0)
     mock_trade_context.submit_order.assert_called_once()
@@ -287,4 +289,4 @@ def test_lstm_strategy(mock_market_data, mock_trade_context, mock_configs):
     signals = strategy.generate_signals(['AAPL.US'])
     assert isinstance(signals, dict)
     assert 'AAPL.US' in signals
-    assert signals['AAPL.US'] in [-1, 0, 1] 
+    assert signals['AAPL.US'] in [-1, 0, 1]

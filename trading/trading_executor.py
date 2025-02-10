@@ -6,6 +6,7 @@ from longport.openapi import (
     OrderSide,
     OrderType,
     TimeInForceType,  # 修改这里：TimeInForce -> TimeInForceType
+    QuoteContext,
 )
 from risk_management.risk_controller import RiskController
 from notification.email_notifier import EmailNotifier
@@ -18,11 +19,13 @@ class TradingExecutor:
     def __init__(
         self,
         trade_ctx: TradeContext,
+        quote_ctx: QuoteContext,
         risk_controller: RiskController,
         email_notifier: EmailNotifier,
         trade_config: Dict
     ):
         self.trade_ctx = trade_ctx
+        self.quote_ctx = quote_ctx
         self.risk_controller = risk_controller
         self.email_notifier = email_notifier
         self.trade_config = trade_config
@@ -117,7 +120,7 @@ class TradingExecutor:
         """
         try:
             # 获取当日交易时段
-            sessions = self.trade_ctx.trading_session()
+            sessions = self.quote_ctx.trading_session()
             
             # 获取当前时间
             now = datetime.now()

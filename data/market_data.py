@@ -4,6 +4,8 @@ from typing import List, Dict, Optional
 import mysql.connector
 from mysql.connector import pooling
 from longport.openapi import QuoteContext, Period, AdjustType, CalcIndex
+import time
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -129,71 +131,64 @@ class MarketDataManager:
             K线数据列表
         """
         try:
-            conn = self.pool.get_connection()
-            cursor = conn.cursor(dictionary=True)
+            logger.info(f"正在获取 {symbol} 的历史K线数据...")
+            all_klines = []
+            remaining_count = count
+            last_time = None
+            max_retries = 3
             
-            # 从数据库获取最新记录
-            cursor.execute('''
-                SELECT timestamp, open, close, high, low, volume, turnover
-                FROM candlesticks 
-                WHERE symbol = %s AND period = %s
-                ORDER BY timestamp DESC
-                LIMIT %s
-            ''', (symbol, period.value, count))
+            with tqdm(total=count, desc=f"获取 {symbol} K线数据") as pbar:
+                while remaining_count > 0 and max_retries > 0:
+                    try:
+                        # 每次请求的数量
+                        batch_size = min(1000, remaining_count)  # 长桥API单次最多返回1000条
+                        
+                        # 获取历史K线
+                        klines = self.quote_ctx.history_candlesticks_by_offset(
+                            symbol=symbol,
+                            period=period,
+                            adjust_type=adjust_type,
+                            forward=False,  # 向前获取历史数据
+                            count=batch_size,
+                            time=last_time
+                        )
+                        
+                        if not klines:
+                            logger.warning(f"未获取到 {symbol} 的历史数据")
+                            break
+                        
+                        logger.info(f"本次获取 {len(klines)} 条K线数据")
+                        all_klines.extend(klines)
+                        
+                        # 更新最后一条K线的时间戳，用于下次请求
+                        if klines:
+                            last_time = klines[-1].timestamp
+                            remaining_count -= len(klines)
+                            pbar.update(len(klines))
+                        else:
+                            max_retries -= 1
+                        
+                        # 如果获取的数据已经足够，就退出循环
+                        if len(all_klines) >= count:
+                            break
+                        
+                        # 添加请求间隔，避免触发频率限制
+                        time.sleep(0.5)
+                        
+                    except Exception as e:
+                        logger.error(f"获取 {symbol} 的历史K线数据失败: {str(e)}")
+                        max_retries -= 1
+                        time.sleep(1)  # 添加重试延迟
+                
+            logger.info(f"总共获取到 {len(all_klines)} 条K线数据")
             
-            db_data = cursor.fetchall()
-            
-            # 如果数据库中数据不足,从API获取补充
-            if len(db_data) < count:
-                api_data = self.quote_ctx.history_candlesticks_by_offset(
-                    symbol=symbol,
-                    period=period,
-                    adjust_type=adjust_type,
-                    forward=True,
-                    time=datetime.now(),
-                    count=count
-                )
-                
-                # 保存到数据库
-                insert_sql = '''
-                    INSERT INTO candlesticks 
-                    (symbol, timestamp, open, close, high, low, volume, turnover, period)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                    open = VALUES(open),
-                    close = VALUES(close),
-                    high = VALUES(high),
-                    low = VALUES(low),
-                    volume = VALUES(volume),
-                    turnover = VALUES(turnover)
-                '''
-                
-                for candle in api_data:
-                    cursor.execute(insert_sql, (
-                        symbol,
-                        int(candle.timestamp.timestamp()),
-                        candle.open,
-                        candle.close,
-                        candle.high,
-                        candle.low,
-                        candle.volume,
-                        candle.turnover,
-                        period.value
-                    ))
-                
-                conn.commit()
-                return api_data
-                
-            return db_data
+            # 按时间排序并返回需要的数量
+            all_klines.sort(key=lambda x: x.timestamp)
+            return all_klines[-count:] if len(all_klines) > count else all_klines
             
         except Exception as e:
             logger.error(f"获取历史K线数据失败: {str(e)}")
             raise
-        finally:
-            if 'cursor' in locals():
-                cursor.close()
-            if 'conn' in locals():
-                conn.close()
                 
     def save_technical_indicators(
         self,

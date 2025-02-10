@@ -49,31 +49,55 @@ class StrategyManager:
         """启动所有策略"""
         logger.info("启动策略管理器...")
         
-        # 添加默认策略
-        self.add_strategy("MACD", MACDStrategy, {
-            "fast_period": 12,
-            "slow_period": 26,
-            "signal_period": 9
-        })
-        
-        self.add_strategy("RSI", RSIStrategy, {
-            "rsi_period": 14,
-            "overbought": 70,
-            "oversold": 30
-        })
-        
-        # 添加LSTM策略
-        self.add_strategy("LSTM", LSTMStrategy, {
-            "lstm_strategy": {
-                "lookback_period": 20,
-                "prediction_period": 5,
-                "batch_size": 32,
-                "epochs": 100,
-                "lstm_units": [64, 32, 16],
-                "dropout_rate": 0.2,
-                "learning_rate": 0.001
+        try:
+            # 获取交易配置中的股票池
+            trading_config = self.trading_executor.trade_config
+            stock_pools = trading_config.get('stock_pools', {})
+            
+            logger.info(f"加载的股票池配置: {stock_pools}")  # 添加日志
+            
+            if not stock_pools:
+                logger.warning("未找到有效的股票池配置")
+                return
+            
+            # 添加默认策略
+            self.add_strategy("MACD", MACDStrategy, {
+                "fast_period": 12,
+                "slow_period": 26,
+                "signal_period": 9,
+                "stock_pools": stock_pools
+            })
+            
+            self.add_strategy("RSI", RSIStrategy, {
+                "rsi_period": 14,
+                "overbought": 70,
+                "oversold": 30,
+                "stock_pools": stock_pools
+            })
+            
+            # 添加LSTM策略
+            lstm_config = {
+                "lstm_strategy": {
+                    "lookback_period": 20,
+                    "prediction_period": 5,
+                    "batch_size": 32,
+                    "epochs": 100,
+                    "lstm_units": [64, 32, 16],
+                    "dropout_rate": 0.2,
+                    "learning_rate": 0.001,
+                    "model_path": "models/lstm_model",
+                    "scaler_path": "models/feature_scaler.pkl",
+                    "stock_pools": stock_pools
+                },
+                "stock_pools": stock_pools
             }
-        })
+            
+            logger.info(f"LSTM策略配置: {lstm_config}")  # 添加日志
+            self.add_strategy("LSTM", LSTMStrategy, lstm_config)
+            
+        except Exception as e:
+            logger.error(f"启动策略管理器失败: {str(e)}")
+            raise
         
     def on_quote_update(self, symbol: str, quote: Dict):
         """处理行情更新"""
