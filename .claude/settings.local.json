@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run dev:*)",
+      "Bash(timeout 8 bash -c 'while ! curl -s http://localhost:3001/health > /dev/null 2>&1; do sleep 1; done && echo \"\"Server is ready\"\"')",
+      "Bash(curl:*)",
+      "Bash(python -m json.tool:*)",
+      "Bash(timeout 10 bash -c 'while ! curl -s http://localhost:3000 > /dev/null 2>&1; do sleep 1; done && echo \"\"Frontend is ready\"\"')"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

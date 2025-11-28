@@ -1,0 +1,301 @@
+import dotenv from 'dotenv';
+import path from 'path';
+
+// 明确指定.env文件路径（相对于当前文件）
+// 兼容Windows和Docker部署
+const envPath = path.resolve(__dirname, '../../.env');
+const result = dotenv.config({ path: envPath });
+
+if (result.error) {
+  console.warn('警告: 无法加载.env文件:', result.error.message);
+  console.warn('尝试使用系统环境变量...');
+} else {
+  console.log('成功加载.env文件:', envPath);
+}
+
+// 使用require方式导入，避免TypeScript类型问题
+const longport = require('longport');
+const { Config, QuoteContext, TradeContext, Decimal, OrderType, OrderSide, TimeInForceType, OutsideRTH } = longport;
+
+type QuoteContextType = any;
+type TradeContextType = any;
+
+let quoteContext: QuoteContextType | null = null;
+let tradeContext: TradeContextType | null = null;
+
+// 添加初始化锁，防止并发初始化
+let quoteContextInitializing: Promise<QuoteContextType> | null = null;
+let tradeContextInitializing: Promise<TradeContextType> | null = null;
+
+// 动态导入配置服务（避免循环依赖）
+let configService: any = null;
+async function getConfigService() {
+  if (!configService) {
+    try {
+      const module = await import('../services/config.service');
+      configService = module.default;
+    } catch (error) {
+      // 如果导入失败（例如数据库未初始化），返回null
+      return null;
+    }
+  }
+  return configService;
+}
+
+// 清除Context缓存（用于Token刷新后重新初始化）
+export function clearQuoteContext() {
+  quoteContext = null;
+  quoteContextInitializing = null;
+}
+
+export function clearTradeContext() {
+  tradeContext = null;
+  tradeContextInitializing = null;
+}
+
+/**
+ * 获取长桥QuoteContext实例（单例模式）
+ * 严格按照长桥官方文档：https://longportapp.github.io/openapi/nodejs/classes/QuoteContext.html#quote
+ * 
+ * 官方示例：
+ * const { Config, QuoteContext } = require("longport")
+ * let config = Config.fromEnv()
+ * QuoteContext.new(config)
+ * 
+ * 注意：Config.fromEnv() 会从系统环境变量读取，确保dotenv已加载.env文件到process.env
+ */
+export async function getQuoteContext(): Promise<QuoteContextType> {
+  // 如果已经初始化，直接返回
+  if (quoteContext) {
+    return quoteContext;
+  }
+  
+  // 如果正在初始化，等待初始化完成
+  if (quoteContextInitializing) {
+    return quoteContextInitializing;
+  }
+  
+  // 开始初始化，创建Promise
+  quoteContextInitializing = (async () => {
+    // 优先从数据库读取配置，如果数据库中没有则使用环境变量
+    const service = await getConfigService();
+    let appKey: string | null = null;
+    let appSecret: string | null = null;
+    let accessToken: string | null = null;
+    let enableOvernight: string | null = null;
+
+    if (service) {
+      try {
+        appKey = await service.getConfig('longport_app_key');
+        appSecret = await service.getConfig('longport_app_secret');
+        accessToken = await service.getConfig('longport_access_token');
+        enableOvernight = await service.getConfig('longport_enable_overnight');
+      } catch (error: any) {
+        console.warn('从数据库读取配置失败，使用环境变量:', error.message);
+      }
+    }
+
+    // Fallback到环境变量
+    appKey = appKey || process.env.LONGPORT_APP_KEY || null;
+    appSecret = appSecret || process.env.LONGPORT_APP_SECRET || null;
+    accessToken = accessToken || process.env.LONGPORT_ACCESS_TOKEN || null;
+    enableOvernight = enableOvernight || process.env.LONGPORT_ENABLE_OVERNIGHT || 'false';
+
+    if (!appKey || !appSecret || !accessToken) {
+      quoteContextInitializing = null;
+      throw new Error(
+        'LongPort credentials not configured. Please set LONGPORT_APP_KEY, LONGPORT_APP_SECRET, and LONGPORT_ACCESS_TOKEN in database or .env file.\n' +
+        `当前.env文件路径: ${envPath}\n` +
+        `LONGPORT_APP_KEY: ${appKey ? '已设置' : '未设置'}\n` +
+        `LONGPORT_APP_SECRET: ${appSecret ? '已设置' : '未设置'}\n` +
+        `LONGPORT_ACCESS_TOKEN: ${accessToken ? '已设置' : '未设置'}`
+      );
+    }
+
+    const configSource = service ? '数据库' : '环境变量';
+    console.log(`使用长桥API配置（来源: ${configSource}）:`);
+    console.log(`  APP_KEY: ${appKey.substring(0, 8)}...`);
+    console.log(`  APP_SECRET: ${appSecret.substring(0, 8)}...`);
+    // 显示Token后20位而不是前20位
+    const tokenDisplay = accessToken.length > 20 
+      ? `...${accessToken.substring(accessToken.length - 20)}`
+      : accessToken;
+    console.log(`  ACCESS_TOKEN: ${tokenDisplay}`);
+
+    // 使用手动创建Config的方式，因为需要enablePrintQuotePackages字段
+    // 根据测试结果，Config.fromEnv()可能在某些版本有兼容性问题
+    const config = new Config({
+      appKey: appKey.trim(),
+      appSecret: appSecret.trim(),
+      accessToken: accessToken.trim(),
+      enablePrintQuotePackages: false, // 新版本SDK要求的字段
+      // 可选：开启美股夜盘
+      enableOvernight: enableOvernight === 'true',
+    });
+
+    // 使用官方SDK创建QuoteContext
+    try {
+      quoteContext = await QuoteContext.new(config);
+      quoteContextInitializing = null;
+      return quoteContext;
+    } catch (error: any) {
+      quoteContextInitializing = null;
+      // 处理401004错误（token invalid）
+      if (error.message && error.message.includes('401004')) {
+        throw new Error(
+          '长桥API认证失败（401004: token invalid）。\n' +
+          '可能的原因：\n' +
+          '1. Access Token已过期或无效\n' +
+          '2. Access Token与当前App Key不匹配\n' +
+          '3. Access Token没有行情权限\n\n' +
+          '解决方案：\n' +
+          '1. 访问 https://open.longportapp.com/ 登录开发者中心\n' +
+          '2. 确认当前使用的App Key是否正确\n' +
+          '3. 重新生成Access Token并更新.env文件中的LONGPORT_ACCESS_TOKEN\n' +
+          '4. 确保账户已开通行情权限\n\n' +
+          `当前配置的App Key: ${appKey.substring(0, 8)}...\n` +
+          // 显示Token后20位而不是前20位
+          `当前Token后20位: ${accessToken.length > 20 ? `...${accessToken.substring(accessToken.length - 20)}` : accessToken}\n` +
+          `当前Token长度: ${accessToken.length}字符`
+        );
+      }
+      throw error;
+    }
+  })();
+
+  return quoteContextInitializing;
+}
+
+/**
+ * 获取长桥TradeContext实例（单例模式）
+ * 用于交易相关操作（下单、撤单、查询订单等）
+ */
+export async function getTradeContext(): Promise<TradeContextType> {
+  // 如果已经初始化，直接返回
+  if (tradeContext) {
+    return tradeContext;
+  }
+  
+  // 如果正在初始化，等待初始化完成
+  if (tradeContextInitializing) {
+    return tradeContextInitializing;
+  }
+  
+  // 开始初始化，创建Promise
+  tradeContextInitializing = (async () => {
+    // 优先从数据库读取配置，如果数据库中没有则使用环境变量
+    const service = await getConfigService();
+    let appKey: string | null = null;
+    let appSecret: string | null = null;
+    let accessToken: string | null = null;
+    let enableOvernight: string | null = null;
+
+    if (service) {
+      try {
+        appKey = await service.getConfig('longport_app_key');
+        appSecret = await service.getConfig('longport_app_secret');
+        accessToken = await service.getConfig('longport_access_token');
+        enableOvernight = await service.getConfig('longport_enable_overnight');
+      } catch (error: any) {
+        console.warn('从数据库读取配置失败，使用环境变量:', error.message);
+      }
+    }
+
+    // Fallback到环境变量
+    appKey = appKey || process.env.LONGPORT_APP_KEY || null;
+    appSecret = appSecret || process.env.LONGPORT_APP_SECRET || null;
+    accessToken = accessToken || process.env.LONGPORT_ACCESS_TOKEN || null;
+    enableOvernight = enableOvernight || process.env.LONGPORT_ENABLE_OVERNIGHT || 'false';
+
+    if (!appKey || !appSecret || !accessToken) {
+      tradeContextInitializing = null;
+      throw new Error(
+        'LongPort credentials not configured. Please set LONGPORT_APP_KEY, LONGPORT_APP_SECRET, and LONGPORT_ACCESS_TOKEN in database or .env file.'
+      );
+    }
+
+    const config = new Config({
+      appKey: appKey.trim(),
+      appSecret: appSecret.trim(),
+      accessToken: accessToken.trim(),
+      enablePrintQuotePackages: false,
+      enableOvernight: enableOvernight === 'true',
+    });
+
+    try {
+      console.log('Initializing TradeContext...');
+      console.log(`  APP_KEY: ${appKey.substring(0, 8)}...`);
+      console.log(`  APP_SECRET: ${appSecret.substring(0, 8)}...`);
+      // 显示Token后20位而不是前20位
+      const tokenDisplay = accessToken.length > 20 
+        ? `...${accessToken.substring(accessToken.length - 20)}`
+        : accessToken;
+      console.log(`  ACCESS_TOKEN: ${tokenDisplay}`);
+      
+      tradeContext = await TradeContext.new(config);
+      console.log('TradeContext initialized successfully');
+      tradeContextInitializing = null;
+      return tradeContext;
+    } catch (error: any) {
+      tradeContextInitializing = null;
+      console.error('Failed to initialize TradeContext:');
+      console.error('  Error type:', error?.constructor?.name);
+      console.error('  Error message:', error?.message);
+      console.error('  Error stack:', error?.stack);
+      console.error('  Full error:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
+      
+      // 检查常见的错误原因
+      let errorMessage = 'Failed to initialize TradeContext.\n\n';
+      
+      if (error?.message) {
+        errorMessage += `错误信息: ${error.message}\n\n`;
+        
+        // 检查是否是权限问题
+        if (error.message.includes('401') || error.message.includes('403') || error.message.includes('permission')) {
+          errorMessage += '可能的原因：\n';
+          errorMessage += '1. Access Token没有交易权限\n';
+          errorMessage += '2. Access Token已过期或无效\n';
+          errorMessage += '3. Access Token与当前App Key不匹配\n\n';
+          errorMessage += '解决方案：\n';
+          errorMessage += '1. 访问 https://open.longportapp.com/ 登录开发者中心\n';
+          errorMessage += '2. 确认当前使用的App Key是否正确\n';
+          errorMessage += '3. 重新生成Access Token（确保有交易权限）\n';
+          errorMessage += '4. 更新.env文件中的LONGPORT_ACCESS_TOKEN\n';
+          errorMessage += '5. 确保账户已开通交易权限（不仅仅是行情权限）\n';
+        } else if (error.message.includes('401004')) {
+          errorMessage += '错误码401004: Token无效\n';
+          errorMessage += '请重新生成Access Token并更新.env文件\n';
+        } else if (error.message.includes('401003')) {
+          errorMessage += '错误码401003: App Key或App Secret无效\n';
+          errorMessage += '请检查.env文件中的LONGPORT_APP_KEY和LONGPORT_APP_SECRET\n';
+        } else {
+          errorMessage += '可能的原因：\n';
+          errorMessage += '1. 网络连接问题\n';
+          errorMessage += '2. 长桥API服务暂时不可用\n';
+          errorMessage += '3. SDK版本问题\n';
+          errorMessage += '4. 配置参数错误\n';
+        }
+      } else {
+        errorMessage += '未知错误，请检查日志获取详细信息\n';
+      }
+      
+      errorMessage += `\n当前配置的App Key: ${appKey.substring(0, 8)}...`;
+      // 显示Token后20位而不是前20位
+      const tokenDisplay2 = accessToken.length > 20 
+        ? `...${accessToken.substring(accessToken.length - 20)}`
+        : accessToken;
+      errorMessage += `\n当前Token后20位: ${tokenDisplay2}`;
+      errorMessage += `\n当前Token长度: ${accessToken.length}字符`;
+      
+      throw new Error(errorMessage);
+    }
+  })();
+
+  return tradeContextInitializing;
+}
+
+// 导出类型和常量供其他模块使用
+// 参考：https://longportapp.github.io/openapi/nodejs/classes/TradeContext.html
+const { OrderStatus, Market } = longport;
+
+export { Decimal, OrderType, OrderSide, OrderStatus, Market, TimeInForceType, OutsideRTH };

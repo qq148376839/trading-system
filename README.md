@@ -1,0 +1,443 @@
+# 长桥股票交易系统
+
+基于 NAS + Docker + Zero Trust 的股票交易系统，支持美股、港股、A股实时行情查询和交易执行。
+
+## 📋 目录
+
+- [项目概述](#项目概述)
+- [技术栈](#技术栈)
+- [项目结构](#项目结构)
+- [核心功能](#核心功能)
+- [快速开始](#快速开始)
+- [API 文档](#api-文档)
+- [开发指南](#开发指南)
+- [重要更新](#重要更新)
+
+## 🎯 项目概述
+
+这是一个全栈股票交易系统，提供实时行情查询、订单管理、持仓管理、交易推荐等功能。系统采用前后端分离架构，后端使用 Node.js + Express + TypeScript，前端使用 Next.js + TypeScript。
+
+### 主要特性
+
+- ✅ **完全基于 Longbridge SDK**：所有订单查询和管理功能直接调用 Longbridge OpenAPI SDK
+- ✅ **统一订单管理**：整合今日订单和历史订单，提供统一的订单管理界面
+- ✅ **智能数据映射**：自动将 SDK 返回的数字枚举值转换为字符串枚举值，符合 API 文档规范
+- ✅ **中文翻译支持**：订单类型、订单状态、盘前盘后等字段提供中文翻译
+- ✅ **期权行情 Fallback**：优先使用长桥 API，权限不足时自动切换到富途牛牛 API
+
+## 🛠 技术栈
+
+### 前端
+- **框架**: Next.js 14 (App Router)
+- **语言**: TypeScript
+- **样式**: Tailwind CSS
+- **图表**: Recharts
+- **HTTP客户端**: Axios
+
+### 后端
+- **框架**: Express.js
+- **语言**: TypeScript
+- **数据库**: PostgreSQL 15
+- **SDK**: Longbridge OpenAPI SDK (Node.js)
+- **其他**: dotenv, axios (富途 API)
+
+### 部署
+- **容器化**: Docker + Docker Compose
+- **公网访问**: Cloudflare Zero Trust Tunnel
+
+## 📁 项目结构
+
+```
+trading-system/
+├── api/                          # API 服务
+│   ├── src/
+│   │   ├── config/               # 配置文件
+│   │   │   ├── database.ts       # 数据库配置
+│   │   │   ├── longport.ts       # Longbridge SDK 配置
+│   │   │   └── futunn.ts         # 富途 API 配置
+│   │   ├── routes/               # API 路由
+│   │   │   ├── orders.ts         # 订单管理（完全基于 SDK）
+│   │   │   ├── quote.ts          # 行情查询
+│   │   │   ├── positions.ts      # 持仓查询
+│   │   │   └── ...
+│   │   ├── services/             # 业务逻辑服务
+│   │   └── middleware/           # 中间件
+│   ├── migrations/               # 数据库迁移脚本
+│   └── package.json
+│
+├── frontend/                     # 前端应用
+│   ├── app/                      # Next.js App Router 页面
+│   │   ├── orders/              # 订单管理页面（统一）
+│   │   ├── quote/                # 行情页面
+│   │   ├── positions/            # 持仓页面
+│   │   └── ...
+│   ├── components/               # React 组件
+│   ├── lib/                      # 工具函数
+│   └── package.json
+│
+└── docs/                        # 项目文档
+    ├── ORDER_MANAGEMENT_REFACTOR_PLAN.md
+    ├── TRADE_RECORD_ORDER_MANAGEMENT.md
+    └── ...
+```
+
+## ✨ 核心功能
+
+### 1. 期权链和期权交易 ⭐ 新功能
+
+**功能亮点**：
+- ✅ **期权链展示**：查看股票的所有可用期权到期日期和行权价
+- ✅ **期权详情**：显示期权的实时价格、Greeks、隐含波动率等详细信息
+- ✅ **主页跳转**：从主页股票列表一键跳转到对应股票的期权链
+- ✅ **自动定位**：期权链表格自动滚动到当前价格附近的行权价并高亮显示
+- ✅ **期权交易**：支持在期权详情页直接交易期权（买入/卖出）
+
+**API 端点**：
+- `GET /api/options/strike-dates` - 获取期权到期日期列表
+- `GET /api/options/chain` - 获取期权链数据
+- `GET /api/options/detail` - 获取期权详情
+- `GET /api/options/underlying-quote` - 获取正股行情（用于定位）
+
+**数据来源**：
+- 使用富途牛牛 API 获取期权链数据（长桥 API 权限不足）
+- 支持自动 fallback 机制
+
+### 2. 订单管理（完全基于 SDK）
+
+**重构亮点**：
+- ✅ 完全基于 Longbridge SDK，不再依赖数据库查询订单状态
+- ✅ 统一订单管理页面，整合今日订单和历史订单
+- ✅ 智能数据映射，自动转换数字枚举值为字符串枚举值
+- ✅ 中文翻译支持，订单类型和盘前盘后字段提供中文显示
+
+**API 端点**：
+- `GET /api/orders/today` - 查询今日订单（支持筛选：symbol, status, side, market, order_id）
+- `GET /api/orders/history` - 查询历史订单（支持筛选：symbol, status, side, market, start_at, end_at）
+- `GET /api/orders/:orderId` - 查询订单详情（包含完整字段和中文翻译）
+- `POST /api/orders/submit` - 提交订单（支持所有订单类型）
+- `PUT /api/orders/:orderId` - 修改订单
+- `DELETE /api/orders/:orderId` - 取消订单
+- `GET /api/orders/account-balance` - 查询账户余额
+- `GET /api/orders/estimate-max-quantity` - 预估最大购买数量
+
+**数据格式**：
+- 所有枚举值返回字符串格式（符合 [Longbridge 交易命名词典](https://open.longbridge.com/zh-CN/docs/trade/trade-definition)）
+- 提供中文翻译字段：`order_type_text`, `outside_rth_text`
+- 时间字段返回时间戳（秒）格式
+
+### 3. 实时行情查询
+
+- **支持市场**: 美股、港股、A股
+- **支持标的**: 股票、期权、外汇、指数
+- **Fallback 机制**: 期权行情优先使用长桥 API，权限不足时自动切换到富途牛牛 API
+
+### 4. 持仓管理
+
+- **持仓查询**: 实时查询账户持仓
+- **盈亏计算**: 
+  - 支持期权合约乘数
+  - 正确计算卖空期权盈亏
+  - 自动使用富途牛牛 API 作为期权行情备用方案
+
+### 5. 交易推荐
+
+- **市场环境分析**: SPX、USD Index、BTC 数据分析
+- **动态止损止盈**: 基于 ATR 计算
+- **风险收益比验证**: >= 1.5
+- **交易费用考虑**: 自动计算交易成本
+
+### 6. 配置管理
+
+- **Web 界面配置**: 数据库存储，支持加密
+- **Token 自动刷新**: LongPort Access Token 自动刷新机制
+- **多环境支持**: 开发、生产环境配置分离
+
+## 🚀 快速开始
+
+### 环境要求
+
+- Node.js 20+
+- PostgreSQL 15+
+- Docker & Docker Compose（可选）
+
+### 1. 克隆项目
+
+```bash
+git clone <repository-url>
+cd trading-system
+```
+
+### 2. 配置环境变量
+
+#### API 服务配置 (`api/.env`)
+
+```bash
+# 数据库配置
+DATABASE_URL=postgresql://user:password@localhost:5432/trading_db
+
+# 长桥 API 配置（必需）
+# 请访问 https://open.longportapp.com/ 获取 API 密钥
+LONGPORT_APP_KEY=your_app_key
+LONGPORT_APP_SECRET=your_app_secret
+LONGPORT_ACCESS_TOKEN=your_access_token
+
+# 可选：开启美股夜盘
+LONGPORT_ENABLE_OVERNIGHT=false
+
+# 服务器配置
+PORT=3001
+NODE_ENV=development
+```
+
+#### 前端配置 (`frontend/.env.local`)
+
+```bash
+NEXT_PUBLIC_API_URL=http://localhost:3001
+```
+
+**重要提示**:
+- ACCESS_TOKEN 有效期为 3 个月，过期后需要到 https://open.longportapp.com/ 重新生成
+- 如果遇到 401003 或 401004 错误，请检查 Token 是否有效
+- 富途牛牛/Moomoo API 配置已硬编码在代码中（使用游客 cookies），无需环境变量配置
+
+### 3. 初始化数据库
+
+```bash
+cd api
+# 运行数据库迁移脚本
+psql -U postgres -d trading_db -f migrations/001_initial_schema.sql
+psql -U postgres -d trading_db -f migrations/002_add_positions_and_trading_rules.sql
+psql -U postgres -d trading_db -f migrations/003_config_management.sql
+psql -U postgres -d trading_db -f migrations/004_add_token_auto_refresh_config.sql
+```
+
+### 4. 安装依赖并启动服务
+
+```bash
+# 启动 API 服务
+cd api
+npm install
+npm run dev
+# API 服务将在 http://localhost:3001 启动
+
+# 启动前端服务（新终端）
+cd frontend
+npm install
+npm run dev
+# 前端应用将在 http://localhost:3000 启动
+```
+
+### 5. 访问应用
+
+打开浏览器访问：http://localhost:3000
+
+## 📚 API 文档
+
+### 订单管理 API
+
+#### 查询今日订单
+
+```bash
+GET /api/orders/today?symbol=AAPL.US&status=Filled&side=Buy&market=US
+```
+
+**查询参数**：
+- `symbol` (可选): 标的代码，如 `AAPL.US`
+- `status` (可选): 订单状态，多个状态用逗号分隔，如 `Filled,New`
+- `side` (可选): 买卖方向，`Buy` 或 `Sell`
+- `market` (可选): 市场，`US` 或 `HK`
+- `order_id` (可选): 订单 ID
+
+#### 查询历史订单
+
+```bash
+GET /api/orders/history?symbol=AAPL.US&start_at=2025-01-01&end_at=2025-01-31
+```
+
+**查询参数**：
+- `symbol` (可选): 标的代码
+- `status` (可选): 订单状态（多个用逗号分隔）
+- `side` (可选): 买卖方向
+- `market` (可选): 市场
+- `start_at` (可选): 开始时间（ISO 字符串或时间戳秒）
+- `end_at` (可选): 结束时间（ISO 字符串或时间戳秒）
+
+#### 查询订单详情
+
+```bash
+GET /api/orders/:orderId
+```
+
+**返回字段**（包含完整订单信息和中文翻译）：
+- `order_id`: 订单 ID
+- `order_type`: 订单类型（如 `LO`, `MO`）
+- `order_type_text`: 订单类型中文翻译（如 `限价单`, `市价单`）
+- `status`: 订单状态（如 `FilledStatus`, `NewStatus`）
+- `outside_rth`: 盘前盘后（如 `ANY_TIME`, `RTH_ONLY`）
+- `outside_rth_text`: 盘前盘后中文翻译（如 `允许盘前盘后`, `不允许盘前盘后`）
+- `history`: 订单历史明细数组
+- `charge_detail`: 订单费用明细
+- 更多字段请参考 [Longbridge API 文档](https://open.longbridge.com/zh-CN/docs/trade/trade-definition)
+
+### 其他 API
+
+详细的 API 文档请参考：
+- [API README](api/README.md)
+- [订单管理重构计划](ORDER_MANAGEMENT_REFACTOR_PLAN.md)
+- [交易记录和订单管理文档](TRADE_RECORD_ORDER_MANAGEMENT.md)
+
+## 🔧 开发指南
+
+### 代码规范
+
+- **TypeScript**: 严格模式，类型安全
+- **代码风格**: ESLint + Prettier
+- **提交规范**: 使用有意义的提交信息
+
+### 数据库设计
+
+- **trades 表**: 仅用于日志记录，不用于订单查询
+- **positions 表**: 持仓数据
+- **config 表**: 配置管理
+- **watchlist 表**: 关注列表
+
+### SDK 使用规范
+
+所有订单相关操作必须使用 Longbridge SDK：
+
+```typescript
+import { getTradeContext, OrderStatus, OrderSide, Market } from '../config/longport';
+
+const tradeCtx = await getTradeContext();
+
+// 查询今日订单
+const orders = await tradeCtx.todayOrders({
+  symbol: 'AAPL.US',
+  status: [OrderStatus.Filled, OrderStatus.New],
+  side: OrderSide.Buy,
+  market: Market.US,
+});
+
+// 查询历史订单
+const historyOrders = await tradeCtx.historyOrders({
+  symbol: 'AAPL.US',
+  startAt: new Date('2025-01-01'),
+  endAt: new Date('2025-01-31'),
+});
+
+// 查询订单详情
+const orderDetail = await tradeCtx.orderDetail('order_id');
+```
+
+### 数据映射规范
+
+所有 SDK 返回的数据必须通过 `mapOrderData()` 函数映射：
+
+```typescript
+import { mapOrderData } from '../routes/orders';
+
+const mappedOrder = mapOrderData(orderDetail);
+// mappedOrder 包含：
+// - 所有字段的下划线命名（符合 API 文档）
+// - 中文翻译字段（order_type_text, outside_rth_text）
+// - 向后兼容的驼峰命名字段
+```
+
+## 📝 重要更新
+
+### 2025-01-XX: 期权链功能完整实现
+
+**新增功能**：
+1. ✅ **期权链展示**：支持查看股票的所有可用期权到期日期和行权价
+2. ✅ **期权详情页**：显示期权的实时价格、Greeks、隐含波动率等详细信息
+3. ✅ **主页跳转功能**：从主页股票列表一键跳转到对应股票的期权链
+4. ✅ **自动滚动定位**：期权链表格自动滚动到当前价格附近的行权价
+5. ✅ **期权交易功能**：支持在期权详情页直接交易期权
+
+**技术实现**：
+- 使用富途牛牛 API 获取期权链数据（长桥 API 权限不足）
+- 支持期权到期日期查询、期权链查询、期权详情查询
+- 前端实现固定表头、自动滚动、高亮显示等用户体验优化
+
+**涉及文件**：
+- 后端：`api/src/routes/options.ts` - 期权相关 API
+- 后端：`api/src/services/futunn-option-chain.service.ts` - 富途期权链服务
+- 前端：`frontend/app/options/chain/page.tsx` - 期权链页面
+- 前端：`frontend/app/options/[optionCode]/page.tsx` - 期权详情页
+- 前端：`frontend/components/OptionTradeModal.tsx` - 期权交易模态框
+
+### 2025-01-XX: 订单管理重构
+
+**重构内容**：
+1. ✅ **完全基于 SDK**：所有订单查询直接调用 Longbridge SDK，不再依赖数据库
+2. ✅ **统一订单管理页面**：整合今日订单和历史订单，提供统一的筛选和管理界面
+3. ✅ **数据格式规范化**：所有枚举值返回字符串格式，符合 API 文档规范
+4. ✅ **中文翻译支持**：订单类型、盘前盘后等字段提供中文翻译
+5. ✅ **完整字段支持**：订单详情包含所有字段（免佣、抵扣、费用明细、历史记录等）
+
+**影响范围**：
+- 后端：`api/src/routes/orders.ts` - 完全重构
+- 前端：`frontend/app/orders/page.tsx` - 统一订单管理页面
+- 前端：`frontend/app/trades/page.tsx` - 重定向到订单管理页面
+
+### 其他更新
+
+- ✅ 期权行情 Fallback 机制（长桥 → 富途）
+- ✅ Token 自动刷新功能
+- ✅ 配置管理 Web 界面
+- ✅ 交易推荐算法优化
+- ✅ 期权持仓计算优化（考虑合约乘数）
+
+## 📖 相关文档
+
+### 使用指南
+- 💼 [交易指南](TRADING_GUIDE.md) - 交易功能使用说明
+- 📊 [交易推荐逻辑](TRADING_RECOMMENDATION_LOGIC.md) - 交易推荐算法详细说明
+- ⚙️ [配置管理设置](CONFIG_MANAGEMENT_SETUP.md) - 配置管理和 Token 刷新功能设置指南
+- 📄 [卖出看跌期权（Sell Put）完全指南](卖出看跌期权（Sell Put）完全指南.md) - 期权交易策略指南
+
+### 技术文档
+- 🔧 [期权行情 API](OPTION_QUOTE_API.md) - 期权行情 API 开发文档
+
+### 历史文档（已归档）
+- 📋 [订单管理重构计划](docs/ORDER_MANAGEMENT_REFACTOR_PLAN.md) - 订单管理重构详细计划（已完成）
+- 📝 [交易记录和订单管理](docs/TRADE_RECORD_ORDER_MANAGEMENT.md) - 订单管理 API 文档（已完成）
+- 📈 [期权链可行性分析](docs/OPTION_CHAIN_FEASIBILITY_ANALYSIS.md) - 期权链功能可行性分析（已完成）
+- 🚀 [期权链优化计划](docs/OPTION_CHAIN_ENHANCEMENT_PLAN.md) - 期权链功能优化计划（已完成）
+- ⚡ [订单提交优化方案](docs/ORDER_SUBMIT_OPTIMIZATION.md) - 订单提交功能优化方案（已完成）
+
+## 🐛 故障排除
+
+### 常见问题
+
+1. **401004 错误（Token 无效）**
+   - 检查 ACCESS_TOKEN 是否过期（有效期 3 个月）
+   - 访问 https://open.longportapp.com/ 重新生成 Token
+   - 更新 `.env` 文件中的 `LONGPORT_ACCESS_TOKEN`
+
+2. **订单查询返回数字枚举值**
+   - 确保使用最新版本的 `mapOrderData()` 函数
+   - 检查 SDK 版本是否最新
+
+3. **前端显示英文枚举值而非中文**
+   - 检查 API 返回是否包含 `order_type_text` 和 `outside_rth_text` 字段
+   - 确保前端代码使用翻译字段：`{order.orderTypeText || order.orderType}`
+
+### 调试工具
+
+- **健康检查**: `GET /api/health`
+- **API 日志**: 查看控制台输出的详细错误信息
+- **数据库日志**: 检查 PostgreSQL 日志
+
+## 📄 许可证
+
+MIT License
+
+## 🙏 致谢
+
+- [Longbridge OpenAPI](https://open.longbridge.com/) - 提供股票行情和交易 API
+- [富途牛牛/Moomoo](https://www.moomoo.com/) - 提供期权行情备用方案
+
+---
+
+**最后更新**: 2025-01-28

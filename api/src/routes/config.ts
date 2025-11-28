@@ -1,0 +1,520 @@
+/**
+ * 配置管理API路由
+ * 支持Windows和Docker部署
+ */
+
+import { Router, Request, Response } from 'express';
+import configService from '../services/config.service';
+import bcrypt from 'bcrypt';
+import pool from '../config/database';
+
+export const configRouter = Router();
+
+/**
+ * 中间件：验证管理员身份
+ * 支持两种认证方式：
+ * 1. username/password（用于兼容旧代码）
+ * 2. authUsername/authPassword（用于区分认证和更新字段）
+ */
+async function requireAdmin(req: Request, res: Response, next: Function) {
+  try {
+    // 优先使用authUsername/authPassword，如果没有则使用username/password（向后兼容）
+    const { username, password, authUsername, authPassword } = req.body;
+    const authUser = authUsername || username;
+    const authPass = authPassword || password;
+    
+    if (!authUser || !authPass) {
+      return res.status(401).json({
+        success: false,
+        error: { message: '缺少用户名或密码' },
+      });
+    }
+
+    const result = await pool.query(
+      'SELECT password_hash FROM admin_users WHERE username = $1 AND is_active = true',
+      [authUser]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        error: { message: '管理员账户不存在或已禁用' },
+      });
+    }
+
+    const isValid = await bcrypt.compare(authPass, result.rows[0].password_hash);
+    if (!isValid) {
+      return res.status(401).json({
+        success: false,
+        error: { message: '密码错误' },
+      });
+    }
+
+    // 更新最后登录时间
+    await pool.query(
+      'UPDATE admin_users SET last_login_at = CURRENT_TIMESTAMP WHERE username = $1',
+      [authUser]
+    );
+
+    // 将用户名附加到请求对象，供后续使用
+    (req as any).adminUsername = authUser;
+    next();
+  } catch (error: any) {
+    console.error('管理员认证失败:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: { message: '管理员认证失败' },
+    });
+  }
+}
+
+/**
+ * POST /api/config/auth
+ * 管理员登录验证（用于前端页面）
+ */
+configRouter.post('/auth', async (req: Request, res: Response) => {
+  try {
+    const { username, password } = req.body;
+    
+    if (!username || !password) {
+      return res.status(400).json({
+        success: false,
+        error: { message: '缺少用户名或密码' },
+      });
+    }
+
+    const result = await pool.query(
+      'SELECT password_hash FROM admin_users WHERE username = $1 AND is_active = true',
+      [username]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        error: { message: '管理员账户不存在或已禁用' },
+      });
+    }
+
+    const isValid = await bcrypt.compare(password, result.rows[0].password_hash);
+    if (!isValid) {
+      return res.status(401).json({
+        success: false,
+        error: { message: '密码错误' },
+      });
+    }
+
+    // 更新最后登录时间
+    await pool.query(
+      'UPDATE admin_users SET last_login_at = CURRENT_TIMESTAMP WHERE username = $1',
+      [username]
+    );
+
+    res.json({
+      success: true,
+      data: { message: '登录成功' },
+    });
+  } catch (error: any) {
+    console.error('登录失败:', error.message);
+    res.status(500).json({
+      success: false,
+      error: { message: '登录失败' },
+    });
+  }
+});
+
+/**
+ * GET /api/config
+ * 获取所有配置（需要管理员认证）
+ */
+configRouter.get('/', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const configs = await configService.getAllConfigs();
+    res.json({ 
+      success: true, 
+      data: { configs } 
+    });
+  } catch (error: any) {
+    console.error('获取配置失败:', error.message);
+    res.status(500).json({
+      success: false,
+      error: { message: error.message || '获取配置失败' },
+    });
+  }
+});
+
+/**
+ * POST /api/config
+ * 获取所有配置（需要管理员认证，支持POST请求）
+ */
+configRouter.post('/', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const configs = await configService.getAllConfigs();
+    res.json({ 
+      success: true, 
+      data: { configs } 
+    });
+  } catch (error: any) {
+    console.error('获取配置失败:', error.message);
+    res.status(500).json({
+      success: false,
+      error: { message: error.message || '获取配置失败' },
+    });
+  }
+});
+
+/**
+ * GET /api/config/:key
+ * 获取单个配置值（需要管理员认证）
+ */
+configRouter.get('/:key', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { key } = req.params;
+    const value = await configService.getConfig(key);
+    
+    if (value === null) {
+      return res.status(404).json({
+        success: false,
+        error: { message: `配置项 ${key} 不存在` },
+      });
+    }
+
+    res.json({
+      success: true,
+      data: { key, value },
+    });
+  } catch (error: any) {
+    console.error('获取配置失败:', error.message);
+    res.status(500).json({
+      success: false,
+      error: { message: error.message || '获取配置失败' },
+    });
+  }
+});
+
+/**
+ * PUT /api/config/:key
+ * 更新配置（需要管理员认证）
+ */
+configRouter.put('/:key', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { key } = req.params;
+    const { value, encrypted } = req.body;
+    const adminUsername = (req as any).adminUsername;
+
+    if (value === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: { message: '缺少配置值' },
+      });
+    }
+
+    // 确定是否需要加密（根据配置项类型）
+    const shouldEncrypt = encrypted !== undefined 
+      ? encrypted 
+      : ['longport_app_key', 'longport_app_secret', 'longport_access_token', 'futunn_csrf_token', 'futunn_cookies'].includes(key);
+
+    await configService.setConfig(key, String(value), shouldEncrypt, adminUsername);
+    
+    res.json({ 
+      success: true, 
+      data: { message: '配置更新成功' } 
+    });
+  } catch (error: any) {
+    console.error('更新配置失败:', error.message);
+    res.status(500).json({
+      success: false,
+      error: { message: error.message || '更新配置失败' },
+    });
+  }
+});
+
+/**
+ * POST /api/config/batch
+ * 批量更新配置（需要管理员认证）
+ */
+configRouter.post('/batch', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { configs } = req.body;
+    const adminUsername = (req as any).adminUsername;
+
+    if (!Array.isArray(configs)) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'configs必须是数组' },
+      });
+    }
+
+    // 确定每个配置项是否需要加密
+    const configsWithEncryption = configs.map((config: any) => ({
+      key: config.key,
+      value: String(config.value),
+      encrypted: config.encrypted !== undefined 
+        ? config.encrypted 
+        : ['longport_app_key', 'longport_app_secret', 'longport_access_token', 'futunn_csrf_token', 'futunn_cookies'].includes(config.key),
+    }));
+
+    await configService.setConfigs(configsWithEncryption, adminUsername);
+    
+    res.json({ 
+      success: true, 
+      data: { message: '批量配置更新成功' } 
+    });
+  } catch (error: any) {
+    console.error('批量更新配置失败:', error.message);
+    res.status(500).json({
+      success: false,
+      error: { message: error.message || '批量更新配置失败' },
+    });
+  }
+});
+
+/**
+ * DELETE /api/config/:key
+ * 删除配置（需要管理员认证）
+ */
+configRouter.delete('/:key', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { key } = req.params;
+    await configService.deleteConfig(key);
+    
+    res.json({ 
+      success: true, 
+      data: { message: '配置删除成功' } 
+    });
+  } catch (error: any) {
+    console.error('删除配置失败:', error.message);
+    res.status(500).json({
+      success: false,
+      error: { message: error.message || '删除配置失败' },
+    });
+  }
+});
+
+/**
+ * POST /api/config/admin/list
+ * 获取所有管理员账户列表（需要管理员认证）
+ */
+configRouter.post('/admin/list', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, username, created_at, last_login_at, is_active FROM admin_users ORDER BY created_at DESC'
+    );
+    
+    res.json({
+      success: true,
+      data: { admins: result.rows },
+    });
+  } catch (error: any) {
+    console.error('获取管理员列表失败:', error.message);
+    res.status(500).json({
+      success: false,
+      error: { message: error.message || '获取管理员列表失败' },
+    });
+  }
+});
+
+/**
+ * PUT /api/config/admin/:id
+ * 更新管理员账户（需要管理员认证）
+ */
+configRouter.put('/admin/:id', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    // requireAdmin中间件已经验证了当前登录管理员身份（使用req.body中的username和password）
+    // 现在从body中读取要更新的字段
+    // 注意：使用updateUsername来避免与认证字段username冲突
+    const { 
+      updateUsername,            // 要更新的用户名（使用updateUsername避免与认证字段冲突）
+      oldPassword,               // 修改密码时需要验证的原密码
+      newPassword,               // 新密码
+      confirmPassword,           // 确认新密码
+      is_active 
+    } = req.body;
+
+    // 先查询当前账户信息
+    const currentAdmin = await pool.query(
+      'SELECT id, username, password_hash, is_active FROM admin_users WHERE id = $1',
+      [parseInt(id)]
+    );
+
+    if (currentAdmin.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: { message: '管理员账户不存在' },
+      });
+    }
+
+    const currentUsername = currentAdmin.rows[0].username;
+    const currentPasswordHash = currentAdmin.rows[0].password_hash;
+    const currentIsActive = currentAdmin.rows[0].is_active;
+
+    const updates: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    // 用户名更新：只有当新用户名与当前用户名不同时才更新
+    if (updateUsername !== undefined && updateUsername !== null && updateUsername !== '' && updateUsername !== currentUsername) {
+      updates.push(`username = $${paramIndex++}`);
+      values.push(updateUsername);
+    }
+
+    // 密码更新：如果提供了新密码，需要验证原密码和确认密码
+    if (newPassword !== undefined && newPassword !== null && newPassword !== '') {
+      // 1. 验证原密码
+      if (!oldPassword) {
+        return res.status(400).json({
+          success: false,
+          error: { message: '修改密码需要提供原密码' },
+        });
+      }
+
+      const isOldPasswordValid = await bcrypt.compare(oldPassword, currentPasswordHash);
+      if (!isOldPasswordValid) {
+        return res.status(400).json({
+          success: false,
+          error: { message: '原密码错误' },
+        });
+      }
+
+      // 2. 验证新密码两次输入一致
+      if (newPassword !== confirmPassword) {
+        return res.status(400).json({
+          success: false,
+          error: { message: '新密码两次输入不一致' },
+        });
+      }
+
+      // 3. 验证新密码长度
+      if (newPassword.length < 6) {
+        return res.status(400).json({
+          success: false,
+          error: { message: '密码长度至少6位' },
+        });
+      }
+
+      // 4. 验证新密码不能与原密码相同
+      const isSamePassword = await bcrypt.compare(newPassword, currentPasswordHash);
+      if (isSamePassword) {
+        return res.status(400).json({
+          success: false,
+          error: { message: '新密码不能与原密码相同' },
+        });
+      }
+
+      // 5. 更新密码
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+      updates.push(`password_hash = $${paramIndex++}`);
+      values.push(passwordHash);
+    }
+
+    // 状态更新：只有当状态有变化时才更新
+    if (is_active !== undefined && is_active !== null && is_active !== currentIsActive) {
+      updates.push(`is_active = $${paramIndex++}`);
+      values.push(is_active);
+    }
+
+    // 如果没有要更新的字段，返回错误
+    if (updates.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: { message: '没有有效的更新字段（所有字段都没有变化）' },
+      });
+    }
+
+    values.push(parseInt(id));
+
+    // 执行更新
+    const query = `UPDATE admin_users SET ${updates.join(', ')} WHERE id = $${paramIndex}`;
+    const result = await pool.query(query, values);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: { message: '管理员账户不存在或没有变化' },
+      });
+    }
+
+    // 验证更新是否成功：重新查询更新后的账户信息
+    const updatedAdmin = await pool.query(
+      'SELECT id, username, is_active FROM admin_users WHERE id = $1',
+      [parseInt(id)]
+    );
+
+    res.json({
+      success: true,
+      data: { 
+        message: '管理员账户更新成功',
+        updated: updatedAdmin.rows[0]
+      },
+    });
+  } catch (error: any) {
+    console.error('更新管理员账户失败:', error.message);
+    
+    // 检查是否是用户名重复错误
+    if (error.code === '23505') {
+      return res.status(400).json({
+        success: false,
+        error: { message: '用户名已存在' },
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      error: { message: error.message || '更新管理员账户失败' },
+    });
+  }
+});
+
+/**
+ * POST /api/config/admin
+ * 创建管理员账户（需要管理员认证）
+ * 注意：requireAdmin中间件会从req.body读取username和password进行认证
+ * 创建新账户时，新账户的用户名和密码使用newUsername和newPassword字段
+ */
+configRouter.post('/admin', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    // requireAdmin已经验证了当前管理员身份，现在读取新账户信息
+    const { newUsername, newPassword } = req.body;
+
+    if (!newUsername || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: { message: '缺少新账户的用户名或密码' },
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: { message: '密码长度至少6位' },
+      });
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+
+    await pool.query(
+      'INSERT INTO admin_users (username, password_hash) VALUES ($1, $2)',
+      [newUsername, passwordHash]
+    );
+
+    res.json({
+      success: true,
+      data: { message: '管理员账户创建成功' },
+    });
+  } catch (error: any) {
+    console.error('创建管理员账户失败:', error.message);
+    
+    if (error.code === '23505') {
+      return res.status(400).json({
+        success: false,
+        error: { message: '用户名已存在' },
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      error: { message: error.message || '创建管理员账户失败' },
+    });
+  }
+});
+

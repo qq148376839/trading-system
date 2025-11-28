@@ -1,0 +1,653 @@
+import axios from 'axios';
+import crypto from 'crypto';
+import { getFutunnConfig, getFutunnHeaders } from '../config/futunn';
+
+/**
+ * 富途牛牛期权链服务
+ * 
+ * 提供期权链相关功能：
+ * 1. 获取期权到期日期列表
+ * 2. 获取指定到期日期的期权链数据
+ * 3. 获取单个期权详情
+ * 
+ * 参考文档：OPTION_CHAIN_FEASIBILITY_ANALYSIS.md
+ */
+
+/**
+ * 生成quote-token
+ * 与现有实现一致，使用字符串类型参数
+ */
+function generateQuoteToken(params: Record<string, string>): string {
+  const dataStr = JSON.stringify(params);
+  
+  if (dataStr.length <= 0) {
+    return 'quote';
+  }
+  
+  // HMAC-SHA512加密
+  const hmacResult = crypto
+    .createHmac('sha512', 'quote_web')
+    .update(dataStr)
+    .digest('hex');
+  
+  const firstSlice = hmacResult.substring(0, 10);
+  
+  // SHA256哈希
+  const sha256Result = crypto
+    .createHash('sha256')
+    .update(firstSlice)
+    .digest('hex');
+  
+  const token = sha256Result.substring(0, 10);
+  
+  return token;
+}
+
+/**
+ * 解析成交量字符串（支持"万"等单位）
+ */
+function parseVolume(volumeStr: string): number {
+  if (!volumeStr || volumeStr === '--') {
+    return 0;
+  }
+  
+  if (typeof volumeStr === 'number') {
+    return volumeStr;
+  }
+  
+  const str = String(volumeStr).trim();
+  if (str.includes('万')) {
+    return parseFloat(str.replace('万', '')) * 10000;
+  }
+  if (str.includes('亿')) {
+    return parseFloat(str.replace('亿', '')) * 100000000;
+  }
+  
+  return parseFloat(str) || 0;
+}
+
+/**
+ * 解析百分比字符串
+ */
+function parsePercentage(percentStr: string): number {
+  if (!percentStr || percentStr === '--') {
+    return 0;
+  }
+  
+  const str = String(percentStr).replace('%', '').trim();
+  return parseFloat(str) || 0;
+}
+
+/**
+ * 解析价格字符串
+ */
+function parsePrice(priceStr: string): number {
+  if (!priceStr || priceStr === '--') {
+    return 0;
+  }
+  
+  return parseFloat(String(priceStr)) || 0;
+}
+
+/**
+ * 获取期权到期日期列表
+ * 
+ * @param stockId 正股ID（例如：201335 对应 TSLA）
+ * @returns 期权到期日期列表和成交量统计
+ */
+export async function getOptionStrikeDates(stockId: string): Promise<{
+  strikeDates: Array<{
+    strikeDate: number;
+    expiration: number;
+    suffix: string;
+    leftDay: number;
+  }>;
+  vol: {
+    callNum: string;
+    putNum: string;
+    callRatio: number;
+    putRatio: number;
+    total: number;
+  };
+} | null> {
+  const url = 'https://www.moomoo.com/quote-api/quote-v2/get-option-strike-dates';
+  const timestamp = Date.now();
+  
+  // Token生成使用字符串类型参数
+  const paramsForToken = {
+    stockId: stockId,
+    _: String(timestamp),
+  };
+  
+  const quoteToken = generateQuoteToken(paramsForToken);
+  
+  // 使用统一的富途牛牛配置获取headers
+  const headers = getFutunnHeaders('https://www.moomoo.com/hans/stock/TSLA-US/options-chain');
+  headers['quote-token'] = quoteToken;
+  
+  // URL参数
+  const params = {
+    stockId: stockId,
+    _: timestamp,
+  };
+  
+  try {
+    const response = await axios.get(url, { params, headers, timeout: 10000 });
+    
+    if (response.data?.code === 0 && response.data?.data) {
+      return {
+        strikeDates: response.data.data.strikeDates || [],
+        vol: response.data.data.vol || {
+          callNum: '0',
+          putNum: '0',
+          callRatio: 0,
+          putRatio: 0,
+          total: 0,
+        },
+      };
+    }
+    
+    console.error('获取期权到期日期列表失败:', response.data);
+    return null;
+  } catch (error: any) {
+    console.error('获取期权到期日期列表失败:', error.message);
+    if (error.response) {
+      console.error('API响应状态:', error.response.status, error.response.data);
+    }
+    return null;
+  }
+}
+
+/**
+ * 获取期权链数据
+ * 
+ * @param stockId 正股ID
+ * @param strikeDate 到期日期时间戳（秒级）
+ * @returns 期权链数据（包含看涨和看跌期权）
+ */
+export async function getOptionChain(
+  stockId: string,
+  strikeDate: number
+): Promise<Array<{
+  callOption?: {
+    optionId: string;
+    optionType: number;
+    code: string;
+    strikePrice: string;
+    strikeDate: number;
+    openInterest: string;
+    priceAccuracy?: number;
+    optionExerciseMethod?: number;
+    standardType?: number;
+    indexOptionType?: number;
+    spreadTableCode?: number;
+  };
+  putOption?: {
+    optionId: string;
+    optionType: number;
+    code: string;
+    strikePrice: string;
+    strikeDate: number;
+    openInterest: string;
+    priceAccuracy?: number;
+    optionExerciseMethod?: number;
+    standardType?: number;
+    indexOptionType?: number;
+    spreadTableCode?: number;
+  };
+}> | null> {
+  const futunnConfig = getFutunnConfig();
+  if (!futunnConfig) {
+    throw new Error('富途牛牛配置未设置');
+  }
+  
+  const url = 'https://www.moomoo.com/quote-api/quote-v2/get-option-chain';
+  const timestamp = Date.now();
+  
+  // 判断期权是否过期
+  // 注意：期权到期日通常是美东时间当天的收盘时间（16:00 ET），对应UTC 21:00（夏令时）或22:00（冬令时）
+  // 但strikeDate时间戳通常是当天的00:00 UTC，所以我们需要判断是否已经过了到期日
+  const currentTimestampSeconds = Math.floor(Date.now() / 1000);
+  // 期权到期日判断：如果当前时间已经超过到期日当天的23:59:59，则认为过期
+  // 但为了保险，我们使用更宽松的判断：如果当前时间已经超过到期日+1天，则认为过期
+  const expirationDayEnd = strikeDate + 86400; // 到期日+1天
+  const isExpired = currentTimestampSeconds >= expirationDayEnd;
+  const expiration = isExpired ? 0 : 1;
+  
+  // 如果expiration=1仍然获取不到数据，尝试使用expiration=0
+  // 但先尝试expiration=1（未过期）
+  
+  // Token生成使用字符串类型参数
+  const paramsForToken = {
+    stockId: stockId,
+    strikeDate: String(strikeDate),
+    expiration: String(expiration),
+    _: String(timestamp),
+  };
+  
+  const quoteToken = generateQuoteToken(paramsForToken);
+  
+  // 使用统一的富途牛牛配置获取headers
+  const headers = getFutunnHeaders('https://www.moomoo.com/hans/stock/TSLA-US/options-chain');
+  headers['quote-token'] = quoteToken;
+  
+  // URL参数使用数字类型
+  const params = {
+    stockId: parseInt(stockId),
+    strikeDate: strikeDate,
+    expiration: expiration,
+    _: timestamp,
+  };
+  
+  try {
+    // 先尝试使用expiration=1（未过期）
+    let response = await axios.get(url, { params, headers, timeout: 10000 });
+    
+    if (response.data?.code === 0) {
+      const chainData = response.data.data || [];
+      // 如果获取到数据，直接返回
+      if (chainData.length > 0) {
+        return chainData;
+      }
+      
+      // 如果expiration=1没有数据，且当前判断为未过期，尝试使用expiration=0
+      // 这可能是因为期权已经接近到期或刚过期，但API仍需要expiration=0
+      if (expiration === 1 && chainData.length === 0) {
+        console.log(`expiration=1未获取到数据，尝试使用expiration=0获取strikeDate=${strikeDate}的期权链`);
+        
+        // 重新生成token和参数，使用expiration=0
+        const paramsForTokenExpired = {
+          stockId: stockId,
+          strikeDate: String(strikeDate),
+          expiration: '0',
+          _: String(timestamp),
+        };
+        const quoteTokenExpired = generateQuoteToken(paramsForTokenExpired);
+        const headersExpired = getFutunnHeaders('https://www.moomoo.com/hans/stock/TSLA-US/options-chain');
+        headersExpired['quote-token'] = quoteTokenExpired;
+        
+        const paramsExpired = {
+          stockId: parseInt(stockId),
+          strikeDate: strikeDate,
+          expiration: 0,
+          _: timestamp,
+        };
+        
+        response = await axios.get(url, { params: paramsExpired, headers: headersExpired, timeout: 10000 });
+        if (response.data?.code === 0) {
+          const expiredChainData = response.data.data || [];
+          if (expiredChainData.length > 0) {
+            console.log(`使用expiration=0成功获取到${expiredChainData.length}条期权链数据`);
+            return expiredChainData;
+          }
+        }
+      }
+      
+      // 如果都没有数据，返回空数组（而不是null）
+      return [];
+    }
+    
+    console.error('获取期权链失败:', response.data);
+    return null;
+  } catch (error: any) {
+    console.error('获取期权链失败:', error.message);
+    if (error.response) {
+      console.error('API响应状态:', error.response.status, error.response.data);
+    }
+    return null;
+  }
+}
+
+/**
+ * 获取期权详情
+ * 
+ * @param optionId 期权ID
+ * @param underlyingStockId 正股ID
+ * @param marketType 市场类型（美股为2）
+ * @returns 期权详情数据
+ */
+export async function getOptionDetail(
+  optionId: string,
+  underlyingStockId: string,
+  marketType: number = 2
+): Promise<{
+  // 价格信息
+  price: number;
+  change: number;
+  changeRatio: number;
+  priceOpen: number;
+  priceLastClose: number;
+  priceHighest: number;
+  priceLowest: number;
+  
+  // 成交量信息
+  volume: number;
+  turnover: number;
+  priceBid: number;
+  priceAsk: number;
+  volumeBid: number;
+  volumeAsk: number;
+  
+  // 期权特定信息
+  option: {
+    strikePrice: number;
+    contractSize: number;
+    openInterest: number;
+    premium: number;
+    impliedVolatility: number;
+    greeks: {
+      delta: number;
+      gamma: number;
+      vega: number;
+      theta: number;
+      rho: number;
+      hpDelta: number;
+      hpGamma: number;
+      hpVega: number;
+      hpTheta: number;
+      hpRho: number;
+    };
+    leverage: number;
+    effectiveLeverage: number;
+    intrinsicValue: number;
+    timeValue: number;
+    daysToExpiration: number;
+    optionType: 'Call' | 'Put';
+    multiplier: number;
+  };
+  
+  // 正股信息
+  underlyingStock: {
+    code: string;
+    name: string;
+    price: number;
+    change: number;
+    changeRatio: number;
+  };
+  
+  // 其他信息
+  marketStatus: number;
+  marketStatusText: string;
+  delayTime: number;
+} | null> {
+  const futunnConfig = getFutunnConfig();
+  if (!futunnConfig) {
+    throw new Error('富途牛牛配置未设置');
+  }
+  
+  const url = 'https://www.moomoo.com/quote-api/quote-v2/get-stock-quote';
+  const timestamp = Date.now();
+  
+  // Token生成使用字符串类型参数
+  const paramsForToken = {
+    stockId: optionId,
+    marketType: String(marketType),
+    marketCode: '41', // 美股期权
+    spreadCode: '81', // 期权价差代码
+    underlyingStockId: underlyingStockId,
+    instrumentType: '8', // 期权
+    subInstrumentType: '8002', // 期权子类型
+    _: String(timestamp),
+  };
+  
+  const quoteToken = generateQuoteToken(paramsForToken);
+  
+  // 使用统一的富途牛牛配置获取headers
+  const headers = getFutunnHeaders('https://www.moomoo.com/hans/options/');
+  headers['quote-token'] = quoteToken;
+  
+  // URL参数使用数字类型
+  const params: any = {
+    stockId: Number(optionId),
+    marketType: marketType,
+    marketCode: 41,
+    spreadCode: 81,
+    underlyingStockId: underlyingStockId,
+    instrumentType: 8,
+    subInstrumentType: 8002,
+    _: timestamp,
+  };
+  
+  try {
+    const response = await axios.get(url, { params, headers, timeout: 10000 });
+    
+    if (response.data?.code === 0 && response.data?.data) {
+      const data = response.data.data;
+      const optionData = data.option || {};
+      const greekData = optionData.greek || {};
+      
+      return {
+        // 价格信息
+        price: parsePrice(data.price || data.priceNominal || '0'),
+        change: parsePrice(data.change || '0'),
+        changeRatio: parsePercentage(data.changeRatio || '0'),
+        priceOpen: parsePrice(data.priceOpen || '0'),
+        priceLastClose: parsePrice(data.priceLastClose || '0'),
+        priceHighest: parsePrice(data.priceHighest || '0'),
+        priceLowest: parsePrice(data.priceLowest || '0'),
+        
+        // 成交量信息
+        volume: parseVolume(data.volume || '0'),
+        turnover: parsePrice(data.turnover || '0'),
+        priceBid: parsePrice(data.priceBid || '0'),
+        priceAsk: parsePrice(data.priceAsk || '0'),
+        volumeBid: parseInt(String(data.volumeBid || '0')) || 0,
+        volumeAsk: parseInt(String(data.volumeAsk || '0')) || 0,
+        
+        // 期权特定信息
+        option: {
+          strikePrice: parsePrice(optionData.priceStrike || '0'),
+          contractSize: parseInt(String(optionData.contractSize || '100')) || 100,
+          openInterest: parseInt(String(optionData.openInterest || '0')) || 0,
+          premium: parsePercentage(optionData.premium || '0'),
+          impliedVolatility: parsePercentage(optionData.impliedVolatility || '0'),
+          greeks: {
+            delta: parsePrice(greekData.delta || greekData.hpDelta || '0'),
+            gamma: parsePrice(greekData.gamma || greekData.hpGamma || '0'),
+            vega: parsePrice(greekData.vega || greekData.hpVega || '0'),
+            theta: parsePrice(greekData.theta || greekData.hpTheta || '0'),
+            rho: parsePrice(greekData.rho || greekData.hpRho || '0'),
+            hpDelta: parsePrice(greekData.hpDelta || '0'),
+            hpGamma: parsePrice(greekData.hpGamma || '0'),
+            hpVega: parsePrice(greekData.hpVega || '0'),
+            hpTheta: parsePrice(greekData.hpTheta || '0'),
+            hpRho: parsePrice(greekData.hpRho || '0'),
+          },
+          leverage: parsePrice(optionData.leverage || '0'),
+          effectiveLeverage: parsePrice(optionData.effectiveLeverage || '0'),
+          intrinsicValue: parsePrice(optionData.intrinsicValue || '0'),
+          timeValue: parsePrice(optionData.timeValue || '0'),
+          daysToExpiration: parseInt(String(optionData.distanceDueDate || '0')) || 0,
+          optionType: (optionData.optionType === 1 || optionData.optionType === '1') ? 'Call' : 'Put',
+          multiplier: parseInt(String(optionData.multiplier || '100')) || 100,
+        },
+        
+        // 正股信息
+        underlyingStock: {
+          code: data.underlyingStockInfo?.stockCode || '',
+          name: data.underlyingStockInfo?.name || '',
+          price: parsePrice(data.underlyingStockInfo?.price || '0'),
+          change: parsePrice(data.underlyingStockInfo?.change || '0'),
+          changeRatio: parsePercentage(data.underlyingStockInfo?.changeRatio || '0'),
+        },
+        
+        // 其他信息
+        marketStatus: data.market_status || 0,
+        marketStatusText: data.market_status_text || '',
+        delayTime: parseInt(String(data.delayTime || '0')) || 0,
+      };
+    }
+    
+    console.error('获取期权详情失败:', response.data);
+    return null;
+  } catch (error: any) {
+    console.error('获取期权详情失败:', error.message);
+    if (error.response) {
+      console.error('API响应状态:', error.response.status, error.response.data);
+    }
+    return null;
+  }
+}
+
+/**
+ * 搜索正股信息（复用现有实现）
+ * 从 futunn-option-quote.service.ts 复制
+ */
+async function searchStock(keyword: string): Promise<{
+  stockId: string;
+  marketType: number;
+} | null> {
+  const url = 'https://www.moomoo.com/api/headfoot-search';
+  const params = {
+    keyword: keyword.toLowerCase(),
+    lang: 'zh-cn',
+    site: 'sg',
+  };
+  
+  try {
+    const headers = getFutunnHeaders('https://www.moomoo.com/');
+    const response = await axios.get(url, { params, headers, timeout: 10000 });
+    
+    let stockList: any[] = [];
+    
+    if (response.data?.data?.stock) {
+      stockList = response.data.data.stock;
+    } else if (response.data?.stock) {
+      stockList = response.data.stock;
+    } else if (Array.isArray(response.data)) {
+      stockList = response.data;
+    }
+    
+    // 查找正股（非ETF）
+    for (const stock of stockList) {
+      if (stock.symbol === keyword.toUpperCase() + '.US' || 
+          stock.stockSymbol === keyword.toUpperCase()) {
+        return {
+          stockId: String(stock.stockId),
+          marketType: stock.marketType,
+        };
+      }
+    }
+    
+    console.warn(`未找到正股: ${keyword}`);
+    return null;
+  } catch (error: any) {
+    console.error('搜索正股失败:', error.message);
+    if (error.response) {
+      console.error('API响应状态:', error.response.status, error.response.data);
+    }
+    return null;
+  }
+}
+
+/**
+ * 通过股票代码获取stockId（辅助函数）
+ */
+export async function getStockIdBySymbol(symbol: string): Promise<string | null> {
+  // 移除 .US 后缀
+  const keyword = symbol.replace(/\.US$/i, '').toUpperCase();
+  const stockInfo = await searchStock(keyword);
+  return stockInfo?.stockId || null;
+}
+
+/**
+ * 获取正股行情
+ * 
+ * @param stockId 正股ID
+ * @param marketType 市场类型（美股为2）
+ * @returns 正股行情数据
+ */
+export async function getUnderlyingStockQuote(
+  stockId: string,
+  marketType: number = 2
+): Promise<{
+  price: number;
+  change: number;
+  changeRatio: number;
+  priceOpen: number;
+  priceHighest: number;
+  priceLowest: number;
+  volume: number;
+  turnover: number;
+  priceBid: number;
+  priceAsk: number;
+  volumeBid: number;
+  volumeAsk: number;
+  marketStatus: number;
+  marketStatusText: string;
+} | null> {
+  const futunnConfig = getFutunnConfig();
+  if (!futunnConfig) {
+    throw new Error('富途牛牛配置未设置');
+  }
+  
+  const url = 'https://www.moomoo.com/quote-api/quote-v2/get-stock-quote';
+  const timestamp = Date.now();
+  
+  // Token生成使用字符串类型参数
+  const paramsForToken = {
+    stockId: stockId,
+    marketType: String(marketType),
+    marketCode: '11', // 美股股票
+    lotSize: '1',
+    spreadCode: '45',
+    underlyingStockId: '0',
+    instrumentType: '3', // 股票
+    subInstrumentType: '3002',
+    _: String(timestamp),
+  };
+  
+  const quoteToken = generateQuoteToken(paramsForToken);
+  
+  // 使用统一的富途牛牛配置获取headers
+  const headers = getFutunnHeaders('https://www.moomoo.com/hans/stock/TSLA-US/options-chain');
+  headers['quote-token'] = quoteToken;
+  
+  // URL参数使用数字类型
+  const params: any = {
+    stockId: Number(stockId),
+    marketType: marketType,
+    marketCode: 11,
+    lotSize: 1,
+    spreadCode: 45,
+    underlyingStockId: 0,
+    instrumentType: 3,
+    subInstrumentType: 3002,
+    _: timestamp,
+  };
+  
+  try {
+    const response = await axios.get(url, { params, headers, timeout: 10000 });
+    
+    if (response.data?.code === 0 && response.data?.data) {
+      const data = response.data.data;
+      
+      return {
+        price: parsePrice(data.price || '0'),
+        change: parsePrice(data.change || '0'),
+        changeRatio: parsePercentage(data.changeRatio || '0'),
+        priceOpen: parsePrice(data.priceOpen || '0'),
+        priceHighest: parsePrice(data.priceHighest || '0'),
+        priceLowest: parsePrice(data.priceLowest || '0'),
+        volume: parseVolume(data.volume || '0'),
+        turnover: parsePrice(data.turnover || '0'),
+        priceBid: parsePrice(data.priceBid || '0'),
+        priceAsk: parsePrice(data.priceAsk || '0'),
+        volumeBid: parseInt(String(data.volumeBid || '0')) || 0,
+        volumeAsk: parseInt(String(data.volumeAsk || '0')) || 0,
+        marketStatus: data.market_status || 0,
+        marketStatusText: data.market_status_text || '',
+      };
+    }
+    
+    console.error('获取正股行情失败:', response.data);
+    return null;
+  } catch (error: any) {
+    console.error('获取正股行情失败:', error.message);
+    if (error.response) {
+      console.error('API响应状态:', error.response.status, error.response.data);
+    }
+    return null;
+  }
+}
+
