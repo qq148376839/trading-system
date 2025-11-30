@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:16-alpine
+    container_name: trading-postgres
+    environment:
+      POSTGRES_USER: trading_user
+      POSTGRES_PASSWORD: trading_password
+      POSTGRES_DB: trading_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./api/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading_user -d trading_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - trading-network
+
+  # API 服务
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: trading-api
+    environment:
+      DATABASE_URL: postgresql://trading_user:trading_password@postgres:5432/trading_db
+      PORT: 3001
+      NODE_ENV: production
+      # 长桥API配置（需要从环境变量或 .env 文件提供）
+      LONGPORT_APP_KEY: ${LONGPORT_APP_KEY:-your_app_key}
+      LONGPORT_APP_SECRET: ${LONGPORT_APP_SECRET:-your_app_secret}
+      LONGPORT_ACCESS_TOKEN: ${LONGPORT_ACCESS_TOKEN:-your_access_token}
+      LONGPORT_ENABLE_OVERNIGHT: ${LONGPORT_ENABLE_OVERNIGHT:-false}
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # 如果需要热重载，可以挂载源代码（仅开发环境）
+      # - ./api/src:/app/src
+      # - ./api/dist:/app/dist
+      - ./api/.env:/app/.env:ro
+    networks:
+      - trading-network
+    restart: unless-stopped
+
+  # Frontend 服务
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: trading-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    networks:
+      - trading-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  trading-network:
+    driver: bridge
+

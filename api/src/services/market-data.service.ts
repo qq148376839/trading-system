@@ -6,6 +6,7 @@
 import axios from 'axios';
 import crypto from 'crypto';
 import { getFutunnHeaders } from '../config/futunn';
+import { moomooProxy, getProxyMode } from '../utils/moomoo-proxy';
 
 interface CandlestickData {
   close: number;
@@ -112,7 +113,18 @@ class MarketDataService {
       // 根据type选择接口和参数
       const isIntraday = type === 1;
       
+      // 根据不同的stockId使用不同的referer，更接近浏览器行为
+      let referer = 'https://www.moomoo.com/';
+      if (stockId === '200003') {
+        referer = 'https://www.moomoo.com/ja/index/.SPX-US'; // SPX
+      } else if (stockId === '72000025') {
+        referer = 'https://www.moomoo.com/currency/USDINDEX-FX'; // USD Index
+      } else if (stockId === '12000015') {
+        referer = 'https://www.moomoo.com/currency/BTC-FX'; // BTC
+      }
+      
       // Token参数（始终使用字符串格式）
+      // 注意：参数顺序很重要！必须与浏览器请求顺序一致
       const tokenParams: Record<string, string> = {
         stockId: stockId,
         marketType: marketId,
@@ -124,6 +136,27 @@ class MarketDataService {
       };
 
       const quoteToken = this.generateQuoteToken(tokenParams);
+      
+      // 调试日志：显示计算的 quote-token 和请求参数
+      const requestUrl = isIntraday 
+        ? `${this.baseUrl}/get-quote-minute`
+        : `${this.baseUrl}/get-kline`;
+      
+      console.log(`[富途API请求详情] stockId=${stockId}, type=${type}:`, {
+        url: requestUrl,
+        tokenParams: JSON.stringify(tokenParams),
+        quoteToken,
+        requestParams: {
+          stockId: Number(stockId),
+          marketType: Number(marketId),
+          type: type,
+          marketCode: Number(marketCode),
+          instrumentType: Number(instrumentType),
+          subInstrumentType: Number(subInstrumentType),
+          _: timestamp,
+        },
+        referer,
+      });
 
       // 请求参数（使用数字格式）
       const requestParams: any = {
@@ -137,29 +170,46 @@ class MarketDataService {
       };
 
       // 分时数据使用get-quote-minute接口，日K数据使用get-kline接口
-      const url = isIntraday 
-        ? `${this.baseUrl}/get-quote-minute`
-        : `${this.baseUrl}/get-kline`;
+      const apiPath = isIntraday 
+        ? '/quote-api/quote-v2/get-quote-minute'
+        : '/quote-api/quote-v2/get-kline';
       
-      const headers = this.getHeaders('https://www.moomoo.com/currency/USDINDEX-FX');
-      headers['quote-token'] = quoteToken;
-
-      const response = await axios.get(url, {
+      const headers = this.getHeaders(referer);
+      
+      console.log(`[富途API请求] stockId=${stockId}, type=${type} (${getProxyMode()}):`, {
+        path: apiPath,
         params: requestParams,
-        headers,
-        timeout: 10000,
+        quoteToken,
+        referer,
       });
 
-      if (response.data && response.data.code === 0) {
+      // 使用边缘函数代理
+      const responseData = await moomooProxy({
+        path: apiPath,
+        params: requestParams,
+        cookies: headers['Cookie'],
+        csrfToken: headers['futu-x-csrf-token'],
+        quoteToken: quoteToken,
+        referer: referer,
+        timeout: 15000,
+      });
+
+      // 检查响应数据
+      if (!responseData) {
+        console.error(`[富途API错误] stockId=${stockId}, type=${type}: 响应数据为空`);
+        return [];
+      }
+
+      if (responseData && responseData.code === 0) {
         let dataArray: any[] = [];
 
-        if (Array.isArray(response.data.data)) {
-          dataArray = response.data.data;
-        } else if (response.data.data && Array.isArray(response.data.data.list)) {
-          dataArray = response.data.data.list;
+        if (Array.isArray(responseData.data)) {
+          dataArray = responseData.data;
+        } else if (responseData.data && Array.isArray(responseData.data.list)) {
+          dataArray = responseData.data.list;
         } else {
           console.warn(`富途API数据结构未知 (stockId=${stockId}, type=${type}):`, {
-            dataKeys: Object.keys(response.data.data || {}),
+            dataKeys: Object.keys(responseData.data || {}),
           });
           return [];
         }
@@ -181,7 +231,7 @@ class MarketDataService {
         
         return this.parseCandlestickData(slicedData);
       } else {
-        const errorMsg = response.data?.message || '未知错误';
+        const errorMsg = responseData?.message || '未知错误';
         console.error(`富途API返回错误 (stockId=${stockId}, type=${type}):`, errorMsg);
         return [];
       }

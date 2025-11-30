@@ -26,7 +26,7 @@ export function getFutunnConfig(): FutunnConfig {
 /**
  * 设置富途牛牛配置（用于测试或动态更新，通常不需要）
  */
-export function setFutunnConfig(config: FutunnConfig) {
+export function setFutunnConfig(_config: FutunnConfig) {
   // 保留接口，但实际使用硬编码的游客配置
   console.warn('setFutunnConfig: 当前使用硬编码的Moomoo游客配置，设置操作将被忽略');
 }
@@ -67,6 +67,105 @@ export function getFutunnHeaders(referer: string = 'https://www.moomoo.com/'): R
   headers['Cookie'] = config.cookies;
 
   return headers;
+}
+
+/**
+ * 获取搜索接口专用的headers（可以单独配置cookies）
+ * 优先使用数据库中的 futunn_search_cookies 配置，如果没有则使用默认配置
+ */
+export async function getFutunnSearchHeaders(referer: string = 'https://www.moomoo.com/'): Promise<Record<string, string>> {
+  const baseHeaders: Record<string, string> = {
+    'authority': 'www.moomoo.com',
+    'accept': 'application/json, text/plain, */*',
+    'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,ja;q=0.7',
+    'cache-control': 'no-cache',
+    'pragma': 'no-cache',
+    'priority': 'u=1, i',
+    'referer': referer,
+    'sec-ch-ua': '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+  };
+
+  // 尝试从数据库获取搜索专用的cookies
+  let searchCookies: string | null = null;
+  let configSource = '硬编码（游客配置）';
+  
+  try {
+    const configService = (await import('../services/config.service')).default;
+    const dbSearchCookies = await configService.getConfig('futunn_search_cookies');
+    
+    if (dbSearchCookies && dbSearchCookies.trim() !== '') {
+      searchCookies = dbSearchCookies;
+      configSource = '数据库（搜索专用）';
+      console.log(`[富途搜索配置] 使用数据库中的搜索专用cookies（长度: ${searchCookies.length}）`);
+    }
+  } catch (error: any) {
+    // 如果无法从数据库获取，继续使用默认配置
+    console.warn(`[富途搜索配置] 无法从数据库获取搜索专用cookies: ${error.message}`);
+  }
+
+  // 如果数据库中没有搜索专用cookies，尝试使用主cookies配置
+  if (!searchCookies) {
+    try {
+      const configService = (await import('../services/config.service')).default;
+      const dbCookies = await configService.getConfig('futunn_cookies');
+      
+      if (dbCookies && dbCookies.trim() !== '') {
+        searchCookies = dbCookies;
+        configSource = '数据库（主配置）';
+        console.log(`[富途搜索配置] 使用数据库中的主cookies配置（长度: ${searchCookies.length}）`);
+      }
+    } catch (error: any) {
+      // 忽略错误，继续使用硬编码配置
+    }
+  }
+
+  // 如果还是没有，使用硬编码的默认配置
+  if (!searchCookies) {
+    const config = getFutunnConfig();
+    searchCookies = config.cookies;
+    configSource = '硬编码（游客配置）';
+  }
+
+  // 尝试从cookies中提取CSRF token（如果存在）
+  let csrfToken: string | null = null;
+  const csrfMatch = searchCookies.match(/csrfToken=([^;]+)/);
+  if (csrfMatch) {
+    csrfToken = csrfMatch[1];
+  }
+
+  // 如果cookies中没有CSRF token，尝试从数据库获取主配置的CSRF token
+  if (!csrfToken) {
+    try {
+      const configService = (await import('../services/config.service')).default;
+      const dbCsrfToken = await configService.getConfig('futunn_csrf_token');
+      if (dbCsrfToken && dbCsrfToken.trim() !== '') {
+        csrfToken = dbCsrfToken;
+      }
+    } catch (error: any) {
+      // 忽略错误
+    }
+  }
+
+  // 如果还是没有，使用硬编码的CSRF token
+  if (!csrfToken) {
+    const config = getFutunnConfig();
+    csrfToken = config.csrfToken;
+  }
+
+  // 添加Cookie和CSRF token（测试：先添加CSRF token看看是否能解决问题）
+  baseHeaders['Cookie'] = searchCookies;
+  baseHeaders['futu-x-csrf-token'] = csrfToken;
+  
+  console.log(`[富途搜索配置] 配置来源: ${configSource}`);
+  console.log(`[富途搜索配置] CSRF Token: ${csrfToken.substring(0, 12)}...`);
+
+  return baseHeaders;
 }
 
 // 启动时初始化配置

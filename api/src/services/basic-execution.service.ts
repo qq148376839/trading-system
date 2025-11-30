@@ -118,18 +118,40 @@ class BasicExecutionService {
         // 如果获取lot size失败，不阻止订单提交，只记录警告
       }
 
-      // 2. 构建订单参数（参照 orders.ts）
+      // 2. 格式化价格（根据市场确定小数位数）
+      const market = detectMarket(symbol);
+      let formattedPrice: number;
+      
+      if (market === 'US') {
+        // 美股：保留2位小数
+        formattedPrice = Math.round(price * 100) / 100;
+      } else if (market === 'HK') {
+        // 港股：保留3位小数
+        formattedPrice = Math.round(price * 1000) / 1000;
+      } else {
+        // 其他市场：保留2位小数
+        formattedPrice = Math.round(price * 100) / 100;
+      }
+
+      // 确保价格大于0
+      if (formattedPrice <= 0) {
+        return {
+          success: false,
+          error: `价格无效: ${price} -> ${formattedPrice}`,
+        };
+      }
+
+      // 3. 构建订单参数（参照 orders.ts）
       const orderOptions: any = {
         symbol,
         orderType: OrderType.LO, // 限价单
         side: side === 'BUY' ? OrderSide.Buy : OrderSide.Sell,
         submittedQuantity: quantity,
-        submittedPrice: new Decimal(price.toString()),
+        submittedPrice: new Decimal(formattedPrice.toString()),
         timeInForce: TimeInForceType.Day,
       };
 
-      // 3. 添加盘前盘后选项（美股订单需要）
-      const market = detectMarket(symbol);
+      // 4. 添加盘前盘后选项（美股订单需要）
       if (market === 'US') {
         // 美股订单默认允许盘前盘后交易
         orderOptions.outsideRth = OutsideRTH.AnyTime;
@@ -139,7 +161,8 @@ class BasicExecutionService {
         symbol,
         side,
         quantity,
-        price,
+        originalPrice: price,
+        formattedPrice: formattedPrice,
         market,
       });
 

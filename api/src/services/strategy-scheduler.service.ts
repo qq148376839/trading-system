@@ -148,13 +148,115 @@ class StrategyScheduler {
     strategyId: number,
     symbolPoolConfig: any
   ): Promise<void> {
-    // 1. 获取股票池
+    // 1. 追踪并更新未成交订单
+    await this.trackPendingOrders(strategyId);
+
+    // 2. 获取股票池
     const symbols = await stockSelector.getSymbolPool(symbolPoolConfig);
 
-    // 2. 并行处理多个股票
+    // 3. 并行处理多个股票
     await Promise.all(
       symbols.map((symbol) => this.processSymbol(strategyInstance, strategyId, symbol))
     );
+  }
+
+  /**
+   * 追踪未成交订单，根据市场变化更新价格
+   */
+  private async trackPendingOrders(strategyId: number): Promise<void> {
+    try {
+      // 查询未成交的买入订单
+      const pendingOrders = await pool.query(
+        `SELECT eo.order_id, eo.symbol, eo.price, eo.quantity, eo.created_at
+         FROM execution_orders eo
+         WHERE eo.strategy_id = $1 
+         AND eo.side = 'BUY'
+         AND eo.current_status IN ('SUBMITTED', 'NEW', 'PARTIALLY_FILLED')
+         AND eo.created_at >= NOW() - INTERVAL '1 hour'
+         ORDER BY eo.created_at DESC
+         LIMIT 10`,
+        [strategyId]
+      );
+
+      if (pendingOrders.rows.length === 0) {
+        return;
+      }
+
+      console.log(`策略 ${strategyId} 发现 ${pendingOrders.rows.length} 个未成交订单，开始追踪...`);
+
+      // 获取当前行情
+      const { getQuoteContext } = await import('../config/longport');
+      const quoteCtx = await getQuoteContext();
+      const symbols = pendingOrders.rows.map((row: any) => row.symbol);
+      const quotes = await quoteCtx.quote(symbols);
+
+      // 创建symbol到quote的映射
+      const quoteMap = new Map<string, any>();
+      for (const quote of quotes) {
+        quoteMap.set(quote.symbol, quote);
+      }
+
+      // 处理每个订单
+      for (const order of pendingOrders.rows) {
+        try {
+          const quote = quoteMap.get(order.symbol);
+          if (!quote) {
+            console.warn(`策略 ${strategyId} 订单 ${order.order_id} 无法获取行情: ${order.symbol}`);
+            continue;
+          }
+
+          const currentPrice = parseFloat(quote.last_done?.toString() || '0');
+          const orderPrice = parseFloat(order.price);
+          
+          if (currentPrice <= 0) {
+            continue;
+          }
+
+          // 如果当前价格与订单价格差异超过2%，更新订单价格
+          const priceDiff = Math.abs(currentPrice - orderPrice) / orderPrice;
+          if (priceDiff > 0.02) {
+            // 更新订单价格（向上调整，确保能成交）
+            const newPrice = currentPrice * 1.01; // 比当前价格高1%，确保能成交
+            
+            // 格式化价格
+            const { detectMarket } = await import('../utils/order-validation');
+            const market = detectMarket(order.symbol);
+            let formattedPrice: number;
+            if (market === 'US') {
+              formattedPrice = Math.round(newPrice * 100) / 100;
+            } else if (market === 'HK') {
+              formattedPrice = Math.round(newPrice * 1000) / 1000;
+            } else {
+              formattedPrice = Math.round(newPrice * 100) / 100;
+            }
+
+            console.log(`策略 ${strategyId} 更新订单 ${order.order_id} 价格: ${orderPrice} -> ${formattedPrice} (当前价格: ${currentPrice})`);
+
+            // 调用SDK更新订单
+            const { getTradeContext, Decimal } = await import('../config/longport');
+            const tradeCtx = await getTradeContext();
+            await tradeCtx.replaceOrder({
+              orderId: order.order_id,
+              price: new Decimal(formattedPrice.toString()),
+            });
+
+            // 更新数据库
+            await pool.query(
+              `UPDATE execution_orders 
+               SET price = $1, updated_at = NOW() 
+               WHERE order_id = $2`,
+              [formattedPrice, order.order_id]
+            );
+          }
+        } catch (orderError: any) {
+          console.error(`策略 ${strategyId} 更新订单 ${order.order_id} 失败:`, orderError.message);
+          // 继续处理下一个订单
+        }
+      }
+    } catch (error: any) {
+      console.error(`策略 ${strategyId} 追踪订单失败:`, error.message);
+      // 不抛出异常，避免影响策略运行
+    }
   }
 
   /**
@@ -174,6 +276,20 @@ class StrategyScheduler {
         return;
       }
 
+      // 检查是否已有持仓（避免重复买入）
+      const hasPosition = await this.checkExistingPosition(strategyId, symbol);
+      if (hasPosition) {
+        console.log(`策略 ${strategyId} 标的 ${symbol} 已有持仓，跳过买入`);
+        return;
+      }
+
+      // 检查是否有未成交的订单
+      const hasPendingOrder = await this.checkPendingOrder(strategyId, symbol);
+      if (hasPendingOrder) {
+        console.log(`策略 ${strategyId} 标的 ${symbol} 有未成交订单，跳过买入`);
+        return;
+      }
+
       // 生成信号
       const intent = await strategyInstance.generateSignal(symbol);
 
@@ -186,15 +302,25 @@ class StrategyScheduler {
         // 申请资金额度
         const availableCapital = await capitalManager.getAvailableCapital(strategyId);
         
+        if (availableCapital <= 0) {
+          console.warn(`策略 ${strategyId} 标的 ${symbol} 可用资金不足: ${availableCapital}`);
+          return;
+        }
+
         // 计算数量（如果没有指定）
         if (!intent.quantity && intent.entryPrice) {
           // 使用可用资金的 10% 计算数量（可根据配置调整）
           const tradeAmount = availableCapital * 0.1;
-          intent.quantity = Math.floor(tradeAmount / intent.entryPrice);
+          const calculatedQuantity = Math.floor(tradeAmount / intent.entryPrice);
+          
+          // 确保数量至少为1
+          intent.quantity = Math.max(1, calculatedQuantity);
+          
+          console.log(`策略 ${strategyId} 标的 ${symbol} 计算数量: 可用资金=${availableCapital.toFixed(2)}, 交易金额=${tradeAmount.toFixed(2)}, 价格=${intent.entryPrice}, 数量=${intent.quantity}`);
         }
 
         if (!intent.quantity || intent.quantity <= 0) {
-          console.warn(`策略 ${strategyId} 标的 ${symbol} 资金不足，无法买入`);
+          console.warn(`策略 ${strategyId} 标的 ${symbol} 资金不足，无法买入（数量=${intent.quantity}）`);
           return;
         }
 
@@ -243,6 +369,81 @@ class StrategyScheduler {
       }
     } catch (error: any) {
       console.error(`策略 ${strategyId} 处理标的 ${symbol} 出错:`, error);
+    }
+  }
+
+  /**
+   * 检查是否已有持仓
+   */
+  private async checkExistingPosition(strategyId: number, symbol: string): Promise<boolean> {
+    try {
+      // 检查策略实例状态
+      const instanceResult = await pool.query(
+        `SELECT current_state FROM strategy_instances 
+         WHERE strategy_id = $1 AND symbol = $2 AND current_state = 'HOLDING'`,
+        [strategyId, symbol]
+      );
+
+      if (instanceResult.rows.length > 0) {
+        return true;
+      }
+
+      // 检查实际持仓（从SDK）
+      try {
+        const { getTradeContext } = await import('../config/longport');
+        const tradeCtx = await getTradeContext();
+        const positions = await tradeCtx.stockPositions();
+        
+        if (positions && typeof positions === 'object') {
+          let allPositions: any[] = [];
+          
+          if (positions.channels && Array.isArray(positions.channels)) {
+            for (const channel of positions.channels) {
+              if (channel.positions && Array.isArray(channel.positions)) {
+                allPositions.push(...channel.positions);
+              }
+            }
+          }
+          
+          for (const pos of allPositions) {
+            if (pos.symbol === symbol) {
+              const quantity = parseInt(pos.quantity?.toString() || '0');
+              if (quantity > 0) {
+                return true;
+              }
+            }
+          }
+        }
+      } catch (sdkError: any) {
+        console.warn(`检查实际持仓失败 (${symbol}):`, sdkError.message);
+        // 如果SDK调用失败，只依赖数据库检查
+      }
+
+      return false;
+    } catch (error: any) {
+      console.error(`检查持仓失败 (${symbol}):`, error);
+      return false; // 出错时返回false，允许继续执行
+    }
+  }
+
+  /**
+   * 检查是否有未成交的订单
+   */
+  private async checkPendingOrder(strategyId: number, symbol: string): Promise<boolean> {
+    try {
+      const result = await pool.query(
+        `SELECT order_id FROM execution_orders 
+         WHERE strategy_id = $1 AND symbol = $2 
+         AND current_status IN ('SUBMITTED', 'NEW', 'PARTIALLY_FILLED')
+         AND side = 'BUY'
+         ORDER BY created_at DESC LIMIT 1`,
+        [strategyId, symbol]
+      );
+
+      return result.rows.length > 0;
+    } catch (error: any) {
+      console.error(`检查未成交订单失败 (${symbol}):`, error);
+      return false;
     }
   }
 

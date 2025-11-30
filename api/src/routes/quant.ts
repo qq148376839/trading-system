@@ -508,11 +508,70 @@ quantRouter.post('/strategies', async (req: Request, res: Response) => {
       });
     }
 
+    // 验证股票池配置
+    if (!symbolPoolConfig.symbols || !Array.isArray(symbolPoolConfig.symbols)) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_SYMBOL_POOL_CONFIG', message: '股票池配置格式错误：symbols必须是数组' },
+      });
+    }
+
+    if (symbolPoolConfig.symbols.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'EMPTY_SYMBOL_POOL', message: '股票池不能为空，请至少添加一个股票' },
+      });
+    }
+
+    // 验证股票代码格式（支持 ticker.region 和 .ticker.region 格式）
+    const symbolPattern = /^\.?[A-Z0-9]+\.[A-Z]{2}$/;
+    const invalidSymbols: string[] = [];
+    const correctedSymbols: string[] = [];
+
+    for (const symbol of symbolPoolConfig.symbols) {
+      const trimmed = String(symbol).trim().toUpperCase();
+      
+      // 自动修正常见错误：APPL -> AAPL
+      let corrected = trimmed;
+      if (corrected === 'APPL.US') {
+        corrected = 'AAPL.US';
+        console.log(`[策略验证] 自动修正股票代码: ${trimmed} -> ${corrected}`);
+      }
+      
+      if (!symbolPattern.test(corrected)) {
+        invalidSymbols.push(trimmed);
+      } else {
+        correctedSymbols.push(corrected);
+      }
+    }
+
+    if (invalidSymbols.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_SYMBOL_FORMAT',
+          message: `无效的标的代码格式: ${invalidSymbols.join(', ')}。请使用 ticker.region 格式，例如：AAPL.US 或 700.HK`,
+        },
+      });
+    }
+
+    // 去重
+    const uniqueSymbols = [...new Set(correctedSymbols)];
+    if (uniqueSymbols.length !== correctedSymbols.length) {
+      console.warn(`[策略验证] 检测到重复的股票代码，已自动去重`);
+    }
+
+    // 使用修正后的股票代码
+    const validatedSymbolPoolConfig = {
+      ...symbolPoolConfig,
+      symbols: uniqueSymbols,
+    };
+
     const result = await pool.query(
       `INSERT INTO strategies (name, type, capital_allocation_id, symbol_pool_config, config, status)
        VALUES ($1, $2, $3, $4, $5, 'STOPPED')
        RETURNING *`,
-      [name, type, capitalAllocationId || null, JSON.stringify(symbolPoolConfig), JSON.stringify(config)]
+      [name, type, capitalAllocationId || null, JSON.stringify(validatedSymbolPoolConfig), JSON.stringify(config)]
     );
 
     res.json({
@@ -619,8 +678,67 @@ quantRouter.put('/strategies/:id', async (req: Request, res: Response) => {
       updateValues.push(capitalAllocationId || null);
     }
     if (symbolPoolConfig !== undefined) {
+      // 验证股票池配置
+      if (!symbolPoolConfig.symbols || !Array.isArray(symbolPoolConfig.symbols)) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_SYMBOL_POOL_CONFIG', message: '股票池配置格式错误：symbols必须是数组' },
+        });
+      }
+
+      if (symbolPoolConfig.symbols.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'EMPTY_SYMBOL_POOL', message: '股票池不能为空，请至少添加一个股票' },
+        });
+      }
+
+      // 验证股票代码格式
+      const symbolPattern = /^\.?[A-Z0-9]+\.[A-Z]{2}$/;
+      const invalidSymbols: string[] = [];
+      const correctedSymbols: string[] = [];
+
+      for (const symbol of symbolPoolConfig.symbols) {
+        const trimmed = String(symbol).trim().toUpperCase();
+        
+        // 自动修正常见错误：APPL -> AAPL
+        let corrected = trimmed;
+        if (corrected === 'APPL.US') {
+          corrected = 'AAPL.US';
+          console.log(`[策略验证] 自动修正股票代码: ${trimmed} -> ${corrected}`);
+        }
+        
+        if (!symbolPattern.test(corrected)) {
+          invalidSymbols.push(trimmed);
+        } else {
+          correctedSymbols.push(corrected);
+        }
+      }
+
+      if (invalidSymbols.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_SYMBOL_FORMAT',
+            message: `无效的标的代码格式: ${invalidSymbols.join(', ')}。请使用 ticker.region 格式，例如：AAPL.US 或 700.HK`,
+          },
+        });
+      }
+
+      // 去重
+      const uniqueSymbols = [...new Set(correctedSymbols)];
+      if (uniqueSymbols.length !== correctedSymbols.length) {
+        console.warn(`[策略验证] 检测到重复的股票代码，已自动去重`);
+      }
+
+      // 使用修正后的股票代码
+      const validatedSymbolPoolConfig = {
+        ...symbolPoolConfig,
+        symbols: uniqueSymbols,
+      };
+
       updateFields.push(`symbol_pool_config = $${paramIndex++}`);
-      updateValues.push(JSON.stringify(symbolPoolConfig));
+      updateValues.push(JSON.stringify(validatedSymbolPoolConfig));
     }
     if (config !== undefined) {
       updateFields.push(`config = $${paramIndex++}`);

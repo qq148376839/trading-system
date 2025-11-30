@@ -1,0 +1,84 @@
+version: '3.8'
+
+# 开发环境 Docker Compose 配置
+# 使用方式: docker-compose -f docker-compose.dev.yml up
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:16-alpine
+    container_name: trading-postgres-dev
+    environment:
+      POSTGRES_USER: trading_user
+      POSTGRES_PASSWORD: trading_password
+      POSTGRES_DB: trading_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+      - ./api/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading_user -d trading_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - trading-network-dev
+
+  # API 服务（开发模式，支持热重载）
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile.dev
+    container_name: trading-api-dev
+    environment:
+      DATABASE_URL: postgresql://trading_user:trading_password@postgres:5432/trading_db
+      PORT: 3001
+      NODE_ENV: development
+      LONGPORT_APP_KEY: ${LONGPORT_APP_KEY:-your_app_key}
+      LONGPORT_APP_SECRET: ${LONGPORT_APP_SECRET:-your_app_secret}
+      LONGPORT_ACCESS_TOKEN: ${LONGPORT_ACCESS_TOKEN:-your_access_token}
+      LONGPORT_ENABLE_OVERNIGHT: ${LONGPORT_ENABLE_OVERNIGHT:-false}
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # 挂载源代码以支持热重载
+      - ./api/src:/app/src
+      - ./api/scripts:/app/scripts
+      - ./api/.env:/app/.env:ro
+    networks:
+      - trading-network-dev
+    command: npm run dev
+
+  # Frontend 服务（开发模式）
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: trading-frontend-dev
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      NODE_ENV: development
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    volumes:
+      # 挂载源代码以支持热重载
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - trading-network-dev
+    command: npm run dev
+
+volumes:
+  postgres_data_dev:
+
+networks:
+  trading-network-dev:
+    driver: bridge
+

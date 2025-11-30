@@ -140,73 +140,98 @@ positionsRouter.get('/', async (req: Request, res: Response) => {
         let longportSuccess = false;
         let missingOptions: string[] = [];
         
-        // 首先尝试使用长桥API获取期权行情
+        // 检查是否启用长桥期权查询（默认关闭，使用富途API）
+        const configService = (await import('../services/config.service')).default;
+        let enableLongportOptionQuote = false;
         try {
-          const optionQuotes = await quoteCtx.optionQuote(optionSymbols);
-          console.log(`[期权行情] 长桥API成功获取 ${optionQuotes.length} 个期权行情`);
-          longportSuccess = true;
-          
-          optionQuotes.forEach(q => {
-            quotesMap.set(q.symbol, {
-              last_done: q.lastDone,
-              prev_close: q.prevClose,
-              open: q.open,
-              high: q.high,
-              low: q.low,
-              volume: q.volume,
-              turnover: q.turnover,
-              timestamp: q.timestamp,
-              trade_status: q.tradeStatus,
-              option_extend: q.optionExtend ? {
-                implied_volatility: q.optionExtend.impliedVolatility,
-                open_interest: q.optionExtend.openInterest,
-                expiry_date: q.optionExtend.expiryDate,
-                strike_price: q.optionExtend.strikePrice,
-                contract_multiplier: q.optionExtend.contractMultiplier,
-                contract_type: q.optionExtend.contractType,
-                contract_size: q.optionExtend.contractSize,
-                direction: q.optionExtend.direction,
-                historical_volatility: q.optionExtend.historicalVolatility,
-                underlying_symbol: q.optionExtend.underlyingSymbol,
-              } : undefined,
+          const configValue = await configService.getConfig('longport_enable_option_quote');
+          enableLongportOptionQuote = configValue === 'true';
+        } catch (error: any) {
+          // 如果读取配置失败，使用默认值 false
+          console.warn('[期权行情] 无法读取配置 longport_enable_option_quote，使用默认值 false（使用富途API）');
+        }
+        
+        if (!enableLongportOptionQuote) {
+          console.log('[期权行情] 长桥期权查询已禁用（配置: longport_enable_option_quote=false），直接使用富途牛牛API');
+          missingOptions = optionSymbols; // 所有期权都从富途牛牛获取
+        } else {
+          // 首先尝试使用长桥API获取期权行情
+          try {
+            const optionQuotes = await quoteCtx.optionQuote(optionSymbols);
+            console.log(`[期权行情] 长桥API成功获取 ${optionQuotes.length} 个期权行情`);
+            longportSuccess = true;
+            
+            optionQuotes.forEach(q => {
+              quotesMap.set(q.symbol, {
+                last_done: q.lastDone,
+                prev_close: q.prevClose,
+                open: q.open,
+                high: q.high,
+                low: q.low,
+                volume: q.volume,
+                turnover: q.turnover,
+                timestamp: q.timestamp,
+                trade_status: q.tradeStatus,
+                option_extend: q.optionExtend ? {
+                  implied_volatility: q.optionExtend.impliedVolatility,
+                  open_interest: q.optionExtend.openInterest,
+                  expiry_date: q.optionExtend.expiryDate,
+                  strike_price: q.optionExtend.strikePrice,
+                  contract_multiplier: q.optionExtend.contractMultiplier,
+                  contract_type: q.optionExtend.contractType,
+                  contract_size: q.optionExtend.contractSize,
+                  direction: q.optionExtend.direction,
+                  historical_volatility: q.optionExtend.historicalVolatility,
+                  underlying_symbol: q.optionExtend.underlyingSymbol,
+                } : undefined,
+              });
+              
+              // 调试日志：每个期权的行情数据
+              console.log(`[期权行情] ${q.symbol}:`, {
+                lastDone: q.lastDone,
+                contractMultiplier: q.optionExtend?.contractMultiplier || 'N/A',
+                hasOptionExtend: !!q.optionExtend,
+              });
             });
             
-            // 调试日志：每个期权的行情数据
-            console.log(`[期权行情] ${q.symbol}:`, {
-              lastDone: q.lastDone,
-              contractMultiplier: q.optionExtend?.contractMultiplier || 'N/A',
-              hasOptionExtend: !!q.optionExtend,
-            });
-          });
-          
-          // 检查是否有期权未获取到行情
-          missingOptions = optionSymbols.filter(sym => !quotesMap.has(sym));
-          if (missingOptions.length > 0) {
-            console.warn(`[期权行情] 以下 ${missingOptions.length} 个期权未从长桥API获取到行情:`, missingOptions);
-          }
-        } catch (error: any) {
-          console.error('获取期权行情失败（长桥API）:', error);
-          // 如果是权限错误，尝试使用富途牛牛API作为备用
-          const isPermissionError = error.message && (
-            error.message.includes('301604') || 
-            error.message.includes('no quote access')
-          );
-          
-          if (isPermissionError) {
-            console.warn('期权行情权限不足（301604），尝试使用富途牛牛API作为备用方案...');
-            missingOptions = optionSymbols; // 所有期权都需要从富途牛牛获取
-          } else {
-            // 其他错误，记录但不影响其他持仓
-            console.error('长桥API获取期权行情失败（非权限错误）:', error.message);
+            // 检查是否有期权未获取到行情
             missingOptions = optionSymbols.filter(sym => !quotesMap.has(sym));
+            if (missingOptions.length > 0) {
+              console.warn(`[期权行情] 以下 ${missingOptions.length} 个期权未从长桥API获取到行情:`, missingOptions);
+            }
+          } catch (error: any) {
+            console.error('获取期权行情失败（长桥API）:', error);
+            // 如果是权限错误，尝试使用富途牛牛API作为备用
+            const isPermissionError = error.message && (
+              error.message.includes('301604') || 
+              error.message.includes('no quote access')
+            );
+            
+            if (isPermissionError) {
+              console.warn('期权行情权限不足（301604），尝试使用富途牛牛API作为备用方案...');
+              missingOptions = optionSymbols; // 所有期权都需要从富途牛牛获取
+            } else {
+              // 其他错误，记录但不影响其他持仓
+              console.error('长桥API获取期权行情失败（非权限错误）:', error.message);
+              missingOptions = optionSymbols.filter(sym => !quotesMap.has(sym));
+            }
           }
         }
         
         // 如果有未获取到行情的期权，尝试使用富途牛牛API作为备用
+        // 使用 Promise.race 确保不会阻塞太久
         if (missingOptions.length > 0) {
           try {
             console.log(`[期权行情] 尝试使用富途牛牛API获取 ${missingOptions.length} 个期权行情...`);
-            const futunnQuotes = await getFutunnOptionQuotes(missingOptions);
+            // 设置超时，避免阻塞整个请求
+            const futunnQuotesPromise = getFutunnOptionQuotes(missingOptions);
+            const timeoutPromise = new Promise<any[]>((resolve) => {
+              setTimeout(() => {
+                console.warn(`[期权行情] 富途牛牛API查询超时（5秒），跳过`);
+                resolve([]);
+              }, 5000);
+            });
+            const futunnQuotes = await Promise.race([futunnQuotesPromise, timeoutPromise]);
             
             if (futunnQuotes.length > 0) {
               console.log(`✅ [期权行情] 富途牛牛API成功获取 ${futunnQuotes.length} 个期权行情`);

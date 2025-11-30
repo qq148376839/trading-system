@@ -1,6 +1,7 @@
 import axios from 'axios';
 import crypto from 'crypto';
-import { getFutunnConfig, getFutunnHeaders } from '../config/futunn';
+import { getFutunnConfig, getFutunnHeaders, getFutunnSearchHeaders } from '../config/futunn';
+import { moomooProxy } from '../utils/moomoo-proxy';
 
 /**
  * 富途牛牛期权链服务
@@ -497,7 +498,6 @@ async function searchStock(keyword: string): Promise<{
   stockId: string;
   marketType: number;
 } | null> {
-  const url = 'https://www.moomoo.com/api/headfoot-search';
   const params = {
     keyword: keyword.toLowerCase(),
     lang: 'zh-cn',
@@ -505,17 +505,27 @@ async function searchStock(keyword: string): Promise<{
   };
   
   try {
-    const headers = getFutunnHeaders('https://www.moomoo.com/');
-    const response = await axios.get(url, { params, headers, timeout: 10000 });
+    // 使用搜索接口专用的headers函数（单独获取cookies）
+    const headers = await getFutunnSearchHeaders('https://www.moomoo.com/');
+    
+    // 使用边缘函数代理
+    const responseData = await moomooProxy({
+      path: '/api/headfoot-search',
+      params,
+      cookies: headers['Cookie'],
+      csrfToken: headers['futu-x-csrf-token'],
+      referer: 'https://www.moomoo.com/',
+      timeout: 10000,
+    });
     
     let stockList: any[] = [];
     
-    if (response.data?.data?.stock) {
-      stockList = response.data.data.stock;
-    } else if (response.data?.stock) {
-      stockList = response.data.stock;
-    } else if (Array.isArray(response.data)) {
-      stockList = response.data;
+    if (responseData?.data?.stock) {
+      stockList = responseData.data.stock;
+    } else if (responseData?.stock) {
+      stockList = responseData.stock;
+    } else if (Array.isArray(responseData)) {
+      stockList = responseData;
     }
     
     // 查找正股（非ETF）

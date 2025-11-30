@@ -6,7 +6,7 @@
  *   node scripts/create-admin.js admin mypassword123
  */
 
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const { Pool } = require('pg');
 const dotenv = require('dotenv');
 const path = require('path');

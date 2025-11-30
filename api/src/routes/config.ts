@@ -5,7 +5,7 @@
 
 import { Router, Request, Response } from 'express';
 import configService from '../services/config.service';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import pool from '../config/database';
 
 export const configRouter = Router();

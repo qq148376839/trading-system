@@ -4,7 +4,7 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
 
 export const api = axios.create({
   baseURL: `${API_BASE_URL}/api`,
-  timeout: 10000,
+  timeout: 30000, // 增加到30秒，因为持仓查询可能需要较长时间（期权行情查询）
   headers: {
     'Content-Type': 'application/json',
   },

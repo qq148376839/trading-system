@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { quantApi } from '@/lib/api';
+import { quantApi, watchlistApi } from '@/lib/api';
 import BackButton from '@/components/BackButton';
 
 interface Strategy {
@@ -282,22 +282,120 @@ function EditStrategyModal({
     name: strategy.name,
     type: strategy.type,
     capitalAllocationId: strategy.capitalAllocationId,
-    symbolPoolConfig: strategy.symbolPoolConfig,
+    symbolPoolConfig: {
+      mode: strategy.symbolPoolConfig?.mode || 'STATIC',
+      symbols: Array.isArray(strategy.symbolPoolConfig?.symbols) 
+        ? strategy.symbolPoolConfig.symbols 
+        : [],
+    },
     config: strategy.config,
   });
   const [allocations, setAllocations] = useState<any[]>([]);
+  const [watchlist, setWatchlist] = useState<any[]>([]);
+  const [newSymbol, setNewSymbol] = useState('');
+  const [symbolError, setSymbolError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    quantApi.getCapitalAllocations().then((res) => {
-      if (res.success) {
-        setAllocations(res.data || []);
+    Promise.all([
+      quantApi.getCapitalAllocations(),
+      watchlistApi.getWatchlist(true), // 只获取启用的关注股票
+    ]).then(([allocRes, watchRes]) => {
+      if (allocRes.success) {
+        setAllocations(allocRes.data || []);
+      }
+      if (watchRes.success && watchRes.data?.watchlist) {
+        setWatchlist(watchRes.data.watchlist);
       }
     });
   }, []);
 
+  // 验证股票代码格式
+  const validateSymbol = (symbol: string): string | null => {
+    const trimmed = symbol.trim().toUpperCase();
+    if (!trimmed) {
+      return '请输入股票代码';
+    }
+    
+    // 自动修正常见错误：APPL -> AAPL
+    let corrected = trimmed;
+    if (corrected === 'APPL.US') {
+      corrected = 'AAPL.US';
+    }
+    
+    // 验证格式：ticker.region 或 .ticker.region
+    const symbolPattern = /^\.?[A-Z0-9]+\.[A-Z]{2}$/;
+    if (!symbolPattern.test(corrected)) {
+      return '无效的标的代码格式。请使用 ticker.region 格式，例如：AAPL.US 或 700.HK';
+    }
+    
+    return corrected;
+  };
+
+  // 添加股票
+  const handleAddSymbol = () => {
+    setSymbolError(null);
+    const validation = validateSymbol(newSymbol);
+    
+    if (typeof validation === 'string' && validation.startsWith('无效')) {
+      setSymbolError(validation);
+      return;
+    }
+    
+    if (typeof validation === 'string') {
+      const symbol = validation;
+      
+      // 检查是否已存在
+      if (formData.symbolPoolConfig.symbols.includes(symbol)) {
+        setSymbolError('该股票已在股票池中');
+        return;
+      }
+      
+      // 添加到股票池
+      setFormData({
+        ...formData,
+        symbolPoolConfig: {
+          ...formData.symbolPoolConfig,
+          symbols: [...formData.symbolPoolConfig.symbols, symbol],
+        },
+      });
+      setNewSymbol('');
+    }
+  };
+
+  // 从关注列表添加
+  const handleAddFromWatchlist = (symbol: string) => {
+    if (!formData.symbolPoolConfig.symbols.includes(symbol)) {
+      setFormData({
+        ...formData,
+        symbolPoolConfig: {
+          ...formData.symbolPoolConfig,
+          symbols: [...formData.symbolPoolConfig.symbols, symbol],
+        },
+      });
+    }
+  };
+
+  // 移除股票
+  const handleRemoveSymbol = (symbol: string) => {
+    setFormData({
+      ...formData,
+      symbolPoolConfig: {
+        ...formData.symbolPoolConfig,
+        symbols: formData.symbolPoolConfig.symbols.filter((s) => s !== symbol),
+      },
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // 验证至少有一个股票
+    if (formData.symbolPoolConfig.symbols.length === 0) {
+      alert('请至少添加一个股票到股票池');
+      return;
+    }
+    
     setLoading(true);
     try {
       await quantApi.updateStrategy(strategy.id, formData);
@@ -332,7 +430,7 @@ function EditStrategyModal({
               onChange={(e) => setFormData({ ...formData, type: e.target.value })}
               className="border rounded px-3 py-2 w-full"
             >
-              <option value="RECOMMENDATION_V1">RECOMMENDATION_V1</option>
+              <option value="RECOMMENDATION_V1">推荐策略 V1</option>
             </select>
           </div>
           <div className="mb-4">
@@ -356,34 +454,144 @@ function EditStrategyModal({
             </select>
           </div>
           <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">标的池配置 (JSON)</label>
-            <textarea
-              value={JSON.stringify(formData.symbolPoolConfig, null, 2)}
-              onChange={(e) => {
-                try {
-                  setFormData({ ...formData, symbolPoolConfig: JSON.parse(e.target.value) });
-                } catch (err) {
-                  // 忽略无效JSON
-                }
-              }}
-              className="border rounded px-3 py-2 w-full font-mono text-sm"
-              rows={4}
-            />
+            <label className="block text-sm font-medium mb-1">股票池</label>
+            
+            {/* 添加股票输入框 */}
+            <div className="mb-2">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newSymbol}
+                  onChange={(e) => {
+                    setNewSymbol(e.target.value);
+                    setSymbolError(null);
+                  }}
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddSymbol();
+                    }
+                  }}
+                  placeholder="输入股票代码，例如：AAPL.US"
+                  className="flex-1 border rounded px-3 py-2"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddSymbol}
+                  className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
+                >
+                  添加
+                </button>
+              </div>
+              {symbolError && (
+                <div className="mt-1 text-sm text-red-600">{symbolError}</div>
+              )}
+              <p className="mt-1 text-xs text-gray-500">
+                格式：ticker.region，例如：AAPL.US（美股）、700.HK（港股）
+              </p>
+            </div>
+
+            {/* 从关注列表快速添加 */}
+            {watchlist.length > 0 && (
+              <div className="mb-2">
+                <label className="block text-xs text-gray-500 mb-1">从关注列表快速添加：</label>
+                <div className="flex flex-wrap gap-2">
+                  {watchlist
+                    .filter((item) => !formData.symbolPoolConfig.symbols.includes(item.symbol))
+                    .slice(0, 10)
+                    .map((item) => (
+                      <button
+                        key={item.symbol}
+                        type="button"
+                        onClick={() => handleAddFromWatchlist(item.symbol)}
+                        className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded"
+                      >
+                        + {item.symbol}
+                      </button>
+                    ))}
+                </div>
+              </div>
+            )}
+
+            {/* 已添加的股票列表 */}
+            <div className="border rounded p-2 min-h-[60px] max-h-[200px] overflow-y-auto">
+              {formData.symbolPoolConfig.symbols.length === 0 ? (
+                <div className="text-sm text-gray-400 text-center py-2">暂无股票，请添加</div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {formData.symbolPoolConfig.symbols.map((symbol) => (
+                    <span
+                      key={symbol}
+                      className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-800 rounded text-sm"
+                    >
+                      {symbol}
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveSymbol(symbol)}
+                        className="text-blue-600 hover:text-blue-800"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
           <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">策略配置 (JSON)</label>
-            <textarea
-              value={JSON.stringify(formData.config, null, 2)}
-              onChange={(e) => {
-                try {
-                  setFormData({ ...formData, config: JSON.parse(e.target.value) });
-                } catch (err) {
-                  // 忽略无效JSON
-                }
-              }}
-              className="border rounded px-3 py-2 w-full font-mono text-sm"
-              rows={6}
-            />
+            <label className="block text-sm font-medium mb-1">策略配置</label>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">ATR周期</label>
+                <input
+                  type="number"
+                  value={formData.config.atrPeriod || 14}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      config: { ...formData.config, atrPeriod: parseInt(e.target.value) || 14 },
+                    })
+                  }
+                  className="border rounded px-3 py-2 w-full"
+                  min="1"
+                  max="100"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">ATR倍数</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={formData.config.atrMultiplier || 2.0}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      config: { ...formData.config, atrMultiplier: parseFloat(e.target.value) || 2.0 },
+                    })
+                  }
+                  className="border rounded px-3 py-2 w-full"
+                  min="0.1"
+                  max="10"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">风险收益比</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={formData.config.riskRewardRatio || 1.5}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      config: { ...formData.config, riskRewardRatio: parseFloat(e.target.value) || 1.5 },
+                    })
+                  }
+                  className="border rounded px-3 py-2 w-full"
+                  min="0.1"
+                  max="10"
+                />
+              </div>
+            </div>
           </div>
           <div className="flex gap-2">
             <button

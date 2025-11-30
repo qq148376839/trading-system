@@ -152,6 +152,39 @@ trading-system/
 - **Token 自动刷新**: LongPort Access Token 自动刷新机制
 - **多环境支持**: 开发、生产环境配置分离
 
+### 7. 量化交易策略 ⭐ 新功能
+
+**功能亮点**：
+- ✅ **策略管理**：创建、编辑、启动、停止策略
+- ✅ **统一界面**：创建和编辑策略使用相同的界面，支持从关注列表快速添加股票
+- ✅ **股票代码验证**：自动验证和修正股票代码格式（APPL.US → AAPL.US）
+- ✅ **智能数量计算**：根据可用资金自动计算购买数量（使用10%可用资金）
+- ✅ **价格精度处理**：自动格式化价格到正确的小数位数（美股2位，港股3位）
+- ✅ **持仓检查**：避免重复买入同一标的
+- ✅ **订单追踪**：自动追踪未成交订单，根据市场变化更新价格
+- ✅ **资金管理**：支持资金分配和额度管理
+
+**策略执行流程**：
+1. 订单追踪：每个策略周期开始时，先追踪并更新未成交订单
+2. 持仓检查：在处理每个标的时，先检查是否已有持仓
+3. 未成交订单检查：检查是否有未成交的订单
+4. 信号生成：生成交易信号
+5. 数量计算：根据可用资金计算购买数量
+6. 价格格式化：格式化价格到正确的小数位数
+7. 订单提交：提交订单到交易所
+
+**API 端点**：
+- `GET /api/quant/strategies` - 获取策略列表
+- `GET /api/quant/strategies/:id` - 获取策略详情
+- `POST /api/quant/strategies` - 创建策略
+- `PUT /api/quant/strategies/:id` - 更新策略
+- `DELETE /api/quant/strategies/:id` - 删除策略
+- `POST /api/quant/strategies/:id/start` - 启动策略
+- `POST /api/quant/strategies/:id/stop` - 停止策略
+- `GET /api/quant/strategies/:id/instances` - 获取策略实例
+- `GET /api/quant/signals` - 获取信号日志
+- `GET /api/quant/capital/allocations` - 获取资金分配列表
+
 ## 🚀 快速开始
 
 ### 环境要求
@@ -366,6 +399,31 @@ const mappedOrder = mapOrderData(orderDetail);
 - 前端：`frontend/app/options/[optionCode]/page.tsx` - 期权详情页
 - 前端：`frontend/components/OptionTradeModal.tsx` - 期权交易模态框
 
+### 2025-01-28: 策略执行优化 ⭐
+
+**优化内容**：
+1. ✅ **策略界面统一**：创建和编辑策略使用相同的界面，支持从关注列表快速添加股票
+2. ✅ **股票代码验证**：自动验证和修正股票代码格式（APPL.US → AAPL.US）
+3. ✅ **数量计算优化**：根据可用资金正确计算购买数量（使用10%可用资金）
+4. ✅ **价格精度修复**：自动格式化价格到正确的小数位数（美股2位，港股3位），避免下单失败
+5. ✅ **持仓检查**：避免重复买入同一标的
+6. ✅ **订单追踪**：自动追踪未成交订单，根据市场变化更新价格（价格差异超过2%时自动更新）
+7. ✅ **未成交订单检查**：避免同一标的同时存在多个未成交订单
+
+**技术实现**：
+- 前端：统一创建和编辑策略的UI组件，添加股票代码实时验证
+- 后端：改进数量计算逻辑、价格格式化逻辑、持仓检查逻辑、订单追踪逻辑
+
+**涉及文件**：
+- 前端：`frontend/app/quant/strategies/page.tsx` - 创建策略界面
+- 前端：`frontend/app/quant/strategies/[id]/page.tsx` - 编辑策略界面
+- 后端：`api/src/routes/quant.ts` - 添加股票代码验证和自动修正
+- 后端：`api/src/services/strategy-scheduler.service.ts` - 添加数量计算、持仓检查、订单追踪
+- 后端：`api/src/services/basic-execution.service.ts` - 添加价格格式化逻辑
+
+**详细文档**：
+- 📄 [策略执行优化总结](STRATEGY_EXECUTION_IMPROVEMENTS.md) - 完整的优化说明和技术细节
+
 ### 2025-01-XX: 订单管理重构
 
 **重构内容**：
@@ -395,6 +453,7 @@ const mappedOrder = mapOrderData(orderDetail);
 - 📊 [交易推荐逻辑](TRADING_RECOMMENDATION_LOGIC.md) - 交易推荐算法详细说明
 - ⚙️ [配置管理设置](CONFIG_MANAGEMENT_SETUP.md) - 配置管理和 Token 刷新功能设置指南
 - 📄 [卖出看跌期权（Sell Put）完全指南](卖出看跌期权（Sell Put）完全指南.md) - 期权交易策略指南
+- 🤖 [策略执行优化总结](STRATEGY_EXECUTION_IMPROVEMENTS.md) - 策略执行功能优化和问题修复总结
 
 ### 技术文档
 - 🔧 [期权行情 API](OPTION_QUOTE_API.md) - 期权行情 API 开发文档
@@ -440,4 +499,4 @@ MIT License
 
 ---
 
-**最后更新**: 2025-01-28
+**最后更新**: 2025-01-28 (策略执行优化完成)

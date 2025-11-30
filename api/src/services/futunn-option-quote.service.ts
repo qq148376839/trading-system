@@ -1,6 +1,7 @@
 import axios from 'axios';
 import crypto from 'crypto';
-import { getFutunnConfig, getFutunnHeaders } from '../config/futunn';
+import { getFutunnConfig, getFutunnHeaders, getFutunnSearchHeaders } from '../config/futunn';
+import { moomooProxy, getProxyMode } from '../utils/moomoo-proxy';
 
 /**
  * 富途牛牛期权行情服务
@@ -101,33 +102,64 @@ async function searchStock(keyword: string): Promise<{
   stockId: string;
   marketType: number;
 } | null> {
-  const url = 'https://www.moomoo.com/api/headfoot-search';
-  const params = {
-    keyword: keyword.toLowerCase(),
-    lang: 'zh-cn',
-    site: 'sg',  // 使用sg而不是cn
-  };
-  
   try {
-    const headers = getFutunnHeaders('https://www.moomoo.com/');
-    const response = await axios.get(url, { params, headers, timeout: 10000 });
+    // 使用搜索接口专用的headers函数（单独获取cookies）
+    const headers = await getFutunnSearchHeaders('https://www.moomoo.com/');
     
-    // headfoot-search接口可能返回不同的数据结构，需要检查
-    // 可能的格式：{ data: { stock: [...] } } 或 { stock: [...] }
+    const startTime = Date.now();
+    console.log(`[富途搜索] 搜索正股: ${keyword} (${getProxyMode()})`);
+    
+    // 使用边缘函数代理
+    const responseData = await moomooProxy({
+      path: '/api/headfoot-search',
+      params: {
+        keyword: keyword.toLowerCase(),
+        lang: 'zh-cn',
+        site: 'sg',
+      },
+      cookies: headers['Cookie'],
+      csrfToken: headers['futu-x-csrf-token'],
+      referer: 'https://www.moomoo.com/',
+      timeout: 10000,
+    });
+    
+    const duration = Date.now() - startTime;
+    console.log(`[富途搜索响应] ${keyword}:`, {
+      duration: `${duration}ms`,
+      dataCode: responseData?.code,
+      dataMessage: responseData?.message,
+      dataLength: responseData ? JSON.stringify(responseData).length : 0,
+      dataKeys: responseData ? Object.keys(responseData) : [],
+      stockCount: responseData?.data?.stock?.length || 0,
+    });
+    
+    // headfoot-search接口返回的数据结构：{ code: 0, message: "成功", data: { stock: [...] } }
     let stockList: any[] = [];
     
-    if (response.data?.data?.stock) {
-      stockList = response.data.data.stock;
-    } else if (response.data?.stock) {
-      stockList = response.data.stock;
-    } else if (Array.isArray(response.data)) {
-      stockList = response.data;
+    if (responseData?.code === 0 && responseData?.data?.stock) {
+      // 标准格式：{ code: 0, data: { stock: [...] } }
+      stockList = responseData.data.stock;
+      console.log(`[富途搜索] 找到 ${stockList.length} 个股票结果`);
+    } else if (responseData?.data?.stock) {
+      stockList = responseData.data.stock;
+    } else if (responseData?.stock) {
+      stockList = responseData.stock;
+    } else if (Array.isArray(responseData)) {
+      stockList = responseData;
+    } else {
+      console.warn(`[富途搜索] 未知的数据结构:`, {
+        code: responseData?.code,
+        message: responseData?.message,
+        dataKeys: responseData?.data ? Object.keys(responseData.data) : [],
+        fullData: JSON.stringify(responseData).substring(0, 500),
+      });
     }
     
     // 查找正股（非ETF）
     for (const stock of stockList) {
       if (stock.symbol === keyword.toUpperCase() + '.US' || 
           stock.stockSymbol === keyword.toUpperCase()) {
+        console.log(`[富途搜索] 找到正股: ${keyword} -> stockId=${stock.stockId}, marketType=${stock.marketType}`);
         return {
           stockId: String(stock.stockId),
           marketType: stock.marketType,
@@ -135,13 +167,31 @@ async function searchStock(keyword: string): Promise<{
       }
     }
     
-    console.warn(`未找到正股: ${keyword}`);
+    console.warn(`[富途搜索] 未找到正股: ${keyword}`, {
+      searchedSymbol: keyword.toUpperCase() + '.US',
+      stockList: stockList.map(s => ({ symbol: s.symbol, stockSymbol: s.stockSymbol, stockId: s.stockId })).slice(0, 5),
+    });
     return null;
   } catch (error: any) {
-    console.error('搜索正股失败:', error.message);
-    if (error.response) {
-      console.error('API响应状态:', error.response.status, error.response.data);
-    }
+    console.error('[富途搜索错误] 搜索正股失败:', {
+      keyword,
+      errorCode: error.code,
+      errorMessage: error.message,
+      errorResponse: error.response ? {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        data: error.response.data,
+      } : null,
+      errorRequest: error.request ? {
+        url: error.config?.url,
+        method: error.config?.method,
+        timeout: error.config?.timeout,
+      } : null,
+      isTimeout: error.code === 'ETIMEDOUT',
+      isConnectionReset: error.code === 'ECONNRESET',
+      isConnectionRefused: error.code === 'ECONNREFUSED',
+      isDNSFailure: error.code === 'ENOTFOUND',
+    });
     return null;
   }
 }
@@ -166,7 +216,6 @@ async function getOptionFromChain(
     throw new Error('富途牛牛配置未设置，请在 .env 文件中设置 FUTUNN_CSRF_TOKEN 和 FUTUNN_COOKIES');
   }
   
-  const url = 'https://www.moomoo.com/quote-api/quote-v2/get-option-chain';
   const timestamp = Date.now();
   
   // 判断期权是否过期
@@ -186,7 +235,6 @@ async function getOptionFromChain(
   
   // 使用统一的富途牛牛配置获取headers
   const headers = getFutunnHeaders('https://www.moomoo.com/');
-  headers['quote-token'] = quoteToken;
   
   // URL参数使用数字类型
   const params = {
@@ -197,10 +245,18 @@ async function getOptionFromChain(
   };
   
   try {
-    const response = await axios.get(url, { params, headers, timeout: 10000 });
+    const responseData = await moomooProxy({
+      path: '/quote-api/quote-v2/get-option-chain',
+      params,
+      cookies: headers['Cookie'],
+      csrfToken: headers['futu-x-csrf-token'],
+      quoteToken: quoteToken,
+      referer: 'https://www.moomoo.com/',
+      timeout: 10000,
+    });
     
-    if (response.data?.code === 0) {
-      const optionList = response.data.data || [];
+    if (responseData?.code === 0) {
+      const optionList = responseData.data || [];
       
       // 查找目标期权
       for (const optionPair of optionList) {
@@ -230,7 +286,6 @@ async function getOptionQuote(optionId: string, marketType: number): Promise<any
     throw new Error('富途牛牛配置未设置，请在 .env 文件中设置 FUTUNN_CSRF_TOKEN 和 FUTUNN_COOKIES');
   }
   
-  const url = 'https://www.moomoo.com/quote-api/quote-v2/get-kline';
   const timestamp = Date.now();
   
   // Token生成使用字符串类型参数
@@ -248,7 +303,6 @@ async function getOptionQuote(optionId: string, marketType: number): Promise<any
   
   // 使用统一的富途牛牛配置获取headers
   const headers = getFutunnHeaders('https://www.moomoo.com/');
-  headers['quote-token'] = quoteToken;
   
   // URL参数使用数字类型
   const params: any = {
@@ -262,10 +316,18 @@ async function getOptionQuote(optionId: string, marketType: number): Promise<any
   };
   
   try {
-    const response = await axios.get(url, { params, headers, timeout: 10000 });
+    const responseData = await moomooProxy({
+      path: '/quote-api/quote-v2/get-kline',
+      params,
+      cookies: headers['Cookie'],
+      csrfToken: headers['futu-x-csrf-token'],
+      quoteToken: quoteToken,
+      referer: 'https://www.moomoo.com/',
+      timeout: 10000,
+    });
     
-    if (response.data?.code === 0) {
-      const klineData = response.data.data;
+    if (responseData?.code === 0) {
+      const klineData = responseData.data;
       const klineList = klineData?.list || [];
       
       if (klineList.length > 0) {

@@ -121,6 +121,70 @@ export async function getQuoteContext(): Promise<QuoteContextType> {
       ? `...${accessToken.substring(accessToken.length - 20)}`
       : accessToken;
     console.log(`  ACCESS_TOKEN: ${tokenDisplay}`);
+    
+    // 打印富途配置（从数据库或硬编码）
+    let futunnCsrfToken: string | null = null;
+    let futunnCookies: string | null = null;
+    if (service) {
+      try {
+        futunnCsrfToken = await service.getConfig('futunn_csrf_token');
+        futunnCookies = await service.getConfig('futunn_cookies');
+      } catch (error: any) {
+        // 忽略错误，使用硬编码配置
+      }
+    }
+    
+    // 如果数据库中没有配置，使用硬编码的游客配置
+    let futunnConfig: { csrfToken: string; cookies: string };
+    if (futunnCsrfToken && futunnCookies) {
+      futunnConfig = { csrfToken: futunnCsrfToken, cookies: futunnCookies };
+    } else {
+      // 动态导入避免循环依赖
+      const futunnModule = await import('./futunn');
+      futunnConfig = futunnModule.getFutunnConfig();
+    }
+    
+    const futunnSource = futunnCsrfToken && futunnCookies ? '数据库' : '硬编码（游客配置）';
+    console.log(`使用富途牛牛API配置（来源: ${futunnSource}）:`);
+    
+    // 显示 CSRF Token（显示完整值，便于对比）
+    const csrfToken = futunnConfig.csrfToken;
+    console.log(`  CSRF_TOKEN (完整值): ${csrfToken} (长度: ${csrfToken.length})`);
+    
+    // 显示 Cookies（前150位 + 后100位，便于对比）
+    const cookies = futunnConfig.cookies;
+    let cookiesPreview: string;
+    if (cookies.length > 250) {
+      cookiesPreview = `${cookies.substring(0, 150)}...${cookies.substring(cookies.length - 100)} (长度: ${cookies.length})`;
+    } else {
+      cookiesPreview = cookies;
+    }
+    console.log(`  COOKIES (预览): ${cookiesPreview}`);
+    
+    // 提取并显示关键 cookies 值（显示完整值，便于对比）
+    const cookieParts = cookies.split(';').map(s => s.trim());
+    const importantCookies = ['csrfToken', 'futu-csrf', 'cipher_device_id', 'device_id', 'locale'];
+    console.log(`  关键 Cookies 值 (完整值):`);
+    importantCookies.forEach(key => {
+      const cookie = cookieParts.find(c => c.startsWith(key + '='));
+      if (cookie) {
+        const value = cookie.split('=')[1];
+        console.log(`    ${key}: ${value} (长度: ${value?.length || 0})`);
+      }
+    });
+    
+    // 验证 CSRF Token 和 cookie 中的 csrfToken 是否一致
+    const cookieCsrfToken = cookieParts.find(c => c.startsWith('csrfToken='));
+    if (cookieCsrfToken) {
+      const cookieCsrfValue = cookieCsrfToken.split('=')[1];
+      if (csrfToken !== cookieCsrfValue) {
+        console.warn(`  ⚠️  警告: CSRF_TOKEN 与 cookie 中的 csrfToken 不一致！`);
+        console.warn(`     CSRF_TOKEN: ${csrfToken}`);
+        console.warn(`     cookie.csrfToken: ${cookieCsrfValue}`);
+      } else {
+        console.log(`  ✅ CSRF_TOKEN 与 cookie 中的 csrfToken 一致`);
+      }
+    }
 
     // 使用手动创建Config的方式，因为需要enablePrintQuotePackages字段
     // 根据测试结果，Config.fromEnv()可能在某些版本有兼容性问题
