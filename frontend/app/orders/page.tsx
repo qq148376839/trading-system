@@ -1,8 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { ordersApi } from '@/lib/api'
 import BackButton from '@/components/BackButton'
+import { DatePicker } from 'antd'
+import type { Dayjs } from 'dayjs'
+import dayjs from 'dayjs'
 
 interface Order {
   orderId: string
@@ -57,9 +60,10 @@ export default function OrdersPage() {
     start_at: '',
     end_at: '',
   })
+  const [orderDateRange, setOrderDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
 
-  // 查询今日订单
-  const fetchTodayOrders = async () => {
+  // 查询今日订单（使用 useCallback 稳定函数引用）
+  const fetchTodayOrders = useCallback(async () => {
     setLoading(true)
     setError(null)
 
@@ -99,10 +103,10 @@ export default function OrdersPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [filters.symbol, filters.status, filters.side, filters.market, filters.order_id])
 
-  // 查询历史订单
-  const fetchHistoryOrders = async () => {
+  // 查询历史订单（使用 useCallback 稳定函数引用）
+  const fetchHistoryOrders = useCallback(async () => {
     setLoading(true)
     setError(null)
 
@@ -120,10 +124,12 @@ export default function OrdersPage() {
       if (filters.market) {
         params.market = filters.market
       }
-      if (filters.start_at) {
+      if (orderDateRange && orderDateRange[0] && orderDateRange[1]) {
+        params.start_at = orderDateRange[0].format('YYYY-MM-DD')
+        params.end_at = orderDateRange[1].format('YYYY-MM-DD')
+      } else if (filters.start_at) {
         params.start_at = filters.start_at
-      }
-      if (filters.end_at) {
+      } else if (filters.end_at) {
         params.end_at = filters.end_at
       }
 
@@ -145,31 +151,57 @@ export default function OrdersPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [filters.symbol, filters.status, filters.side, filters.market, orderDateRange])
 
-  // 根据当前Tab调用对应的查询函数
-  const fetchOrders = () => {
-    if (activeTab === 'today') {
-      fetchTodayOrders()
-    } else {
-      fetchHistoryOrders()
+  // 使用 useRef 防止重复请求
+  const isFetchingRef = useRef(false)
+  const lastFetchParamsRef = useRef<string>('')
+
+  // 根据当前Tab调用对应的查询函数（优化版本，防止重复请求）
+  const fetchOrdersOptimized = useCallback(() => {
+    // 生成请求参数的唯一标识
+    const paramsKey = JSON.stringify({
+      activeTab,
+      ...filters
+    })
+
+    // 如果正在请求或参数相同，跳过
+    if (isFetchingRef.current || lastFetchParamsRef.current === paramsKey) {
+      return
     }
-  }
 
+    isFetchingRef.current = true
+    lastFetchParamsRef.current = paramsKey
+
+    if (activeTab === 'today') {
+      fetchTodayOrders().finally(() => {
+        isFetchingRef.current = false
+      })
+    } else {
+      fetchHistoryOrders().finally(() => {
+        isFetchingRef.current = false
+      })
+    }
+  }, [activeTab, filters.symbol, filters.status, filters.side, filters.market, filters.order_id, orderDateRange, fetchTodayOrders, fetchHistoryOrders])
+
+  // 首次加载和筛选条件变化时请求（使用优化版本）
   useEffect(() => {
-    fetchOrders()
-  }, [activeTab, filters.symbol, filters.status, filters.side, filters.market, filters.order_id, filters.start_at, filters.end_at])
+    fetchOrdersOptimized()
+  }, [fetchOrdersOptimized])
 
   // 自动刷新（仅今日订单，每30秒）
   useEffect(() => {
     if (!autoRefresh || activeTab !== 'today') return
 
     const interval = setInterval(() => {
+      // 自动刷新时，重置请求状态，允许刷新
+      isFetchingRef.current = false
+      lastFetchParamsRef.current = ''
       fetchTodayOrders()
     }, 30000) // 每30秒刷新一次
 
     return () => clearInterval(interval)
-  }, [autoRefresh, activeTab, filters.symbol, filters.status, filters.side, filters.market, filters.order_id])
+  }, [autoRefresh, activeTab, fetchTodayOrders]) // 只依赖必要的变量
 
   const handleCancelOrder = async (orderId: string) => {
     if (!confirm('确定要取消这个订单吗？')) {
@@ -179,8 +211,10 @@ export default function OrdersPage() {
     try {
       await ordersApi.cancelOrder(orderId)
       setError(null)
-      // 刷新订单列表
-      await fetchOrders()
+      // 刷新订单列表（重置请求状态，允许刷新）
+      isFetchingRef.current = false
+      lastFetchParamsRef.current = ''
+      await fetchOrdersOptimized()
       // 关闭详情弹窗
       setSelectedOrder(null)
     } catch (err: any) {
@@ -318,7 +352,12 @@ export default function OrdersPage() {
                   </label>
                 )}
                 <button
-                  onClick={fetchOrders}
+                  onClick={() => {
+                    // 手动刷新时，重置请求状态
+                    isFetchingRef.current = false
+                    lastFetchParamsRef.current = ''
+                    fetchOrdersOptimized()
+                  }}
                   disabled={loading}
                   className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 text-sm"
                 >
@@ -394,20 +433,50 @@ export default function OrdersPage() {
               
               {/* 历史订单时间范围 */}
               {activeTab === 'history' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <input
-                    type="date"
-                    value={filters.start_at}
-                    onChange={(e) => setFilters({ ...filters, start_at: e.target.value })}
-                    className="px-3 py-2 border border-gray-300 rounded-md text-sm"
-                    placeholder="开始日期"
-                  />
-                  <input
-                    type="date"
-                    value={filters.end_at}
-                    onChange={(e) => setFilters({ ...filters, end_at: e.target.value })}
-                    className="px-3 py-2 border border-gray-300 rounded-md text-sm"
-                    placeholder="结束日期"
+                <div>
+                  <DatePicker.RangePicker
+                    value={orderDateRange}
+                    onChange={(dates) => {
+                      setOrderDateRange(dates)
+                      if (dates && dates[0] && dates[1]) {
+                        setFilters({
+                          ...filters,
+                          start_at: dates[0].format('YYYY-MM-DD'),
+                          end_at: dates[1].format('YYYY-MM-DD'),
+                        })
+                      } else {
+                        setFilters({
+                          ...filters,
+                          start_at: '',
+                          end_at: '',
+                        })
+                      }
+                    }}
+                    format="YYYY-MM-DD"
+                    className="w-full"
+                    placeholder={['开始日期', '结束日期']}
+                    presets={[
+                      {
+                        label: '最近一个月',
+                        value: [dayjs().subtract(1, 'month'), dayjs()],
+                      },
+                      {
+                        label: '最近三个月',
+                        value: [dayjs().subtract(3, 'month'), dayjs()],
+                      },
+                      {
+                        label: '最近六个月',
+                        value: [dayjs().subtract(6, 'month'), dayjs()],
+                      },
+                      {
+                        label: '最近九个月',
+                        value: [dayjs().subtract(9, 'month'), dayjs()],
+                      },
+                      {
+                        label: '最近一年',
+                        value: [dayjs().subtract(1, 'year'), dayjs()],
+                      },
+                    ]}
                   />
                 </div>
               )}
@@ -593,7 +662,10 @@ export default function OrdersPage() {
           onClose={() => setSelectedOrder(null)}
           onCancel={handleCancelOrder}
           onModify={async () => {
-            await fetchOrders()
+            // 重置请求状态，允许刷新
+            isFetchingRef.current = false
+            lastFetchParamsRef.current = ''
+            await fetchOrdersOptimized()
             setSelectedOrder(null)
           }}
         />

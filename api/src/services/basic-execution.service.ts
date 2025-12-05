@@ -7,6 +7,7 @@ import { getTradeContext, getQuoteContext, OrderType, OrderSide, TimeInForceType
 import pool from '../config/database';
 import { TradingIntent } from './strategies/strategy-base';
 import { detectMarket } from '../utils/order-validation';
+import { logger } from '../utils/logger';
 
 export interface ExecutionResult {
   success: boolean;
@@ -15,6 +16,8 @@ export interface ExecutionResult {
   filledQuantity?: number;
   fees?: number; // 实际手续费（从订单详情获取）
   error?: string;
+  orderStatus?: string; // 订单状态：FilledStatus, NewStatus, RejectedStatus 等
+  submitted?: boolean; // 订单是否已成功提交到交易所
 }
 
 class BasicExecutionService {
@@ -41,7 +44,7 @@ class BasicExecutionService {
         strategyId
       );
     } catch (error: any) {
-      console.error(`执行买入失败 (${intent.symbol}):`, error);
+      logger.error(`执行买入失败 (${intent.symbol}):`, error);
       return {
         success: false,
         error: error.message || '未知错误',
@@ -72,7 +75,7 @@ class BasicExecutionService {
         strategyId
       );
     } catch (error: any) {
-      console.error(`执行卖出失败 (${intent.symbol}):`, error);
+      logger.error(`执行卖出失败 (${intent.symbol}):`, error);
       return {
         success: false,
         error: error.message || '未知错误',
@@ -109,12 +112,12 @@ class BasicExecutionService {
                 error: `数量不符合最小交易单位要求。最小交易单位为 ${lotSize}，当前数量 ${quantity} 太小`,
               };
             }
-            console.warn(`数量 ${quantity} 不符合最小交易单位 ${lotSize}，调整为 ${adjustedQuantity}`);
+            logger.warn(`数量 ${quantity} 不符合最小交易单位 ${lotSize}，调整为 ${adjustedQuantity}`);
             quantity = adjustedQuantity;
           }
         }
       } catch (lotSizeError: any) {
-        console.warn('获取最小交易单位失败，跳过验证:', lotSizeError.message);
+        logger.warn('获取最小交易单位失败，跳过验证:', lotSizeError.message);
         // 如果获取lot size失败，不阻止订单提交，只记录警告
       }
 
@@ -157,7 +160,7 @@ class BasicExecutionService {
         orderOptions.outsideRth = OutsideRTH.AnyTime;
       }
 
-      console.log(`策略 ${strategyId} 提交订单:`, {
+      logger.log(`策略 ${strategyId} 提交订单:`, {
         symbol,
         side,
         quantity,
@@ -177,13 +180,13 @@ class BasicExecutionService {
       }
 
       const orderId = response.orderId;
-      console.log(`策略 ${strategyId} 订单提交成功，订单ID: ${orderId}`);
+      logger.log(`策略 ${strategyId} 订单提交成功，订单ID: ${orderId}`);
 
       // 5. 记录订单到数据库
       try {
         await this.recordOrder(strategyId, symbol, side, quantity, price, orderId);
       } catch (dbError: any) {
-        console.error(`记录订单到数据库失败 (${orderId}):`, dbError.message);
+        logger.error(`记录订单到数据库失败 (${orderId}):`, dbError.message);
         // 不阻止后续流程，因为订单已经提交成功
       }
 
@@ -201,19 +204,27 @@ class BasicExecutionService {
         try {
           await this.recordTrade(strategyId, symbol, side, orderDetail, fees);
         } catch (tradeError: any) {
-          console.error(`记录交易到数据库失败 (${orderId}):`, tradeError.message);
+          logger.error(`记录交易到数据库失败 (${orderId}):`, tradeError.message);
         }
       }
 
+      // 判断订单是否已成交
+      const isFilled = normalizedStatus === 'FilledStatus';
+      const isRejected = normalizedStatus === 'RejectedStatus' || normalizedStatus === 'CanceledStatus';
+      
       return {
-        success: normalizedStatus === 'FilledStatus',
+        success: isFilled,
         orderId,
         avgPrice: parseFloat(orderDetail.executedPrice?.toString() || orderDetail.executed_price?.toString() || '0'),
         filledQuantity: parseInt(orderDetail.executedQuantity?.toString() || orderDetail.executed_quantity?.toString() || '0'),
         fees,
+        orderStatus: normalizedStatus,
+        submitted: true, // 订单已成功提交到交易所
+        // 如果订单被拒绝或取消，设置错误信息
+        error: isRejected ? `订单状态: ${normalizedStatus}` : undefined,
       };
     } catch (error: any) {
-      console.error(`策略 ${strategyId} 提交订单失败 (${symbol}):`, error);
+      logger.error(`策略 ${strategyId} 提交订单失败 (${symbol}):`, error);
       
       // 提取错误信息
       let errorMessage = '未知错误';
@@ -249,13 +260,14 @@ class BasicExecutionService {
       // 如果没有 charge_detail，返回 0（后续会通过估算补充）
       return 0;
     } catch (error: any) {
-      console.error(`获取订单手续费失败 (${orderId}):`, error);
+      logger.error(`获取订单手续费失败 (${orderId}):`, error);
       return 0;
     }
   }
 
   /**
    * 等待订单成交
+   * 使用 todayOrders() 批量查询，避免频率限制
    */
   private async waitForOrderFill(
     orderId: string,
@@ -264,46 +276,72 @@ class BasicExecutionService {
     try {
       const tradeCtx = await getTradeContext();
       const startTime = Date.now();
+      let lastError: any = null;
 
       while (Date.now() - startTime < timeout) {
         try {
-          const order = await tradeCtx.orderDetail(orderId);
-          const status = this.normalizeStatus(order.status);
+          // 使用批量查询 todayOrders() 替代单个订单查询，避免频率限制
+          const todayOrders = await tradeCtx.todayOrders({});
+          
+          // 从批量结果中查找目标订单
+          const order = this.findOrderInList(todayOrders, orderId);
+          
+          if (order) {
+            const status = this.normalizeStatus(order.status);
 
-          if (status === 'FilledStatus' || status === 'PartialFilledStatus') {
-            return order;
-          }
+            if (status === 'FilledStatus' || status === 'PartialFilledStatus') {
+              return order;
+            }
 
-          if (status === 'CanceledStatus' || status === 'RejectedStatus') {
-            // 订单已取消或拒绝，返回订单详情而不是抛出错误
-            return order;
+            if (status === 'CanceledStatus' || status === 'RejectedStatus') {
+              // 订单已取消或拒绝，返回订单详情而不是抛出错误
+              return order;
+            }
+          } else {
+            // 订单不在今日订单列表中，可能是新订单还未同步，继续等待
+            logger.log(`订单 ${orderId} 尚未出现在今日订单列表中，继续等待...`);
           }
 
           // 等待 2 秒后再次查询
           await new Promise((resolve) => setTimeout(resolve, 2000));
         } catch (queryError: any) {
-          // 如果查询订单详情失败，记录错误但继续重试
-          console.warn(`查询订单详情失败 (${orderId}):`, queryError.message);
-          await new Promise((resolve) => setTimeout(resolve, 2000));
+          // 如果查询失败，记录错误但继续重试
+          lastError = queryError;
+          
+          // 如果是频率限制错误，延长等待时间
+          if (queryError.message && (queryError.message.includes('429') || queryError.message.includes('429002'))) {
+            logger.warn(`订单查询频率限制，等待更长时间后重试 (${orderId})`);
+            await new Promise((resolve) => setTimeout(resolve, 5000)); // 等待5秒
+          } else {
+            logger.warn(`批量查询今日订单失败 (${orderId}):`, queryError.message);
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          }
         }
       }
 
-      // 超时，返回当前状态（如果可能）
+      // 超时，尝试最后一次批量查询
       try {
         const tradeCtx = await getTradeContext();
-        return await tradeCtx.orderDetail(orderId);
+        const todayOrders = await tradeCtx.todayOrders({});
+        const order = this.findOrderInList(todayOrders, orderId);
+        
+        if (order) {
+          return order;
+        }
       } catch (error: any) {
-        // 如果查询失败，返回一个基本结构
-        console.warn(`超时后查询订单详情失败 (${orderId}):`, error.message);
-        return {
-          orderId,
-          status: 'NewStatus', // 假设是新订单状态
-          executedPrice: null,
-          executedQuantity: 0,
-        };
+        logger.warn(`超时后批量查询订单失败 (${orderId}):`, error.message);
       }
+
+      // 如果查询失败，返回一个基本结构
+      logger.warn(`订单 ${orderId} 查询超时，返回默认状态`);
+      return {
+        orderId,
+        status: 'NewStatus', // 假设是新订单状态
+        executedPrice: null,
+        executedQuantity: 0,
+      };
     } catch (error: any) {
-      console.error(`等待订单成交失败 (${orderId}):`, error);
+      logger.error(`等待订单成交失败 (${orderId}):`, error);
       // 返回一个基本结构，避免后续代码崩溃
       return {
         orderId,
@@ -312,6 +350,34 @@ class BasicExecutionService {
         executedQuantity: 0,
       };
     }
+  }
+
+  /**
+   * 从订单列表中查找指定订单
+   */
+  private findOrderInList(orders: any, orderId: string): any | null {
+    if (!orders) return null;
+
+    // 处理不同的返回格式
+    let orderList: any[] = [];
+    
+    if (Array.isArray(orders)) {
+      orderList = orders;
+    } else if (orders.orders && Array.isArray(orders.orders)) {
+      orderList = orders.orders;
+    } else if (orders.list && Array.isArray(orders.list)) {
+      orderList = orders.list;
+    }
+
+    // 查找匹配的订单
+    for (const order of orderList) {
+      const id = order.orderId || order.order_id || order.id;
+      if (id && id.toString() === orderId.toString()) {
+        return order;
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -352,9 +418,9 @@ class BasicExecutionService {
   }
 
   /**
-   * 记录交易到数据库
+   * 记录交易到数据库（公开方法，供订单追踪调用）
    */
-  private async recordTrade(
+  async recordTrade(
     strategyId: number,
     symbol: string,
     side: string,

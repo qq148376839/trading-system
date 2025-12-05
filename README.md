@@ -12,6 +12,7 @@
 - [API 文档](#api-文档)
 - [开发指南](#开发指南)
 - [重要更新](#重要更新)
+- [项目状态](#项目状态)
 
 ## 🎯 项目概述
 
@@ -422,7 +423,7 @@ const mappedOrder = mapOrderData(orderDetail);
 - 后端：`api/src/services/basic-execution.service.ts` - 添加价格格式化逻辑
 
 **详细文档**：
-- 📄 [策略执行优化总结](STRATEGY_EXECUTION_IMPROVEMENTS.md) - 完整的优化说明和技术细节
+- 📄 [策略执行优化总结](docs/archive/STRATEGY_EXECUTION_IMPROVEMENTS.md) - 完整的优化说明和技术细节
 
 ### 2025-01-XX: 订单管理重构
 
@@ -448,22 +449,32 @@ const mappedOrder = mapOrderData(orderDetail);
 
 ## 📖 相关文档
 
-### 使用指南
-- 💼 [交易指南](TRADING_GUIDE.md) - 交易功能使用说明
-- 📊 [交易推荐逻辑](TRADING_RECOMMENDATION_LOGIC.md) - 交易推荐算法详细说明
-- ⚙️ [配置管理设置](CONFIG_MANAGEMENT_SETUP.md) - 配置管理和 Token 刷新功能设置指南
-- 📄 [卖出看跌期权（Sell Put）完全指南](卖出看跌期权（Sell Put）完全指南.md) - 期权交易策略指南
-- 🤖 [策略执行优化总结](STRATEGY_EXECUTION_IMPROVEMENTS.md) - 策略执行功能优化和问题修复总结
+### 📍 代码地图
+- 🗺️ [代码地图](CODE_MAP.md) - 项目中每个文件的作用和调用关系
 
-### 技术文档
-- 🔧 [期权行情 API](OPTION_QUOTE_API.md) - 期权行情 API 开发文档
+### 📚 文档中心
 
-### 历史文档（已归档）
-- 📋 [订单管理重构计划](docs/ORDER_MANAGEMENT_REFACTOR_PLAN.md) - 订单管理重构详细计划（已完成）
-- 📝 [交易记录和订单管理](docs/TRADE_RECORD_ORDER_MANAGEMENT.md) - 订单管理 API 文档（已完成）
-- 📈 [期权链可行性分析](docs/OPTION_CHAIN_FEASIBILITY_ANALYSIS.md) - 期权链功能可行性分析（已完成）
-- 🚀 [期权链优化计划](docs/OPTION_CHAIN_ENHANCEMENT_PLAN.md) - 期权链功能优化计划（已完成）
-- ⚡ [订单提交优化方案](docs/ORDER_SUBMIT_OPTIMIZATION.md) - 订单提交功能优化方案（已完成）
+**👉 [查看完整文档索引](docs/README.md)**
+
+#### 使用指南
+- 💼 [交易指南](docs/guides/TRADING_GUIDE.md) - 交易功能使用说明
+- ⚙️ [配置管理设置](docs/guides/CONFIG_MANAGEMENT_SETUP.md) - 配置管理和 Token 刷新功能设置指南
+- 🐳 [Docker 环境设置](docs/guides/DOCKER_SETUP.md) - Docker 环境配置和部署说明
+- 📄 [卖出看跌期权完全指南](docs/guides/卖出看跌期权（Sell Put）完全指南.md) - 期权交易策略指南
+
+#### 技术文档
+- 🏗️ [项目总结](docs/technical/PROJECT_SUMMARY.md) - 项目核心信息、关键决策和技术栈
+- 📊 [交易推荐逻辑](docs/technical/TRADING_RECOMMENDATION_LOGIC.md) - 交易推荐算法详细说明
+- 🔧 [期权行情 API](docs/technical/OPTION_QUOTE_API.md) - 期权行情 API 开发文档
+- 🤖 [策略逻辑审查](docs/technical/STRATEGY_LOGIC_REVIEW.md) - 量化交易策略的详细逻辑说明
+
+#### 历史文档（已归档）
+- 📋 [订单管理重构计划](docs/archive/ORDER_MANAGEMENT_REFACTOR_PLAN.md) - 订单管理重构详细计划（已完成）
+- 📝 [交易记录和订单管理](docs/archive/TRADE_RECORD_ORDER_MANAGEMENT.md) - 订单管理 API 文档（已完成）
+- 📈 [期权链可行性分析](docs/archive/OPTION_CHAIN_FEASIBILITY_ANALYSIS.md) - 期权链功能可行性分析（已完成）
+- 🚀 [期权链优化计划](docs/archive/OPTION_CHAIN_ENHANCEMENT_PLAN.md) - 期权链功能优化计划（已完成）
+- ⚡ [订单提交优化方案](docs/archive/ORDER_SUBMIT_OPTIMIZATION.md) - 订单提交功能优化方案（已完成）
+- 🤖 [策略执行优化总结](docs/archive/STRATEGY_EXECUTION_IMPROVEMENTS.md) - 策略执行功能优化和问题修复总结
 
 ## 🐛 故障排除
 
@@ -497,6 +508,29 @@ MIT License
 - [Longbridge OpenAPI](https://open.longbridge.com/) - 提供股票行情和交易 API
 - [富途牛牛/Moomoo](https://www.moomoo.com/) - 提供期权行情备用方案
 
+## 📊 项目状态
+
+### 当前版本
+- **版本**: 1.0
+- **状态**: ✅ 正常运行
+- **最后更新**: 2025-12-05
+
+### 最近更新 (2025-12-05)
+
+#### ⚠️ 关键BUG修复
+- **资金使用差异BUG修复**: 修复持仓数据解析BUG，扩展状态同步逻辑，修复实际使用值计算
+- **修复效果**: 差异从 24810.74 减少到 17033.84（减少31%）
+- **数据库迁移脚本合并**: 合并008和009到000_init_schema.sql，简化部署流程
+
+### 项目进度
+查看 [PROJECT_STATUS.md](PROJECT_STATUS.md) 了解详细的项目进度和计划。
+
+### 更新日志
+查看 [CHANGELOG.md](CHANGELOG.md) 了解完整的功能更新和修复记录。
+
+### 文档中心
+查看 [docs/README.md](docs/README.md) 了解完整的文档索引。
+
 ---
 
-**最后更新**: 2025-01-28 (策略执行优化完成)
+**最后更新**: 2025-12-05 (资金使用差异BUG修复完成)

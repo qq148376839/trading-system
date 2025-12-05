@@ -34,6 +34,7 @@ interface TradingRecommendation {
   analysis_summary: string;
   risk_note: string;
   spx_usd_relationship_analysis?: string; // SPX与USD关系的详细分析（可选）
+  atr?: number; // ATR（平均真实波幅），用于动态止损止盈
 }
 
 interface MarketAnalysis {
@@ -91,28 +92,46 @@ class TradingRecommendationService {
         }
       }
 
-      // 3. 计算各市场分析（即使市场数据不足，也使用默认值继续计算）
-      const spxAnalysis = this.calculateMarketAnalysis(marketData.spx, 'SPX');
-      const usdAnalysis = this.calculateMarketAnalysis(marketData.usdIndex, 'USD Index');
-      const btcAnalysis = this.calculateBTCAnalysis(marketData.btc);
+      // 3. 检查市场数据是否充足，如果不足则重新获取
+      let finalMarketData = marketData;
+      if (!marketData.spx || marketData.spx.length < 50 || 
+          !marketData.usdIndex || marketData.usdIndex.length < 50 ||
+          !marketData.btc || marketData.btc.length < 50) {
+        console.warn('市场数据不足，强制刷新缓存并重新获取...');
+        // 清除缓存，强制重新获取
+        marketDataCacheService.clearCache();
+        finalMarketData = await marketDataCacheService.getMarketData(100, true);
+        
+        // 如果重新获取后仍然不足，抛出错误
+        if (!finalMarketData.spx || finalMarketData.spx.length < 50 || 
+            !finalMarketData.usdIndex || finalMarketData.usdIndex.length < 50 ||
+            !finalMarketData.btc || finalMarketData.btc.length < 50) {
+          throw new Error('市场数据获取失败，无法计算推荐。请检查富途API连接。');
+        }
+      }
+
+      // 3. 计算各市场分析
+      const spxAnalysis = this.calculateMarketAnalysis(finalMarketData.spx, 'SPX');
+      const usdAnalysis = this.calculateMarketAnalysis(finalMarketData.usdIndex, 'USD Index');
+      const btcAnalysis = this.calculateBTCAnalysis(finalMarketData.btc);
       const spxBtcCorrelation = this.calculateSPXBTCCorrelation(
-        marketData.spx,
-        marketData.btc
+        finalMarketData.spx,
+        finalMarketData.btc
       );
 
       // 3.5. 计算分时数据情绪（如果可用）
       let intradaySentiment = null;
-      if (marketData.btcHourly && marketData.btcHourly.length > 0 && 
-          marketData.usdIndexHourly && marketData.usdIndexHourly.length > 0) {
+      if (finalMarketData.btcHourly && finalMarketData.btcHourly.length > 0 && 
+          finalMarketData.usdIndexHourly && finalMarketData.usdIndexHourly.length > 0) {
         // 过滤分时数据噪音
-        const filteredBTCHourly = intradayDataFilterService.filterData(marketData.btcHourly);
-        const filteredUSDHourly = intradayDataFilterService.filterData(marketData.usdIndexHourly);
+        const filteredBTCHourly = intradayDataFilterService.filterData(finalMarketData.btcHourly);
+        const filteredUSDHourly = intradayDataFilterService.filterData(finalMarketData.usdIndexHourly);
         
         // 计算分时情绪
         intradaySentiment = this.calculateIntradaySentiment(
-          marketData.btc,
+          finalMarketData.btc,
           filteredBTCHourly,
-          marketData.usdIndex,
+          finalMarketData.usdIndex,
           filteredUSDHourly
         );
       }
@@ -252,28 +271,16 @@ class TradingRecommendationService {
 
   /**
    * 计算市场分析（通用）
+   * 注意：此方法假设数据已经充足，如果数据不足应该在调用前检查
    */
   private calculateMarketAnalysis(
     data: CandlestickData[],
     name: string
   ): MarketAnalysis {
     if (!data || data.length < 50) {
-      // 返回默认的中性分析（而不是抛出错误）
+      // 数据不足时抛出错误，而不是返回默认值
       const dataLength = data?.length || 0;
-      console.warn(`${name} 数据不足（${dataLength} < 50），使用默认值。可能原因：富途API调用失败或返回空数据`);
-      return {
-        current_price: 0,
-        avg_20: 0,
-        avg_10: 0,
-        high_50: 0,
-        low_50: 0,
-        trend: '盘整',
-        short_term_trend: '盘整',
-        market_position: '中部',
-        position_percentage: 50,
-        trend_strength: 0,
-        deviation_from_20day: 0,
-      };
+      throw new Error(`${name} 数据不足（${dataLength} < 50），无法计算分析`);
     }
 
     // 确保所有价格都是数字类型
@@ -890,6 +897,8 @@ class TradingRecommendationService {
       risk_note,
       // 添加SPX与USD关系的详细分析（用于调试和详细展示）
       spx_usd_relationship_analysis: spx_usd_relationship_analysis,
+      // 添加ATR（平均真实波幅）
+      atr: parseFloat(atr.toFixed(4)),
     };
   }
 

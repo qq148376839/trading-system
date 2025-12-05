@@ -137,27 +137,6 @@ class MarketDataService {
 
       const quoteToken = this.generateQuoteToken(tokenParams);
       
-      // 调试日志：显示计算的 quote-token 和请求参数
-      const requestUrl = isIntraday 
-        ? `${this.baseUrl}/get-quote-minute`
-        : `${this.baseUrl}/get-kline`;
-      
-      console.log(`[富途API请求详情] stockId=${stockId}, type=${type}:`, {
-        url: requestUrl,
-        tokenParams: JSON.stringify(tokenParams),
-        quoteToken,
-        requestParams: {
-          stockId: Number(stockId),
-          marketType: Number(marketId),
-          type: type,
-          marketCode: Number(marketCode),
-          instrumentType: Number(instrumentType),
-          subInstrumentType: Number(subInstrumentType),
-          _: timestamp,
-        },
-        referer,
-      });
-
       // 请求参数（使用数字格式）
       const requestParams: any = {
         stockId: Number(stockId),
@@ -176,12 +155,7 @@ class MarketDataService {
       
       const headers = this.getHeaders(referer);
       
-      console.log(`[富途API请求] stockId=${stockId}, type=${type} (${getProxyMode()}):`, {
-        path: apiPath,
-        params: requestParams,
-        quoteToken,
-        referer,
-      });
+      // 只在错误时输出日志，减少正常请求的日志干扰
 
       // 使用边缘函数代理
       const responseData = await moomooProxy({
@@ -231,15 +205,17 @@ class MarketDataService {
         
         return this.parseCandlestickData(slicedData);
       } else {
+        // 只在错误时输出日志
         const errorMsg = responseData?.message || '未知错误';
-        console.error(`富途API返回错误 (stockId=${stockId}, type=${type}):`, errorMsg);
+        console.error(`[富途API错误] stockId=${stockId}, type=${type}: ${errorMsg}`);
         return [];
       }
     } catch (error: any) {
       const errorMsg = error.response?.status === 504 
         ? `网关超时 (504)` 
         : error.message || '未知错误';
-      console.error(`获取富途分时数据失败 (stockId=${stockId}, type=${type}):`, errorMsg);
+      // 简化错误日志
+      console.error(`[富途API] stockId=${stockId}, type=${type}: ${errorMsg}`);
       return [];
     }
   }

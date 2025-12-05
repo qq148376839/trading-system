@@ -86,13 +86,10 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
         return response.data;
       }
     } catch (error: any) {
-      console.error('[Moomoo代理] 边缘函数请求失败:', {
-        path,
-        params: proxyParams,
-        error: error.message,
-        response: error.response?.data,
-        status: error.response?.status,
-      });
+      // 简化错误日志，只在关键错误时输出
+      if (error.response?.status !== 504) { // 504超时错误不输出详细日志
+        console.error(`[Moomoo代理] 边缘函数请求失败: ${path} - ${error.message}`);
+      }
       throw error;
     }
   } else {
@@ -129,11 +126,8 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
 
       return response.data;
     } catch (error: any) {
-      console.error('[Moomoo代理] 直接访问失败:', {
-        path,
-        error: error.message,
-        response: error.response?.data,
-      });
+      // 简化错误日志
+      console.error(`[Moomoo代理] 直接访问失败: ${path} - ${error.message}`);
       throw error;
     }
   }

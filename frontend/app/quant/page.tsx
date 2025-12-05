@@ -79,6 +79,19 @@ export default function QuantTradingPage() {
 
   return (
     <div className="container mx-auto p-6">
+      {/* 顶部导航栏 */}
+      <div className="mb-6 flex items-center justify-between">
+        <h1 className="text-3xl font-bold text-gray-900">量化交易</h1>
+        <div className="flex gap-4">
+          <Link
+            href="/orders"
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors flex items-center gap-2"
+          >
+            <span>📋</span>
+            <span>订单查询</span>
+          </Link>
+        </div>
+      </div>
       <h1 className="text-3xl font-bold mb-6">量化交易中心</h1>
 
       {/* 总览卡片 */}
@@ -102,30 +115,43 @@ export default function QuantTradingPage() {
       </div>
 
       {/* 快速操作 */}
-      <div className="mb-6 flex gap-4">
+      <div className="mb-6 flex gap-4 flex-wrap">
         <Link
           href="/quant/strategies"
-          className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+          className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 transition-colors"
         >
           策略管理
         </Link>
         <Link
           href="/quant/capital"
-          className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
+          className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 transition-colors"
         >
           资金管理
         </Link>
         <Link
           href="/quant/signals"
-          className="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600"
+          className="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600 transition-colors"
         >
           信号日志
         </Link>
         <Link
           href="/quant/trades"
-          className="bg-orange-500 text-white px-4 py-2 rounded hover:bg-orange-600"
+          className="bg-orange-500 text-white px-4 py-2 rounded hover:bg-orange-600 transition-colors"
         >
           交易记录
+        </Link>
+        <Link
+          href="/quant/backtest"
+          className="bg-teal-500 text-white px-4 py-2 rounded hover:bg-teal-600 transition-colors"
+        >
+          回测管理
+        </Link>
+        <Link
+          href="/orders"
+          className="bg-indigo-500 text-white px-4 py-2 rounded hover:bg-indigo-600 transition-colors flex items-center gap-2"
+        >
+          <span>📋</span>
+          <span>订单查询</span>
         </Link>
       </div>
 

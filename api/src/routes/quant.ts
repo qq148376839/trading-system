@@ -911,6 +911,214 @@ quantRouter.get('/strategies/:id/instances', async (req: Request, res: Response)
   }
 });
 
+/**
+ * GET /api/quant/strategies/:id/monitoring-status
+ * 获取策略监控状态（诊断用）
+ * 显示所有标的的状态、持仓信息、止盈止损设置等
+ */
+quantRouter.get('/strategies/:id/monitoring-status', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const strategyId = parseInt(id);
+
+    if (isNaN(strategyId)) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_ID', message: '策略ID无效' },
+      });
+    }
+
+    // 1. 获取策略配置
+    const strategyResult = await pool.query(
+      'SELECT id, name, type, config, symbol_pool_config, status FROM strategies WHERE id = $1',
+      [strategyId]
+    );
+
+    if (strategyResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: '策略不存在' },
+      });
+    }
+
+    const strategy = strategyResult.rows[0];
+
+    // 2. 获取所有策略实例状态
+    const instances = await stateManager.getStrategyInstances(strategyId);
+
+    // 3. 获取实际持仓（从Longbridge SDK）
+    let actualPositions: any[] = [];
+    try {
+      const { getTradeContext } = await import('../config/longport');
+      const tradeCtx = await getTradeContext();
+      const positions = await tradeCtx.stockPositions();
+      
+      if (positions && typeof positions === 'object') {
+        if (positions.channels && Array.isArray(positions.channels)) {
+          for (const channel of positions.channels) {
+            if (channel.positions && Array.isArray(channel.positions)) {
+              actualPositions.push(...channel.positions);
+            }
+          }
+        }
+      }
+    } catch (error: any) {
+      console.warn('获取实际持仓失败:', error.message);
+    }
+
+    // 4. 获取今日订单（用于检查未成交订单）
+    let todayOrders: any[] = [];
+    try {
+      const { getTradeContext } = await import('../config/longport');
+      const tradeCtx = await getTradeContext();
+      todayOrders = await tradeCtx.todayOrders({});
+      todayOrders = Array.isArray(todayOrders) ? todayOrders : [];
+    } catch (error: any) {
+      console.warn('获取今日订单失败:', error.message);
+    }
+
+    // 5. 获取当前价格（用于计算盈亏）
+    const symbols = instances.map(i => i.symbol);
+    let currentPrices: Map<string, number> = new Map();
+    if (symbols.length > 0) {
+      try {
+        const { getQuoteContext } = await import('../config/longport');
+        const quoteCtx = await getQuoteContext();
+        const quotes = await quoteCtx.quote(symbols);
+        
+        if (quotes && Array.isArray(quotes)) {
+          for (const quote of quotes) {
+            const symbol = quote.symbol || quote.stock_name;
+            // Longbridge SDK返回的是驼峰命名：lastDone
+            const price = parseFloat(quote.lastDone?.toString() || quote.last_done?.toString() || '0');
+            if (symbol && price > 0) {
+              currentPrices.set(symbol, price);
+            }
+          }
+        }
+      } catch (error: any) {
+        console.warn('获取当前价格失败:', error.message);
+        // 如果批量获取失败，尝试逐个获取
+        for (const symbol of symbols) {
+          try {
+            const { getQuoteContext } = await import('../config/longport');
+            const quoteCtx = await getQuoteContext();
+            const quotes = await quoteCtx.quote([symbol]);
+            if (quotes && quotes.length > 0) {
+              // Longbridge SDK返回的是驼峰命名：lastDone
+              const price = parseFloat(quotes[0].lastDone?.toString() || quotes[0].last_done?.toString() || '0');
+              if (price > 0) {
+                currentPrices.set(symbol, price);
+              }
+            }
+          } catch (err: any) {
+            // 忽略单个标的的价格获取失败
+          }
+        }
+      }
+    }
+
+    // 6. 构建监控状态数据
+    const monitoringData = instances.map((instance) => {
+      const symbol = instance.symbol;
+      const context = instance.context || {};
+      const entryPrice = context.entryPrice;
+      const stopLoss = context.stopLoss;
+      const takeProfit = context.takeProfit;
+      const quantity = context.quantity;
+      const currentPrice = currentPrices.get(symbol) || 0;
+
+      // 计算盈亏
+      let pnl = 0;
+      let pnlPercent = 0;
+      if (entryPrice && quantity && currentPrice > 0) {
+        pnl = (currentPrice - entryPrice) * quantity;
+        pnlPercent = ((currentPrice - entryPrice) / entryPrice) * 100;
+      }
+
+      // 检查实际持仓
+      const actualPosition = actualPositions.find(p => (p.symbol || p.stock_name) === symbol);
+      const hasActualPosition = actualPosition && parseInt(actualPosition.quantity?.toString() || '0') > 0;
+
+      // 检查未成交订单
+      const pendingBuyOrders = todayOrders.filter((o: any) => {
+        const orderSymbol = o.symbol || o.stock_name;
+        const orderSide = o.side;
+        const isBuy = orderSide === 'Buy' || orderSide === 1 || orderSide === 'BUY' || orderSide === 'buy';
+        const status = o.status?.toString() || '';
+        const pendingStatuses = ['NotReported', 'NewStatus', 'WaitToNew', 'PartialFilledStatus', 'PendingReplaceStatus', 'WaitToReplace'];
+        return orderSymbol === symbol && isBuy && pendingStatuses.some(s => status.includes(s));
+      });
+
+      const pendingSellOrders = todayOrders.filter((o: any) => {
+        const orderSymbol = o.symbol || o.stock_name;
+        const orderSide = o.side;
+        const isSell = orderSide === 'Sell' || orderSide === 2 || orderSide === 'SELL' || orderSide === 'sell';
+        const status = o.status?.toString() || '';
+        const pendingStatuses = ['NotReported', 'NewStatus', 'WaitToNew', 'PartialFilledStatus', 'PendingReplaceStatus', 'WaitToReplace'];
+        return orderSymbol === symbol && isSell && pendingStatuses.some(s => status.includes(s));
+      });
+
+      // 检查是否触发止盈/止损
+      let triggerStatus = 'NONE';
+      if (currentPrice > 0 && stopLoss && currentPrice <= stopLoss) {
+        triggerStatus = 'STOP_LOSS_TRIGGERED';
+      } else if (currentPrice > 0 && takeProfit && currentPrice >= takeProfit) {
+        triggerStatus = 'TAKE_PROFIT_TRIGGERED';
+      }
+
+      return {
+        symbol,
+        state: instance.state,
+        entryPrice,
+        stopLoss,
+        takeProfit,
+        quantity,
+        currentPrice: currentPrice > 0 ? currentPrice : null,
+        pnl: pnl !== 0 ? pnl : null,
+        pnlPercent: pnlPercent !== 0 ? pnlPercent : null,
+        hasActualPosition,
+        actualPositionQuantity: actualPosition ? parseInt(actualPosition.quantity?.toString() || '0') : 0,
+        pendingBuyOrders: pendingBuyOrders.length,
+        pendingSellOrders: pendingSellOrders.length,
+        triggerStatus,
+        lastUpdated: instance.lastUpdated,
+        context,
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        strategy: {
+          id: strategy.id,
+          name: strategy.name,
+          type: strategy.type,
+          status: strategy.status,
+        },
+        instances: monitoringData,
+        summary: {
+          total: monitoringData.length,
+          idle: monitoringData.filter(i => i.state === 'IDLE').length,
+          opening: monitoringData.filter(i => i.state === 'OPENING').length,
+          holding: monitoringData.filter(i => i.state === 'HOLDING').length,
+          closing: monitoringData.filter(i => i.state === 'CLOSING').length,
+          cooldown: monitoringData.filter(i => i.state === 'COOLDOWN').length,
+          withActualPosition: monitoringData.filter(i => i.hasActualPosition).length,
+          pendingBuyOrders: monitoringData.reduce((sum, i) => sum + i.pendingBuyOrders, 0),
+          pendingSellOrders: monitoringData.reduce((sum, i) => sum + i.pendingSellOrders, 0),
+        },
+      },
+    });
+  } catch (error: any) {
+    console.error('获取策略监控状态失败:', error);
+    res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: error.message },
+    });
+  }
+});
+
 // ==================== 信号日志 API ====================
 
 /**

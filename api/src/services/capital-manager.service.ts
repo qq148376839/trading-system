@@ -6,6 +6,7 @@
 import pool from '../config/database';
 import { getTradeContext } from '../config/longport';
 import accountBalanceSyncService from './account-balance-sync.service';
+import { logger } from '../utils/logger';
 
 export interface CapitalAllocation {
   id: number;
@@ -29,14 +30,73 @@ export interface AllocationResult {
 }
 
 class CapitalManager {
+  // 账户余额缓存：避免频繁调用 accountBalance() API
+  private balanceCache: { amount: number; timestamp: number } | null = null;
+  private readonly BALANCE_CACHE_TTL = 10000; // 10秒缓存
+  private lastBalanceCallTime: number = 0;
+  private readonly MIN_BALANCE_CALL_INTERVAL = 2000; // 最小调用间隔2秒（交易API限制：30秒内不超过30次，每次间隔>=0.02秒）
+
   /**
    * 获取账户总资金（从实时账户获取）
    * 根据SDK文档，使用 available_cash（可用现金）作为实际可用金额
-   * 每次调用都从 Longbridge SDK 获取最新余额，不依赖数据库缓存
+   * 添加缓存机制，避免频繁调用导致频率限制
    */
   async getTotalCapital(): Promise<number> {
+    const now = Date.now();
+    
+    // 检查缓存是否有效
+    if (this.balanceCache && (now - this.balanceCache.timestamp) < this.BALANCE_CACHE_TTL) {
+      return this.balanceCache.amount;
+    }
+
+    // 检查调用间隔（交易API频率限制：30秒内不超过30次，每次间隔>=0.02秒）
+    const timeSinceLastCall = now - this.lastBalanceCallTime;
+    if (timeSinceLastCall < this.MIN_BALANCE_CALL_INTERVAL) {
+      const waitTime = this.MIN_BALANCE_CALL_INTERVAL - timeSinceLastCall;
+      await new Promise((resolve) => setTimeout(resolve, waitTime));
+    }
+
     try {
+      this.lastBalanceCallTime = Date.now();
       const tradeCtx = await getTradeContext();
+      
+      // 首先尝试直接获取 USD 余额（如果SDK支持按币种查询）
+      try {
+        const usdBalances = await tradeCtx.accountBalance('USD');
+        if (usdBalances && usdBalances.length > 0) {
+          const usdBalance = usdBalances[0];
+          // 优先使用 cashInfos 中的 availableCash
+          if (usdBalance.cashInfos && Array.isArray(usdBalance.cashInfos) && usdBalance.cashInfos.length > 0) {
+            const usdCashInfo = usdBalance.cashInfos.find((ci: any) => ci.currency === 'USD');
+            if (usdCashInfo && usdCashInfo.availableCash) {
+              const amount = parseFloat(usdCashInfo.availableCash.toString());
+              this.balanceCache = { amount, timestamp: Date.now() };
+              return amount;
+            }
+          }
+          // 如果没有 cashInfos，使用 buyPower 或 netAssets
+          if (usdBalance.buyPower) {
+            const amount = parseFloat(usdBalance.buyPower.toString());
+            this.balanceCache = { amount, timestamp: Date.now() };
+            return amount;
+          }
+          if (usdBalance.netAssets) {
+            const amount = parseFloat(usdBalance.netAssets.toString());
+            this.balanceCache = { amount, timestamp: Date.now() };
+            return amount;
+          }
+          if (usdBalance.totalCash) {
+            const amount = parseFloat(usdBalance.totalCash.toString());
+            this.balanceCache = { amount, timestamp: Date.now() };
+            return amount;
+          }
+        }
+      } catch (usdError: any) {
+        // 如果按币种查询失败，继续使用通用查询方式
+        console.debug('按USD币种查询失败，使用通用查询:', usdError.message);
+      }
+      
+      // 通用查询方式：获取所有币种余额
       const balances = await tradeCtx.accountBalance();
 
       // 优先查找 USD 余额：遍历所有账户的 cashInfos 数组
@@ -45,7 +105,8 @@ class CapitalManager {
           const usdCashInfo = balance.cashInfos.find((ci: any) => ci.currency === 'USD');
           if (usdCashInfo && usdCashInfo.availableCash) {
             const amount = parseFloat(usdCashInfo.availableCash.toString());
-            console.log(`找到 USD 可用现金: ${amount}`);
+            // 更新缓存
+            this.balanceCache = { amount, timestamp: Date.now() };
             return amount;
           }
         }
@@ -57,60 +118,79 @@ class CapitalManager {
         // 优先使用 buyPower（购买力）作为可用金额
         if (usdBalance.buyPower) {
           const amount = parseFloat(usdBalance.buyPower.toString());
-          console.log(`找到 USD 购买力: ${amount}`);
+          this.balanceCache = { amount, timestamp: Date.now() };
           return amount;
         }
         // 使用 netAssets（净资产）
         if (usdBalance.netAssets) {
           const amount = parseFloat(usdBalance.netAssets.toString());
-          console.log(`找到 USD 净资产: ${amount}`);
+          this.balanceCache = { amount, timestamp: Date.now() };
           return amount;
         }
         // 最后使用 totalCash
         if (usdBalance.totalCash) {
           const amount = parseFloat(usdBalance.totalCash.toString());
-          console.log(`找到 USD 总现金: ${amount}`);
+          this.balanceCache = { amount, timestamp: Date.now() };
           return amount;
         }
       }
+      
+      // 调试日志：输出所有账户信息，帮助诊断问题
+      logger.debug('账户余额详情:', JSON.stringify(balances.map((bal: any) => ({
+        currency: bal.currency,
+        cashInfos: bal.cashInfos?.map((ci: any) => ({
+          currency: ci.currency,
+          availableCash: ci.availableCash?.toString(),
+        })),
+        buyPower: bal.buyPower?.toString(),
+        netAssets: bal.netAssets?.toString(),
+        totalCash: bal.totalCash?.toString(),
+      })), null, 2));
 
       // 如果没有找到 USD，使用第一个币种的可用现金（但记录警告）
       if (balances.length > 0) {
         const firstBalance = balances[0];
-        // 优先使用 cashInfos 中的 available_cash
+        let amount = 0;
+        
+        // 优先使用 cashInfos 中的 availableCash
         if (firstBalance.cashInfos && Array.isArray(firstBalance.cashInfos) && firstBalance.cashInfos.length > 0) {
           const firstCashInfo = firstBalance.cashInfos[0];
           if (firstCashInfo.availableCash) {
-            const amount = parseFloat(firstCashInfo.availableCash.toString());
-            console.warn(`⚠️ 未找到 USD 余额，使用 ${firstBalance.currency} 可用现金: ${amount}（注意：可能存在货币转换问题）`);
-            return amount;
+            amount = parseFloat(firstCashInfo.availableCash.toString());
+          } else {
+            amount = parseFloat(firstBalance.netAssets?.toString() || firstBalance.totalCash?.toString() || '0');
+          }
+        } else {
+          // 如果没有 cashInfos，使用 buyPower 或 netAssets
+          if (firstBalance.buyPower) {
+            amount = parseFloat(firstBalance.buyPower.toString());
+          } else {
+            amount = parseFloat(firstBalance.netAssets?.toString() || firstBalance.totalCash?.toString() || '0');
           }
         }
-        // 如果没有 cashInfos，使用 buyPower
-        if (firstBalance.buyPower) {
-          const amount = parseFloat(firstBalance.buyPower.toString());
-          console.warn(`⚠️ 未找到 USD 余额，使用 ${firstBalance.currency} 购买力: ${amount}（注意：可能存在货币转换问题）`);
-          return amount;
-        }
-        const amount = parseFloat(firstBalance.netAssets?.toString() || firstBalance.totalCash?.toString() || '0');
-        console.warn(`⚠️ 未找到 USD 余额，使用 ${firstBalance.currency} 余额: ${amount}（注意：可能存在货币转换问题）`);
+        
+        // 记录警告
+        logger.warn(`未找到 USD 余额，使用 ${firstBalance.currency} 余额: ${amount.toFixed(2)}`);
+        this.balanceCache = { amount, timestamp: Date.now() };
         return amount;
       }
 
       throw new Error('无法获取账户余额');
     } catch (error: any) {
-      console.error('获取账户总资金失败:', error);
-      
-      // 如果是API限流错误，等待更长时间后重试
+      // 如果是API限流错误，使用缓存（如果存在）
       if (error.message && error.message.includes('429002')) {
-        console.warn('API请求限流，等待3秒后重试...');
+        if (this.balanceCache) {
+          logger.warn(`[资金管理] API限流，使用缓存余额: ${this.balanceCache.amount.toFixed(2)}`);
+          return this.balanceCache.amount;
+        }
+        // 等待后重试
         await new Promise((resolve) => setTimeout(resolve, 3000));
       } else {
-        // 其他错误，等待1秒后重试
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
       
       try {
+        this.lastBalanceCallTime = Date.now();
         const tradeCtx = await getTradeContext();
         const balances = await tradeCtx.accountBalance();
         
@@ -119,7 +199,9 @@ class CapitalManager {
           if (balance.cashInfos && Array.isArray(balance.cashInfos)) {
             const usdCashInfo = balance.cashInfos.find((ci: any) => ci.currency === 'USD');
             if (usdCashInfo && usdCashInfo.availableCash) {
-              return parseFloat(usdCashInfo.availableCash.toString());
+              const amount = parseFloat(usdCashInfo.availableCash.toString());
+              this.balanceCache = { amount, timestamp: Date.now() };
+              return amount;
             }
           }
         }
@@ -128,12 +210,20 @@ class CapitalManager {
         const usdBalance = balances.find((bal: any) => bal.currency === 'USD');
         if (usdBalance) {
           if (usdBalance.buyPower) {
-            return parseFloat(usdBalance.buyPower.toString());
+            const amount = parseFloat(usdBalance.buyPower.toString());
+            this.balanceCache = { amount, timestamp: Date.now() };
+            return amount;
           }
-          return parseFloat(usdBalance.netAssets?.toString() || usdBalance.totalCash?.toString() || '0');
+          const amount = parseFloat(usdBalance.netAssets?.toString() || usdBalance.totalCash?.toString() || '0');
+          this.balanceCache = { amount, timestamp: Date.now() };
+          return amount;
         }
       } catch (retryError: any) {
-        console.error('重试获取账户总资金失败:', retryError);
+        // 重试失败，如果有缓存则使用缓存
+        if (this.balanceCache) {
+          logger.warn(`[资金管理] 重试失败，使用缓存余额: ${this.balanceCache.amount.toFixed(2)}`);
+          return this.balanceCache.amount;
+        }
         throw new Error(`获取账户总资金失败: ${retryError.message}`);
       }
       
@@ -208,6 +298,54 @@ class CapitalManager {
   }
 
   /**
+   * 获取标的级限制（每个标的的最大持仓金额）
+   */
+  async getMaxPositionPerSymbol(strategyId: number): Promise<number> {
+    try {
+      // 查询策略关联的资金分配账户
+      const strategyResult = await pool.query(
+        `SELECT s.symbol_pool_config, ca.allocation_type, ca.allocation_value
+         FROM strategies s
+         LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
+         WHERE s.id = $1`,
+        [strategyId]
+      );
+
+      if (strategyResult.rows.length === 0 || !strategyResult.rows[0].allocation_type) {
+        return 0;
+      }
+
+      const strategy = strategyResult.rows[0];
+      
+      // 计算策略总资金
+      const totalCapital = await this.getTotalCapital();
+      let allocatedAmount = 0;
+      if (strategy.allocation_type === 'PERCENTAGE') {
+        allocatedAmount = totalCapital * parseFloat(strategy.allocation_value.toString());
+      } else {
+        allocatedAmount = parseFloat(strategy.allocation_value.toString());
+      }
+
+      // 获取标的池中的标的数量
+      let symbolCount = 1;
+      try {
+        const stockSelector = (await import('./stock-selector.service')).default;
+        const symbols = await stockSelector.getSymbolPool(strategy.symbol_pool_config || {});
+        symbolCount = Math.max(1, symbols.length);
+      } catch (error: any) {
+        logger.warn(`无法获取策略 ${strategyId} 的标的池，使用默认限制:`, error.message);
+        symbolCount = 20; // 假设20个标的
+      }
+
+      // 计算每个标的的最大持仓金额
+      return allocatedAmount / symbolCount;
+    } catch (error: any) {
+      logger.error(`获取标的级限制失败 (策略 ${strategyId}):`, error);
+      return 0;
+    }
+  }
+
+  /**
    * 申请资金额度
    */
   async requestAllocation(request: AllocationRequest): Promise<AllocationResult> {
@@ -272,7 +410,7 @@ class CapitalManager {
         const symbols = await stockSelector.getSymbolPool(strategy.symbol_pool_config || {});
         symbolCount = Math.max(1, symbols.length); // 至少为1，避免除零
       } catch (error: any) {
-        console.warn(`无法获取策略 ${request.strategyId} 的标的池，使用默认限制:`, error.message);
+        logger.warn(`无法获取策略 ${request.strategyId} 的标的池，使用默认限制:`, error.message);
         // 如果无法获取标的池，使用固定百分比（向后兼容）
         symbolCount = 20; // 假设20个标的，相当于5%的限制
       }
@@ -332,7 +470,8 @@ class CapitalManager {
    */
   async releaseAllocation(strategyId: number, amount: number, _symbol?: string): Promise<void> {
     const strategyResult = await pool.query(
-      `SELECT ca.id as allocation_id FROM strategies s
+      `SELECT ca.id as allocation_id, ca.current_usage, ca.name as allocation_name
+       FROM strategies s
        LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
        WHERE s.id = $1`,
       [strategyId]
@@ -343,13 +482,31 @@ class CapitalManager {
     }
 
     const allocationId = strategyResult.rows[0].allocation_id;
+    const beforeUsage = parseFloat(strategyResult.rows[0].current_usage?.toString() || '0');
+    const allocationName = strategyResult.rows[0].allocation_name || '未知';
 
-    await pool.query(
+    logger.debug(
+      `[资金释放] 策略 ${strategyId}, 标的 ${_symbol || 'N/A'}, ` +
+      `释放金额=${amount.toFixed(2)}, 释放前current_usage=${beforeUsage.toFixed(2)}`
+    );
+
+    const updateResult = await pool.query(
       `UPDATE capital_allocations 
        SET current_usage = GREATEST(0, current_usage - $1), updated_at = NOW()
-       WHERE id = $2`,
+       WHERE id = $2
+       RETURNING current_usage`,
       [amount, allocationId]
     );
+
+    if (updateResult.rows.length > 0) {
+      const afterUsage = parseFloat(updateResult.rows[0].current_usage?.toString() || '0');
+      logger.debug(
+        `[资金释放] 策略 ${strategyId}, 分配账户 ${allocationName} (ID: ${allocationId}), ` +
+        `释放后current_usage=${afterUsage.toFixed(2)}`
+      );
+    } else {
+      logger.error(`[资金释放] 策略 ${strategyId} 资金释放失败，更新结果为空`);
+    }
 
     // 可选：触发账户余额同步验证
     // accountBalanceSyncService.syncAccountBalance().catch(console.error);
@@ -359,22 +516,30 @@ class CapitalManager {
    * 获取策略可用资金
    */
   async getAvailableCapital(strategyId: number): Promise<number> {
-    // 前置：先获取实时账户余额
+    // 前置：先获取实时账户余额（带缓存）
     const totalCapital = await this.getTotalCapital();
 
     const strategyResult = await pool.query(
-      `SELECT ca.allocation_type, ca.allocation_value, ca.current_usage
+      `SELECT s.name as strategy_name, s.capital_allocation_id, 
+              ca.id as allocation_id, ca.allocation_type, ca.allocation_value, ca.current_usage
        FROM strategies s
        LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
        WHERE s.id = $1`,
       [strategyId]
     );
 
-    if (strategyResult.rows.length === 0 || !strategyResult.rows[0].allocation_type) {
+    if (strategyResult.rows.length === 0) {
       return 0;
     }
 
-    const allocation = strategyResult.rows[0];
+    const strategy = strategyResult.rows[0];
+    
+    // 检查策略是否配置了资金分配
+    if (!strategy.capital_allocation_id || !strategy.allocation_id || !strategy.allocation_type) {
+      return 0;
+    }
+
+    const allocation = strategy;
     let allocatedAmount = 0;
 
     if (allocation.allocation_type === 'PERCENTAGE') {
@@ -384,7 +549,9 @@ class CapitalManager {
     }
 
     const currentUsage = parseFloat(allocation.current_usage || '0');
-    return Math.max(0, allocatedAmount - currentUsage);
+    const availableAmount = Math.max(0, allocatedAmount - currentUsage);
+    
+    return availableAmount;
   }
 
   /**
@@ -408,11 +575,36 @@ class CapitalManager {
       const positions = await tradeCtx.stockPositions();
       const positionMap = new Map<string, number>();
       
-      if (positions && positions.positions) {
-        for (const pos of positions.positions) {
+      // 处理不同的数据结构：可能是 positions.positions 或 positions.channels[].positions
+      let positionsArray: any[] = [];
+      
+      if (positions) {
+        // 尝试直接访问 positions.positions
+        if (positions.positions && Array.isArray(positions.positions)) {
+          positionsArray = positions.positions;
+        }
+        // 尝试访问 positions.channels[].positions
+        else if (positions.channels && Array.isArray(positions.channels)) {
+          for (const channel of positions.channels) {
+            if (channel.positions && Array.isArray(channel.positions)) {
+              positionsArray.push(...channel.positions);
+            }
+          }
+        }
+      }
+      
+      if (positionsArray.length > 0) {
+        for (const pos of positionsArray) {
           const symbol = pos.symbol;
           const quantity = parseInt(pos.quantity?.toString() || '0');
-          const price = parseFloat(pos.currentPrice?.toString() || '0');
+          // 尝试多种价格字段：currentPrice, costPrice, avgPrice, lastPrice
+          const price = parseFloat(
+            pos.currentPrice?.toString() || 
+            pos.costPrice?.toString() || 
+            pos.avgPrice?.toString() ||
+            pos.lastPrice?.toString() ||
+            '0'
+          );
           const positionValue = quantity * price;
           
           if (positionValue > 0) {

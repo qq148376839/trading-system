@@ -17,6 +17,7 @@ import { configRouter } from './routes/config';
 import { tokenRefreshRouter } from './routes/token-refresh';
 import { optionsRouter } from './routes/options';
 import { quantRouter } from './routes/quant';
+import backtestRouter from './routes/backtest';
 import { errorHandler } from './middleware/errorHandler';
 
 // 加载环境变量（明确指定路径）
@@ -35,8 +36,9 @@ const PORT = parseInt(process.env.PORT || '3001', 10);
 
 // 中间件
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// 增加 JSON 解析限制，支持更大的回测结果
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // 路由
 app.use('/api/quote', quoteRouter);
@@ -53,6 +55,7 @@ app.use('/api/config', configRouter);
 app.use('/api/token-refresh', tokenRefreshRouter);
 app.use('/api/options', optionsRouter);
 app.use('/api/quant', quantRouter);
+app.use('/api/quant/backtest', backtestRouter);
 app.use('/api/health', healthRouter);
 
 // 错误处理中间件

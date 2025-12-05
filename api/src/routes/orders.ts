@@ -425,8 +425,11 @@ function formatChargeDetail(chargeDetail: any): any {
  * 将Longbridge SDK返回的订单数据映射为统一格式
  * 保留所有官方字段，并将数字枚举值转换为字符串枚举值
  * 参考：https://open.longbridge.com/zh-CN/docs/trade/trade-definition
+ * 
+ * 注意：此函数会根据 executedQuantity 自动修正订单状态
+ * 如果已成交数量 > 0，但状态不是已成交，会自动修正为 FilledStatus 或 PartialFilledStatus
  */
-function mapOrderData(order: any): any {
+export function mapOrderData(order: any): any {
   // 智能判断状态：如果 executedQuantity > 0 但 status 不是已成交状态，自动修正
   const executedQty = parseFloat(order.executedQuantity?.toString() || order.executed_quantity?.toString() || '0');
   const quantity = parseFloat(order.quantity?.toString() || order.submittedQuantity?.toString() || '0');

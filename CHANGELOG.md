@@ -1,5 +1,67 @@
 # 更新日志
 
+## 2025-12-05
+
+### 资金使用差异BUG修复 ⚠️ 关键修复
+
+**问题**: 资金使用记录值与实际值存在严重差异（差异 24810.74）
+
+**根本原因**:
+1. **持仓数据解析BUG**: API返回结构是 `channels[].positions`，代码错误检查 `positions.positions`
+2. **状态同步不完整**: 只处理HOLDING状态，OPENING和CLOSING状态未处理
+3. **实际使用值计算错误**: OPENING状态的资金未计入实际使用值
+
+**修复内容**:
+
+1. **修复持仓数据解析逻辑**
+   - ✅ 支持多种数据结构：`positions.positions` 和 `positions.channels[].positions`
+   - ✅ 支持多种价格字段：`currentPrice`, `costPrice`, `avgPrice`, `lastPrice`
+   - ✅ 修复文件：`api/src/services/account-balance-sync.service.ts`, `api/src/services/capital-manager.service.ts`
+
+2. **扩展状态同步逻辑**
+   - ✅ 处理所有非IDLE状态（HOLDING, OPENING, CLOSING）
+   - ✅ 检查未成交订单，判断状态是否合理
+   - ✅ 自动修复状态不一致并释放资金
+   - ✅ 修复条件：
+     - HOLDING但实际持仓不存在 → 修复
+     - OPENING但实际持仓不存在且无未成交订单 → 修复
+     - CLOSING但实际持仓不存在且无未成交订单 → 修复
+
+3. **修复实际使用值计算**
+   - ✅ OPENING/CLOSING状态的申请资金也计入实际使用值
+   - ✅ 与实际资金占用更一致
+
+4. **增强日志输出**
+   - ✅ 状态分布统计
+   - ✅ 资金使用详细计算过程
+   - ✅ 修复统计（修复了多少标的，释放了多少资金）
+
+**修复效果**:
+- **修复前**: 记录值 32922.07, 实际值 8111.33, 差异 24810.74
+- **修复后**: 记录值 32922.07, 实际值 15888.23, 差异 17033.84
+- **减少了**: 7776.90 (31%)
+
+**修改文件**:
+- `api/src/services/account-balance-sync.service.ts` - 账户余额同步服务
+- `api/src/services/capital-manager.service.ts` - 资金管理服务
+
+### 数据库迁移脚本合并 ✅
+
+**合并内容**:
+- ✅ 合并 `008_add_backtest_results.sql` 到 `000_init_schema.sql`
+- ✅ 合并 `009_add_backtest_status.sql` 到 `000_init_schema.sql`
+- ✅ 已移动已合并脚本到 `archive/` 目录
+
+**合并原则**:
+- ✅ 使用 `CREATE TABLE IF NOT EXISTS` 避免覆盖已有表
+- ✅ 使用 `DO $$ ... END $$` 块检查列是否存在，避免重复添加列
+- ✅ 使用 `UPDATE` 更新已有数据，确保数据一致性
+- ✅ 保持向后兼容，已有数据不受影响
+
+**修改文件**:
+- `api/migrations/000_init_schema.sql` - 统一初始化脚本（已更新）
+- `api/migrations/README.md` - 使用说明（已更新）
+
 ## 2025-01-28 (下午)
 
 ### 策略执行优化 ⭐

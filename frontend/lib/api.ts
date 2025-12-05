@@ -559,6 +559,73 @@ export const optionsApi = {
 }
 
 // 量化交易 API
+export const backtestApi = {
+  /**
+   * 执行回测
+   */
+  runBacktest: (data: {
+    strategyId: number;
+    symbols: string[];
+    startDate: string;
+    endDate: string;
+    config?: any;
+  }) => {
+    return api.post('/quant/backtest', data);
+  },
+
+  /**
+   * 获取回测结果
+   */
+  getBacktestResult: (id: number) => {
+    return api.get(`/quant/backtest/${id}`);
+  },
+
+  /**
+   * 获取回测状态
+   */
+  getBacktestStatus: (id: number) => {
+    return api.get(`/quant/backtest/${id}/status`);
+  },
+
+  /**
+   * 重试失败的回测任务
+   */
+  retryBacktest: (id: number, symbols: string[]) => {
+    return api.post(`/quant/backtest/${id}/retry`, { symbols });
+  },
+
+  /**
+   * 获取策略的所有回测结果
+   */
+  getBacktestResultsByStrategy: (strategyId: number) => {
+    return api.get(`/quant/backtest/strategy/${strategyId}`);
+  },
+  /**
+   * 删除回测结果
+   */
+  deleteBacktestResult: (id: number) => {
+    return api.delete(`/quant/backtest/${id}`);
+  },
+
+  /**
+   * 批量删除回测结果
+   */
+  deleteBacktestResults: (ids: number[]) => {
+    return api.delete('/quant/backtest/batch', { data: { ids } });
+  },
+
+  /**
+   * 导出回测结果为JSON文件
+   */
+  exportBacktest: async (id: number): Promise<Blob> => {
+    const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+    const response = await axios.get(`${API_BASE_URL}/api/quant/backtest/${id}/export`, {
+      responseType: 'blob',
+    });
+    return response.data;
+  },
+};
+
 export const quantApi = {
   // 策略管理
   getStrategies: () => {
