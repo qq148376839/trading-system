@@ -661,3 +661,177 @@ export async function getUnderlyingStockQuote(
   }
 }
 
+/**
+ * 获取期权K线数据（日K）
+ * 
+ * @param optionId 期权ID
+ * @param marketType 市场类型（默认2=美股）
+ * @param count 数据条数（默认100）
+ * @returns K线数据数组
+ */
+export async function getOptionKline(
+  optionId: string,
+  marketType: number = 2,
+  count: number = 100
+): Promise<Array<{
+  timestamp: number;      // 时间戳（秒）
+  open: number;           // 开盘价
+  close: number;          // 收盘价
+  high: number;           // 最高价
+  low: number;            // 最低价
+  volume: number;         // 成交量
+  turnover: number;       // 成交额
+  prevClose: number;      // 昨收
+  change: number;         // 涨跌额
+  openInterest?: number;  // 持仓量（可选）
+}>> {
+  const timestamp = Date.now();
+  
+  // Token参数（字符串类型，顺序很重要）
+  const tokenParams: Record<string, string> = {
+    stockId: optionId,
+    marketType: String(marketType),
+    type: '2', // 日K
+    marketCode: '41',
+    instrumentType: '8', // 期权
+    subInstrumentType: '8002', // 期权子类型
+    _: String(timestamp),
+  };
+  
+  const quoteToken = generateQuoteToken(tokenParams);
+  
+  // 请求参数（数字类型）
+  const requestParams: any = {
+    stockId: Number(optionId),
+    marketType: marketType,
+    type: 2, // 日K
+    marketCode: 41,
+    instrumentType: 8,
+    subInstrumentType: 8002,
+    _: timestamp,
+  };
+  
+  try {
+    const headers = getFutunnHeaders('https://www.moomoo.com/hans/options/');
+    
+    // 使用边缘函数代理
+    const responseData = await moomooProxy({
+      path: '/quote-api/quote-v2/get-kline',
+      params: requestParams,
+      cookies: headers['Cookie'],
+      csrfToken: headers['futu-x-csrf-token'],
+      quoteToken: quoteToken,
+      referer: 'https://www.moomoo.com/hans/options/',
+      timeout: 15000,
+    });
+    
+    if (responseData?.code === 0 && responseData?.data) {
+      const klineList = responseData.data.list || [];
+      
+      return klineList.map((item: any) => ({
+        timestamp: item.k || 0, // 时间戳（秒）
+        open: parsePrice(item.o || '0'),
+        close: parsePrice(item.c || '0'),
+        high: parsePrice(item.h || '0'),
+        low: parsePrice(item.l || '0'),
+        volume: parseInt(String(item.v || '0')) || 0,
+        turnover: parseInt(String(item.t || '0')) || 0,
+        prevClose: parsePrice(item.lc || '0'),
+        change: parsePrice(item.cp || '0'),
+        openInterest: item.oi ? parseInt(String(item.oi)) : undefined,
+      }));
+    }
+    
+    console.error('获取期权K线数据失败:', responseData);
+    return [];
+  } catch (error: any) {
+    console.error('获取期权K线数据失败:', error.message);
+    if (error.response) {
+      console.error('API响应状态:', error.response.status, error.response.data);
+    }
+    return [];
+  }
+}
+
+/**
+ * 获取期权分时数据
+ * 
+ * @param optionId 期权ID
+ * @param marketType 市场类型（默认2=美股）
+ * @returns 分时数据数组
+ */
+export async function getOptionMinute(
+  optionId: string,
+  marketType: number = 2
+): Promise<Array<{
+  timestamp: number;      // 时间戳（秒）
+  price: number;          // 价格
+  volume: number;         // 成交量
+  turnover: number;       // 成交额
+  changeRatio: number;    // 涨跌幅（%）
+  changePrice: number;    // 涨跌额
+}>> {
+  const timestamp = Date.now();
+  
+  // Token参数（字符串类型，顺序很重要）
+  const tokenParams: Record<string, string> = {
+    stockId: optionId,
+    marketType: String(marketType),
+    type: '1', // 分时
+    marketCode: '41',
+    instrumentType: '8', // 期权
+    subInstrumentType: '8002', // 期权子类型
+    _: String(timestamp),
+  };
+  
+  const quoteToken = generateQuoteToken(tokenParams);
+  
+  // 请求参数（数字类型）
+  const requestParams: any = {
+    stockId: Number(optionId),
+    marketType: marketType,
+    type: 1, // 分时
+    marketCode: 41,
+    instrumentType: 8,
+    subInstrumentType: 8002,
+    _: timestamp,
+  };
+  
+  try {
+    const headers = getFutunnHeaders('https://www.moomoo.com/hans/options/');
+    
+    // 使用边缘函数代理
+    const responseData = await moomooProxy({
+      path: '/quote-api/quote-v2/get-quote-minute',
+      params: requestParams,
+      cookies: headers['Cookie'],
+      csrfToken: headers['futu-x-csrf-token'],
+      quoteToken: quoteToken,
+      referer: 'https://www.moomoo.com/hans/options/',
+      timeout: 15000,
+    });
+    
+    if (responseData?.code === 0 && responseData?.data) {
+      const minuteList = responseData.data.list || [];
+      
+      return minuteList.map((item: any) => ({
+        timestamp: item.time || 0, // 时间戳（秒）
+        price: item.cc_price ? parsePrice(String(item.cc_price)) : (item.price ? parsePrice(String(item.price)) / 1000 : 0), // 优先使用cc_price，否则price需要除以1000
+        volume: parseInt(String(item.volume || '0')) || 0,
+        turnover: parseInt(String(item.turnover || '0')) || 0,
+        changeRatio: parsePercentage(item.ratio || '0'),
+        changePrice: parsePrice(String(item.change_price || '0')),
+      }));
+    }
+    
+    console.error('获取期权分时数据失败:', responseData);
+    return [];
+  } catch (error: any) {
+    console.error('获取期权分时数据失败:', error.message);
+    if (error.response) {
+      console.error('API响应状态:', error.response.status, error.response.data);
+    }
+    return [];
+  }
+}
+

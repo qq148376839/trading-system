@@ -19,7 +19,7 @@ export const tradingRecommendationRouter = Router();
  * 响应：
  * - recommendations: 交易推荐列表
  */
-tradingRecommendationRouter.get('/', rateLimiter, async (req: Request, res: Response) => {
+tradingRecommendationRouter.get('/', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { symbols } = req.query;
 
@@ -40,13 +40,7 @@ tradingRecommendationRouter.get('/', rateLimiter, async (req: Request, res: Resp
     } else if (Array.isArray(symbols)) {
       symbolList = symbols as string[];
     } else {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_PARAMETER',
-          message: 'symbols参数格式错误',
-        },
-      });
+      return next(ErrorFactory.validationError('symbols参数格式错误'));
     }
 
     // 只保留US股票
@@ -77,14 +71,8 @@ tradingRecommendationRouter.get('/', rateLimiter, async (req: Request, res: Resp
       },
     });
   } catch (error: any) {
-    console.error('获取交易推荐失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message || '服务器内部错误',
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -98,19 +86,13 @@ tradingRecommendationRouter.get('/', rateLimiter, async (req: Request, res: Resp
  * 响应：
  * - recommendation: 交易推荐对象
  */
-tradingRecommendationRouter.get('/:symbol', rateLimiter, async (req: Request, res: Response) => {
+tradingRecommendationRouter.get('/:symbol', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { symbol } = req.params;
 
     // 验证symbol格式
     if (!symbol.endsWith('.US')) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_SYMBOL',
-          message: '只支持US股票，symbol格式应为：AAPL.US',
-        },
-      });
+      return next(ErrorFactory.validationError('只支持US股票，symbol格式应为：AAPL.US'));
     }
 
     console.log(`开始计算 ${symbol} 的交易推荐...`);
@@ -127,13 +109,7 @@ tradingRecommendationRouter.get('/:symbol', rateLimiter, async (req: Request, re
       },
     });
   } catch (error: any) {
-    console.error(`获取 ${req.params.symbol} 交易推荐失败:`, error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message || '服务器内部错误',
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });

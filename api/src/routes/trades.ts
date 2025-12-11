@@ -1,5 +1,6 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import pool from '../config/database';
+import { normalizeError } from '../utils/errors';
 
 export const tradesRouter = Router();
 
@@ -7,7 +8,7 @@ export const tradesRouter = Router();
  * GET /api/trades
  * 查询交易记录
  */
-tradesRouter.get('/', async (req: Request, res: Response) => {
+tradesRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { symbol, status, start_date, end_date, limit = 100, offset = 0 } = req.query;
 
@@ -59,14 +60,8 @@ tradesRouter.get('/', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('查询交易记录失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 

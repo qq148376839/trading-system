@@ -40,8 +40,14 @@ export class RecommendationStrategy extends StrategyBase {
         },
       };
 
-      // 记录信号到数据库
-      await this.logSignal(intent);
+      // 记录信号到数据库，获取signal_id
+      const signalId = await this.logSignal(intent);
+      
+      // 将signal_id添加到intent的metadata中，传递给订单提交流程
+      intent.metadata = {
+        ...intent.metadata,
+        signalId,  // 新增：信号ID，用于关联订单
+      };
 
       return intent;
     } catch (error: any) {

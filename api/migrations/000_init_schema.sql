@@ -213,11 +213,29 @@ CREATE TABLE IF NOT EXISTS capital_allocations (
     allocation_type VARCHAR(20) NOT NULL CHECK (allocation_type IN ('PERCENTAGE', 'FIXED_AMOUNT')),
     allocation_value DECIMAL(15, 4) NOT NULL,
     current_usage DECIMAL(15, 4) DEFAULT 0,
+    is_system BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_capital_allocations_parent ON capital_allocations(parent_id);
+CREATE INDEX IF NOT EXISTS idx_capital_allocations_is_system ON capital_allocations(is_system);
+
+-- Add is_system column if it doesn't exist (for existing tables)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'capital_allocations' AND column_name = 'is_system'
+    ) THEN
+        ALTER TABLE capital_allocations ADD COLUMN is_system BOOLEAN DEFAULT FALSE;
+        -- Set GLOBAL account as system account
+        UPDATE capital_allocations SET is_system = TRUE WHERE name = 'GLOBAL';
+    END IF;
+END $$;
+
+-- Add column comment (using English to avoid encoding issues)
+COMMENT ON COLUMN capital_allocations.is_system IS 'Whether this is a system account. System accounts cannot be deleted or have their names edited';
 
 -- 为capital_allocations表创建触发器
 DROP TRIGGER IF EXISTS update_capital_allocations_updated_at ON capital_allocations;
@@ -308,6 +326,7 @@ CREATE TABLE IF NOT EXISTS execution_orders (
     price DECIMAL(15, 4),
     current_status VARCHAR(20),
     execution_stage INTEGER DEFAULT 1,
+    signal_id INTEGER REFERENCES strategy_signals(id) ON DELETE SET NULL,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -315,6 +334,23 @@ CREATE TABLE IF NOT EXISTS execution_orders (
 CREATE INDEX IF NOT EXISTS idx_execution_orders_status ON execution_orders(current_status);
 CREATE INDEX IF NOT EXISTS idx_execution_orders_strategy ON execution_orders(strategy_id, symbol);
 CREATE INDEX IF NOT EXISTS idx_execution_orders_order_id ON execution_orders(order_id);
+CREATE INDEX IF NOT EXISTS idx_execution_orders_signal_id ON execution_orders(signal_id);
+
+-- Add signal_id column if it doesn't exist (for existing tables)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'execution_orders' AND column_name = 'signal_id'
+    ) THEN
+        ALTER TABLE execution_orders 
+        ADD COLUMN signal_id INTEGER REFERENCES strategy_signals(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS idx_execution_orders_signal_id ON execution_orders(signal_id);
+    END IF;
+END $$;
+
+-- Add column comment (using English to avoid encoding issues)
+COMMENT ON COLUMN execution_orders.signal_id IS 'Reference to strategy_signals table. Used to track signal execution status based on order status';
 
 -- 为execution_orders表创建触发器
 DROP TRIGGER IF EXISTS update_execution_orders_updated_at ON execution_orders;
@@ -432,11 +468,15 @@ CREATE TRIGGER update_backtest_results_updated_at BEFORE UPDATE ON backtest_resu
 -- Initialize root capital account
 -- Note: Actual balance needs to be fetched from Longbridge SDK
 -- 使用 NOT EXISTS 检查，避免重复插入
-INSERT INTO capital_allocations (name, parent_id, allocation_type, allocation_value)
-SELECT 'GLOBAL', NULL, 'PERCENTAGE', 1.0
+INSERT INTO capital_allocations (name, parent_id, allocation_type, allocation_value, is_system)
+SELECT 'GLOBAL', NULL, 'PERCENTAGE', 1.0, TRUE
 WHERE NOT EXISTS (
     SELECT 1 FROM capital_allocations WHERE name = 'GLOBAL' AND parent_id IS NULL
-);
+)
+ON CONFLICT DO NOTHING;
+
+-- Ensure GLOBAL account is marked as system account (for existing databases)
+UPDATE capital_allocations SET is_system = TRUE WHERE name = 'GLOBAL' AND (is_system IS NULL OR is_system = FALSE);
 
 -- ============================================================================
 -- 完成

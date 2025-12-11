@@ -1,6 +1,7 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { getQuoteContext } from '../config/longport';
 import { rateLimiter } from '../middleware/rateLimiter';
+import { ErrorFactory, normalizeError } from '../utils/errors';
 
 export const candlesticksRouter = Router();
 
@@ -16,52 +17,28 @@ export const candlesticksRouter = Router();
  * 响应：
  * - candlesticks: K线数据列表
  */
-candlesticksRouter.get('/', rateLimiter, async (req: Request, res: Response) => {
+candlesticksRouter.get('/', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { symbol, period, count } = req.query;
 
     // 参数验证
     if (!symbol) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: symbol',
-        },
-      });
+      return next(ErrorFactory.missingParameter('symbol'));
     }
 
     if (!period) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: period',
-        },
-      });
+      return next(ErrorFactory.missingParameter('period'));
     }
 
     if (!count) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: count',
-        },
-      });
+      return next(ErrorFactory.missingParameter('count'));
     }
 
     // 验证symbol格式（支持 ticker.region 和 .ticker.region 格式）
     // 支持格式：AAPL.US, 700.HK, .SPX.US (标普500指数带前导点)
     const symbolPattern = /^\.?[A-Z0-9]+\.[A-Z]{2}$/;
     if (typeof symbol !== 'string' || !symbolPattern.test(symbol)) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_SYMBOL_FORMAT',
-          message: '无效的标的代码格式。请使用 ticker.region 格式，例如：700.HK 或 .SPX.US',
-        },
-      });
+      return next(ErrorFactory.validationError('无效的标的代码格式。请使用 ticker.region 格式，例如：700.HK 或 .SPX.US'));
     }
 
     // 验证period格式
@@ -79,25 +56,13 @@ candlesticksRouter.get('/', rateLimiter, async (req: Request, res: Response) => 
 
     const periodKey = period as string;
     if (!periodMap[periodKey]) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_PERIOD',
-          message: `无效的周期: ${period}。支持的周期: ${Object.keys(periodMap).join(', ')}`,
-        },
-      });
+      return next(ErrorFactory.validationError(`无效的周期: ${period}。支持的周期: ${Object.keys(periodMap).join(', ')}`));
     }
 
     // 验证count
     const countNum = parseInt(count as string, 10);
     if (isNaN(countNum) || countNum <= 0 || countNum > 1000) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_COUNT',
-          message: 'count必须是1-1000之间的整数',
-        },
-      });
+      return next(ErrorFactory.validationError('count必须是1-1000之间的整数'));
     }
 
     // 调用长桥API
@@ -122,13 +87,7 @@ candlesticksRouter.get('/', rateLimiter, async (req: Request, res: Response) => 
 
     const periodEnum = periodEnumMap[periodKey];
     if (!periodEnum) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_PERIOD',
-          message: `无效的周期: ${period}`,
-        },
-      });
+      return next(ErrorFactory.validationError(`无效的周期: ${period}`));
     }
 
     // candlesticks方法参数：
@@ -187,37 +146,9 @@ candlesticksRouter.get('/', rateLimiter, async (req: Request, res: Response) => 
       },
     });
   } catch (error: any) {
-    console.error('获取K线数据失败:', error);
-
-    // 处理长桥API错误
-    if (error.code === '301600') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_REQUEST',
-          message: '无效的请求参数',
-        },
-      });
-    }
-
-    if (error.code === '301606') {
-      return res.status(429).json({
-        success: false,
-        error: {
-          code: 'RATE_LIMIT',
-          message: '请求频率过高，请稍后重试',
-        },
-      });
-    }
-
-    // 其他错误
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message || '服务器内部错误',
-      },
-    });
+    // 使用统一的错误处理（normalizeError会自动处理长桥API错误码）
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 

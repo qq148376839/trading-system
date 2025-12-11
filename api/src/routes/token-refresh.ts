@@ -3,9 +3,10 @@
  * 实现长桥API的Access Token刷新功能
  */
 
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import tokenRefreshService from '../services/token-refresh.service';
 import configService from '../services/config.service';
+import { normalizeError } from '../utils/errors';
 
 export const tokenRefreshRouter = Router();
 
@@ -13,7 +14,7 @@ export const tokenRefreshRouter = Router();
  * POST /api/token-refresh/refresh
  * 手动刷新Token
  */
-tokenRefreshRouter.post('/refresh', async (req: Request, res: Response) => {
+tokenRefreshRouter.post('/refresh', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await tokenRefreshService.refreshToken();
     res.json({
@@ -25,11 +26,8 @@ tokenRefreshRouter.post('/refresh', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('刷新Token失败:', error.message);
-    res.status(500).json({
-      success: false,
-      error: { message: error.message || '刷新Token失败' },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -37,7 +35,7 @@ tokenRefreshRouter.post('/refresh', async (req: Request, res: Response) => {
  * GET /api/token-refresh/status
  * 检查Token状态
  */
-tokenRefreshRouter.get('/status', async (req: Request, res: Response) => {
+tokenRefreshRouter.get('/status', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const status = await tokenRefreshService.getTokenStatus();
     
@@ -46,11 +44,8 @@ tokenRefreshRouter.get('/status', async (req: Request, res: Response) => {
       data: status,
     });
   } catch (error: any) {
-    console.error('获取Token状态失败:', error.message);
-    res.status(500).json({
-      success: false,
-      error: { message: error.message || '获取Token状态失败' },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -58,7 +53,7 @@ tokenRefreshRouter.get('/status', async (req: Request, res: Response) => {
  * POST /api/token-refresh/auto-refresh
  * 触发自动刷新检查（如果需要）
  */
-tokenRefreshRouter.post('/auto-refresh', async (req: Request, res: Response) => {
+tokenRefreshRouter.post('/auto-refresh', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const refreshed = await tokenRefreshService.autoRefreshIfNeeded();
     
@@ -70,11 +65,8 @@ tokenRefreshRouter.post('/auto-refresh', async (req: Request, res: Response) => 
       },
     });
   } catch (error: any) {
-    console.error('自动刷新Token失败:', error.message);
-    res.status(500).json({
-      success: false,
-      error: { message: error.message || '自动刷新Token失败' },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 

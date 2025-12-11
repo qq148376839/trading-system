@@ -1,10 +1,11 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { getQuoteContext } from '../config/longport';
 import { rateLimiter } from '../middleware/rateLimiter';
 import { Market, SecurityListCategory } from 'longport';
 import { 
   getFutunnOptionQuotes
 } from '../services/futunn-option-quote.service';
+import { ErrorFactory, normalizeError } from '../utils/errors';
 
 export const quoteRouter = Router();
 
@@ -70,7 +71,7 @@ async function getSecurityList(): Promise<Array<{ symbol: string; name_cn: strin
  * GET /api/quote/security-list
  * 获取美股标的列表（用于自动完成）
  */
-quoteRouter.get('/security-list', async (req: Request, res: Response) => {
+quoteRouter.get('/security-list', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { query } = req.query;
     
@@ -107,14 +108,8 @@ quoteRouter.get('/security-list', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('获取标的列表失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message || '获取标的列表失败',
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -143,19 +138,13 @@ setInterval(() => {
  * 响应：
  * - secu_quote: 标的实时行情数据列表
  */
-quoteRouter.get('/', rateLimiter, async (req: Request, res: Response) => {
+quoteRouter.get('/', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { symbol } = req.query;
 
     // 参数验证
     if (!symbol) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: symbol',
-        },
-      });
+      return next(ErrorFactory.missingParameter('symbol'));
     }
 
     // 处理symbol参数（支持单个或多个，支持逗号分隔）
@@ -166,24 +155,12 @@ quoteRouter.get('/', rateLimiter, async (req: Request, res: Response) => {
     } else if (Array.isArray(symbol)) {
       symbols = symbol as string[];
     } else {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_PARAMETER',
-          message: 'symbol参数格式错误',
-        },
-      });
+      return next(ErrorFactory.validationError('symbol参数格式错误'));
     }
 
     // 检查数量限制（每次最多500个）
     if (symbols.length > 500) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'QUOTA_EXCEEDED',
-          message: '请求的标的数量超过限制，最多支持500个',
-        },
-      });
+      return next(ErrorFactory.quotaExceeded('请求的标的数量超过限制，最多支持500个'));
     }
 
     // 验证symbol格式（支持 ticker.region 和 .ticker.region 格式）
@@ -191,13 +168,10 @@ quoteRouter.get('/', rateLimiter, async (req: Request, res: Response) => {
     const symbolPattern = /^\.?[A-Z0-9]+\.[A-Z]{2}$/;
     const invalidSymbols = symbols.filter(s => !symbolPattern.test(s));
     if (invalidSymbols.length > 0) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_SYMBOL_FORMAT',
-          message: `无效的标的代码格式: ${invalidSymbols.join(', ')}。请使用 ticker.region 格式，例如：700.HK 或 .SPX.US`,
-        },
-      });
+      return next(ErrorFactory.validationError(
+        `无效的标的代码格式: ${invalidSymbols.join(', ')}。请使用 ticker.region 格式，例如：700.HK 或 .SPX.US`,
+        { invalidSymbols }
+      ));
     }
 
     // 权限检查：如果只有美股Basic行情权限，检查是否包含非美股代码
@@ -298,80 +272,9 @@ quoteRouter.get('/', rateLimiter, async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('获取行情失败:', error);
-
-    // 处理长桥API错误
-    if (error.code === '301600') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_REQUEST',
-          message: '无效的请求参数',
-        },
-      });
-    }
-
-    if (error.code === '301606') {
-      return res.status(429).json({
-        success: false,
-        error: {
-          code: 'RATE_LIMIT',
-          message: '请求频率过高，请稍后重试',
-        },
-      });
-    }
-
-    if (error.code === '301607') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'QUOTA_EXCEEDED',
-          message: '请求的标的数量超限，请减少单次请求标的数量',
-        },
-      });
-    }
-
-    // 处理权限错误（可能因为只有美股Basic行情权限，无法获取港股等）
-    if (error.message && error.message.includes('permission') || error.message.includes('权限')) {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'PERMISSION_DENIED',
-          message: '当前账户没有该市场的行情权限。您只有美股Basic行情权限，请使用美股代码（如AAPL.US）或开通其他市场的行情权限',
-        },
-      });
-    }
-
-    // 处理Token过期错误（401003）
-    if (error.message && (error.message.includes('401003') || error.message?.includes('token expired'))) {
-      return res.status(401).json({
-        success: false,
-        error: {
-          code: 'TOKEN_EXPIRED',
-          message: '访问令牌已过期，请更新.env文件中的LONGPORT_ACCESS_TOKEN。访问 https://open.longportapp.com/ 获取新的token',
-        },
-      });
-    }
-
-    // 处理Token无效错误（401004）
-    if (error.message && error.message.includes('401004')) {
-      return res.status(401).json({
-        success: false,
-        error: {
-          code: 'TOKEN_INVALID',
-          message: '访问令牌无效（401004）。可能原因：Token与App Key不匹配、Token已过期、或没有行情权限。请访问 https://open.longportapp.com/ 重新生成Token并更新.env文件',
-        },
-      });
-    }
-
-    // 其他错误
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message || '服务器内部错误',
-      },
-    });
+    // 使用统一的错误处理（normalizeError会自动处理长桥API错误码）
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -389,18 +292,12 @@ quoteRouter.get('/', rateLimiter, async (req: Request, res: Response) => {
  * 响应：
  * - secu_quote: 期权实时行情数据列表
  */
-quoteRouter.get('/option', rateLimiter, async (req: Request, res: Response) => {
+quoteRouter.get('/option', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { symbol } = req.query;
 
     if (!symbol) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: symbol',
-        },
-      });
+      return next(ErrorFactory.missingParameter('symbol'));
     }
 
     let symbols: string[];
@@ -409,24 +306,12 @@ quoteRouter.get('/option', rateLimiter, async (req: Request, res: Response) => {
     } else if (Array.isArray(symbol)) {
       symbols = symbol as string[];
     } else {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_PARAMETER',
-          message: 'symbol参数格式错误',
-        },
-      });
+      return next(ErrorFactory.validationError('symbol参数格式错误'));
     }
 
     // 检查数量限制（每次最多500个）
     if (symbols.length > 500) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'QUOTA_EXCEEDED',
-          message: '请求的标的数量超过限制，最多支持500个',
-        },
-      });
+      return next(ErrorFactory.quotaExceeded('请求的标的数量超过限制，最多支持500个'));
     }
 
     const quoteCtx = await getQuoteContext();
@@ -512,38 +397,18 @@ quoteRouter.get('/option', rateLimiter, async (req: Request, res: Response) => {
         }
         
         // 如果富途牛牛API也失败，返回权限错误
-        return res.status(403).json({
-          success: false,
-          error: {
-            code: 'NO_OPTION_QUOTE_ACCESS',
-            message: '当前账户没有期权行情权限（错误码：301604）。已尝试使用富途牛牛API作为fallback，但仍无法获取数据。请检查富途牛牛配置或访问 Longbridge 手机客户端购买期权行情权限。',
-            details: {
-              error_code: '301604',
-              symbols: symbols,
-              futunn_fallback_attempted: true,
-            },
-          },
-        });
+        return next(ErrorFactory.permissionDenied(
+          '当前账户没有期权行情权限（错误码：301604）。已尝试使用富途牛牛API作为fallback，但仍无法获取数据。请检查富途牛牛配置或访问 Longbridge 手机客户端购买期权行情权限。'
+        ));
       }
       
-      // 处理其他错误
-      res.status(500).json({
-        success: false,
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: error.message || '服务器内部错误',
-        },
-      });
+      // 处理其他错误（使用normalizeError会自动处理）
+      const appError = normalizeError(error);
+      return next(appError);
     }
   } catch (error: any) {
-    console.error('获取期权行情失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message || '服务器内部错误',
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 

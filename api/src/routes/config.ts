@@ -3,10 +3,11 @@
  * 支持Windows和Docker部署
  */
 
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import configService from '../services/config.service';
 import bcrypt from 'bcryptjs';
 import pool from '../config/database';
+import { ErrorFactory, normalizeError } from '../utils/errors';
 
 export const configRouter = Router();
 
@@ -16,7 +17,7 @@ export const configRouter = Router();
  * 1. username/password（用于兼容旧代码）
  * 2. authUsername/authPassword（用于区分认证和更新字段）
  */
-async function requireAdmin(req: Request, res: Response, next: Function) {
+async function requireAdmin(req: Request, res: Response, next: NextFunction) {
   try {
     // 优先使用authUsername/authPassword，如果没有则使用username/password（向后兼容）
     const { username, password, authUsername, authPassword } = req.body;
@@ -24,10 +25,7 @@ async function requireAdmin(req: Request, res: Response, next: Function) {
     const authPass = authPassword || password;
     
     if (!authUser || !authPass) {
-      return res.status(401).json({
-        success: false,
-        error: { message: '缺少用户名或密码' },
-      });
+      return next(ErrorFactory.unauthorized('缺少用户名或密码'));
     }
 
     const result = await pool.query(
@@ -36,18 +34,12 @@ async function requireAdmin(req: Request, res: Response, next: Function) {
     );
     
     if (result.rows.length === 0) {
-      return res.status(401).json({
-        success: false,
-        error: { message: '管理员账户不存在或已禁用' },
-      });
+      return next(ErrorFactory.unauthorized('管理员账户不存在或已禁用'));
     }
 
     const isValid = await bcrypt.compare(authPass, result.rows[0].password_hash);
     if (!isValid) {
-      return res.status(401).json({
-        success: false,
-        error: { message: '密码错误' },
-      });
+      return next(ErrorFactory.unauthorized('密码错误'));
     }
 
     // 更新最后登录时间
@@ -60,11 +52,8 @@ async function requireAdmin(req: Request, res: Response, next: Function) {
     (req as any).adminUsername = authUser;
     next();
   } catch (error: any) {
-    console.error('管理员认证失败:', error.message);
-    return res.status(500).json({
-      success: false,
-      error: { message: '管理员认证失败' },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 }
 
@@ -72,15 +61,12 @@ async function requireAdmin(req: Request, res: Response, next: Function) {
  * POST /api/config/auth
  * 管理员登录验证（用于前端页面）
  */
-configRouter.post('/auth', async (req: Request, res: Response) => {
+configRouter.post('/auth', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { username, password } = req.body;
     
     if (!username || !password) {
-      return res.status(400).json({
-        success: false,
-        error: { message: '缺少用户名或密码' },
-      });
+      return next(ErrorFactory.missingParameter('username 或 password'));
     }
 
     const result = await pool.query(
@@ -89,18 +75,12 @@ configRouter.post('/auth', async (req: Request, res: Response) => {
     );
     
     if (result.rows.length === 0) {
-      return res.status(401).json({
-        success: false,
-        error: { message: '管理员账户不存在或已禁用' },
-      });
+      return next(ErrorFactory.unauthorized('管理员账户不存在或已禁用'));
     }
 
     const isValid = await bcrypt.compare(password, result.rows[0].password_hash);
     if (!isValid) {
-      return res.status(401).json({
-        success: false,
-        error: { message: '密码错误' },
-      });
+      return next(ErrorFactory.unauthorized('密码错误'));
     }
 
     // 更新最后登录时间
@@ -114,11 +94,8 @@ configRouter.post('/auth', async (req: Request, res: Response) => {
       data: { message: '登录成功' },
     });
   } catch (error: any) {
-    console.error('登录失败:', error.message);
-    res.status(500).json({
-      success: false,
-      error: { message: '登录失败' },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -126,7 +103,7 @@ configRouter.post('/auth', async (req: Request, res: Response) => {
  * GET /api/config
  * 获取所有配置（需要管理员认证）
  */
-configRouter.get('/', requireAdmin, async (req: Request, res: Response) => {
+configRouter.get('/', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const configs = await configService.getAllConfigs();
     res.json({ 
@@ -134,11 +111,8 @@ configRouter.get('/', requireAdmin, async (req: Request, res: Response) => {
       data: { configs } 
     });
   } catch (error: any) {
-    console.error('获取配置失败:', error.message);
-    res.status(500).json({
-      success: false,
-      error: { message: error.message || '获取配置失败' },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -146,7 +120,7 @@ configRouter.get('/', requireAdmin, async (req: Request, res: Response) => {
  * POST /api/config
  * 获取所有配置（需要管理员认证，支持POST请求）
  */
-configRouter.post('/', requireAdmin, async (req: Request, res: Response) => {
+configRouter.post('/', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const configs = await configService.getAllConfigs();
     res.json({ 
@@ -154,11 +128,8 @@ configRouter.post('/', requireAdmin, async (req: Request, res: Response) => {
       data: { configs } 
     });
   } catch (error: any) {
-    console.error('获取配置失败:', error.message);
-    res.status(500).json({
-      success: false,
-      error: { message: error.message || '获取配置失败' },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -166,16 +137,13 @@ configRouter.post('/', requireAdmin, async (req: Request, res: Response) => {
  * GET /api/config/:key
  * 获取单个配置值（需要管理员认证）
  */
-configRouter.get('/:key', requireAdmin, async (req: Request, res: Response) => {
+configRouter.get('/:key', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { key } = req.params;
     const value = await configService.getConfig(key);
     
     if (value === null) {
-      return res.status(404).json({
-        success: false,
-        error: { message: `配置项 ${key} 不存在` },
-      });
+      return next(ErrorFactory.notFound(`配置项 ${key}`));
     }
 
     res.json({
@@ -183,11 +151,8 @@ configRouter.get('/:key', requireAdmin, async (req: Request, res: Response) => {
       data: { key, value },
     });
   } catch (error: any) {
-    console.error('获取配置失败:', error.message);
-    res.status(500).json({
-      success: false,
-      error: { message: error.message || '获取配置失败' },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -195,17 +160,14 @@ configRouter.get('/:key', requireAdmin, async (req: Request, res: Response) => {
  * PUT /api/config/:key
  * 更新配置（需要管理员认证）
  */
-configRouter.put('/:key', requireAdmin, async (req: Request, res: Response) => {
+configRouter.put('/:key', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { key } = req.params;
     const { value, encrypted } = req.body;
     const adminUsername = (req as any).adminUsername;
 
     if (value === undefined) {
-      return res.status(400).json({
-        success: false,
-        error: { message: '缺少配置值' },
-      });
+      return next(ErrorFactory.missingParameter('value'));
     }
 
     // 确定是否需要加密（根据配置项类型）
@@ -220,11 +182,8 @@ configRouter.put('/:key', requireAdmin, async (req: Request, res: Response) => {
       data: { message: '配置更新成功' } 
     });
   } catch (error: any) {
-    console.error('更新配置失败:', error.message);
-    res.status(500).json({
-      success: false,
-      error: { message: error.message || '更新配置失败' },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -232,16 +191,13 @@ configRouter.put('/:key', requireAdmin, async (req: Request, res: Response) => {
  * POST /api/config/batch
  * 批量更新配置（需要管理员认证）
  */
-configRouter.post('/batch', requireAdmin, async (req: Request, res: Response) => {
+configRouter.post('/batch', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { configs } = req.body;
     const adminUsername = (req as any).adminUsername;
 
     if (!Array.isArray(configs)) {
-      return res.status(400).json({
-        success: false,
-        error: { message: 'configs必须是数组' },
-      });
+      return next(ErrorFactory.validationError('configs必须是数组'));
     }
 
     // 确定每个配置项是否需要加密
@@ -260,11 +216,8 @@ configRouter.post('/batch', requireAdmin, async (req: Request, res: Response) =>
       data: { message: '批量配置更新成功' } 
     });
   } catch (error: any) {
-    console.error('批量更新配置失败:', error.message);
-    res.status(500).json({
-      success: false,
-      error: { message: error.message || '批量更新配置失败' },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -272,7 +225,7 @@ configRouter.post('/batch', requireAdmin, async (req: Request, res: Response) =>
  * DELETE /api/config/:key
  * 删除配置（需要管理员认证）
  */
-configRouter.delete('/:key', requireAdmin, async (req: Request, res: Response) => {
+configRouter.delete('/:key', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { key } = req.params;
     await configService.deleteConfig(key);
@@ -282,11 +235,8 @@ configRouter.delete('/:key', requireAdmin, async (req: Request, res: Response) =
       data: { message: '配置删除成功' } 
     });
   } catch (error: any) {
-    console.error('删除配置失败:', error.message);
-    res.status(500).json({
-      success: false,
-      error: { message: error.message || '删除配置失败' },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -294,7 +244,7 @@ configRouter.delete('/:key', requireAdmin, async (req: Request, res: Response) =
  * POST /api/config/admin/list
  * 获取所有管理员账户列表（需要管理员认证）
  */
-configRouter.post('/admin/list', requireAdmin, async (req: Request, res: Response) => {
+configRouter.post('/admin/list', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await pool.query(
       'SELECT id, username, created_at, last_login_at, is_active FROM admin_users ORDER BY created_at DESC'
@@ -305,11 +255,8 @@ configRouter.post('/admin/list', requireAdmin, async (req: Request, res: Respons
       data: { admins: result.rows },
     });
   } catch (error: any) {
-    console.error('获取管理员列表失败:', error.message);
-    res.status(500).json({
-      success: false,
-      error: { message: error.message || '获取管理员列表失败' },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -317,7 +264,7 @@ configRouter.post('/admin/list', requireAdmin, async (req: Request, res: Respons
  * PUT /api/config/admin/:id
  * 更新管理员账户（需要管理员认证）
  */
-configRouter.put('/admin/:id', requireAdmin, async (req: Request, res: Response) => {
+configRouter.put('/admin/:id', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     // requireAdmin中间件已经验证了当前登录管理员身份（使用req.body中的username和password）
@@ -338,10 +285,7 @@ configRouter.put('/admin/:id', requireAdmin, async (req: Request, res: Response)
     );
 
     if (currentAdmin.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: { message: '管理员账户不存在' },
-      });
+      return next(ErrorFactory.notFound('管理员账户'));
     }
 
     const currentUsername = currentAdmin.rows[0].username;
@@ -362,43 +306,28 @@ configRouter.put('/admin/:id', requireAdmin, async (req: Request, res: Response)
     if (newPassword !== undefined && newPassword !== null && newPassword !== '') {
       // 1. 验证原密码
       if (!oldPassword) {
-        return res.status(400).json({
-          success: false,
-          error: { message: '修改密码需要提供原密码' },
-        });
+        return next(ErrorFactory.missingParameter('oldPassword'));
       }
 
       const isOldPasswordValid = await bcrypt.compare(oldPassword, currentPasswordHash);
       if (!isOldPasswordValid) {
-        return res.status(400).json({
-          success: false,
-          error: { message: '原密码错误' },
-        });
+        return next(ErrorFactory.validationError('原密码错误'));
       }
 
       // 2. 验证新密码两次输入一致
       if (newPassword !== confirmPassword) {
-        return res.status(400).json({
-          success: false,
-          error: { message: '新密码两次输入不一致' },
-        });
+        return next(ErrorFactory.validationError('新密码两次输入不一致'));
       }
 
       // 3. 验证新密码长度
       if (newPassword.length < 6) {
-        return res.status(400).json({
-          success: false,
-          error: { message: '密码长度至少6位' },
-        });
+        return next(ErrorFactory.validationError('密码长度至少6位'));
       }
 
       // 4. 验证新密码不能与原密码相同
       const isSamePassword = await bcrypt.compare(newPassword, currentPasswordHash);
       if (isSamePassword) {
-        return res.status(400).json({
-          success: false,
-          error: { message: '新密码不能与原密码相同' },
-        });
+        return next(ErrorFactory.validationError('新密码不能与原密码相同'));
       }
 
       // 5. 更新密码
@@ -415,10 +344,7 @@ configRouter.put('/admin/:id', requireAdmin, async (req: Request, res: Response)
 
     // 如果没有要更新的字段，返回错误
     if (updates.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: { message: '没有有效的更新字段（所有字段都没有变化）' },
-      });
+      return next(ErrorFactory.validationError('没有有效的更新字段（所有字段都没有变化）'));
     }
 
     values.push(parseInt(id));
@@ -428,10 +354,7 @@ configRouter.put('/admin/:id', requireAdmin, async (req: Request, res: Response)
     const result = await pool.query(query, values);
 
     if (result.rowCount === 0) {
-      return res.status(404).json({
-        success: false,
-        error: { message: '管理员账户不存在或没有变化' },
-      });
+      return next(ErrorFactory.notFound('管理员账户'));
     }
 
     // 验证更新是否成功：重新查询更新后的账户信息
@@ -452,16 +375,11 @@ configRouter.put('/admin/:id', requireAdmin, async (req: Request, res: Response)
     
     // 检查是否是用户名重复错误
     if (error.code === '23505') {
-      return res.status(400).json({
-        success: false,
-        error: { message: '用户名已存在' },
-      });
+      return next(ErrorFactory.resourceConflict('用户名已存在'));
     }
 
-    res.status(500).json({
-      success: false,
-      error: { message: error.message || '更新管理员账户失败' },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -471,23 +389,17 @@ configRouter.put('/admin/:id', requireAdmin, async (req: Request, res: Response)
  * 注意：requireAdmin中间件会从req.body读取username和password进行认证
  * 创建新账户时，新账户的用户名和密码使用newUsername和newPassword字段
  */
-configRouter.post('/admin', requireAdmin, async (req: Request, res: Response) => {
+configRouter.post('/admin', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     // requireAdmin已经验证了当前管理员身份，现在读取新账户信息
     const { newUsername, newPassword } = req.body;
 
     if (!newUsername || !newPassword) {
-      return res.status(400).json({
-        success: false,
-        error: { message: '缺少新账户的用户名或密码' },
-      });
+      return next(ErrorFactory.missingParameter('newUsername 或 newPassword'));
     }
 
     if (newPassword.length < 6) {
-      return res.status(400).json({
-        success: false,
-        error: { message: '密码长度至少6位' },
-      });
+      return next(ErrorFactory.validationError('密码长度至少6位'));
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
@@ -505,16 +417,11 @@ configRouter.post('/admin', requireAdmin, async (req: Request, res: Response) =>
     console.error('创建管理员账户失败:', error.message);
     
     if (error.code === '23505') {
-      return res.status(400).json({
-        success: false,
-        error: { message: '用户名已存在' },
-      });
+      return next(ErrorFactory.resourceConflict('用户名已存在'));
     }
 
-    res.status(500).json({
-      success: false,
-      error: { message: error.message || '创建管理员账户失败' },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 

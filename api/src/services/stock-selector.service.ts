@@ -6,8 +6,8 @@
 import pool from '../config/database';
 
 export interface SymbolPoolConfig {
-  mode: 'STATIC' | 'DYNAMIC';
-  symbols?: string[]; // STATIC 模式
+  mode: 'STATIC' | 'DYNAMIC' | 'INSTITUTION';
+  symbols?: string[]; // STATIC 和 INSTITUTION 模式
   source?: 'WATCHLIST' | 'MARKET_SCAN';
   groupId?: number; // Watchlist group ID
   filters?: {
@@ -23,10 +23,11 @@ class StockSelector {
   async getSymbolPool(config: SymbolPoolConfig): Promise<string[]> {
     let symbols: string[] = [];
 
-    if (config.mode === 'STATIC') {
-      // STATIC 模式：直接返回配置的股票列表
+    if (config.mode === 'STATIC' || config.mode === 'INSTITUTION') {
+      // STATIC 和 INSTITUTION 模式：直接返回配置的股票列表
+      // INSTITUTION 模式通过机构选股功能选择股票后，保存到 symbols 数组中
       if (!config.symbols || config.symbols.length === 0) {
-        throw new Error('STATIC 模式必须提供 symbols 数组');
+        throw new Error(`${config.mode} 模式必须提供 symbols 数组`);
       }
       symbols = config.symbols;
     } else if (config.mode === 'DYNAMIC') {

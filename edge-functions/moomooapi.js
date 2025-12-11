@@ -9,6 +9,8 @@
  * - /quote-api/quote-v2/get-stock-quote - 股票行情
  * - /quote-api/quote-v2/get-option-chain - 期权链
  * - /quote-api/quote-v2/get-option-strike-dates - 期权到期日期
+ * - /quote-api/quote-v2/get-popular-position - 热门机构列表
+ * - /quote-api/quote-v2/get-share-holding-list - 机构持仓列表
  */
 
 const MOOMOO_BASE_URL = 'https://www.moomoo.com';
@@ -25,6 +27,9 @@ const QUOTE_TOKEN_REQUIRED_PATHS = [
     '/quote-api/quote-v2/get-stock-quote',
     '/quote-api/quote-v2/get-option-chain',
     '/quote-api/quote-v2/get-option-strike-dates',
+    '/quote-api/quote-v2/get-popular-position',
+    '/quote-api/quote-v2/get-share-holding-list',
+    '/quote-api/quote-v2/get-owner-position-list',
 ];
 
 /**
@@ -129,6 +134,29 @@ function extractTokenParams(queryParams, apiPath) {
                 tokenParams[key] = String(queryParams[key]);
             }
         }
+    } else if (apiPath.includes('get-popular-position')) {
+        // 热门机构列表：根据浏览器请求，这个API不需要任何查询参数
+        // 但需要quote-token，使用空对象来计算token
+        // 注意：不设置任何参数，返回空对象
+    } else if (apiPath.includes('get-share-holding-list')) {
+        // 机构持仓列表：ownerObjectId, periodId, page, pageSize, _
+        const keys = ['ownerObjectId', 'periodId', 'page', 'pageSize', '_'];
+        for (const key of keys) {
+            if (queryParams[key] !== undefined && queryParams[key] !== null && queryParams[key] !== '') {
+                tokenParams[key] = String(queryParams[key]);
+            }
+        }
+    } else if (apiPath.includes('get-owner-position-list')) {
+        // 机构列表：page, pageSize, _
+        const keys = ['page', 'pageSize', '_'];
+        for (const key of keys) {
+            if (queryParams[key] !== undefined && queryParams[key] !== null && queryParams[key] !== '') {
+                tokenParams[key] = String(queryParams[key]);
+            }
+        }
+        if (Object.keys(tokenParams).length === 0) {
+            tokenParams['_'] = '';
+        }
     }
     
     return tokenParams;
@@ -173,6 +201,9 @@ export async function moomooApi(queryParams = {}, request = null) {
         delete requestParams.quote_token;
         delete requestParams.quoteToken;
         delete requestParams.referer;
+        
+        // 对于某些API，如果没有参数，确保传递空对象而不是undefined
+        // 这样可以避免某些API的参数验证错误
 
         // 构建查询字符串（确保数字参数正确转换）
         const queryString = Object.entries(requestParams)
@@ -185,6 +216,13 @@ export async function moomooApi(queryParams = {}, request = null) {
             .join('&');
 
         const fullUrl = queryString ? `${targetUrl}?${queryString}` : targetUrl;
+        
+        // 设置cookies和CSRF token（优先使用参数中的值，否则使用默认值）
+        const cookies = queryParams.cookies || DEFAULT_COOKIES;
+        const csrfToken = queryParams.csrf_token || queryParams.csrfToken || DEFAULT_CSRF_TOKEN;
+
+        // 如果需要quote-token，自动计算（在删除控制参数之前，使用原始queryParams）
+        let quoteToken = queryParams.quote_token || queryParams.quoteToken;
         
         // 调试日志
         console.log(`[边缘函数] 请求Moomoo API:`, {
@@ -211,27 +249,20 @@ export async function moomooApi(queryParams = {}, request = null) {
             'sec-fetch-site': 'same-origin',
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
         };
-
-        // 设置cookies和CSRF token（优先使用参数中的值，否则使用默认值）
-        const cookies = queryParams.cookies || DEFAULT_COOKIES;
-        const csrfToken = queryParams.csrf_token || queryParams.csrfToken || DEFAULT_CSRF_TOKEN;
         
         headers['Cookie'] = cookies;
         headers['futu-x-csrf-token'] = csrfToken;
-
-        // 如果需要quote-token，自动计算（在删除控制参数之前，使用原始queryParams）
-        let quoteToken = queryParams.quote_token || queryParams.quoteToken;
+        
+        // 如果需要quote-token，自动计算
         if (requiresQuoteToken(apiPath) && !quoteToken) {
             // 提取用于计算token的参数（使用原始queryParams，包含所有参数）
             const tokenParams = extractTokenParams(queryParams, apiPath);
-            if (Object.keys(tokenParams).length > 0) {
-                quoteToken = await generateQuoteToken(tokenParams);
-                console.log(`[边缘函数] 自动计算quote-token: ${quoteToken} (路径: ${apiPath})`);
-                console.log(`[边缘函数] Token参数详情:`, JSON.stringify(tokenParams));
-            } else {
-                console.warn(`[边缘函数] 无法提取token参数 (路径: ${apiPath})`);
-                console.warn(`[边缘函数] 可用参数:`, Object.keys(queryParams).join(', '));
-            }
+            
+            // 对于所有需要quote-token的API，即使没有参数也要计算token
+            // 空对象也会生成有效的token
+            quoteToken = await generateQuoteToken(tokenParams);
+            console.log(`[边缘函数] 自动计算quote-token: ${quoteToken} (路径: ${apiPath})`);
+            console.log(`[边缘函数] Token参数详情:`, JSON.stringify(tokenParams));
         }
         
         if (quoteToken) {
@@ -290,11 +321,24 @@ export async function moomooApi(queryParams = {}, request = null) {
 
         // 检查响应数据是否包含错误
         if (responseData && typeof responseData === 'object' && responseData.code !== undefined && responseData.code !== 0) {
-            console.warn(`[边缘函数] Moomoo API返回业务错误:`, {
+            console.error(`[边缘函数] Moomoo API返回业务错误:`, {
                 code: responseData.code,
                 message: responseData.message,
                 path: apiPath,
+                url: fullUrl.substring(0, 300),
+                params: Object.keys(requestParams),
+                hasCookies: !!cookies,
+                hasCsrfToken: !!csrfToken,
             });
+            // 如果是参数错误，输出更详细的信息
+            if (responseData.message && (responseData.message.includes('Params') || responseData.message.includes('参数'))) {
+                console.error(`[边缘函数] 参数错误详情:`, {
+                    path: apiPath,
+                    requestParams: requestParams,
+                    queryString: queryString,
+                    fullUrl: fullUrl.substring(0, 500),
+                });
+            }
         }
 
         // 返回响应（保持原始状态码和headers）

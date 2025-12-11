@@ -1,5 +1,6 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import pool from '../config/database';
+import { ErrorCode, ErrorSeverity, AppError } from '../utils/errors';
 
 export const healthRouter = Router();
 
@@ -7,7 +8,7 @@ export const healthRouter = Router();
  * GET /api/health
  * 健康检查接口
  */
-healthRouter.get('/', async (req: Request, res: Response) => {
+healthRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     // 检查数据库连接
     await pool.query('SELECT 1');
@@ -23,17 +24,15 @@ healthRouter.get('/', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    res.status(503).json({
-      success: false,
-      data: {
-        status: 'unhealthy',
-        timestamp: new Date().toISOString(),
-        services: {
-          database: 'disconnected',
-        },
-        error: error.message,
-      },
-    });
+    // 健康检查失败，返回503状态码
+    const appError = new AppError(
+      ErrorCode.EXTERNAL_API_ERROR, // 使用EXTERNAL_API_ERROR，因为数据库是外部服务
+      '数据库连接失败',
+      ErrorSeverity.HIGH,
+      503,
+      { originalError: error.message }
+    );
+    return next(appError);
   }
 });
 

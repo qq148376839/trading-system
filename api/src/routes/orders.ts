@@ -9,7 +9,7 @@ export const ordersRouter = Router();
  * 转换订单方向（side）字段
  * 支持枚举值（1=Buy, 2=Sell）和字符串（"Buy", "Sell"）
  */
-function normalizeSide(side: any): string {
+export function normalizeSide(side: any): string {
   if (!side) return 'Unknown';
   
   // 如果是字符串，直接返回
@@ -52,7 +52,7 @@ function normalizeSide(side: any): string {
  * 注意：API可能返回简写形式（如"Filled"）、完整形式（如"FilledStatus"）或数字枚举值
  * 这里统一转换为完整形式，便于后续处理
  */
-function normalizeStatus(status: any): string {
+export function normalizeStatus(status: any): string {
   if (status === null || status === undefined) return 'Unknown';
   
   // 如果是数字，转换为字符串枚举值

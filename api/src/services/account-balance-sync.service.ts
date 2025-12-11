@@ -14,6 +14,8 @@ interface BalanceDiscrepancy {
   expected: number;
   actual: number;
   difference: number;
+  severity?: 'ERROR' | 'WARNING' | 'INFO';
+  differencePercent?: number;
 }
 
 interface SyncResult {
@@ -21,6 +23,12 @@ interface SyncResult {
   totalCapital: number;
   discrepancies?: BalanceDiscrepancy[];
   error?: string;
+  lastSyncTime?: Date;
+  strategies?: Array<{
+    id: number;
+    name: string;
+    expectedAllocation: number;
+  }>;
 }
 
 class AccountBalanceSyncService {
@@ -152,8 +160,9 @@ class AccountBalanceSyncService {
       }
 
       // 如果没有找到 USD，使用第一个币种的可用现金（但记录警告）
-      if (!foundUsd && balances.length > 0) {
-        const firstBalance = balances[0];
+      const allBalances = await tradeCtx.accountBalance();
+      if (!foundUsd && allBalances && allBalances.length > 0) {
+        const firstBalance = allBalances[0];
         // 优先使用 cashInfos 中的 availableCash
         if (firstBalance.cashInfos && Array.isArray(firstBalance.cashInfos) && firstBalance.cashInfos.length > 0) {
           const firstCashInfo = firstBalance.cashInfos[0];
@@ -296,7 +305,7 @@ class AccountBalanceSyncService {
         }
 
         // 记录需要修复的标的（状态非IDLE但实际持仓不存在且无未成交订单）
-        const symbolsToFix: Array<{ symbol: string; state: string; context: any }> = [];
+        const symbolsToFix: Array<{ symbol: string; state: string; context: any; targetState?: string }> = [];
 
         for (const instance of strategyInstances.rows) {
           const originalSymbol = instance.symbol;
@@ -327,20 +336,30 @@ class AccountBalanceSyncService {
           // 判断是否需要修复
           // 1. HOLDING状态但实际持仓不存在 -> 需要修复
           // 2. OPENING/CLOSING状态但实际持仓不存在且无未成交订单 -> 需要修复
-          const needsFix = positionValue === 0 && (
+          // 3. OPENING状态但实际持仓已存在 -> 需要修复（转为HOLDING）
+          const needsFixToIdle = positionValue === 0 && (
             currentState === 'HOLDING' || 
             (currentState === 'OPENING' && !hasPendingOrder) ||
             (currentState === 'CLOSING' && !hasPendingOrder)
           );
           
-          if (needsFix) {
+          const needsFixToHolding = positionValue > 0 && currentState === 'OPENING';
+          
+          if (needsFixToIdle) {
             logger.warn(
               `[账户余额同步] 策略 ${strategy.strategy_name} 标的 ${originalSymbol} ` +
               `状态为${currentState}但实际持仓中未找到匹配（尝试了 ${originalSymbol} 和 ${normalizedSymbol}），` +
               `未成交订单: ${hasPendingOrder ? '有' : '无'}`
             );
             
-            symbolsToFix.push({ symbol: originalSymbol, state: currentState, context });
+            symbolsToFix.push({ symbol: originalSymbol, state: currentState, context, targetState: 'IDLE' });
+          } else if (needsFixToHolding) {
+            // OPENING状态但实际持仓已存在，应该转为HOLDING
+            logger.warn(
+              `[账户余额同步] 策略 ${strategy.strategy_name} 标的 ${originalSymbol} ` +
+              `状态为OPENING但实际持仓已存在（持仓价值=${positionValue.toFixed(2)}），需要转为HOLDING`
+            );
+            symbolsToFix.push({ symbol: originalSymbol, state: currentState, context, targetState: 'HOLDING' });
           } else if (positionValue > 0) {
             logger.debug(
               `[账户余额同步] 策略 ${strategy.strategy_name} 标的 ${originalSymbol}: ` +
@@ -383,18 +402,46 @@ class AccountBalanceSyncService {
           let fixedCount = 0;
           let releasedAmount = 0;
           
-          for (const { symbol, state, context } of symbolsToFix) {
+          for (const { symbol, state, context, targetState } of symbolsToFix) {
             try {
-              // 1. 更新状态为IDLE
-              await stateManager.updateState(strategy.strategy_id, symbol, 'IDLE');
-              logger.log(
-                `[账户余额同步] 策略 ${strategy.strategy_name} 标的 ${symbol}: ` +
-                `状态已从${state}更新为IDLE（实际持仓不存在且无未成交订单）`
-              );
+              const finalTargetState = targetState || 'IDLE';
+              
+              // 1. 更新状态
+              await stateManager.updateState(strategy.strategy_id, symbol, finalTargetState);
+              
+              if (finalTargetState === 'HOLDING') {
+                // 转为HOLDING：更新context，保存持仓信息
+                // 获取实际持仓信息
+                const actualPosition = positionsArray.find((pos: any) => {
+                  const posSymbol = pos.symbol || pos.stock_name;
+                  return posSymbol === symbol || posSymbol === this.normalizeSymbol(symbol);
+                });
+                
+                const updatedContext = {
+                  ...context,
+                  entryPrice: actualPosition?.costPrice || actualPosition?.avgPrice || context.entryPrice || context.intent?.entryPrice,
+                  quantity: actualPosition?.quantity || context.quantity || context.intent?.quantity,
+                  syncedFromPosition: true,
+                  syncedAt: new Date().toISOString(),
+                };
+                await stateManager.updateState(strategy.strategy_id, symbol, 'HOLDING', updatedContext);
+                
+                logger.log(
+                  `[账户余额同步] 策略 ${strategy.strategy_name} 标的 ${symbol}: ` +
+                  `状态已从${state}更新为HOLDING（实际持仓已存在，数量=${updatedContext.quantity || 'N/A'}）`
+                );
+              } else {
+                // 转为IDLE：释放资金
+                logger.log(
+                  `[账户余额同步] 策略 ${strategy.strategy_name} 标的 ${symbol}: ` +
+                  `状态已从${state}更新为IDLE（实际持仓不存在且无未成交订单）`
+                );
+              }
+              
               fixedCount++;
               
-              // 2. 释放资金（如果有allocationAmount记录）
-              if (context && context.allocationAmount) {
+              // 2. 如果转为IDLE，释放资金（如果有allocationAmount记录）
+              if (finalTargetState === 'IDLE' && context && context.allocationAmount) {
                 const allocationAmount = parseFloat(context.allocationAmount.toString() || '0');
                 if (allocationAmount > 0) {
                   try {
@@ -447,8 +494,13 @@ class AccountBalanceSyncService {
         const recordedUsage = parseFloat(strategy.current_usage?.toString() || '0');
         const difference = Math.abs(actualUsage - recordedUsage);
 
-        // 如果差异超过 1%（或 $10），记录为差异
-        const threshold = Math.max(expectedAllocation * 0.01, 10);
+        // 设置多级告警阈值
+        // 警告阈值：差异超过 5%（或 $100）
+        const warningThreshold = Math.max(expectedAllocation * 0.05, 100);
+        // 错误阈值：差异超过 10%（或 $500）
+        const errorThreshold = Math.max(expectedAllocation * 0.10, 500);
+        // 基础阈值：差异超过 1%（或 $10），用于记录差异
+        const baseThreshold = Math.max(expectedAllocation * 0.01, 10);
 
         logger.debug(
           `[账户余额同步] 策略 ${strategy.strategy_name} (ID: ${strategy.strategy_id}) ` +
@@ -457,21 +509,72 @@ class AccountBalanceSyncService {
         logger.debug(`  - 记录值: ${recordedUsage.toFixed(2)}`);
         logger.debug(`  - 实际值: ${actualUsage.toFixed(2)}`);
         logger.debug(`  - 差异: ${difference.toFixed(2)}`);
-        logger.debug(`  - 阈值: ${threshold.toFixed(2)}`);
+        logger.debug(`  - 警告阈值: ${warningThreshold.toFixed(2)}`);
+        logger.debug(`  - 错误阈值: ${errorThreshold.toFixed(2)}`);
 
-        if (difference > threshold) {
+        if (difference > baseThreshold) {
+          const differencePercent = expectedAllocation > 0 
+            ? parseFloat(((difference / expectedAllocation) * 100).toFixed(2))
+            : 0;
+          
+          // 确定严重程度
+          let severity: 'ERROR' | 'WARNING' | 'INFO' = 'INFO';
+          if (difference > errorThreshold) {
+            severity = 'ERROR';
+          } else if (difference > warningThreshold) {
+            severity = 'WARNING';
+          }
+          
           discrepancies.push({
             strategyId: strategy.strategy_id,
             expected: recordedUsage,
             actual: actualUsage,
             difference,
+            severity,
+            differencePercent,
           });
 
-          logger.warn(
-            `策略 ${strategy.strategy_name} (ID: ${strategy.strategy_id}) 资金使用差异: ` +
-            `记录值 ${recordedUsage.toFixed(2)}, 实际值 ${actualUsage.toFixed(2)}, ` +
-            `差异 ${difference.toFixed(2)}`
-          );
+          // 根据差异级别记录不同级别的日志
+          if (difference > errorThreshold) {
+            // 严重差异：记录错误日志并告警
+            const differencePercent = expectedAllocation > 0 
+              ? ((difference / expectedAllocation) * 100).toFixed(2) 
+              : 'N/A';
+            
+            logger.error(
+              `[资金差异告警] 🔴 严重差异 - 策略 ${strategy.strategy_name} (ID: ${strategy.strategy_id}) ` +
+              `记录值 ${recordedUsage.toFixed(2)}, 实际值 ${actualUsage.toFixed(2)}, ` +
+              `差异 ${difference.toFixed(2)} (${differencePercent}%)`
+            );
+            
+            // TODO: 发送告警通知（邮件/短信/钉钉等）
+            // await sendAlert('资金差异告警', { 
+            //   strategyId: strategy.strategy_id,
+            //   strategyName: strategy.strategy_name,
+            //   recordedUsage,
+            //   actualUsage,
+            //   difference,
+            //   differencePercent 
+            // });
+          } else if (difference > warningThreshold) {
+            // 警告差异：记录警告日志
+            const differencePercent = expectedAllocation > 0 
+              ? ((difference / expectedAllocation) * 100).toFixed(2) 
+              : 'N/A';
+            
+            logger.warn(
+              `[资金差异警告] 🟠 资金差异 - 策略 ${strategy.strategy_name} (ID: ${strategy.strategy_id}) ` +
+              `记录值 ${recordedUsage.toFixed(2)}, 实际值 ${actualUsage.toFixed(2)}, ` +
+              `差异 ${difference.toFixed(2)} (${differencePercent}%)`
+            );
+          } else {
+            // 基础差异：记录调试日志
+            logger.debug(
+              `策略 ${strategy.strategy_name} (ID: ${strategy.strategy_id}) 资金使用差异: ` +
+              `记录值 ${recordedUsage.toFixed(2)}, 实际值 ${actualUsage.toFixed(2)}, ` +
+              `差异 ${difference.toFixed(2)}`
+            );
+          }
           
           // 输出详细的诊断信息
           const holdingSymbols = strategyInstances.rows
@@ -482,16 +585,54 @@ class AccountBalanceSyncService {
             `HOLDING状态标的: ${holdingSymbols.join(', ') || '无'}, ` +
             `positionMap keys: ${Array.from(positionMap.keys()).slice(0, 10).join(', ') || '无'}`
           );
+          
+          // 自动修复：如果差异超过错误阈值，且实际值更可靠，则更新current_usage
+          if (difference > errorThreshold && actualUsage > 0) {
+            try {
+              // 更新current_usage为实际使用值
+              const updateResult = await pool.query(
+                `UPDATE capital_allocations 
+                 SET current_usage = $1, updated_at = NOW()
+                 WHERE id = $2
+                 RETURNING current_usage`,
+                [actualUsage, strategy.allocation_id]
+              );
+              
+              if (updateResult.rows.length > 0) {
+                const updatedUsage = parseFloat(updateResult.rows[0].current_usage?.toString() || '0');
+                logger.log(
+                  `[账户余额同步] ✅ 自动修复完成 - 策略 ${strategy.strategy_name} (ID: ${strategy.strategy_id}) ` +
+                  `已将current_usage从 ${recordedUsage.toFixed(2)} 更新为 ${updatedUsage.toFixed(2)} (实际值: ${actualUsage.toFixed(2)})`
+                );
+              }
+            } catch (fixError: any) {
+              logger.error(
+                `[账户余额同步] ❌ 自动修复失败 - 策略 ${strategy.strategy_name} (ID: ${strategy.strategy_id}) ` +
+                `更新current_usage失败: ${fixError.message}`
+              );
+            }
+          }
         }
       }
 
       // 5. 更新根账户的总资金（可选，仅记录日志）
       logger.log(`账户余额同步完成: 总资金 ${totalCapital.toFixed(2)} USD`);
 
+      // 收集策略信息
+      const strategies = strategiesQuery.rows.map((row: any) => ({
+        id: row.strategy_id,
+        name: row.strategy_name,
+        expectedAllocation: parseFloat(row.allocation_type === 'PERCENTAGE' 
+          ? (totalCapital * parseFloat(row.allocation_value.toString())).toFixed(2)
+          : row.allocation_value.toString()),
+      }));
+
       return {
         success: true,
         totalCapital,
         discrepancies: discrepancies.length > 0 ? discrepancies : undefined,
+        lastSyncTime: new Date(),
+        strategies,
       };
     } catch (error: any) {
       logger.error('账户余额同步失败:', error);

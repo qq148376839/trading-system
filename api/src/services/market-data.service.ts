@@ -450,73 +450,86 @@ class MarketDataService {
 
   /**
    * 批量获取所有市场数据（包含分时数据）
+   * 如果关键市场指标（SPX、USD Index、BTC）获取失败，将抛出错误，而不是返回空数组
    */
   async getAllMarketData(count: number = 100, includeIntraday: boolean = false) {
     try {
-      const promises = [
+      // 关键市场指标：必须全部成功，否则抛出错误
+      const criticalPromises = [
         this.getSPXCandlesticks(count).catch(err => {
           console.error(`获取SPX数据失败:`, err.message);
-          return [];
+          throw new Error(`SPX数据获取失败: ${err.message}`);
         }),
         this.getUSDIndexCandlesticks(count).catch(err => {
           console.error(`获取USD Index日K数据失败:`, err.message);
-          return [];
+          throw new Error(`USD Index数据获取失败: ${err.message}`);
         }),
         this.getBTCCandlesticks(count).catch(err => {
           console.error(`获取BTC数据失败:`, err.message);
-          return [];
+          throw new Error(`BTC数据获取失败: ${err.message}`);
         }),
       ];
 
+      // 分时数据：可选，失败时返回空数组
+      const optionalPromises: Promise<any[]>[] = [];
       if (includeIntraday) {
-        // 并行获取日K和小时K数据
-        promises.push(
+        optionalPromises.push(
           this.getUSDIndexHourlyCandlesticks(count).catch(err => {
-            console.error(`获取USD Index分时数据失败:`, err.message);
+            console.warn(`获取USD Index分时数据失败（非关键）:`, err.message);
             return [];
           }),
           this.getBTCHourlyCandlesticks(count).catch(err => {
-            console.error(`获取BTC分时数据失败:`, err.message);
+            console.warn(`获取BTC分时数据失败（非关键）:`, err.message);
             return [];
           })
         );
       }
 
-      const results = await Promise.all(promises);
+      // 先获取关键数据，如果失败会抛出错误
+      const criticalResults = await Promise.all(criticalPromises);
+
+      // 检查关键数据是否充足
+      if (!criticalResults[0] || criticalResults[0].length < 50) {
+        throw new Error(`SPX数据不足（${criticalResults[0]?.length || 0} < 50），无法提供交易建议`);
+      }
+      if (!criticalResults[1] || criticalResults[1].length < 50) {
+        throw new Error(`USD Index数据不足（${criticalResults[1]?.length || 0} < 50），无法提供交易建议`);
+      }
+      if (!criticalResults[2] || criticalResults[2].length < 50) {
+        throw new Error(`BTC数据不足（${criticalResults[2]?.length || 0} < 50），无法提供交易建议`);
+      }
+
+      // 获取可选数据（分时数据）
+      const optionalResults = includeIntraday ? await Promise.all(optionalPromises) : [];
 
       const result: any = {
-        spx: results[0],
-        usdIndex: results[1],
-        btc: results[2],
+        spx: criticalResults[0],
+        usdIndex: criticalResults[1],
+        btc: criticalResults[2],
       };
 
       if (includeIntraday) {
-        result.usdIndexHourly = results[3];
-        result.btcHourly = results[4];
+        result.usdIndexHourly = optionalResults[0] || [];
+        result.btcHourly = optionalResults[1] || [];
       }
 
       // 输出数据获取结果摘要
       const dataSummary: Record<string, string> = {
-        SPX: `${results[0].length}条`,
-        'USD Index': `${results[1].length}条`,
-        BTC: `${results[2].length}条`,
+        SPX: `${criticalResults[0].length}条`,
+        'USD Index': `${criticalResults[1].length}条`,
+        BTC: `${criticalResults[2].length}条`,
       };
       if (includeIntraday) {
-        dataSummary['USD Index分时'] = `${results[3].length}条`;
-        dataSummary['BTC分时'] = `${results[4].length}条`;
+        dataSummary['USD Index分时'] = `${optionalResults[0]?.length || 0}条`;
+        dataSummary['BTC分时'] = `${optionalResults[1]?.length || 0}条`;
       }
       console.log(`市场数据获取完成:`, dataSummary);
 
       return result;
     } catch (error: any) {
       console.error('批量获取市场数据失败:', error.message);
-      // 返回空数据而不是抛出错误
-      return {
-        spx: [],
-        usdIndex: [],
-        btc: [],
-        ...(includeIntraday ? { usdIndexHourly: [], btcHourly: [] } : {}),
-      };
+      // 关键市场指标获取失败，抛出错误，不返回空数据
+      throw new Error(`市场数据获取失败，无法提供交易建议: ${error.message}`);
     }
   }
 }

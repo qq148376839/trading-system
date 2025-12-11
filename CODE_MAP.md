@@ -2,7 +2,7 @@
 
 本文档详细说明了项目中每个文件的作用以及文件之间的调用和关联关系。
 
-**最后更新**: 2025-12-03 (添加回测功能)
+**最后更新**: 2025-12-11 (量化交易订单管理重构、Docker优化、数据库迁移脚本清理)
 
 ---
 
@@ -323,10 +323,16 @@ trading-system/
 - `POST /api/quant/strategies/:id/start` - 启动策略
 - `POST /api/quant/strategies/:id/stop` - 停止策略
 - `GET /api/quant/signals` - 信号日志
-- `GET /api/quant/trades` - 交易记录
+- `GET /api/quant/dashboard/stats` - Dashboard统计数据（今日交易数量、盈亏等）
 - `GET /api/quant/blacklist` - 黑名单
 - `POST /api/quant/blacklist` - 添加黑名单
 - `DELETE /api/quant/blacklist/:symbol` - 删除黑名单
+- `GET /api/quant/institutions/popular` - 获取热门机构列表
+- `GET /api/quant/institutions/list` - 获取机构列表（支持分页）
+- `GET /api/quant/institutions/:institutionId/holdings` - 获取机构持仓
+- `POST /api/quant/institutions/select-stocks` - 智能选股
+- `POST /api/quant/institutions/calculate-allocation` - 计算资金分配
+- `GET /api/quant/capital/usage` - 获取资金使用情况
 
 **调用关系**:
 - ✅ 使用 `services/capital-manager.service.ts` - 资金管理
@@ -334,7 +340,11 @@ trading-system/
 - ✅ 使用 `services/strategy-scheduler.service.ts` - 策略调度器
 - ✅ 使用 `services/state-manager.service.ts` - 状态管理
 - ✅ 使用 `services/account-balance-sync.service.ts` - 余额同步
+- ✅ 使用 `services/institution-stock-selector.service.ts` - 机构选股服务
+- ✅ 使用 `utils/moomoo-proxy.ts` - Moomoo API代理
 - ✅ 使用 `config/database.ts` - 数据库操作
+- ✅ 使用 `config/longport.ts` - 获取今日订单（Dashboard统计）
+- ✅ 使用 `routes/orders.ts` - 导入 `normalizeStatus` 和 `normalizeSide` 函数
 
 **被调用**:
 - 📌 `server.ts` - 注册路由
@@ -511,6 +521,40 @@ trading-system/
 - 📌 `services/strategy-scheduler.service.ts` - 策略调度器
 - 📌 `services/capital-manager.service.ts` - 资金管理器（计算标的数量）
 
+#### `api/src/services/institution-stock-selector.service.ts`
+**作用**: 机构选股服务
+
+**主要功能**:
+- 获取热门机构列表
+- 获取机构列表（支持分页，42,638个机构）
+- 获取机构持仓列表
+- 智能选股（按持仓占比排序，过滤非美股，支持分页获取）
+- 数据缓存（5-10分钟）
+
+**调用关系**:
+- ✅ 使用 `utils/moomoo-proxy.ts` - Moomoo API代理
+- ✅ 使用 `utils/chinese-number-parser.ts` - 中文数字解析
+- ✅ 使用 `services/institution-cache.service.ts` - 缓存服务
+- ✅ 使用 `config/futunn.ts` - 富途配置
+
+**被调用**:
+- 📌 `routes/quant.ts` - 量化交易 API（机构选股相关接口）
+
+#### `api/src/services/institution-cache.service.ts`
+**作用**: 机构数据缓存服务
+
+**主要功能**:
+- 内存缓存实现
+- 5分钟TTL（可配置）
+- 自动清理过期缓存
+- 最大1000条缓存限制
+
+**调用关系**:
+- ✅ 无外部依赖
+
+**被调用**:
+- 📌 `services/institution-stock-selector.service.ts` - 机构选股服务
+
 #### `api/src/services/state-manager.service.ts`
 **作用**: 策略状态管理器服务
 
@@ -529,21 +573,31 @@ trading-system/
 - 📌 `services/strategies/strategy-base.ts` - 策略基类
 
 #### `api/src/services/basic-execution.service.ts`
-**作用**: 基础执行服务（订单执行）
+**作用**: 基础订单执行服务
 
 **主要功能**:
-- 执行买入/卖出意图
-- 提交订单到 Longbridge SDK
-- 等待订单成交
-- 记录交易结果
+- 执行买入/卖出订单
+- 记录订单到数据库（`execution_orders`表）
+- 关联信号和订单（通过`signal_id`字段）
+- 更新信号状态（订单提交/成交/拒绝/取消时）
 
 **调用关系**:
 - ✅ 使用 `config/longport.ts` - 获取交易上下文
 - ✅ 使用 `config/database.ts` - 数据库操作（记录订单）
+- ✅ 使用 `utils/order-validation.ts` - 订单验证
 - ✅ 使用 `utils/logger.ts` - 日志记录
+- ✅ 使用 `routes/orders.ts` - 导入 `normalizeSide` 函数（用于信号状态更新）
+
+**主要方法**:
+- `executeBuyIntent` - 执行买入订单（接收`signalId`参数）
+- `executeSellIntent` - 执行卖出订单（接收`signalId`参数）
+- `submitOrder` - 提交订单到交易所（保存`signal_id`，更新信号状态）
+- `recordOrder` - 记录订单到数据库（保存`signal_id`字段）
+- `updateSignalStatusBySignalId` - 通过`signal_id`更新信号状态
+- `updateSignalStatusByOrderId` - 通过订单ID更新信号状态（支持历史订单回填）
 
 **被调用**:
-- 📌 `services/strategy-scheduler.service.ts` - 策略调度器（执行交易）
+- 📌 `services/strategy-scheduler.service.ts` - 策略调度器（执行订单）
 
 #### `api/src/services/dynamic-position-manager.service.ts`
 **作用**: 动态持仓管理服务
@@ -591,6 +645,7 @@ trading-system/
 - 订单监控和追踪
 - 持仓检查
 - 动态持仓管理（集成动态调整逻辑）
+- 更新信号状态（订单取消/拒绝时）
 
 **调用关系**:
 - ✅ 使用 `config/database.ts` - 数据库操作
@@ -604,6 +659,11 @@ trading-system/
 - ✅ 使用 `services/trading-recommendation.service.ts` - 交易推荐服务（获取ATR）
 - ✅ 使用 `config/longport.ts` - 获取持仓和订单（直接调用 SDK）
 - ✅ 使用 `utils/logger.ts` - 日志记录
+
+**主要方法**:
+- `trackPendingOrders` - 追踪未成交订单，检测取消/拒绝状态
+- `handleOrderCancelled` - 处理订单取消（更新信号状态为`IGNORED`）
+- `handleOrderRejected` - 处理订单拒绝（更新信号状态为`REJECTED`）
 
 **被调用**:
 - 📌 `server.ts` - 启动时自动启动
@@ -632,9 +692,14 @@ trading-system/
 - 定义策略接口
 - 提供状态管理方法
 - 定义信号生成接口
+- 记录信号到数据库（`logSignal`方法返回`signal_id`）
 
 **调用关系**:
 - ✅ 使用 `services/state-manager.service.ts` - 状态管理
+- ✅ 使用 `config/database.ts` - 数据库操作（记录信号）
+
+**主要方法**:
+- `logSignal` - 记录信号到数据库，返回`signal_id`（用于关联订单）
 
 **被调用**:
 - 📌 `services/strategies/recommendation-strategy.ts` - 推荐策略（继承）
@@ -647,11 +712,13 @@ trading-system/
 - 实现 `StrategyBase` 接口
 - 调用交易推荐服务生成信号
 - 管理策略状态
+- 将`signal_id`传递到订单执行流程（通过`TradingIntent.metadata.signalId`）
 
 **调用关系**:
 - ✅ 继承 `services/strategies/strategy-base.ts` - 策略基类
 - ✅ 使用 `services/trading-recommendation.service.ts` - 交易推荐服务
 - ✅ 使用 `services/state-manager.service.ts` - 状态管理
+- ✅ 调用 `logSignal` 获取`signal_id`并添加到`TradingIntent.metadata`
 
 **被调用**:
 - 📌 `services/strategy-scheduler.service.ts` - 策略调度器（创建策略实例）
@@ -680,14 +747,17 @@ trading-system/
 - 代理富途/Moomoo API 请求
 - 处理 quote-token 计算
 - 错误处理和重试
+- 通过边缘函数代理访问（解决IP限制问题）
 
 **调用关系**:
 - ✅ 使用 `config/futunn.ts` - 富途配置
+- ✅ 调用边缘函数 (`https://cfapi.riowang.win/api/moomooapi`)
 
 **被调用**:
 - 📌 `services/market-data.service.ts` - 市场数据服务
 - 📌 `services/futunn-option-quote.service.ts` - 期权行情服务
 - 📌 `services/futunn-option-chain.service.ts` - 期权链服务
+- 📌 `services/institution-stock-selector.service.ts` - 机构选股服务
 
 #### `api/src/utils/order-validation.ts`
 **作用**: 订单验证工具
@@ -702,6 +772,20 @@ trading-system/
 **被调用**:
 - 📌 `routes/orders.ts` - 订单 API
 - 📌 `services/basic-execution.service.ts` - 订单执行服务
+
+#### `api/src/utils/chinese-number-parser.ts`
+**作用**: 中文数字解析工具
+
+**主要功能**:
+- 解析中文数字格式（如 "15.29亿" → 1529000000）
+- 支持正负数、亿/千万/万单位
+- 批量解析功能
+
+**调用关系**:
+- ✅ 无外部依赖
+
+**被调用**:
+- 📌 `services/institution-stock-selector.service.ts` - 机构选股服务
 
 #### `api/src/utils/trading-hours.ts`
 **作用**: 交易时间工具
@@ -801,13 +885,28 @@ trading-system/
 - 📌 Next.js 路由 `/positions`
 
 #### `frontend/app/orders/page.tsx`
-**作用**: 订单管理页面
+**作用**: 订单管理页面（已重定向到`/quant/orders`）
+
+**调用关系**:
+- ✅ 重定向到 `/quant/orders`
+
+**被调用**:
+- 📌 Next.js 路由 `/orders`（向后兼容，重定向到`/quant/orders`）
+
+#### `frontend/app/quant/orders/page.tsx`
+**作用**: 量化交易订单管理页面（统一订单管理）
+
+**主要功能**:
+- 显示今日订单和历史订单
+- 订单筛选、搜索
+- 订单详情查看
+- 订单取消、修改
 
 **调用关系**:
 - ✅ 使用 `lib/api.ts` - API 调用
 
 **被调用**:
-- 📌 Next.js 路由 `/orders`
+- 📌 Next.js 路由 `/quant/orders`
 
 #### `frontend/app/trades/page.tsx`
 **作用**: 交易记录页面（已废弃，重定向到订单页面）
@@ -865,10 +964,18 @@ trading-system/
 - 📌 Next.js 路由 `/options/[optionCode]`
 
 #### `frontend/app/quant/page.tsx`
-**作用**: 量化交易主页面
+**作用**: 量化交易首页（Dashboard）
+
+**主要功能**:
+- 显示运行中的策略数量
+- 显示总资金
+- 显示今日交易数量（使用长桥API统计，Tooltip显示买入/卖出数量）
+- 显示今日盈亏
+- 显示持仓盈亏
 
 **调用关系**:
-- ✅ 使用 `lib/api.ts` - API 调用
+- ✅ 使用 `lib/api.ts` - API 调用（`getDashboardStats`）
+- ✅ 使用 Ant Design `Tooltip` 组件显示买入/卖出数量
 
 **被调用**:
 - 📌 Next.js 路由 `/quant`
@@ -876,8 +983,16 @@ trading-system/
 #### `frontend/app/quant/strategies/page.tsx`
 **作用**: 策略管理页面
 
+**主要功能**:
+- 策略列表展示
+- 创建策略（支持手动输入和机构选股）
+- 策略类型说明卡片
+- 策略参数配置（ATR周期、倍数、风险收益比）
+- 按钮固定在模态框底部
+
 **调用关系**:
 - ✅ 使用 `lib/api.ts` - API 调用
+- ✅ 使用 `components/InstitutionStockSelector.tsx` - 机构选股组件
 
 **被调用**:
 - 📌 Next.js 路由 `/quant/strategies`
@@ -910,13 +1025,11 @@ trading-system/
 - 📌 Next.js 路由 `/quant/signals`
 
 #### `frontend/app/quant/trades/page.tsx`
-**作用**: 量化交易记录页面
+**作用**: ~~量化交易记录页面~~ **已删除**（2025-12-11）
 
-**调用关系**:
-- ✅ 使用 `lib/api.ts` - API 调用
-
-**被调用**:
-- 📌 Next.js 路由 `/quant/trades`
+**说明**:
+- 功能已整合到订单管理（`/quant/orders`）
+- 所有交易数据统一通过订单管理查看
 
 ---
 
@@ -948,6 +1061,21 @@ trading-system/
 
 **被调用**:
 - 📌 多个页面组件
+
+#### `frontend/components/InstitutionStockSelector.tsx`
+**作用**: 机构选股组件
+
+**主要功能**:
+- 机构选择（热门机构/全部机构切换，支持分页）
+- 股票选择（按持仓占比排序，支持多选）
+- 资金分配预览（按持仓占比分配）
+- 三步骤流程：选择机构 → 选择股票 → 预览分配
+
+**调用关系**:
+- ✅ 使用 `lib/api.ts` - API 调用
+
+**被调用**:
+- 📌 `app/quant/strategies/page.tsx` - 策略创建页面
 
 ---
 
@@ -991,15 +1119,47 @@ trading-system/
 - 创建所有表结构
 - 创建索引和触发器
 - 插入默认配置
+- 包含所有迁移内容（001-011已合并）
+
+**已合并的迁移脚本**:
+- 001-007: 基础表结构
+- 008-009: 回测结果表
+- 010: `capital_allocations.is_system`字段
+- 011: `execution_orders.signal_id`字段
 
 **调用关系**:
 - ✅ 无外部依赖
 
 **被调用**:
 - 📌 数据库初始化时手动执行
+- 📌 Docker Compose 自动执行（挂载到`/docker-entrypoint-initdb.d`）
+
+#### `api/migrations/012_backfill_signal_id_and_status.sql`
+**作用**: 历史数据回填脚本（可选）
+
+**主要功能**:
+- 回填历史订单的`signal_id`字段（时间窗口匹配）
+- 更新历史信号状态（基于订单状态）
+
+**调用关系**:
+- ✅ 无外部依赖
+
+**被调用**:
+- 📌 仅在需要修复历史数据时手动执行
+- ⚠️ **不在初始化时执行**
 
 #### `api/migrations/archive/*.sql`
 **作用**: 历史迁移脚本（已归档）
+
+**归档内容**:
+- 001-007: 基础迁移脚本
+- 008-009: 回测功能迁移脚本
+- 010-011: 量化交易优化迁移脚本
+
+**说明**:
+- 所有脚本内容已合并到`000_init_schema.sql`
+- 仅作为历史记录保留
+- 新项目请使用`000_init_schema.sql`
 
 **调用关系**:
 - ✅ 无外部依赖
@@ -1038,6 +1198,21 @@ trading-system/
 
 **被调用**:
 - 📌 手动执行（诊断用）
+
+#### `api/scripts/backfill-signal-associations.ts`
+**作用**: 历史信号关联数据回填脚本（可选）
+
+**主要功能**:
+- 回填历史订单的`signal_id`字段
+- 更新历史信号状态
+- 支持dry-run模式
+- 支持时间窗口配置（默认±5分钟）
+
+**调用关系**:
+- ✅ 使用 `config/database.ts` - 数据库操作
+
+**被调用**:
+- 📌 手动执行：`npm run backfill-signals` 或 `npm run backfill-signals -- --dry-run`
 
 ---
 
@@ -1082,8 +1257,20 @@ trading-system/
 #### `docker-compose.yml`
 **作用**: Docker Compose 生产环境配置
 
+**主要功能**:
+- PostgreSQL 数据库服务（带健康检查）
+- API 服务（带健康检查、资源限制）
+- Frontend 服务（带健康检查、资源限制）
+- 只挂载初始化脚本（`000_init_schema.sql`）
+
+**优化内容**:
+- ✅ 添加健康检查（所有服务）
+- ✅ 添加资源限制（CPU、内存）
+- ✅ 优化迁移脚本挂载（只挂载初始化脚本）
+- ✅ Frontend 依赖 API 健康状态
+
 **调用关系**:
-- ✅ 定义服务容器配置
+- ✅ 无外部依赖
 
 **被调用**:
 - 📌 Docker Compose
@@ -1091,11 +1278,91 @@ trading-system/
 #### `docker-compose.dev.yml`
 **作用**: Docker Compose 开发环境配置
 
+**主要功能**:
+- PostgreSQL 数据库服务（带健康检查）
+- API 服务（开发模式，支持热重载，带健康检查）
+- Frontend 服务（开发模式，支持热重载，带健康检查）
+- 只挂载初始化脚本（`000_init_schema.sql`）
+
+**优化内容**:
+- ✅ 添加健康检查（所有服务）
+- ✅ Frontend 依赖 API 健康状态
+- ✅ 支持源代码热重载
+
 **调用关系**:
-- ✅ 定义开发服务容器配置
+- ✅ 无外部依赖
 
 **被调用**:
-- 📌 Docker Compose
+- 📌 Docker Compose（开发环境）
+
+#### `api/Dockerfile`
+**作用**: API 服务生产环境 Dockerfile
+
+**主要功能**:
+- 构建 TypeScript 代码
+- 创建非 root 用户运行服务
+- 添加健康检查支持
+
+**优化内容**:
+- ✅ 添加 `curl` 用于健康检查
+- ✅ 添加 `HEALTHCHECK` 指令
+- ✅ 创建非 root 用户（nodejs:1001）
+
+#### `api/Dockerfile.dev`
+**作用**: API 服务开发环境 Dockerfile
+
+**主要功能**:
+- 支持热重载（tsx watch）
+- 添加健康检查支持
+
+#### `frontend/Dockerfile`
+**作用**: Frontend 服务生产环境 Dockerfile
+
+**主要功能**:
+- 多阶段构建（builder + runner）
+- 使用 Next.js standalone 模式
+- 创建非 root 用户运行服务
+- 添加健康检查支持
+
+**优化内容**:
+- ✅ 添加 `curl` 用于健康检查
+- ✅ 添加 `HEALTHCHECK` 指令
+
+#### `frontend/Dockerfile.dev`
+**作用**: Frontend 服务开发环境 Dockerfile
+
+**主要功能**:
+- 支持热重载（next dev）
+- 添加健康检查支持
+
+#### `docker-check.sh` / `docker-check.ps1`
+**作用**: Docker 构建和启动检查脚本
+
+**主要功能**:
+- 检查 Docker 环境
+- 检查必要文件
+- 检查端口占用
+- 检查环境变量文件
+- 构建镜像
+- 启动服务
+- 等待服务就绪
+- 检查健康状态
+
+**调用关系**:
+- ✅ 调用 Docker 和 Docker Compose 命令
+
+**被调用**:
+- 📌 手动执行（Linux/Mac: `./docker-check.sh`，Windows: `.\docker-check.ps1`）
+
+#### `DOCKER_OPTIMIZATION.md`
+**作用**: Docker 配置优化说明文档
+
+**主要内容**:
+- Dockerfile 优化说明
+- Docker Compose 优化说明
+- 健康检查配置
+- 资源限制配置
+- 故障排除指南
 
 ---
 
@@ -1172,24 +1439,62 @@ frontend/app/* (所有页面)
    ├── stock-selector.service.ts (获取标的池)
    ├── state-manager.service.ts (检查状态)
    ├── recommendation-strategy.ts (生成信号)
+   │   ├── strategy-base.ts.logSignal() (返回 signal_id)
    │   └── trading-recommendation.service.ts
    │       └── market-data-cache.service.ts
    │           └── market-data.service.ts
    ├── capital-manager.service.ts (申请资金)
    │   └── config/longport.ts (获取余额)
    └── basic-execution.service.ts (执行订单)
+       ├── 接收 signalId 参数
+       ├── 保存 signal_id 到 execution_orders 表
+       ├── 更新信号状态（EXECUTED/REJECTED/IGNORED）
        └── config/longport.ts (提交订单)
 ```
 
 ### 订单查询流程
 
 ```
-1. frontend/app/orders/page.tsx
+1. frontend/app/quant/orders/page.tsx（统一订单管理）
    └── lib/api.ts
-       └── GET /api/orders/today
+       └── GET /api/orders/today（今日订单）
+       └── GET /api/orders/history（历史订单）
            └── routes/orders.ts
                └── config/longport.ts
-                   └── tradeCtx.todayOrders()
+                   └── tradeCtx.todayOrders() / tradeCtx.historyOrders()
+```
+
+### 信号状态更新流程
+
+```
+1. services/strategies/recommendation-strategy.ts（生成信号）
+   └── strategy-base.ts.logSignal()
+       └── 返回 signal_id
+       └── 添加到 TradingIntent.metadata.signalId
+
+2. services/basic-execution.service.ts（执行订单）
+   └── executeBuyIntent/executeSellIntent（接收 signalId）
+       └── submitOrder（保存 signal_id，更新信号状态为 EXECUTED）
+           └── recordOrder（保存 signal_id 到 execution_orders 表）
+           └── waitForOrderFill（订单成交时确认信号状态）
+
+3. services/strategy-scheduler.service.ts（订单监控）
+   └── trackPendingOrders（检测订单状态变化）
+       └── handleOrderCancelled（订单取消 → 信号状态 IGNORED）
+       └── handleOrderRejected（订单拒绝 → 信号状态 REJECTED）
+```
+
+### Dashboard 统计流程
+
+```
+1. frontend/app/quant/page.tsx（量化首页）
+   └── lib/api.ts.getDashboardStats()
+       └── GET /api/quant/dashboard/stats
+           └── routes/quant.ts
+               └── config/longport.ts.tradeCtx.todayOrders()
+                   └── 统计已成交订单（FilledStatus/PartialFilledStatus）
+                   └── 区分买入和卖出数量
+                   └── 返回 todayTrades, todayBuyOrders, todaySellOrders
 ```
 
 ---
@@ -1201,6 +1506,28 @@ frontend/app/* (所有页面)
 3. **Longbridge SDK**: 行情查询使用 `getQuoteContext()`，交易操作使用 `getTradeContext()`
 4. **日志记录**: 所有服务都使用 `utils/logger.ts` 进行日志记录
 5. **错误处理**: 所有路由都通过 `middleware/errorHandler.ts` 统一处理错误
+6. **信号订单关联**: 新订单通过`signal_id`字段关联信号，历史订单可通过时间窗口匹配回填
+7. **数据源统一**: 所有交易数据来自长桥API，`auto_trades`表保留用于兼容但不再作为主要数据源
+8. **订单管理统一**: 所有订单管理功能统一在`/quant/orders`页面，`/quant/trades`已删除
+
+## 最新变更（2025-12-11）
+
+### 量化交易订单管理重构
+- ✅ 删除`/quant/trades`页面和API
+- ✅ 移动订单管理到`/quant/orders`
+- ✅ 修改今日交易数量统计（使用长桥API）
+- ✅ 修复信号日志状态更新（通过`signal_id`关联）
+
+### Docker 优化
+- ✅ 添加健康检查（所有服务）
+- ✅ 添加资源限制
+- ✅ 优化迁移脚本挂载
+- ✅ 创建错误检测脚本
+
+### 数据库迁移脚本清理
+- ✅ 合并010和011到`000_init_schema.sql`
+- ✅ 归档历史迁移脚本（001-011）
+- ✅ 保留012作为可选的历史数据修复脚本
 
 ---
 

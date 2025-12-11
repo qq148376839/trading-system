@@ -4,7 +4,9 @@ import { useEffect, useState, useMemo } from 'react'
 import { forexApi } from '@/lib/api'
 import { calculateZIG } from '@/lib/indicators'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
-import BackButton from '@/components/BackButton'
+import AppLayout from '@/components/AppLayout'
+import { Card, Select, Button, Alert, Spin, Checkbox, Row, Col, Space, Statistic, Collapse, Input } from 'antd'
+import { ReloadOutlined } from '@ant-design/icons'
 
 interface ForexProduct {
   code: string
@@ -123,240 +125,255 @@ export default function ForexPage() {
   const selectedProductInfo = products.find(p => p.code === selectedProduct)
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div className="px-4 py-6 sm:px-0">
-          <div className="mb-4">
-            <BackButton />
-          </div>
+    <AppLayout>
+      <Card>
+        <h1 style={{ fontSize: 24, fontWeight: 600, marginBottom: 16 }}>外汇市场行情</h1>
 
-          <div className="bg-white shadow rounded-lg p-6">
-            <h1 className="text-2xl font-bold text-gray-900 mb-6">外汇市场行情</h1>
+        {/* 产品选择和K线类型 */}
+        <Card style={{ marginBottom: 16 }}>
+          <Row gutter={16}>
+            <Col xs={24} sm={12} md={8}>
+              <div style={{ marginBottom: 8, fontWeight: 500 }}>外汇产品</div>
+              <Select
+                value={selectedProduct}
+                onChange={setSelectedProduct}
+                style={{ width: '100%' }}
+              >
+                {products.map((product) => (
+                  <Select.Option key={product.code} value={product.code}>
+                    {product.name} ({product.code})
+                  </Select.Option>
+                ))}
+              </Select>
+            </Col>
+            <Col xs={24} sm={12} md={8}>
+              <div style={{ marginBottom: 8, fontWeight: 500 }}>K线类型</div>
+              <Select
+                value={quoteType}
+                onChange={setQuoteType}
+                style={{ width: '100%' }}
+              >
+                <Select.Option value="minute">分时</Select.Option>
+                <Select.Option value="5day">5日</Select.Option>
+                <Select.Option value="day">日K</Select.Option>
+                <Select.Option value="week">周K</Select.Option>
+                <Select.Option value="month">月K</Select.Option>
+                <Select.Option value="quarter">季K</Select.Option>
+                <Select.Option value="year">年K</Select.Option>
+              </Select>
+            </Col>
+            <Col xs={24} sm={24} md={8}>
+              <div style={{ marginBottom: 8 }}>&nbsp;</div>
+              <Button
+                type="primary"
+                icon={<ReloadOutlined />}
+                onClick={fetchData}
+                loading={loading}
+                block
+              >
+                刷新数据
+              </Button>
+            </Col>
+          </Row>
+        </Card>
 
-            {/* 产品选择和K线类型 */}
-            <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  外汇产品
-                </label>
-                <select
-                  value={selectedProduct}
-                  onChange={(e) => setSelectedProduct(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+        {/* ZIG指标设置 */}
+        <Card style={{ marginBottom: 16 }}>
+          <Checkbox
+            checked={showZIG}
+            onChange={(e) => setShowZIG(e.target.checked)}
+            style={{ marginBottom: showZIG ? 16 : 0 }}
+          >
+            显示ZIG指标（之字转向）
+          </Checkbox>
+          {showZIG && (
+            <Row gutter={16}>
+              <Col xs={24} sm={12}>
+                <div style={{ marginBottom: 8, fontWeight: 500 }}>计算依据</div>
+                <Select
+                  value={zigPriceType}
+                  onChange={(value) => setZigPriceType(value)}
+                  style={{ width: '100%' }}
                 >
-                  {products.map((product) => (
-                    <option key={product.code} value={product.code}>
-                      {product.name} ({product.code})
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  K线类型
-                </label>
-                <select
-                  value={quoteType}
-                  onChange={(e) => setQuoteType(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="minute">分时</option>
-                  <option value="5day">5日</option>
-                  <option value="day">日K</option>
-                  <option value="week">周K</option>
-                  <option value="month">月K</option>
-                  <option value="quarter">季K</option>
-                  <option value="year">年K</option>
-                </select>
-              </div>
-              <div className="flex items-end">
-                <button
-                  onClick={fetchData}
-                  disabled={loading}
-                  className="w-full px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400"
-                >
-                  {loading ? '加载中...' : '刷新数据'}
-                </button>
-              </div>
-            </div>
-
-            {/* ZIG指标设置 */}
-            <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
-              <div className="flex items-center mb-3">
-                <input
-                  type="checkbox"
-                  id="showZIGForex"
-                  checked={showZIG}
-                  onChange={(e) => setShowZIG(e.target.checked)}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  <Select.Option value="close">收盘价</Select.Option>
+                  <Select.Option value="high">最高价</Select.Option>
+                  <Select.Option value="low">最低价</Select.Option>
+                </Select>
+              </Col>
+              <Col xs={24} sm={12}>
+                <div style={{ marginBottom: 8, fontWeight: 500 }}>转向幅度 (%)</div>
+                <Input
+                  type="number"
+                  value={zigReversalPercent}
+                  onChange={(e) => setZigReversalPercent(parseFloat(e.target.value) || 5)}
+                  min={0.1}
+                  max={50}
+                  step={0.1}
                 />
-                <label htmlFor="showZIGForex" className="ml-2 text-sm font-medium text-gray-700">
-                  显示ZIG指标（之字转向）
-                </label>
-              </div>
+              </Col>
+            </Row>
+          )}
+        </Card>
+
+        {/* 错误提示 */}
+        {error && (
+          <Alert
+            message={error}
+            type="error"
+            showIcon
+            closable
+            onClose={() => setError(null)}
+            style={{ marginBottom: 16 }}
+          />
+        )}
+
+        {/* 实时报价 */}
+        {quote && (
+          <Card
+            style={{
+              marginBottom: 16,
+              background: 'linear-gradient(135deg, #1890ff 0%, #096dd9 100%)',
+              color: '#fff',
+            }}
+          >
+            <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16, color: '#fff' }}>
+              {selectedProductInfo?.name || selectedProduct} 实时报价
+            </h2>
+            <Row gutter={16}>
+              <Col xs={12} sm={6}>
+                <Statistic
+                  title={<span style={{ color: 'rgba(255,255,255,0.9)' }}>最新价</span>}
+                  value={quote.price || quote.lastPrice || '-'}
+                  valueStyle={{ color: '#fff', fontSize: 24, fontWeight: 600 }}
+                />
+              </Col>
+              <Col xs={12} sm={6}>
+                <Statistic
+                  title={<span style={{ color: 'rgba(255,255,255,0.9)' }}>涨跌</span>}
+                  value={(quote.change || 0) >= 0 ? '+' : ''}
+                  suffix={quote.change || '-'}
+                  valueStyle={{
+                    color: (quote.change || 0) >= 0 ? '#fff' : '#fff',
+                    fontSize: 24,
+                    fontWeight: 600,
+                  }}
+                />
+              </Col>
+              <Col xs={12} sm={6}>
+                <Statistic
+                  title={<span style={{ color: 'rgba(255,255,255,0.9)' }}>涨跌幅</span>}
+                  value={(quote.changeRate || 0) >= 0 ? '+' : ''}
+                  suffix={`${quote.changeRate || '-'}%`}
+                  valueStyle={{
+                    color: '#fff',
+                    fontSize: 24,
+                    fontWeight: 600,
+                  }}
+                />
+              </Col>
+              <Col xs={12} sm={6}>
+                <Statistic
+                  title={<span style={{ color: 'rgba(255,255,255,0.9)' }}>代码</span>}
+                  value={quote.code || selectedProduct}
+                  valueStyle={{ color: '#fff', fontSize: 24, fontWeight: 600 }}
+                />
+              </Col>
+            </Row>
+          </Card>
+        )}
+
+        {/* K线图表 */}
+        {chartData.length > 0 && (
+          <Card style={{ marginBottom: 16 }}>
+            <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>
+              {selectedProductInfo?.name} - {
+                quoteType === 'minute' ? '分时' :
+                quoteType === '5day' ? '5日' :
+                quoteType === 'day' ? '日K' :
+                quoteType === 'week' ? '周K' :
+                quoteType === 'month' ? '月K' :
+                quoteType === 'quarter' ? '季K' :
+                quoteType === 'year' ? '年K' : ''
+              }走势
               {showZIG && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      计算依据
-                    </label>
-                    <select
-                      value={zigPriceType}
-                      onChange={(e) => setZigPriceType(e.target.value as 'close' | 'high' | 'low')}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value="close">收盘价</option>
-                      <option value="high">最高价</option>
-                      <option value="low">最低价</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      转向幅度 (%)
-                    </label>
-                    <input
-                      type="number"
-                      value={zigReversalPercent}
-                      onChange={(e) => setZigReversalPercent(parseFloat(e.target.value) || 5)}
-                      min="0.1"
-                      max="50"
-                      step="0.1"
-                      className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                </div>
+                <span style={{ marginLeft: 8, fontSize: 14, fontWeight: 400, color: '#666' }}>
+                  (ZIG: {zigPriceType === 'close' ? '收盘价' : zigPriceType === 'high' ? '最高价' : '最低价'}, {zigReversalPercent}%)
+                </span>
               )}
+            </h2>
+            <ResponsiveContainer width="100%" height={400}>
+              <LineChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis 
+                  dataKey="time" 
+                  angle={-45}
+                  textAnchor="end"
+                  height={60}
+                  interval="preserveStartEnd"
+                />
+                <YAxis 
+                  domain={['auto', 'auto']}
+                  label={{ value: '价格', angle: -90, position: 'insideLeft' }}
+                />
+                <Tooltip 
+                  formatter={(value: any) => [value, '价格']}
+                  labelFormatter={(label) => `时间: ${label}`}
+                />
+                <Legend />
+                <Line 
+                  type="monotone" 
+                  dataKey="price" 
+                  stroke="#1890ff" 
+                  strokeWidth={2} 
+                  name="价格"
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                />
+                {showZIG && (
+                  <Line
+                    type="monotone"
+                    dataKey="zig"
+                    stroke="#52c41a"
+                    strokeWidth={2}
+                    name={`ZIG(${zigPriceType === 'close' ? '收盘价' : zigPriceType === 'high' ? '最高价' : '最低价'},${zigReversalPercent}%)`}
+                    dot={false}
+                    connectNulls={true}
+                    activeDot={{ r: 4 }}
+                  />
+                )}
+              </LineChart>
+            </ResponsiveContainer>
+          </Card>
+        )}
+
+        {/* 原始数据展示（调试用） */}
+        {candlestick && (
+          <Card>
+            <Collapse
+              items={[
+                {
+                  key: '1',
+                  label: '查看原始数据（调试）',
+                  children: (
+                    <pre style={{ fontSize: 12, overflow: 'auto', maxHeight: 400, background: '#f5f5f5', padding: 16, borderRadius: 4 }}>
+                      {JSON.stringify(candlestick, null, 2)}
+                    </pre>
+                  ),
+                },
+              ]}
+            />
+          </Card>
+        )}
+
+        {!loading && !quote && !candlestick && (
+          <Card>
+            <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+              暂无数据，请选择外汇产品并点击刷新
             </div>
-
-            {/* 错误提示 */}
-            {error && (
-              <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
-                {error}
-              </div>
-            )}
-
-            {/* 实时报价 */}
-            {quote && (
-              <div className="mb-6 p-4 bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg shadow-lg text-white">
-                <h2 className="text-lg font-semibold mb-3">
-                  {selectedProductInfo?.name || selectedProduct} 实时报价
-                </h2>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                  <div>
-                    <div className="text-sm opacity-90 mb-1">最新价</div>
-                    <div className="text-2xl font-bold">
-                      {quote.price || quote.lastPrice || '-'}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-sm opacity-90 mb-1">涨跌</div>
-                    <div className={`text-2xl font-bold ${(quote.change || 0) >= 0 ? 'text-green-200' : 'text-red-200'}`}>
-                      {(quote.change || 0) >= 0 ? '+' : ''}{quote.change || '-'}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-sm opacity-90 mb-1">涨跌幅</div>
-                    <div className={`text-2xl font-bold ${(quote.changeRate || 0) >= 0 ? 'text-green-200' : 'text-red-200'}`}>
-                      {(quote.changeRate || 0) >= 0 ? '+' : ''}{quote.changeRate || '-'}%
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-sm opacity-90 mb-1">代码</div>
-                    <div className="text-2xl font-bold">
-                      {quote.code || selectedProduct}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* K线图表 */}
-            {chartData.length > 0 && (
-              <div className="mb-6">
-                <h2 className="text-lg font-semibold text-gray-900 mb-4">
-                  {selectedProductInfo?.name} - {
-                    quoteType === 'minute' ? '分时' :
-                    quoteType === '5day' ? '5日' :
-                    quoteType === 'day' ? '日K' :
-                    quoteType === 'week' ? '周K' :
-                    quoteType === 'month' ? '月K' :
-                    quoteType === 'quarter' ? '季K' :
-                    quoteType === 'year' ? '年K' : ''
-                  }走势
-                  {showZIG && (
-                    <span className="ml-2 text-sm font-normal text-gray-600">
-                      (ZIG: {zigPriceType === 'close' ? '收盘价' : zigPriceType === 'high' ? '最高价' : '最低价'}, {zigReversalPercent}%)
-                    </span>
-                  )}
-                </h2>
-                <ResponsiveContainer width="100%" height={400}>
-                  <LineChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis 
-                      dataKey="time" 
-                      angle={-45}
-                      textAnchor="end"
-                      height={60}
-                      interval="preserveStartEnd"
-                    />
-                    <YAxis 
-                      domain={['auto', 'auto']}
-                      label={{ value: '价格', angle: -90, position: 'insideLeft' }}
-                    />
-                    <Tooltip 
-                      formatter={(value: any) => [value, '价格']}
-                      labelFormatter={(label) => `时间: ${label}`}
-                    />
-                    <Legend />
-                    <Line 
-                      type="monotone" 
-                      dataKey="price" 
-                      stroke="#3b82f6" 
-                      strokeWidth={2} 
-                      name="价格"
-                      dot={false}
-                      activeDot={{ r: 4 }}
-                    />
-                    {showZIG && (
-                      <Line
-                        type="monotone"
-                        dataKey="zig"
-                        stroke="#10b981"
-                        strokeWidth={2}
-                        name={`ZIG(${zigPriceType === 'close' ? '收盘价' : zigPriceType === 'high' ? '最高价' : '最低价'},${zigReversalPercent}%)`}
-                        dot={false}
-                        connectNulls={true}
-                        activeDot={{ r: 4 }}
-                      />
-                    )}
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-
-            {/* 原始数据展示（调试用） */}
-            {candlestick && (
-              <div className="mt-6">
-                <details className="bg-gray-50 p-4 rounded-lg">
-                  <summary className="cursor-pointer text-sm font-medium text-gray-700 mb-2">
-                    查看原始数据（调试）
-                  </summary>
-                  <pre className="text-xs overflow-auto max-h-96 bg-white p-4 rounded border">
-                    {JSON.stringify(candlestick, null, 2)}
-                  </pre>
-                </details>
-              </div>
-            )}
-
-            {!loading && !quote && !candlestick && (
-              <div className="text-center py-8 text-gray-500">
-                暂无数据，请选择外汇产品并点击刷新
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
+          </Card>
+        )}
+      </Card>
+    </AppLayout>
   )
 }
 

@@ -8,6 +8,7 @@ import pool from '../config/database';
 import { TradingIntent } from './strategies/strategy-base';
 import { detectMarket } from '../utils/order-validation';
 import { logger } from '../utils/logger';
+import { normalizeSide } from '../routes/orders';
 
 export interface ExecutionResult {
   success: boolean;
@@ -22,7 +23,58 @@ export interface ExecutionResult {
 
 class BasicExecutionService {
   /**
+   * 验证买入价格的合理性
+   * @param buyPrice 买入价格
+   * @param currentPrice 当前市场价格
+   * @param symbol 标的代码
+   * @returns 验证结果
+   */
+  private validateBuyPrice(
+    buyPrice: number,
+    currentPrice: number | null,
+    symbol: string
+  ): { valid: boolean; warning?: string; error?: string } {
+    // 基础验证：价格必须大于0
+    if (buyPrice <= 0) {
+      return {
+        valid: false,
+        error: `买入价格无效: ${buyPrice}`,
+      };
+    }
+
+    // 如果无法获取当前市场价格，跳过价格偏差验证（记录警告）
+    if (currentPrice === null || currentPrice <= 0) {
+      logger.warn(`无法获取${symbol}的当前市场价格，跳过价格偏差验证`);
+      return { valid: true };
+    }
+
+    // 计算价格偏差百分比
+    const priceDeviation = Math.abs((buyPrice - currentPrice) / currentPrice) * 100;
+
+    // 偏差超过5%：拒绝订单（买入价格偏差应该更严格）
+    if (priceDeviation > 5) {
+      return {
+        valid: false,
+        error: `买入价格偏差过大: ${buyPrice.toFixed(2)} vs 市场价格 ${currentPrice.toFixed(2)} (偏差${priceDeviation.toFixed(2)}%)`,
+      };
+    }
+
+    // 偏差在1%-5%之间：记录警告，但仍允许提交（限价单允许一定偏差）
+    if (priceDeviation > 1) {
+      return {
+        valid: true,
+        warning: `买入价格偏差较大: ${buyPrice.toFixed(2)} vs 市场价格 ${currentPrice.toFixed(2)} (偏差${priceDeviation.toFixed(2)}%)`,
+      };
+    }
+
+    return { valid: true };
+  }
+
+  /**
    * 执行买入意图
+   * 
+   * 价格使用逻辑：
+   * - entryPrice: 买入价格（限价单价格）
    */
   async executeBuyIntent(
     intent: TradingIntent,
@@ -35,16 +87,54 @@ class BasicExecutionService {
       };
     }
 
+    // 价格验证：获取当前市场价格并验证合理性
+    const currentPrice = await this.getCurrentMarketPrice(intent.symbol);
+    const priceValidation = this.validateBuyPrice(intent.entryPrice, currentPrice, intent.symbol);
+    
+    if (!priceValidation.valid) {
+      logger.error(`策略 ${strategyId} 标的 ${intent.symbol}: 价格验证失败 - ${priceValidation.error}`);
+      // 如果价格验证失败，更新信号状态为REJECTED
+      const signalId = (intent.metadata as any)?.signalId;
+      if (signalId) {
+        await this.updateSignalStatusBySignalId(signalId, 'REJECTED');
+      }
+      return {
+        success: false,
+        error: priceValidation.error || '价格验证失败',
+      };
+    }
+
+    // 如果有警告，记录日志
+    if (priceValidation.warning) {
+      logger.warn(`策略 ${strategyId} 标的 ${intent.symbol}: ${priceValidation.warning}`);
+    }
+
+    // 记录价格信息，便于调试和问题追踪
+    logger.log(`策略 ${strategyId} 执行买入意图: ` +
+      `标的=${intent.symbol}, ` +
+      `数量=${intent.quantity}, ` +
+      `买入价(entryPrice)=${intent.entryPrice.toFixed(2)}, ` +
+      `市场价格=${currentPrice?.toFixed(2) || 'N/A'}, ` +
+      `原因=${intent.reason}`);
+
+    // 从intent.metadata中获取signal_id
+    const signalId = (intent.metadata as any)?.signalId;
+
     try {
       return await this.submitOrder(
         intent.symbol,
         'BUY',
         intent.quantity,
-        intent.entryPrice,
-        strategyId
+        intent.entryPrice, // ✅ 买入时entryPrice就是买入价格
+        strategyId,
+        signalId  // 新增参数：信号ID
       );
     } catch (error: any) {
       logger.error(`执行买入失败 (${intent.symbol}):`, error);
+      // 如果订单提交失败，更新信号状态为REJECTED
+      if (signalId) {
+        await this.updateSignalStatusBySignalId(signalId, 'REJECTED');
+      }
       return {
         success: false,
         error: error.message || '未知错误',
@@ -53,29 +143,152 @@ class BasicExecutionService {
   }
 
   /**
+   * 验证卖出价格的合理性
+   * @param sellPrice 卖出价格
+   * @param currentPrice 当前市场价格
+   * @param symbol 标的代码
+   * @returns 验证结果
+   */
+  private validateSellPrice(
+    sellPrice: number,
+    currentPrice: number | null,
+    symbol: string
+  ): { valid: boolean; warning?: string; error?: string } {
+    // 基础验证：价格必须大于0
+    if (sellPrice <= 0) {
+      return {
+        valid: false,
+        error: `卖出价格无效: ${sellPrice}`,
+      };
+    }
+
+    // 如果无法获取当前市场价格，跳过价格偏差验证（记录警告）
+    if (currentPrice === null || currentPrice <= 0) {
+      logger.warn(`无法获取${symbol}的当前市场价格，跳过价格偏差验证`);
+      return { valid: true };
+    }
+
+    // 计算价格偏差百分比
+    const priceDeviation = Math.abs((sellPrice - currentPrice) / currentPrice) * 100;
+
+    // 偏差超过20%：拒绝订单
+    if (priceDeviation > 20) {
+      return {
+        valid: false,
+        error: `卖出价格偏差过大: ${sellPrice.toFixed(2)} vs 市场价格 ${currentPrice.toFixed(2)} (偏差${priceDeviation.toFixed(2)}%)`,
+      };
+    }
+
+    // 偏差在5%-20%之间：记录警告，但仍允许提交
+    if (priceDeviation > 5) {
+      return {
+        valid: true,
+        warning: `卖出价格偏差较大: ${sellPrice.toFixed(2)} vs 市场价格 ${currentPrice.toFixed(2)} (偏差${priceDeviation.toFixed(2)}%)`,
+      };
+    }
+
+    return { valid: true };
+  }
+
+  /**
+   * 获取当前市场价格（用于价格验证）
+   */
+  private async getCurrentMarketPrice(symbol: string): Promise<number | null> {
+    try {
+      const { getQuoteContext } = await import('../config/longport');
+      const quoteCtx = await getQuoteContext();
+      const quotes = await quoteCtx.quote([symbol]);
+      
+      if (quotes && quotes.length > 0) {
+        const quote = quotes[0];
+        const price = parseFloat(quote.lastDone?.toString() || quote.last_done?.toString() || '0');
+        if (price > 0) {
+          return price;
+        }
+      }
+      return null;
+    } catch (error: any) {
+      logger.warn(`获取${symbol}当前市场价格失败:`, error.message);
+      return null;
+    }
+  }
+
+  /**
    * 执行卖出意图
+   * 
+   * 价格使用逻辑：
+   * - 平仓场景：优先使用sellPrice（当前市场价格），entryPrice用于记录买入价格
+   * - 做空场景：使用entryPrice（做空价格），sellPrice不使用
    */
   async executeSellIntent(
     intent: TradingIntent,
     strategyId: number
   ): Promise<ExecutionResult> {
-    if (!intent.quantity || !intent.entryPrice) {
+    // 验证必要参数
+    if (!intent.quantity) {
       return {
         success: false,
-        error: '缺少数量或价格信息',
+        error: '缺少数量信息',
       };
     }
+
+    // 确定卖出价格
+    // 优先级：sellPrice > entryPrice
+    // sellPrice: 用于平仓场景（推荐）
+    // entryPrice: 用于做空场景（fallback）
+    const sellPrice = intent.sellPrice || intent.entryPrice;
+    
+    if (!sellPrice || sellPrice <= 0) {
+      return {
+        success: false,
+        error: `缺少有效的卖出价格信息 (sellPrice=${intent.sellPrice}, entryPrice=${intent.entryPrice})`,
+      };
+    }
+
+    // 价格验证：获取当前市场价格并验证合理性
+    const currentPrice = await this.getCurrentMarketPrice(intent.symbol);
+    const priceValidation = this.validateSellPrice(sellPrice, currentPrice, intent.symbol);
+    
+    if (!priceValidation.valid) {
+      logger.error(`策略 ${strategyId} 标的 ${intent.symbol}: 价格验证失败 - ${priceValidation.error}`);
+      return {
+        success: false,
+        error: priceValidation.error || '价格验证失败',
+      };
+    }
+
+    // 如果有警告，记录日志
+    if (priceValidation.warning) {
+      logger.warn(`策略 ${strategyId} 标的 ${intent.symbol}: ${priceValidation.warning}`);
+    }
+
+    // 记录价格信息，便于调试和问题追踪
+    logger.log(`策略 ${strategyId} 执行卖出意图: ` +
+      `标的=${intent.symbol}, ` +
+      `数量=${intent.quantity}, ` +
+      `卖出价=${sellPrice.toFixed(2)}, ` +
+      `买入价(entryPrice)=${intent.entryPrice?.toFixed(2) || 'N/A'}, ` +
+      `市场价格=${currentPrice?.toFixed(2) || 'N/A'}, ` +
+      `原因=${intent.reason}`);
+
+    // 从intent.metadata中获取signal_id
+    const signalId = (intent.metadata as any)?.signalId;
 
     try {
       return await this.submitOrder(
         intent.symbol,
         'SELL',
         intent.quantity,
-        intent.entryPrice,
-        strategyId
+        sellPrice, // ✅ 使用正确的卖出价格
+        strategyId,
+        signalId  // 新增参数：信号ID
       );
     } catch (error: any) {
       logger.error(`执行卖出失败 (${intent.symbol}):`, error);
+      // 如果订单提交失败，更新信号状态为REJECTED
+      if (signalId) {
+        await this.updateSignalStatusBySignalId(signalId, 'REJECTED');
+      }
       return {
         success: false,
         error: error.message || '未知错误',
@@ -184,22 +397,61 @@ class BasicExecutionService {
 
       // 5. 记录订单到数据库
       try {
-        await this.recordOrder(strategyId, symbol, side, quantity, price, orderId);
+        await this.recordOrder(strategyId, symbol, side, quantity, price, orderId, signalId);
       } catch (dbError: any) {
         logger.error(`记录订单到数据库失败 (${orderId}):`, dbError.message);
         // 不阻止后续流程，因为订单已经提交成功
       }
 
-      // 6. 等待订单成交（异步，不阻塞）
+      // 6. 如果订单提交成功，更新信号状态为EXECUTED
+      if (signalId) {
+        try {
+          await this.updateSignalStatusBySignalId(signalId, 'EXECUTED');
+        } catch (signalError: any) {
+          logger.warn(`更新信号状态失败 (signalId: ${signalId}, orderId: ${orderId}):`, signalError.message);
+          // 不阻止后续流程
+        }
+      }
+
+      // 7. 等待订单成交（异步，不阻塞）
       // 注意：这里不等待订单成交，因为订单可能不会立即成交
       // 后续通过定时任务同步订单状态
       const orderDetail = await this.waitForOrderFill(orderId, 10000); // 10秒超时
 
-      // 7. 获取实际手续费
+      // 8. 如果订单已成交，确认信号状态为EXECUTED
+      const normalizedStatus = this.normalizeStatus(orderDetail.status);
+      if (normalizedStatus === 'FilledStatus' || normalizedStatus === 'PartialFilledStatus') {
+        if (signalId) {
+          try {
+            await this.updateSignalStatusBySignalId(signalId, 'EXECUTED');
+          } catch (signalError: any) {
+            logger.warn(`确认信号状态失败 (signalId: ${signalId}, orderId: ${orderId}):`, signalError.message);
+          }
+        }
+      } else if (normalizedStatus === 'RejectedStatus') {
+        // 如果订单被拒绝，更新信号状态为REJECTED
+        if (signalId) {
+          try {
+            await this.updateSignalStatusBySignalId(signalId, 'REJECTED');
+          } catch (signalError: any) {
+            logger.warn(`更新信号状态为REJECTED失败 (signalId: ${signalId}, orderId: ${orderId}):`, signalError.message);
+          }
+        }
+      } else if (normalizedStatus === 'CanceledStatus' || normalizedStatus === 'PendingCancelStatus') {
+        // 如果订单被取消，更新信号状态为IGNORED
+        if (signalId) {
+          try {
+            await this.updateSignalStatusBySignalId(signalId, 'IGNORED');
+          } catch (signalError: any) {
+            logger.warn(`更新信号状态为IGNORED失败 (signalId: ${signalId}, orderId: ${orderId}):`, signalError.message);
+          }
+        }
+      }
+
+      // 9. 获取实际手续费
       const fees = await this.getOrderFees(orderId);
 
-      // 8. 记录交易到数据库（如果已成交）
-      const normalizedStatus = this.normalizeStatus(orderDetail.status);
+      // 10. 记录交易到数据库（如果已成交）
       if (normalizedStatus === 'FilledStatus' || normalizedStatus === 'PartialFilledStatus') {
         try {
           await this.recordTrade(strategyId, symbol, side, orderDetail, fees);
@@ -407,14 +659,148 @@ class BasicExecutionService {
     side: string,
     quantity: number,
     price: number,
-    orderId: string
+    orderId: string,
+    signalId?: number
   ): Promise<void> {
     await pool.query(
       `INSERT INTO execution_orders 
-       (strategy_id, symbol, order_id, side, quantity, price, current_status, execution_stage)
-       VALUES ($1, $2, $3, $4, $5, $6, 'SUBMITTED', 1)`,
-      [strategyId, symbol, orderId, side, quantity, price]
+       (strategy_id, symbol, order_id, side, quantity, price, current_status, execution_stage, signal_id)
+       VALUES ($1, $2, $3, $4, $5, $6, 'SUBMITTED', 1, $7)`,
+      [strategyId, symbol, orderId, side, quantity, price, signalId || null]
     );
+  }
+
+  /**
+   * 根据信号ID更新信号状态
+   */
+  private async updateSignalStatusBySignalId(
+    signalId: number,
+    status: 'EXECUTED' | 'REJECTED' | 'IGNORED'
+  ): Promise<void> {
+    try {
+      const result = await pool.query(
+        'UPDATE strategy_signals SET status = $1 WHERE id = $2',
+        [status, signalId]
+      );
+      
+      if (result.rowCount === 0) {
+        logger.warn(`未找到信号 ${signalId}`);
+      } else {
+        logger.debug(`信号 ${signalId} 状态已更新为 ${status}`);
+      }
+    } catch (error: any) {
+      logger.error(`更新信号状态失败 (signalId: ${signalId}):`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * 根据订单ID更新信号状态（通过signal_id关联）
+   */
+  async updateSignalStatusByOrderId(
+    orderId: string,
+    status: 'EXECUTED' | 'REJECTED' | 'IGNORED'
+  ): Promise<void> {
+    try {
+      // First, try to update using signal_id (for new orders)
+      let result = await pool.query(
+        `UPDATE strategy_signals 
+         SET status = $1 
+         WHERE id IN (
+           SELECT signal_id FROM execution_orders 
+           WHERE order_id = $2 AND signal_id IS NOT NULL
+         )`,
+        [status, orderId]
+      );
+      
+      // If no signal was updated and order doesn't have signal_id, try time window matching (for historical orders)
+      if (result.rowCount === 0) {
+        // Get order information
+        const orderResult = await pool.query(
+          `SELECT strategy_id, symbol, side, created_at, signal_id
+           FROM execution_orders 
+           WHERE order_id = $1`,
+          [orderId]
+        );
+        
+        if (orderResult.rows.length === 0) {
+          logger.warn(`未找到订单 ${orderId}`);
+          return;
+        }
+        
+        const order = orderResult.rows[0];
+        
+        // If order already has signal_id but signal wasn't found, skip
+        if (order.signal_id) {
+          logger.warn(`订单 ${orderId} 有 signal_id=${order.signal_id}，但信号不存在`);
+          return;
+        }
+        
+        // Try time window matching (fallback for historical orders)
+        const orderSide = normalizeSide(order.side);
+        const orderTime = new Date(order.created_at);
+        const timeWindowStart = new Date(orderTime.getTime() - 5 * 60 * 1000); // 5 minutes before
+        const timeWindowEnd = new Date(orderTime.getTime() + 5 * 60 * 1000); // 5 minutes after
+        
+        const signalType = orderSide === 'Buy' ? 'BUY' : 'SELL';
+        
+        result = await pool.query(
+          `UPDATE strategy_signals 
+           SET status = $1 
+           WHERE id = (
+             SELECT id
+             FROM strategy_signals
+             WHERE strategy_id = $2 
+               AND symbol = $3 
+               AND signal_type = $4
+               AND created_at >= $5 
+               AND created_at <= $6
+               AND status = 'PENDING'
+             ORDER BY 
+               CASE 
+                 WHEN created_at <= $7 THEN 0  -- Prefer signals before order creation
+                 ELSE 1  -- Then signals after order creation
+               END,
+               ABS(EXTRACT(EPOCH FROM (created_at - $7)))  -- Among same priority, choose closest
+             LIMIT 1
+           )
+           RETURNING id`,
+          [
+            status,
+            order.strategy_id,
+            order.symbol,
+            signalType,
+            timeWindowStart,
+            timeWindowEnd,
+            order.created_at,  // Add order creation time for priority sorting
+          ]
+        );
+        
+        if (result.rowCount > 0) {
+          const signalIds = result.rows.map(r => r.id);
+          logger.debug(`订单 ${orderId} 通过时间窗口匹配更新了信号状态: ${signalIds.join(',')}`);
+          
+          // Optionally, backfill signal_id for future use
+          if (signalIds.length === 1) {
+            await pool.query(
+              `UPDATE execution_orders SET signal_id = $1 WHERE order_id = $2`,
+              [signalIds[0], orderId]
+            );
+            logger.debug(`已回填订单 ${orderId} 的 signal_id=${signalIds[0]}`);
+          }
+        } else {
+          logger.warn(
+            `未找到订单 ${orderId} 关联的信号 ` +
+            `(strategy_id=${order.strategy_id}, symbol=${order.symbol}, side=${orderSide})`
+          );
+        }
+      } else {
+        logger.debug(`订单 ${orderId} 关联的信号状态已更新为 ${status}`);
+      }
+    } catch (error: any) {
+      logger.error(`更新信号状态失败 (订单: ${orderId}):`, error);
+      throw error;
+    }
   }
 
   /**
@@ -479,12 +865,27 @@ class BasicExecutionService {
       );
     }
 
-    // 更新订单状态
+    // 更新订单状态（将API状态转换为数据库状态格式）
+    // API状态: FilledStatus, PartialFilledStatus
+    // 数据库状态: FILLED, PARTIALLY_FILLED
+    let dbStatus = 'SUBMITTED';
+    if (status === 'FilledStatus') {
+      dbStatus = 'FILLED';
+    } else if (status === 'PartialFilledStatus') {
+      dbStatus = 'PARTIALLY_FILLED';
+    } else if (status === 'CanceledStatus' || status === 'PendingCancelStatus' || status === 'WaitToCancel') {
+      dbStatus = 'CANCELLED';
+    } else if (status === 'RejectedStatus') {
+      dbStatus = 'REJECTED';
+    } else {
+      dbStatus = status; // 其他状态保持原样
+    }
+    
     await pool.query(
       `UPDATE execution_orders 
        SET current_status = $1, updated_at = NOW()
        WHERE order_id = $2`,
-      [status, orderId]
+      [dbStatus, orderId]
     );
   }
 }

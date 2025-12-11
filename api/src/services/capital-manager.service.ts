@@ -15,6 +15,7 @@ export interface CapitalAllocation {
   allocationType: 'PERCENTAGE' | 'FIXED_AMOUNT';
   allocationValue: number;
   currentUsage: number;
+  isSystem?: boolean;
 }
 
 export interface AllocationRequest {
@@ -278,11 +279,11 @@ class CapitalManager {
     // 注意：百分比值存储在数据库中，实际金额在查询时基于实时余额计算
     let allocationValue = config.allocationValue;
 
-    // 插入数据库
+    // 插入数据库（新增账户默认不是系统账户）
     const result = await pool.query(
-      `INSERT INTO capital_allocations (name, parent_id, allocation_type, allocation_value)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, name, parent_id, allocation_type, allocation_value, current_usage`,
+      `INSERT INTO capital_allocations (name, parent_id, allocation_type, allocation_value, is_system)
+       VALUES ($1, $2, $3, $4, FALSE)
+       RETURNING id, name, parent_id, allocation_type, allocation_value, current_usage, is_system`,
       [config.name, config.parentId || null, config.allocationType, allocationValue]
     );
 
@@ -294,6 +295,7 @@ class CapitalManager {
       allocationType: row.allocation_type,
       allocationValue: parseFloat(row.allocation_value),
       currentUsage: parseFloat(row.current_usage || '0'),
+      isSystem: row.is_system || false,
     };
   }
 

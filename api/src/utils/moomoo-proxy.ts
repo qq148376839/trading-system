@@ -53,6 +53,16 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
     // 注意：quoteToken由边缘函数自动计算，不需要传递
 
     try {
+      // 调试日志：打印请求参数
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`[Moomoo代理] 请求参数:`, {
+          path,
+          params: Object.keys(proxyParams),
+          hasCookies: !!proxyParams.cookies,
+          hasCsrfToken: !!proxyParams.csrf_token,
+        });
+      }
+
       const response = await axios.get(`${EDGE_FUNCTION_URL}/api/moomooapi`, {
         params: proxyParams,
         timeout,
@@ -60,11 +70,48 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
         validateStatus: (status) => status < 500,
       });
 
+      // 调试日志：打印响应结构
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`[Moomoo代理] 响应结构:`, {
+          hasData: !!response.data,
+          dataType: typeof response.data,
+          hasSuccess: response.data?.success !== undefined,
+          hasCode: response.data?.code !== undefined,
+          hasDataData: !!response.data?.data,
+        });
+      }
+
       // 检查响应格式
       if (response.data && typeof response.data === 'object') {
-        // 如果响应包含success字段
+        // 如果响应包含success字段（边缘函数格式）
         if (response.data.success === true) {
-          return response.data.data;
+          // 边缘函数成功，返回Moomoo API的原始响应（在data字段中）
+          const moomooResponse = response.data.data;
+          
+          // 调试日志
+          if (process.env.NODE_ENV === 'development') {
+            console.log(`[Moomoo代理] Moomoo API响应:`, {
+              hasCode: moomooResponse?.code !== undefined,
+              code: moomooResponse?.code,
+              message: moomooResponse?.message,
+            });
+          }
+          
+          // 如果Moomoo API响应包含code字段，检查是否成功
+          if (moomooResponse && typeof moomooResponse === 'object' && 'code' in moomooResponse) {
+            if (moomooResponse.code !== 0) {
+              const errorMsg = moomooResponse.message || `Moomoo API error: code=${moomooResponse.code}`;
+              console.error(`[Moomoo代理] Moomoo API返回错误:`, {
+                code: moomooResponse.code,
+                message: errorMsg,
+                path,
+                fullResponse: JSON.stringify(moomooResponse).substring(0, 1000),
+              });
+              throw new Error(errorMsg);
+            }
+          }
+          
+          return moomooResponse;
         } else if (response.data.success === false) {
           // 边缘函数返回的错误
           const errorMsg = response.data.error || response.data.message || 'Edge function request failed';
@@ -86,8 +133,12 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
         return response.data;
       }
     } catch (error: any) {
-      // 简化错误日志，只在关键错误时输出
-      if (error.response?.status !== 504) { // 504超时错误不输出详细日志
+      // 详细错误日志
+      if (error.response) {
+        console.error(`[Moomoo代理] 边缘函数请求失败: ${path}`);
+        console.error(`[Moomoo代理] 状态码: ${error.response.status}`);
+        console.error(`[Moomoo代理] 响应数据: ${JSON.stringify(error.response.data).substring(0, 500)}`);
+      } else {
         console.error(`[Moomoo代理] 边缘函数请求失败: ${path} - ${error.message}`);
       }
       throw error;

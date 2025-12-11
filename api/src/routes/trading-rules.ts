@@ -1,5 +1,6 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import pool from '../config/database';
+import { ErrorFactory, normalizeError } from '../utils/errors';
 
 export const tradingRulesRouter = Router();
 
@@ -7,7 +8,7 @@ export const tradingRulesRouter = Router();
  * GET /api/trading-rules
  * 获取交易规则列表
  */
-tradingRulesRouter.get('/', async (req: Request, res: Response) => {
+tradingRulesRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { symbol, enabled } = req.query;
 
@@ -36,14 +37,8 @@ tradingRulesRouter.get('/', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('获取交易规则失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -51,7 +46,7 @@ tradingRulesRouter.get('/', async (req: Request, res: Response) => {
  * GET /api/trading-rules/:id
  * 获取单个交易规则详情
  */
-tradingRulesRouter.get('/:id', async (req: Request, res: Response) => {
+tradingRulesRouter.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
 
@@ -61,13 +56,7 @@ tradingRulesRouter.get('/:id', async (req: Request, res: Response) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'NOT_FOUND',
-          message: '未找到该交易规则',
-        },
-      });
+      return next(ErrorFactory.notFound('交易规则'));
     }
 
     res.json({
@@ -77,14 +66,8 @@ tradingRulesRouter.get('/:id', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('获取交易规则详情失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -92,7 +75,7 @@ tradingRulesRouter.get('/:id', async (req: Request, res: Response) => {
  * POST /api/trading-rules
  * 创建交易规则
  */
-tradingRulesRouter.post('/', async (req: Request, res: Response) => {
+tradingRulesRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const {
       symbol,
@@ -103,26 +86,14 @@ tradingRulesRouter.post('/', async (req: Request, res: Response) => {
     } = req.body;
 
     if (!symbol || !rule_name || !rule_type) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: symbol, rule_name, rule_type',
-        },
-      });
+      return next(ErrorFactory.missingParameter('symbol, rule_name, 或 rule_type'));
     }
 
     // 验证symbol格式（支持 ticker.region 和 .ticker.region 格式）
     // 支持格式：AAPL.US, 700.HK, .SPX.US (标普500指数带前导点)
     const symbolPattern = /^\.?[A-Z0-9]+\.[A-Z]{2}$/;
     if (!symbolPattern.test(symbol)) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_SYMBOL_FORMAT',
-          message: '无效的标的代码格式。请使用 ticker.region 格式，例如：AAPL.US 或 .SPX.US',
-        },
-      });
+      return next(ErrorFactory.validationError('无效的标的代码格式。请使用 ticker.region 格式，例如：AAPL.US 或 .SPX.US'));
     }
 
     // 验证rule_type
@@ -135,13 +106,7 @@ tradingRulesRouter.post('/', async (req: Request, res: Response) => {
       'dca',              // 定投
     ];
     if (!validRuleTypes.includes(rule_type)) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_RULE_TYPE',
-          message: `无效的规则类型。支持的类型: ${validRuleTypes.join(', ')}`,
-        },
-      });
+      return next(ErrorFactory.validationError(`无效的规则类型。支持的类型: ${validRuleTypes.join(', ')}`));
     }
 
     // 插入新记录
@@ -161,23 +126,11 @@ tradingRulesRouter.post('/', async (req: Request, res: Response) => {
   } catch (error: any) {
     // 处理唯一约束冲突
     if (error.code === '23505') {
-      return res.status(409).json({
-        success: false,
-        error: {
-          code: 'DUPLICATE_RULE',
-          message: '该股票已存在同名交易规则',
-        },
-      });
+      return next(ErrorFactory.resourceConflict('该股票已存在同名交易规则'));
     }
 
-    console.error('创建交易规则失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -185,7 +138,7 @@ tradingRulesRouter.post('/', async (req: Request, res: Response) => {
  * PUT /api/trading-rules/:id
  * 更新交易规则
  */
-tradingRulesRouter.put('/:id', async (req: Request, res: Response) => {
+tradingRulesRouter.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const { rule_name, rule_type, enabled, config } = req.body;
@@ -213,13 +166,7 @@ tradingRulesRouter.put('/:id', async (req: Request, res: Response) => {
     }
 
     if (updates.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '至少需要提供一个更新字段',
-        },
-      });
+      return next(ErrorFactory.missingParameter('至少一个更新字段'));
     }
 
     updates.push(`updated_at = NOW()`);
@@ -235,13 +182,7 @@ tradingRulesRouter.put('/:id', async (req: Request, res: Response) => {
     const result = await pool.query(query, params);
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'NOT_FOUND',
-          message: '未找到该交易规则',
-        },
-      });
+      return next(ErrorFactory.notFound('交易规则'));
     }
 
     res.json({
@@ -251,14 +192,8 @@ tradingRulesRouter.put('/:id', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('更新交易规则失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -266,7 +201,7 @@ tradingRulesRouter.put('/:id', async (req: Request, res: Response) => {
  * DELETE /api/trading-rules/:id
  * 删除交易规则
  */
-tradingRulesRouter.delete('/:id', async (req: Request, res: Response) => {
+tradingRulesRouter.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
 
@@ -276,13 +211,7 @@ tradingRulesRouter.delete('/:id', async (req: Request, res: Response) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'NOT_FOUND',
-          message: '未找到该交易规则',
-        },
-      });
+      return next(ErrorFactory.notFound('交易规则'));
     }
 
     res.json({
@@ -292,14 +221,8 @@ tradingRulesRouter.delete('/:id', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('删除交易规则失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 

@@ -1,5 +1,121 @@
 # 文档更新日志
 
+## 2025-12-11
+
+### ✅ 量化交易订单管理重构完成
+
+#### 🎯 核心功能
+- ✅ **删除交易记录功能**：删除冗余的`/quant/trades`页面和API
+- ✅ **移动订单管理**：将`/orders`移动到`/quant/orders`，整合到量化交易模块
+- ✅ **修改今日交易数量统计**：使用长桥API的`todayOrders()`统计，确保数据准确性
+- ✅ **修复信号日志状态更新**：实现信号状态与订单状态的实时关联
+
+#### 🔧 技术实现
+- ✅ **数据库迁移**：添加`signal_id`字段到`execution_orders`表（方案B）
+- ✅ **信号生成流程**：`logSignal`返回`signal_id`，`generateSignal`传递`signal_id`到订单流程
+- ✅ **订单执行流程**：订单提交时保存`signal_id`，订单状态变化时更新信号状态
+- ✅ **订单监控流程**：检测订单取消和拒绝，更新对应的信号状态
+
+#### 📊 数据准确性提升
+- ✅ 今日交易数量统计准确率 100%（与实际订单一致）
+- ✅ 买入和卖出数量分别统计，Tooltip显示详细信息
+- ✅ API限流时优雅降级（使用数据库查询作为备用）
+
+#### 📝 文档更新
+- ✅ 更新 [量化交易订单管理重构PRD](features/QUANT_ORDER_MANAGEMENT_REFACTOR_PRD.md) - 标记所有功能为已完成
+- ✅ 新增 [量化交易订单管理重构实施总结](features/QUANT_ORDER_MANAGEMENT_REFACTOR_IMPLEMENTATION_SUMMARY.md) ⭐ 新增
+- ✅ 新增 [信号日志历史数据修复方案](features/SIGNAL_ORDER_HISTORICAL_DATA_FIX.md) - 历史数据修复方案（可选）
+
+#### 🔄 相关变更
+- ✅ 删除`frontend/app/quant/trades/page.tsx`
+- ✅ 删除`GET /api/quant/trades` API
+- ✅ 创建`frontend/app/quant/orders/page.tsx`
+- ✅ 更新导航菜单：删除"交易记录"，添加"订单管理"
+
+---
+
+## 2025-12-08
+
+### 📄 文档整理和归档 ✅
+
+#### 文档归档
+- ✅ **归档已完成的功能文档**：
+  - `ORDER_SUBMIT_OPTIMIZATION.md` → `docs/archive/ORDER_SUBMIT_OPTIMIZATION.md`
+  - `verify_backtest_fix.md` → `docs/archive/verify_backtest_fix.md`
+  - `DOCUMENTATION_CLEANUP_SUMMARY.md` → `docs/archive/DOCUMENTATION_CLEANUP_SUMMARY.md`
+- ✅ **更新边缘函数文档**：
+  - 更新 `edge-functions/README.md` - 添加机构选股相关API支持
+  - 更新 `edge-functions/QUOTE_TOKEN_IMPLEMENTATION.md` - 添加机构选股接口的token参数说明
+  - 更新 `docs/integration/MOOMOO_EDGE_FUNCTION_INTEGRATION.md` - 添加机构选股接口列表
+- ✅ **更新代码地图**：
+  - 更新 `CODE_MAP.md` - 添加机构选股相关服务和组件
+  - 更新最后更新时间：2025-12-08
+
+### 🎨 策略创建UI优化 ✅
+
+#### ✨ 新增功能
+- **机构选择功能增强**：支持获取全部机构列表（42,638个机构），支持分页浏览
+  - 新增 `GET /api/quant/institutions/list` API
+  - 前端添加"热门机构"和"全部机构"切换按钮
+  - 支持分页浏览（每页15个机构）
+
+#### 🎨 UI优化
+- **策略类型UI优化**：移除单一选项的下拉框，改为说明卡片
+  - 创建页面：显示策略类型说明卡片，无需选择
+  - 编辑页面：策略类型改为只读显示，提示"策略类型创建后不可修改"
+- **按钮位置优化**：将创建/取消按钮固定在模态框底部，无需滚动即可看到
+- **策略配置说明优化**：添加详细的参数说明、推荐值和计算公式
+- **布局优化**：将策略说明卡片移到策略参数配置上方，布局更合理
+
+#### 🐛 Bug修复
+- **可用资金计算**：修复使用固定默认值的问题，改为从资金分配账户动态获取
+- **美股过滤**：机构选股只返回美股（.US），过滤掉日股、港股等非美股
+- **分页逻辑**：优化分页判断，支持获取多页数据直到达到目标数量
+
+#### 📝 文档更新
+- 新增 [策略创建UI优化文档](features/STRATEGY_CREATION_UI_OPTIMIZATION.md)
+- 新增 [策略编辑和详情页面优化PRD](features/STRATEGY_EDIT_DETAIL_OPTIMIZATION_PRD.md) ⭐ 新增
+- 更新 [机构选股功能实施总结](features/INSTITUTION_STOCK_SELECTOR_IMPLEMENTATION.md)
+
+---
+
+## 2025-12-08
+
+### 📄 文档结构整理完成 ✅
+- **新增目录结构**: 
+  - `docs/fixes/` - 修复文档目录（7个文档）
+  - `docs/features/` - 功能文档目录（6个文档）
+  - `docs/integration/` - 集成文档目录（3个文档）
+- **文档迁移**: 
+  - ✅ 修复相关文档迁移到 `fixes/`（7个）
+  - ✅ 功能相关文档迁移到 `features/`（6个）
+  - ✅ 集成相关文档迁移到 `integration/`（3个）
+- **文档索引更新**: 
+  - ✅ 更新 `README.md` 以反映新的文档结构
+  - ✅ 创建 `DOCUMENTATION_STRUCTURE.md` 说明文档结构和管理规范
+  - ✅ 创建 `fixes/DOCUMENTATION_REORGANIZATION_SUMMARY.md` 文档整理完成总结
+- **文档管理规范**: 
+  - ✅ 定义文档命名规范（SCREAMING_SNAKE_CASE）
+  - ✅ 定义文档分类原则（6个分类）
+  - ✅ 定义文档更新规范
+
+### ✅ 错误处理统一完成
+- **完成度**: 100% ✅
+- **已迁移路由文件**: 15个（80+个路由）
+- **统一错误处理系统**: 
+  - 30+个错误码
+  - 4个错误分类（CLIENT_ERROR, SERVER_ERROR, EXTERNAL_ERROR, BUSINESS_ERROR）
+  - 4个严重程度级别（LOW, MEDIUM, HIGH, CRITICAL）
+- **相关文档**: [错误处理统一实施文档](fixes/ERROR_HANDLING_IMPLEMENTATION.md)
+
+### ✅ 测试体系建设完成
+- **测试通过率**: 100%（29/29）
+- **测试覆盖**: 
+  - 资金管理服务（account-balance-sync.service.ts）
+  - 策略执行验证（strategy-scheduler.service.ts）
+  - 动态持仓管理（dynamic-position-manager.service.ts）
+- **相关文档**: [测试体系建设完成总结](fixes/TEST_COMPLETION_SUMMARY.md)
+
 ## 2025-12-05
 
 ### 📄 文档整理
@@ -65,6 +181,6 @@
 
 ---
 
-**最后更新**: 2025-12-02
+**最后更新**: 2025-12-08
 
 

@@ -1,4 +1,7 @@
 import type { Metadata } from 'next'
+import { ConfigProvider } from 'antd'
+import zhCN from 'antd/locale/zh_CN'
+import { antdTheme } from '@/lib/antd-theme'
 import './globals.css'
 import 'antd/dist/reset.css'
 
@@ -14,7 +17,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <body>
+        <ConfigProvider theme={antdTheme} locale={zhCN}>
+          {children}
+        </ConfigProvider>
+      </body>
     </html>
   )
 }

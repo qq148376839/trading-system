@@ -556,6 +556,32 @@ export const optionsApi = {
   getUnderlyingQuote: (params?: { stockId?: string; symbol?: string }) => {
     return api.get('/options/underlying-quote', { params })
   },
+
+  /**
+   * 获取期权K线数据（日K）
+   * @param optionId 期权ID
+   * @param marketType 市场类型（可选，默认2=美股）
+   * @param count 数据条数（可选，默认100）
+   */
+  getOptionKline: (params: {
+    optionId: string
+    marketType?: number
+    count?: number
+  }) => {
+    return api.get('/options/kline', { params })
+  },
+
+  /**
+   * 获取期权分时数据
+   * @param optionId 期权ID
+   * @param marketType 市场类型（可选，默认2=美股）
+   */
+  getOptionMinute: (params: {
+    optionId: string
+    marketType?: number
+  }) => {
+    return api.get('/options/minute', { params })
+  },
 }
 
 // 量化交易 API
@@ -652,6 +678,9 @@ export const quantApi = {
   getStrategyInstances: (id: number) => {
     return api.get(`/quant/strategies/${id}/instances`)
   },
+  getStrategyHoldings: (id: number) => {
+    return api.get(`/quant/strategies/${id}/holdings`)
+  },
 
   // 资金管理
   getCapitalAllocations: () => {
@@ -668,6 +697,13 @@ export const quantApi = {
   },
   getCapitalUsage: () => {
     return api.get('/quant/capital/usage')
+  },
+
+  /**
+   * 获取资金差异告警列表
+   */
+  getCapitalAlerts: () => {
+    return api.get('/quant/capital/alerts')
   },
   syncBalance: () => {
     return api.post('/quant/capital/sync-balance')
@@ -692,9 +728,58 @@ export const quantApi = {
     return api.get('/quant/signals', { params })
   },
 
-  // 交易记录
-  getTrades: (params?: { strategyId?: number; symbol?: string; limit?: number }) => {
-    return api.get('/quant/trades', { params })
+  // Dashboard统计
+  getDashboardStats: () => {
+    return api.get('/quant/dashboard/stats')
+  },
+
+  // 订单价格审查
+  reviewOrders: (params: {
+    startDate: string;
+    endDate: string;
+    baseThreshold?: number;
+  }) => {
+    return api.post('/quant/orders/review', params)
+  },
+
+  // 保证金比例
+  getMarginRatio: (symbol: string) => {
+    return api.get(`/quant/margin-ratio/${symbol}`)
+  },
+
+  // 资金流水
+  getCashflow: (params: {
+    startTime: string;
+    endTime: string;
+    businessType?: number;
+    symbol?: string;
+    page?: number;
+    size?: number;
+  }) => {
+    return api.get('/quant/cashflow', { params })
+  },
+
+  // 机构选股
+  getPopularInstitutions: () => {
+    return api.get('/quant/institutions/popular')
+  },
+  getInstitutionList: (params?: { page?: number; pageSize?: number }) => {
+    return api.get('/quant/institutions/list', { params })
+  },
+  getInstitutionHoldings: (institutionId: string, params?: { periodId?: number; page?: number; pageSize?: number }) => {
+    return api.get(`/quant/institutions/${institutionId}/holdings`, { params })
+  },
+  selectStocksByInstitution: (data: { institutionId: string; minHoldingRatio?: number; maxStocks?: number }) => {
+    return api.post('/quant/institutions/select-stocks', data)
+  },
+  calculateAllocation: (data: {
+    strategyId: number;
+    stocks: Array<{ symbol: string; holdingRatio?: number; percentOfPortfolio?: number; price?: number }>;
+    allocationMode?: string;
+    maxPositionPerSymbol?: number;
+    minInvestmentAmount?: number;
+  }) => {
+    return api.post('/quant/institutions/calculate-allocation', data)
   },
 }
 

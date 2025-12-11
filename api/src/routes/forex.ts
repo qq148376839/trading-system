@@ -1,8 +1,9 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import axios from 'axios';
 import crypto from 'crypto';
 import { rateLimiter } from '../middleware/rateLimiter';
 import { getFutunnHeaders } from '../config/futunn';
+import { ErrorFactory, normalizeError } from '../utils/errors';
 
 export const forexRouter = Router();
 
@@ -82,7 +83,7 @@ function generateQuoteToken(params: Record<string, string>): string {
  * GET /api/forex/products
  * 获取支持的外汇产品列表
  */
-forexRouter.get('/products', async (_req: Request, res: Response) => {
+forexRouter.get('/products', async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const products = Object.entries(FOREX_PRODUCTS).map(([code, info]) => ({
       code,
@@ -97,14 +98,8 @@ forexRouter.get('/products', async (_req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('获取外汇产品列表失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message || '获取外汇产品列表失败',
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -115,29 +110,17 @@ forexRouter.get('/products', async (_req: Request, res: Response) => {
  * 请求参数：
  * - product: string (必需) 产品代码，例如：USDINDEX, EURINDEX, XAUUSD, SPX, BTC
  */
-forexRouter.get('/quote', rateLimiter, async (req: Request, res: Response) => {
+forexRouter.get('/quote', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { product } = req.query;
     
     if (!product || typeof product !== 'string') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: product。支持的值: USDINDEX, EURINDEX, XAUUSD, SPX, BTC',
-        },
-      });
+      return next(ErrorFactory.missingParameter('product'));
     }
     
     const productInfo = FOREX_PRODUCTS[product.toUpperCase()];
     if (!productInfo) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_PRODUCT',
-          message: `无效的外汇产品: ${product}。支持的值: ${Object.keys(FOREX_PRODUCTS).join(', ')}`,
-        },
-      });
+      return next(ErrorFactory.validationError(`无效的外汇产品: ${product}。支持的值: ${Object.keys(FOREX_PRODUCTS).join(', ')}`));
     }
     
     const timestamp = Date.now();
@@ -191,23 +174,11 @@ forexRouter.get('/quote', rateLimiter, async (req: Request, res: Response) => {
         },
       });
     } else {
-      return res.status(500).json({
-        success: false,
-        error: {
-          code: 'API_ERROR',
-          message: response.data?.message || '获取外汇报价失败',
-        },
-      });
+      return next(ErrorFactory.externalApiError('富途API', response.data?.message || '获取外汇报价失败'));
     }
   } catch (error: any) {
-    console.error('获取外汇报价失败:', error);
-    return res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message || '获取外汇报价失败',
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -219,50 +190,26 @@ forexRouter.get('/quote', rateLimiter, async (req: Request, res: Response) => {
  * - product: string (必需) 产品代码，例如：USDINDEX, EURINDEX, XAUUSD, SPX, BTC
  * - type: string (必需) K线类型，支持：minute(分时), 5day(5日), day(日K), week(周K), month(月K), quarter(季K), year(年K)
  */
-forexRouter.get('/candlestick', rateLimiter, async (req: Request, res: Response) => {
+forexRouter.get('/candlestick', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { product, type } = req.query;
     
     if (!product || typeof product !== 'string') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: product',
-        },
-      });
+      return next(ErrorFactory.missingParameter('product'));
     }
     
     if (!type || typeof type !== 'string') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: type。支持的值: minute, 5day, day, week, month, quarter, year',
-        },
-      });
+      return next(ErrorFactory.missingParameter('type'));
     }
     
     const productInfo = FOREX_PRODUCTS[product.toUpperCase()];
     if (!productInfo) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_PRODUCT',
-          message: `无效的外汇产品: ${product}`,
-        },
-      });
+      return next(ErrorFactory.validationError(`无效的外汇产品: ${product}`));
     }
     
     const quoteType = QUOTE_TYPE_MAP[type.toLowerCase()];
     if (!quoteType) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_TYPE',
-          message: `无效的K线类型: ${type}。支持的值: ${Object.keys(QUOTE_TYPE_MAP).join(', ')}`,
-        },
-      });
+      return next(ErrorFactory.validationError(`无效的K线类型: ${type}。支持的值: ${Object.keys(QUOTE_TYPE_MAP).join(', ')}`));
     }
     
     const timestamp = Date.now();
@@ -317,23 +264,11 @@ forexRouter.get('/candlestick', rateLimiter, async (req: Request, res: Response)
         },
       });
     } else {
-      return res.status(500).json({
-        success: false,
-        error: {
-          code: 'API_ERROR',
-          message: response.data?.message || '获取外汇K线数据失败',
-        },
-      });
+      return next(ErrorFactory.externalApiError('富途API', response.data?.message || '获取外汇K线数据失败'));
     }
   } catch (error: any) {
-    console.error('获取外汇K线数据失败:', error);
-    return res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message || '获取外汇K线数据失败',
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -341,7 +276,7 @@ forexRouter.get('/candlestick', rateLimiter, async (req: Request, res: Response)
  * GET /api/forex/test-btc
  * 测试BTC API请求（用于调试）
  */
-forexRouter.get('/test-btc', async (_req: Request, res: Response) => {
+forexRouter.get('/test-btc', async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const { testBTCRequest } = await import('../services/market-data.service');
     
@@ -358,15 +293,8 @@ forexRouter.get('/test-btc', async (_req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('BTC测试失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'BTC_TEST_FAILED',
-        message: error.message || 'BTC请求测试失败',
-        details: error.stack,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 

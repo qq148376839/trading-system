@@ -156,14 +156,25 @@ curl "https://your-worker.workers.dev/api/moomooapi?path=/quote-api/quote-v2/get
 
 ## 支持的Moomoo API接口
 
+### 基础接口
 - ✅ `/api/headfoot-search` - 搜索接口
+
+### 行情接口（需要quote-token）
 - ✅ `/quote-api/quote-v2/get-kline` - K线数据
 - ✅ `/quote-api/quote-v2/get-quote-minute` - 分时数据
 - ✅ `/quote-api/quote-v2/get-stock-quote` - 股票行情
 - ✅ `/quote-api/quote-v2/get-option-chain` - 期权链
 - ✅ `/quote-api/quote-v2/get-option-strike-dates` - 期权到期日期
 
+### 机构选股接口（需要quote-token）
+- ✅ `/quote-api/quote-v2/get-popular-position` - 热门机构列表
+- ✅ `/quote-api/quote-v2/get-share-holding-list` - 机构持仓列表
+- ✅ `/quote-api/quote-v2/get-owner-position-list` - 机构列表（支持分页）
+
+**注意**：所有需要 `quote-token` 的接口都会自动计算并添加token，无需手动传递。
+
 ## 更新日志
 
-- 2025-01-28: 初始版本，支持基本的GET请求代理
+- **2025-12-08**: 添加机构选股相关API支持（get-popular-position, get-share-holding-list, get-owner-position-list）
+- **2025-01-28**: 初始版本，支持基本的GET请求代理和quote-token自动计算
 

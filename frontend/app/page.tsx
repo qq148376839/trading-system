@@ -5,6 +5,8 @@ import React from 'react'
 import Link from 'next/link'
 import { quoteApi, watchlistApi, positionsApi, tradingRulesApi, ordersApi, tradingRecommendationApi } from '@/lib/api'
 import TradeModal from '@/components/TradeModal'
+import AppLayout from '@/components/AppLayout'
+import { Button, Input, Card, Table, Tag, Badge, Spin, message, Space, AutoComplete, Switch, Select, Skeleton, Modal, Alert } from 'antd'
 
 interface Quote {
   symbol: string
@@ -902,51 +904,26 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* 导航栏 */}
-      <nav className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16">
-            <div className="flex items-center">
-              <h1 className="text-xl font-bold text-gray-900">长桥股票交易系统</h1>
-            </div>
-            <div className="flex items-center space-x-4">
-              <Link href="/candles" className="text-gray-600 hover:text-gray-900">
-                K线图
-              </Link>
-              <Link href="/forex" className="text-gray-600 hover:text-gray-900">
-                外汇行情
-              </Link>
-              <Link href="/orders" className="text-gray-600 hover:text-gray-900 font-medium">
-                订单管理
-              </Link>
-              <Link href="/trades" className="text-gray-600 hover:text-gray-900">
-                交易记录
-              </Link>
-              <Link href="/quant" className="text-blue-600 hover:text-blue-800 font-medium">
-                量化交易
-              </Link>
-              <Link href="/config" className="text-gray-600 hover:text-gray-900">
-                系统配置
-              </Link>
-            </div>
-          </div>
-        </div>
-      </nav>
-
-      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div className="px-4 py-6 sm:px-0">
-          {/* 账户资产信息 */}
-          {accountBalance && (
-            <div className="bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg shadow-lg p-6 mb-6 text-white">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-lg font-semibold">账户资产</h2>
-                <button
+    <AppLayout>
+      {/* 账户资产信息 */}
+      {accountBalance && (
+            <Card
+              style={{
+                background: 'linear-gradient(135deg, #1890ff 0%, #096dd9 100%)',
+                border: 'none',
+                marginBottom: 24
+              }}
+              bodyStyle={{ color: '#fff', padding: 24 }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <h2 style={{ fontSize: 18, fontWeight: 600, color: '#fff', margin: 0 }}>账户资产</h2>
+                <Button
+                  type="text"
                   onClick={() => setAccountDetailsExpanded(!accountDetailsExpanded)}
-                  className="text-sm opacity-90 hover:opacity-100 underline"
+                  style={{ padding: 0, color: '#fff' }}
                 >
                   {accountDetailsExpanded ? '收起详情 ▲' : '展开详情 ▼'}
-                </button>
+                </Button>
               </div>
               
               {/* 总体资产信息 */}
@@ -1137,591 +1114,480 @@ export default function Home() {
                   )}
                 </div>
               )}
-            </div>
-          )}
+            </Card>
+      )}
 
-          {/* 快速功能入口 */}
-          <div className="bg-white shadow rounded-lg p-6 mb-6">
-            <h2 className="text-xl font-bold text-gray-900 mb-4">快速功能</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              <Link
-                href="/quant"
-                className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg p-6 shadow-md transition-all transform hover:scale-105"
-              >
-                <div className="flex items-center justify-between">
+      {/* 页面标题和添加关注 */}
+      <Card className="mb-6">
+        <div className="mb-4">
+          <h1 className="text-2xl font-bold text-gray-900 mb-4">持仓与关注股票</h1>
+          <Space.Compact style={{ width: '100%', maxWidth: 600 }}>
+            <AutoComplete
+              value={newSymbol}
+              onChange={(value) => handleSymbolInputChange(value)}
+              onSelect={handleSelectSuggestion}
+              options={autocompleteSuggestions.map(item => ({
+                value: item.symbol,
+                label: (
                   <div>
-                    <div className="text-sm opacity-90 mb-1">量化交易</div>
-                    <div className="text-2xl font-bold">自动交易</div>
-                  </div>
-                  <div className="text-4xl opacity-80">📈</div>
-                </div>
-                <div className="mt-2 text-sm opacity-90">策略管理 · 资金分配 · 信号监控</div>
-              </Link>
-              <Link
-                href="/orders"
-                className="bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white rounded-lg p-6 shadow-md transition-all transform hover:scale-105"
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-sm opacity-90 mb-1">订单管理</div>
-                    <div className="text-2xl font-bold">订单查询</div>
-                  </div>
-                  <div className="text-4xl opacity-80">📋</div>
-                </div>
-                <div className="mt-2 text-sm opacity-90">今日订单 · 历史订单 · 订单详情</div>
-              </Link>
-              <Link
-                href="/candles"
-                className="bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white rounded-lg p-6 shadow-md transition-all transform hover:scale-105"
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-sm opacity-90 mb-1">K线图</div>
-                    <div className="text-2xl font-bold">技术分析</div>
-                  </div>
-                  <div className="text-4xl opacity-80">📊</div>
-                </div>
-                <div className="mt-2 text-sm opacity-90">K线图表 · 技术指标 · 行情分析</div>
-              </Link>
-              <Link
-                href="/config"
-                className="bg-gradient-to-r from-gray-500 to-gray-600 hover:from-gray-600 hover:to-gray-700 text-white rounded-lg p-6 shadow-md transition-all transform hover:scale-105"
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-sm opacity-90 mb-1">系统配置</div>
-                    <div className="text-2xl font-bold">设置</div>
-                  </div>
-                  <div className="text-4xl opacity-80">⚙️</div>
-                </div>
-                <div className="mt-2 text-sm opacity-90">API配置 · 系统设置 · 参数管理</div>
-              </Link>
-            </div>
-          </div>
-
-          {/* 页面标题和添加关注 */}
-          <div className="bg-white shadow rounded-lg p-6 mb-6">
-            <div className="flex justify-between items-center mb-4">
-              <h1 className="text-2xl font-bold text-gray-900">持仓与关注股票</h1>
-              <div className="flex gap-4 relative">
-                <div className="relative flex-1">
-                  <input
-                    type="text"
-                    value={newSymbol}
-                    onChange={(e) => handleSymbolInputChange(e.target.value)}
-                    onFocus={() => {
-                      if (autocompleteSuggestions.length > 0) {
-                        setShowAutocomplete(true)
-                      }
-                    }}
-                    onBlur={() => {
-                      // 延迟隐藏，让用户有时间点击下拉项
-                      setTimeout(() => setShowAutocomplete(false), 200)
-                    }}
-                    placeholder="添加关注股票，例如：AAPL.US 或输入 goo 搜索"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    onKeyPress={(e) => e.key === 'Enter' && handleAddWatchlist()}
-                  />
-                  {searchingAutocomplete && (
-                    <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
-                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                    <div style={{ fontWeight: 500 }}>{item.symbol}</div>
+                    <div style={{ fontSize: 12, color: '#666' }}>
+                      {item.name_cn && item.name_en 
+                        ? `${item.name_cn} • ${item.name_en}` 
+                        : item.name_cn || item.name_en || ''}
                     </div>
-                  )}
-                  {/* 自动完成下拉列表 */}
-                  {showAutocomplete && autocompleteSuggestions.length > 0 && (
-                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                      {autocompleteSuggestions.map((item, index) => (
-                        <div
-                          key={index}
-                          onClick={() => handleSelectSuggestion(item.symbol)}
-                          className="px-4 py-2 hover:bg-blue-50 cursor-pointer border-b border-gray-100 last:border-b-0"
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="flex-1">
-                              <div className="font-medium text-gray-900">{item.symbol}</div>
-                              <div className="text-sm text-gray-600">
-                                {item.name_cn && item.name_en 
-                                  ? `${item.name_cn} • ${item.name_en}` 
-                                  : item.name_cn || item.name_en || ''}
-                              </div>
-                            </div>
+                  </div>
+                ),
+              }))}
+              placeholder="添加关注股票，例如：AAPL.US 或输入 goo 搜索"
+              style={{ flex: 1 }}
+              open={showAutocomplete && autocompleteSuggestions.length > 0}
+              onFocus={() => {
+                if (autocompleteSuggestions.length > 0) {
+                  setShowAutocomplete(true)
+                }
+              }}
+              onBlur={() => {
+                setTimeout(() => setShowAutocomplete(false), 200)
+              }}
+              notFoundContent={searchingAutocomplete ? <Spin size="small" /> : null}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  handleAddWatchlist()
+                }
+              }}
+            />
+            <Button
+              type="primary"
+              onClick={handleAddWatchlist}
+              loading={loading}
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              {loading ? '添加中...' : '添加关注'}
+            </Button>
+          </Space.Compact>
+        </div>
+
+        {/* 消息提示 */}
+        {error && (
+          <Alert
+            message={error}
+            type="error"
+            showIcon
+            closable
+            onClose={() => setError(null)}
+            style={{ marginBottom: 16 }}
+          />
+        )}
+        {success && (
+          <Alert
+            message={success}
+            type="success"
+            showIcon
+            closable
+            onClose={() => setSuccess(null)}
+            style={{ marginBottom: 16 }}
+          />
+        )}
+      </Card>
+
+      {/* 持仓和行情列表 */}
+      <Card>
+        <Table
+          dataSource={stocks}
+          loading={loading && stocks.length === 0}
+          rowKey="symbol"
+          pagination={false}
+          scroll={{ x: 'max-content' }}
+          locale={{
+            emptyText: stocks.length === 0 && !loading ? '暂无持仓或关注股票，请添加关注股票开始使用' : undefined
+          }}
+          columns={[
+                {
+                  title: '标的代码',
+                  key: 'symbol',
+                  width: 200,
+                  fixed: 'left',
+                  render: (_, stock: StockRow) => {
+                    if (stock._error) {
+                      return (
+                        <Space wrap>
+                          <span>{stock.symbol}</span>
+                          {stock.isWatched && <Tag color="orange">关注</Tag>}
+                          {stock.isHeld && <Tag color="blue">持仓</Tag>}
+                        </Space>
+                      )
+                    }
+                    const currentPriceInfo = getCurrentPrice(stock)
+                    return (
+                      <Space wrap>
+                        <span>{stock.symbol}</span>
+                        {stock.isWatched && <Tag color="orange">关注</Tag>}
+                        {stock.isHeld && <Tag color="blue">持仓</Tag>}
+                        {currentPriceInfo.label !== '盘中' && (
+                          <Tag>{currentPriceInfo.label}</Tag>
+                        )}
+                      </Space>
+                    )
+                  }
+                },
+                {
+                  title: '持仓数量',
+                  key: 'quantity',
+                  width: 120,
+                  render: (_, stock: StockRow) => {
+                    if (stock._error) return null
+                    if (!stock.position) return '-'
+                    return (
+                      <div>
+                        <div>{stock.position.quantity}</div>
+                        {isOptionSymbol(stock.symbol) && stock.position.contract_multiplier && (
+                          <div style={{ fontSize: 12, color: '#999' }}>
+                            ({stock.position.quantity > 0 ? '多' : '空'}{Math.abs(stock.position.quantity)}张)
+                          </div>
+                        )}
+                      </div>
+                    )
+                  }
+                },
+                {
+                  title: '价格',
+                  key: 'price',
+                  width: 150,
+                  render: (_, stock: StockRow) => {
+                    if (stock._error) return null
+                    const currentPriceInfo = getCurrentPrice(stock)
+                    const { change } = calculateChange(currentPriceInfo.price, currentPriceInfo.prevClose)
+                    const isPositive = change >= 0
+                    const priceColor = currentPriceInfo.priceClass || (isPositive ? '#ff4d4f' : '#52c41a')
+                    
+                    if (stock.position) {
+                      return (
+                        <div>
+                          <div style={{ fontWeight: 600, color: priceColor }}>
+                            {currentPriceInfo.price}
+                            {currentPriceInfo.label !== '盘中' && (
+                              <span style={{ fontSize: 12, marginLeft: 4 }}>({currentPriceInfo.label})</span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
+                            成本: {parseFloat(stock.position.cost_price).toFixed(2)}
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <button
-                  onClick={handleAddWatchlist}
-                  disabled={loading}
-                  className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 whitespace-nowrap"
-                >
-                  {loading ? '添加中...' : '添加关注'}
-                </button>
-              </div>
-            </div>
-
-            {/* 消息提示 */}
-            {error && (
-              <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
-                {error}
-              </div>
-            )}
-            {success && (
-              <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-md text-green-700">
-                {success}
-              </div>
-            )}
-          </div>
-
-          {/* 持仓和行情列表 */}
-          <div className="bg-white shadow rounded-lg overflow-hidden">
-            {loading && stocks.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                加载中...
-              </div>
-            ) : stocks.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                暂无持仓或关注股票，请添加关注股票开始使用
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        标的代码
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        持仓数量
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        价格
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        涨跌
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        涨跌幅
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        盈亏
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        市值/数量
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        交易推荐
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        操作
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {stocks.map((stock) => {
-                      // 如果是失败的股票，显示错误状态
-                      if (stock._error) {
-                        return (
-                          <tr key={stock.symbol} className="hover:bg-gray-50 bg-red-50">
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <div className="flex items-center flex-wrap gap-1.5">
-                                <span className="text-sm font-medium text-gray-900">
-                                  {stock.symbol}
-                                </span>
-                                {stock.isWatched && (
-                                  <span className="px-2 py-1 text-xs bg-yellow-100 text-yellow-800 rounded">
-                                    关注
-                                  </span>
-                                )}
-                                {stock.isHeld && (
-                                  <span className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded">
-                                    持仓
-                                  </span>
-                                )}
-                                {stock.isHeld && (
-                                  <span className="px-2 py-1 text-xs bg-blue-50 text-blue-700 rounded">
-                                    持仓中
-                                  </span>
-                                )}
-                                {!stock.isHeld && stock.isWatched && (
-                                  <span className="px-2 py-1 text-xs bg-yellow-50 text-yellow-700 rounded">
-                                    关注中
-                                  </span>
-                                )}
-                              </div>
-                            </td>
-                            <td colSpan={8} className="px-6 py-4">
-                              <div className="flex items-center justify-between">
-                                <span className="text-sm text-red-600 font-medium">
-                                  无法获取行情数据（可能是代码错误或没有权限）
-                                </span>
-                                {stock.isWatched && (
-                                  <button
-                                    onClick={() => handleRemoveWatchlist(stock.symbol)}
-                                    className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
-                                  >
-                                    删除关注
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        )
-                      }
-                      
-                      const currentPriceInfo = getCurrentPrice(stock)
-                      const { change, changePercent } = calculateChange(currentPriceInfo.price, currentPriceInfo.prevClose)
-                      const isPositive = change >= 0
-                      const unrealizedPl = stock.position 
-                        ? parseFloat(stock.position.unrealized_pl)
-                        : 0
-
-                      return (
-                        <tr key={stock.symbol} className="hover:bg-gray-50">
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="flex items-center flex-wrap gap-1.5">
-                              <span className="text-sm font-medium text-gray-900">
-                                {stock.symbol}
-                              </span>
-                              {stock.isWatched && (
-                                <span className="px-2 py-1 text-xs bg-yellow-100 text-yellow-800 rounded">
-                                  关注
-                                </span>
-                              )}
-                              {stock.isHeld && (
-                                <span className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded">
-                                  持仓
-                                </span>
-                              )}
-                              {stock.isHeld && (
-                                <span className="px-2 py-1 text-xs bg-blue-50 text-blue-700 rounded">
-                                  持仓中
-                                </span>
-                              )}
-                              {!stock.isHeld && stock.isWatched && (
-                                <span className="px-2 py-1 text-xs bg-yellow-50 text-yellow-700 rounded">
-                                  关注中
-                                </span>
-                              )}
-                              {currentPriceInfo.label !== '盘中' && (
-                                <span className={`px-1.5 py-0.5 text-xs rounded ${currentPriceInfo.badgeClass}`}>
-                                  {currentPriceInfo.label}
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {stock.position ? (
-                              <div className="flex flex-col">
-                                <span>{stock.position.quantity}</span>
-                                {isOptionSymbol(stock.symbol) && stock.position.contract_multiplier && (
-                                  <span className="text-xs text-gray-400">
-                                    ({stock.position.quantity > 0 ? '多' : '空'}{Math.abs(stock.position.quantity)}张)
-                                  </span>
-                                )}
-                              </div>
-                            ) : '-'}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm">
-                            {stock.position ? (
-                              <div className="flex flex-col">
-                                <div className={`font-semibold ${currentPriceInfo.priceClass || (isPositive ? 'text-red-600' : 'text-green-600')}`}>
-                                  <span>{currentPriceInfo.price}</span>
-                                  {currentPriceInfo.label !== '盘中' && (
-                                    <span className={`ml-1 text-xs ${currentPriceInfo.priceClass}`}>
-                                      ({currentPriceInfo.label})
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-xs text-gray-500 mt-0.5">
-                                  成本: {parseFloat(stock.position.cost_price).toFixed(2)}
-                                </div>
-                              </div>
-                            ) : (
-                              <div className={`font-semibold ${currentPriceInfo.priceClass || (isPositive ? 'text-red-600' : 'text-green-600')}`}>
-                                <span>{currentPriceInfo.price}</span>
-                                {currentPriceInfo.label !== '盘中' && (
-                                  <span className={`ml-1 text-xs ${currentPriceInfo.priceClass}`}>
-                                    ({currentPriceInfo.label})
-                                  </span>
-                                )}
-                              </div>
-                            )}
-                          </td>
-                          <td className={`px-6 py-4 whitespace-nowrap text-sm ${isPositive ? 'text-red-600' : 'text-green-600'}`}>
-                            {isPositive ? '+' : ''}{change.toFixed(2)}
-                          </td>
-                          <td className={`px-6 py-4 whitespace-nowrap text-sm ${isPositive ? 'text-red-600' : 'text-green-600'}`}>
-                            {isPositive ? '+' : ''}{changePercent}%
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm">
-                            {stock.position ? (
-                              <div className="flex flex-col">
-                                <span className={`font-semibold ${unrealizedPl >= 0 ? 'text-red-600' : 'text-green-600'}`}>
-                                  {unrealizedPl >= 0 ? '+' : ''}{unrealizedPl.toFixed(2)}
-                                </span>
-                                {stock.position.unrealized_pl_ratio && (
-                                  <span className={`text-xs ${unrealizedPl >= 0 ? 'text-red-600' : 'text-green-600'}`}>
-                                    {unrealizedPl >= 0 ? '+' : ''}{parseFloat(stock.position.unrealized_pl_ratio).toFixed(2)}%
-                                  </span>
-                                )}
-                              </div>
-                            ) : '-'}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {stock.position ? (
-                              <div className="flex flex-col">
-                                <span>{parseFloat(stock.position.market_value).toFixed(2)}</span>
-                                {isOptionSymbol(stock.symbol) && stock.position.contract_multiplier && (
-                                  <span className="text-xs text-gray-400">
-                                    市值
-                                  </span>
-                                )}
-                              </div>
-                            ) : '-'}
-                          </td>
-                          <td className="px-6 py-4 text-sm">
-                            {stock.tradingRecommendation ? (() => {
-                              const rec = stock.tradingRecommendation
-                              const envStyle = getMarketEnvironmentStyle(rec.market_environment)
-                              const trendStyle = getTrendConsistencyStyle(rec.trend_consistency)
-                              const strengthStyle = getMarketStrengthStyle(rec.comprehensive_market_strength)
-                              const isExpanded = expandedRecommendations.has(stock.symbol)
-                              const isRefreshing = refreshingRecommendations.has(stock.symbol)
-                              
-                              return (
-                                <div className={`inline-block px-3 py-2 rounded-lg border-2 min-w-[280px] relative transition-opacity duration-300 ${
-                                  isRefreshing ? 'opacity-75' : 'opacity-100'
-                                } ${
-                                  rec.action === 'BUY' 
-                                    ? 'bg-green-50 border-green-200' 
-                                    : rec.action === 'SELL' 
-                                    ? 'bg-red-50 border-red-200' 
-                                    : 'bg-gray-50 border-gray-200'
-                                }`}>
-                                  {/* 刷新指示器 */}
-                                  {isRefreshing && (
-                                    <div className="absolute top-2 right-2">
-                                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
-                                    </div>
-                                  )}
-                                  <div className={`text-sm font-bold mb-2 ${
-                                    rec.action === 'BUY' ? 'text-green-700' :
-                                    rec.action === 'SELL' ? 'text-red-700' : 'text-gray-700'
-                                  }`}>
-                                    {rec.action === 'BUY' ? '买入' :
-                                     rec.action === 'SELL' ? '卖出（做空）' : '持有'}
-                                  </div>
-                                  {rec.action === 'SELL' && (
-                                    <div className="text-xs text-red-600 mb-1.5 italic">
-                                      做空：在较高价卖出，价格下跌后买回获利
-                                    </div>
-                                  )}
-                                  
-                                  {/* 市场环境 - 突出显示 */}
-                                  <div className={`mb-2 px-2 py-1 rounded ${envStyle.bg} ${envStyle.border} border`}>
-                                    <div className="flex items-center justify-between">
-                                      <span className={`text-xs font-semibold ${envStyle.text}`}>
-                                        <span className="mr-1">{envStyle.icon}</span>
-                                        市场环境: {rec.market_environment}
-                                      </span>
-                                      <span className={`text-xs font-bold ${strengthStyle.text}`}>
-                                        {rec.comprehensive_market_strength > 0 ? '+' : ''}{rec.comprehensive_market_strength.toFixed(1)}
-                                      </span>
-                                    </div>
-                                  </div>
-                                  
-                                  {/* 趋势一致性 */}
-                                  <div className={`mb-2 px-2 py-1 rounded text-xs ${trendStyle.bg}`}>
-                                    <span className={`font-medium ${trendStyle.text}`}>
-                                      趋势: {rec.trend_consistency}
-                                    </span>
-                                  </div>
-                                  
-                                  <div className="space-y-1.5 text-xs">
-                                    <div className="flex items-start gap-2">
-                                      <span className="text-gray-600 font-medium min-w-[40px]">入场:</span>
-                                      <span className="text-gray-800 font-semibold">
-                                        ${rec.entry_price_range.min.toFixed(2)} - ${rec.entry_price_range.max.toFixed(2)}
-                                      </span>
-                                    </div>
-                                    <div className="flex items-start gap-2">
-                                      <span className="text-red-600 font-medium min-w-[40px]">
-                                        {rec.action === 'SELL' ? '止损↑:' : '止损:'}
-                                      </span>
-                                      <span className="text-gray-800 font-semibold">
-                                        ${rec.stop_loss.toFixed(2)}
-                                        {rec.action === 'SELL' && (
-                                          <span className="text-red-500 text-[10px] ml-1">(价格上涨会亏损)</span>
-                                        )}
-                                      </span>
-                                    </div>
-                                    <div className="flex items-start gap-2">
-                                      <span className="text-green-600 font-medium min-w-[40px]">
-                                        {rec.action === 'SELL' ? '止盈↓:' : '止盈:'}
-                                      </span>
-                                      <span className="text-gray-800 font-semibold">
-                                        ${rec.take_profit.toFixed(2)}
-                                        {rec.action === 'SELL' && (
-                                          <span className="text-green-500 text-[10px] ml-1">(价格下跌会盈利)</span>
-                                        )}
-                                      </span>
-                                    </div>
-                                    <div className="flex items-center gap-2 pt-1 border-t border-gray-200">
-                                      <span className="text-gray-600 font-medium min-w-[40px]">R/R:</span>
-                                      <span className={`font-bold ${
-                                        rec.risk_reward_ratio >= 1.5 ? 'text-green-600' : 'text-orange-600'
-                                      }`}>
-                                        {rec.risk_reward_ratio.toFixed(2)}
-                                      </span>
-                                    </div>
-                                    
-                                    {/* 风险提示 */}
-                                    {rec.risk_note && rec.risk_note !== '无特别风险提示' && (
-                                      <div className="pt-1 border-t border-gray-200">
-                                        <div className="text-xs text-orange-600 font-medium">
-                                          ⚠ {rec.risk_note}
-                                        </div>
-                                      </div>
-                                    )}
-                                    
-                                    {/* 展开/收起按钮 */}
-                                    <button
-                                      onClick={() => toggleRecommendationDetails(stock.symbol)}
-                                      className="w-full pt-1 mt-1 text-xs text-blue-600 hover:text-blue-800 font-medium border-t border-gray-200"
-                                    >
-                                      {isExpanded ? '收起详情 ▲' : '展开详情 ▼'}
-                                    </button>
-                                    
-                                    {/* 详细信息（可展开） */}
-                                    {isExpanded && (
-                                      <div className="pt-2 mt-2 border-t border-gray-300 space-y-2 text-xs">
-                                        <div className="bg-gray-50 p-2 rounded">
-                                          <div className="font-semibold text-gray-700 mb-1">分析摘要:</div>
-                                          <div className="text-gray-600 leading-relaxed">{rec.analysis_summary}</div>
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              )
-                            })() : stock.symbol.endsWith('.US') && !isOptionSymbol(stock.symbol) ? (
-                              // 首次加载时显示骨架屏，保持单元格高度
-                              <div className="inline-block px-3 py-2 rounded-lg border-2 min-w-[280px] bg-gray-50 border-gray-200 animate-pulse">
-                                <div className="h-4 bg-gray-200 rounded mb-2 w-1/3"></div>
-                                <div className="h-3 bg-gray-200 rounded mb-1.5 w-2/3"></div>
-                                <div className="h-3 bg-gray-200 rounded mb-1.5 w-1/2"></div>
-                                <div className="h-3 bg-gray-200 rounded w-3/4"></div>
-                                <div className="mt-2 flex items-center gap-2">
-                                  <div className="h-3 bg-gray-200 rounded w-16"></div>
-                                  <div className="h-3 bg-gray-200 rounded w-20"></div>
-                                </div>
-                              </div>
-                            ) : (
-                              <span className="text-xs text-gray-400">-</span>
-                            )}
-                          </td>
-                          <td className="px-6 py-4 text-sm">
-                            <div className="flex flex-wrap gap-2">
-                              {stock.isWatched && (
-                                <button
-                                  onClick={() => handleRemoveWatchlist(stock.symbol)}
-                                  className="text-red-600 hover:text-red-800 whitespace-nowrap"
-                                  title="取消关注"
-                                >
-                                  取消关注
-                                </button>
-                              )}
-                              <button
-                                onClick={() => {
-                                  setTradeSymbol(stock.symbol)
-                                  setTradePrice(currentPriceInfo.price)
-                                }}
-                                className="text-blue-600 hover:text-blue-800 font-semibold whitespace-nowrap"
-                                title="交易"
-                              >
-                                {stock.isHeld ? '卖出' : '买入'}
-                              </button>
-                              <button
-                                onClick={() => setSelectedSymbol(stock.symbol)}
-                                className="text-purple-600 hover:text-purple-800 whitespace-nowrap"
-                                title="设置交易规则"
-                              >
-                                设置规则
-                              </button>
-                              <Link
-                                href={`/candles?symbol=${stock.symbol}`}
-                                className="text-green-600 hover:text-green-800 whitespace-nowrap"
-                              >
-                                查看K线
-                              </Link>
-                              {stock.symbol.endsWith('.US') && !isOptionSymbol(stock.symbol) && (
-                                <Link
-                                  href={`/options/chain?symbol=${stock.symbol}`}
-                                  className="text-purple-600 hover:text-purple-800 whitespace-nowrap"
-                                  title="查看期权链"
-                                >
-                                  期权
-                                </Link>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
                       )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* 交易规则设置模态框 */}
-          {selectedSymbol && (
-            <TradingRuleModal
-              symbol={selectedSymbol}
-              onClose={() => setSelectedSymbol(null)}
-              onSuccess={() => {
-                setSelectedSymbol(null)
-                setSuccess('交易规则设置成功')
-              }}
-            />
-          )}
-
-          {/* 交易下单模态框 */}
-          {tradeSymbol && (
-            <TradeModal
-              symbol={tradeSymbol}
-              currentPrice={tradePrice || undefined}
-              onClose={() => {
-                setTradeSymbol(null)
-                setTradePrice(null)
-              }}
-              onSuccess={() => {
-                setTradeSymbol(null)
-                setTradePrice(null)
-                setSuccess('订单提交成功')
-                // 延迟同步订单状态和持仓，然后刷新数据
-                setTimeout(async () => {
-                  try {
-                    // 同步订单状态和持仓
-                    await ordersApi.syncStatus()
-                    // 刷新持仓和账户余额
-                    fetchPositions()
-                    fetchAccountBalance(true)
-                  } catch (err) {
-                    console.error('同步订单状态失败:', err)
-                    // 即使同步失败，也刷新持仓
-                    fetchPositions()
-                    fetchAccountBalance(true)
+                    }
+                    return (
+                      <div style={{ fontWeight: 600, color: priceColor }}>
+                        {currentPriceInfo.price}
+                        {currentPriceInfo.label !== '盘中' && (
+                          <span style={{ fontSize: 12, marginLeft: 4 }}>({currentPriceInfo.label})</span>
+                        )}
+                      </div>
+                    )
                   }
-                }, 2000)
-              }}
-            />
-          )}
-        </div>
-      </div>
-    </div>
+                },
+                {
+                  title: '涨跌',
+                  key: 'change',
+                  width: 100,
+                  render: (_, stock: StockRow) => {
+                    if (stock._error) return null
+                    const currentPriceInfo = getCurrentPrice(stock)
+                    const { change } = calculateChange(currentPriceInfo.price, currentPriceInfo.prevClose)
+                    const isPositive = change >= 0
+                    return (
+                      <span style={{ color: isPositive ? '#ff4d4f' : '#52c41a' }}>
+                        {isPositive ? '+' : ''}{change.toFixed(2)}
+                      </span>
+                    )
+                  }
+                },
+                {
+                  title: '涨跌幅',
+                  key: 'changePercent',
+                  width: 100,
+                  render: (_, stock: StockRow) => {
+                    if (stock._error) return null
+                    const currentPriceInfo = getCurrentPrice(stock)
+                    const { changePercent } = calculateChange(currentPriceInfo.price, currentPriceInfo.prevClose)
+                    const isPositive = parseFloat(changePercent) >= 0
+                    return (
+                      <span style={{ color: isPositive ? '#ff4d4f' : '#52c41a' }}>
+                        {isPositive ? '+' : ''}{changePercent}%
+                      </span>
+                    )
+                  }
+                },
+                {
+                  title: '盈亏',
+                  key: 'unrealizedPl',
+                  width: 120,
+                  render: (_, stock: StockRow) => {
+                    if (stock._error) return null
+                    if (!stock.position) return '-'
+                    const unrealizedPl = parseFloat(stock.position.unrealized_pl)
+                    return (
+                      <div>
+                        <div style={{ fontWeight: 600, color: unrealizedPl >= 0 ? '#ff4d4f' : '#52c41a' }}>
+                          {unrealizedPl >= 0 ? '+' : ''}{unrealizedPl.toFixed(2)}
+                        </div>
+                        {stock.position.unrealized_pl_ratio && (
+                          <div style={{ fontSize: 12, color: unrealizedPl >= 0 ? '#ff4d4f' : '#52c41a' }}>
+                            {unrealizedPl >= 0 ? '+' : ''}{parseFloat(stock.position.unrealized_pl_ratio).toFixed(2)}%
+                          </div>
+                        )}
+                      </div>
+                    )
+                  }
+                },
+                {
+                  title: '市值/数量',
+                  key: 'marketValue',
+                  width: 120,
+                  render: (_, stock: StockRow) => {
+                    if (stock._error) return null
+                    if (!stock.position) return '-'
+                    return (
+                      <div>
+                        <div>{parseFloat(stock.position.market_value).toFixed(2)}</div>
+                        {isOptionSymbol(stock.symbol) && stock.position.contract_multiplier && (
+                          <div style={{ fontSize: 12, color: '#999' }}>市值</div>
+                        )}
+                      </div>
+                    )
+                  }
+                },
+                {
+                  title: '交易推荐',
+                  key: 'recommendation',
+                  width: 320,
+                  render: (_, stock: StockRow) => {
+                    if (stock._error) return null
+                    if (!stock.tradingRecommendation) {
+                      if (stock.symbol.endsWith('.US') && !isOptionSymbol(stock.symbol)) {
+                        return <Skeleton active paragraph={{ rows: 3 }} />
+                      }
+                      return <span style={{ color: '#999' }}>-</span>
+                    }
+                    
+                    const rec = stock.tradingRecommendation
+                    const envStyle = getMarketEnvironmentStyle(rec.market_environment)
+                    const trendStyle = getTrendConsistencyStyle(rec.trend_consistency)
+                    const strengthStyle = getMarketStrengthStyle(rec.comprehensive_market_strength)
+                    const isExpanded = expandedRecommendations.has(stock.symbol)
+                    const isRefreshing = refreshingRecommendations.has(stock.symbol)
+                    
+                    const getBgColor = () => {
+                      if (rec.action === 'BUY') return '#f6ffed'
+                      if (rec.action === 'SELL') return '#fff1f0'
+                      return '#fafafa'
+                    }
+                    
+                    const getBorderColor = () => {
+                      if (rec.action === 'BUY') return '#52c41a'
+                      if (rec.action === 'SELL') return '#ff4d4f'
+                      return '#d9d9d9'
+                    }
+                    
+                    return (
+                      <Card
+                        size="small"
+                        style={{
+                          minWidth: 280,
+                          opacity: isRefreshing ? 0.75 : 1,
+                          borderColor: getBorderColor(),
+                          backgroundColor: getBgColor()
+                        }}
+                      >
+                        {isRefreshing && (
+                          <Spin size="small" style={{ position: 'absolute', top: 8, right: 8 }} />
+                        )}
+                        <div style={{ fontWeight: 600, marginBottom: 8, color: rec.action === 'BUY' ? '#52c41a' : rec.action === 'SELL' ? '#ff4d4f' : '#666' }}>
+                          {rec.action === 'BUY' ? '买入' : rec.action === 'SELL' ? '卖出（做空）' : '持有'}
+                        </div>
+                        {rec.action === 'SELL' && (
+                          <div style={{ fontSize: 12, color: '#ff4d4f', fontStyle: 'italic', marginBottom: 8 }}>
+                            做空：在较高价卖出，价格下跌后买回获利
+                          </div>
+                        )}
+                        <div style={{ marginBottom: 8, padding: 4, borderRadius: 4, backgroundColor: getBgColor() }}>
+                          <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                            <span style={{ fontSize: 12, fontWeight: 600 }}>
+                              {envStyle.icon} 市场环境: {rec.market_environment}
+                            </span>
+                            <span style={{ fontSize: 12, fontWeight: 600 }}>
+                              {rec.comprehensive_market_strength > 0 ? '+' : ''}{rec.comprehensive_market_strength.toFixed(1)}
+                            </span>
+                          </Space>
+                        </div>
+                        <div style={{ marginBottom: 8, padding: 4, borderRadius: 4, fontSize: 12 }}>
+                          趋势: {rec.trend_consistency}
+                        </div>
+                        <div style={{ fontSize: 12 }}>
+                          <div style={{ marginBottom: 4 }}>
+                            <span style={{ color: '#666' }}>入场: </span>
+                            <span style={{ fontWeight: 600 }}>${rec.entry_price_range.min.toFixed(2)} - ${rec.entry_price_range.max.toFixed(2)}</span>
+                          </div>
+                          <div style={{ marginBottom: 4 }}>
+                            <span style={{ color: '#ff4d4f' }}>{rec.action === 'SELL' ? '止损↑: ' : '止损: '}</span>
+                            <span style={{ fontWeight: 600 }}>${rec.stop_loss.toFixed(2)}</span>
+                            {rec.action === 'SELL' && <span style={{ fontSize: 10, color: '#ff4d4f', marginLeft: 4 }}>(价格上涨会亏损)</span>}
+                          </div>
+                          <div style={{ marginBottom: 4 }}>
+                            <span style={{ color: '#52c41a' }}>{rec.action === 'SELL' ? '止盈↓: ' : '止盈: '}</span>
+                            <span style={{ fontWeight: 600 }}>${rec.take_profit.toFixed(2)}</span>
+                            {rec.action === 'SELL' && <span style={{ fontSize: 10, color: '#52c41a', marginLeft: 4 }}>(价格下跌会盈利)</span>}
+                          </div>
+                          <div style={{ paddingTop: 4, borderTop: '1px solid #e5e7eb' }}>
+                            <span style={{ color: '#666' }}>R/R: </span>
+                            <span style={{ fontWeight: 600, color: rec.risk_reward_ratio >= 1.5 ? '#52c41a' : '#faad14' }}>
+                              {rec.risk_reward_ratio.toFixed(2)}
+                            </span>
+                          </div>
+                          {rec.risk_note && rec.risk_note !== '无特别风险提示' && (
+                            <div style={{ paddingTop: 4, borderTop: '1px solid #e5e7eb', fontSize: 12, color: '#faad14' }}>
+                              ⚠ {rec.risk_note}
+                            </div>
+                          )}
+                          <Button
+                            type="link"
+                            size="small"
+                            onClick={() => toggleRecommendationDetails(stock.symbol)}
+                            style={{ width: '100%', paddingTop: 4, marginTop: 4, fontSize: 12, borderTop: '1px solid #e5e7eb' }}
+                          >
+                            {isExpanded ? '收起详情 ▲' : '展开详情 ▼'}
+                          </Button>
+                          {isExpanded && (
+                            <div style={{ paddingTop: 8, marginTop: 8, borderTop: '1px solid #d9d9d9' }}>
+                              <Card size="small" style={{ backgroundColor: '#fafafa' }}>
+                                <div style={{ fontWeight: 600, marginBottom: 4 }}>分析摘要:</div>
+                                <div style={{ fontSize: 12, lineHeight: 1.6 }}>{rec.analysis_summary}</div>
+                              </Card>
+                            </div>
+                          )}
+                        </div>
+                      </Card>
+                    )
+                  }
+                },
+                {
+                  title: '操作',
+                  key: 'actions',
+                  width: 200,
+                  fixed: 'right',
+                  render: (_, stock: StockRow) => {
+                    if (stock._error) {
+                      return (
+                        <div>
+                          <div style={{ color: '#ff4d4f', fontSize: 12, marginBottom: 8 }}>
+                            无法获取行情数据（可能是代码错误或没有权限）
+                          </div>
+                          {stock.isWatched && (
+                            <Button
+                              type="primary"
+                              danger
+                              size="small"
+                              onClick={() => handleRemoveWatchlist(stock.symbol)}
+                            >
+                              删除关注
+                            </Button>
+                          )}
+                        </div>
+                      )
+                    }
+                    
+                    const currentPriceInfo = getCurrentPrice(stock)
+                    return (
+                      <Space wrap>
+                        {stock.isWatched && (
+                          <Button
+                            type="link"
+                            danger
+                            onClick={() => handleRemoveWatchlist(stock.symbol)}
+                            title="取消关注"
+                            style={{ padding: 0 }}
+                          >
+                            取消关注
+                          </Button>
+                        )}
+                        <Button
+                          type="primary"
+                          onClick={() => {
+                            setTradeSymbol(stock.symbol)
+                            setTradePrice(currentPriceInfo.price)
+                          }}
+                          title="交易"
+                        >
+                          {stock.isHeld ? '卖出' : '买入'}
+                        </Button>
+                        <Button
+                          type="link"
+                          onClick={() => setSelectedSymbol(stock.symbol)}
+                          title="设置交易规则"
+                          style={{ padding: 0 }}
+                        >
+                          设置规则
+                        </Button>
+                        <Link href={`/candles?symbol=${stock.symbol}`} style={{ color: '#52c41a' }}>
+                          查看K线
+                        </Link>
+                        {stock.symbol.endsWith('.US') && !isOptionSymbol(stock.symbol) && (
+                          <Link href={`/options/chain?symbol=${stock.symbol}`} style={{ color: '#722ed1' }}>
+                            期权
+                          </Link>
+                        )}
+                      </Space>
+                    )
+                  }
+                }
+          ]}
+        />
+      </Card>
+
+      {/* 交易规则设置模态框 */}
+      {selectedSymbol && (
+        <TradingRuleModal
+          symbol={selectedSymbol}
+          onClose={() => setSelectedSymbol(null)}
+          onSuccess={() => {
+            setSelectedSymbol(null)
+            setSuccess('交易规则设置成功')
+          }}
+        />
+      )}
+
+      {/* 交易下单模态框 */}
+      {tradeSymbol && (
+        <TradeModal
+          symbol={tradeSymbol}
+          currentPrice={tradePrice || undefined}
+          onClose={() => {
+            setTradeSymbol(null)
+            setTradePrice(null)
+          }}
+          onSuccess={() => {
+            setTradeSymbol(null)
+            setTradePrice(null)
+            setSuccess('订单提交成功')
+            // 延迟同步订单状态和持仓，然后刷新数据
+            setTimeout(async () => {
+              try {
+                // 同步订单状态和持仓
+                await ordersApi.syncStatus()
+                // 刷新持仓和账户余额
+                fetchPositions()
+                fetchAccountBalance(true)
+              } catch (err) {
+                console.error('同步订单状态失败:', err)
+                // 即使同步失败，也刷新持仓
+                fetchPositions()
+                fetchAccountBalance(true)
+              }
+            }, 2000)
+          }}
+        />
+      )}
+      </AppLayout>
   )
 }
 
@@ -1760,77 +1626,75 @@ function TradingRuleModal({ symbol, onClose, onSuccess }: { symbol: string; onCl
   }
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-        <h2 className="text-xl font-bold mb-4">设置交易规则 - {symbol}</h2>
-        
-        {error && (
-          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
-            {error}
-          </div>
-        )}
+    <Modal
+      title={`设置交易规则 - ${symbol}`}
+      open={true}
+      onCancel={onClose}
+      footer={[
+        <Button key="cancel" onClick={onClose}>
+          取消
+        </Button>,
+        <Button
+          key="submit"
+          type="primary"
+          onClick={handleSubmit}
+          loading={loading}
+        >
+          确认设置
+        </Button>,
+      ]}
+      width={500}
+    >
+      {error && (
+        <Alert
+          message={error}
+          type="error"
+          showIcon
+          style={{ marginBottom: 16 }}
+        />
+      )}
 
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              规则名称
-            </label>
-            <input
-              type="text"
-              value={ruleName}
-              onChange={(e) => setRuleName(e.target.value)}
-              placeholder="例如：价格突破提醒"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              规则类型
-            </label>
-            <select
-              value={ruleType}
-              onChange={(e) => setRuleType(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="price_alert">价格提醒</option>
-              <option value="auto_trade">自动交易</option>
-              <option value="stop_loss">止损</option>
-              <option value="take_profit">止盈</option>
-              <option value="trailing_stop">跟踪止损</option>
-              <option value="dca">定投</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="flex items-center">
-              <input
-                type="checkbox"
-                checked={enabled}
-                onChange={(e) => setEnabled(e.target.checked)}
-                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
-              <span className="ml-2 text-sm text-gray-700">启用规则</span>
-            </label>
-          </div>
-
-          <div className="flex gap-4">
-            <button
-              onClick={handleSubmit}
-              disabled={loading}
-              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400"
-            >
-              {loading ? '设置中...' : '确认设置'}
-            </button>
-            <button
-              onClick={onClose}
-              className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
-            >
-              取消
-            </button>
-          </div>
+      <Space direction="vertical" style={{ width: '100%' }} size="large">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            规则名称
+          </label>
+          <Input
+            value={ruleName}
+            onChange={(e) => setRuleName(e.target.value)}
+            placeholder="例如：价格突破提醒"
+          />
         </div>
-      </div>
-    </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            规则类型
+          </label>
+          <Select
+            value={ruleType}
+            onChange={(value) => setRuleType(value)}
+            style={{ width: '100%' }}
+            options={[
+              { value: 'price_alert', label: '价格提醒' },
+              { value: 'auto_trade', label: '自动交易' },
+              { value: 'stop_loss', label: '止损' },
+              { value: 'take_profit', label: '止盈' },
+              { value: 'trailing_stop', label: '跟踪止损' },
+              { value: 'dca', label: '定投' },
+            ]}
+          />
+        </div>
+
+        <div>
+          <label className="flex items-center">
+            <Switch
+              checked={enabled}
+              onChange={setEnabled}
+            />
+            <span className="ml-2 text-sm text-gray-700">启用规则</span>
+          </label>
+        </div>
+      </Space>
+    </Modal>
   )
 }

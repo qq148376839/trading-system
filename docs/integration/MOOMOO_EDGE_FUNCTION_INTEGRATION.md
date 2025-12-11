@@ -75,11 +75,22 @@ const responseData = await moomooProxy({
 
 以下接口已更新为使用边缘函数：
 
+### 基础接口
 1. ✅ `/api/headfoot-search` - 搜索接口
+
+### 行情接口（需要quote-token）
 2. ✅ `/quote-api/quote-v2/get-kline` - K线数据
 3. ✅ `/quote-api/quote-v2/get-quote-minute` - 分时数据
 4. ✅ `/quote-api/quote-v2/get-option-chain` - 期权链
-5. ✅ `/quote-api/quote-v2/get-stock-quote` - 股票行情（通过期权链服务）
+5. ✅ `/quote-api/quote-v2/get-stock-quote` - 股票行情
+6. ✅ `/quote-api/quote-v2/get-option-strike-dates` - 期权到期日期
+
+### 机构选股接口（需要quote-token）
+7. ✅ `/quote-api/quote-v2/get-popular-position` - 热门机构列表
+8. ✅ `/quote-api/quote-v2/get-share-holding-list` - 机构持仓列表
+9. ✅ `/quote-api/quote-v2/get-owner-position-list` - 机构列表（支持分页）
+
+**注意**：所有需要 `quote-token` 的接口都会自动计算并添加token，无需手动传递。
 
 ## 测试
 

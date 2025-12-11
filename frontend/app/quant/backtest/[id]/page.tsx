@@ -3,7 +3,9 @@
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { backtestApi, quantApi } from '@/lib/api';
-import BackButton from '@/components/BackButton';
+import AppLayout from '@/components/AppLayout';
+import { Card, Table, Tag, Space, Button, Alert, Spin, Row, Col, Statistic, message } from 'antd';
+import { DownloadOutlined } from '@ant-design/icons';
 import {
   LineChart,
   Line,
@@ -17,6 +19,7 @@ import {
   ResponsiveContainer,
   BarChart,
   Bar,
+  Cell,
 } from 'recharts';
 
 interface BacktestTrade {
@@ -107,13 +110,9 @@ export default function BacktestDetailPage() {
     return new Date(dateStr).toLocaleString('zh-CN');
   };
 
-  const getReturnColor = (returnValue: number) => {
-    return returnValue >= 0 ? 'text-green-600' : 'text-red-600';
-  };
-
   const handleExport = async () => {
     if (!result) {
-      alert('回测结果不存在，无法导出');
+      message.error('回测结果不存在，无法导出');
       return;
     }
     
@@ -136,268 +135,337 @@ export default function BacktestDetailPage() {
       // 清理
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
+      message.success('导出成功');
     } catch (err: any) {
-      alert('导出失败: ' + (err.message || '未知错误'));
+      message.error('导出失败: ' + (err.message || '未知错误'));
     }
   };
 
+  const tradeColumns = [
+    {
+      title: '标的',
+      key: 'symbol',
+      dataIndex: 'symbol',
+      render: (text: string) => <span style={{ fontFamily: 'monospace', fontWeight: 500 }}>{text}</span>,
+    },
+    {
+      title: '买入日期',
+      key: 'entryDate',
+      dataIndex: 'entryDate',
+      render: (text: string) => formatDate(text),
+    },
+    {
+      title: '卖出日期',
+      key: 'exitDate',
+      dataIndex: 'exitDate',
+      render: (text: string | null) => text ? formatDate(text) : '-',
+    },
+    {
+      title: '买入价',
+      key: 'entryPrice',
+      dataIndex: 'entryPrice',
+      render: (price: number) => `$${price.toFixed(2)}`,
+    },
+    {
+      title: '卖出价',
+      key: 'exitPrice',
+      dataIndex: 'exitPrice',
+      render: (price: number | null) => price ? `$${price.toFixed(2)}` : '-',
+    },
+    {
+      title: '数量',
+      key: 'quantity',
+      dataIndex: 'quantity',
+    },
+    {
+      title: '盈亏',
+      key: 'pnl',
+      render: (_: any, record: BacktestTrade) => (
+        <div style={{ color: record.pnl >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 600 }}>
+          ${record.pnl.toFixed(2)} ({record.pnlPercent >= 0 ? '+' : ''}{record.pnlPercent.toFixed(2)}%)
+        </div>
+      ),
+    },
+    {
+      title: '卖出原因',
+      key: 'exitReason',
+      dataIndex: 'exitReason',
+      render: (text: string | null) => text || '-',
+    },
+  ];
+
   if (loading) {
     return (
-      <div className="container mx-auto p-6">
-        <div className="text-center">加载中...</div>
-      </div>
+      <AppLayout>
+        <Card>
+          <div style={{ textAlign: 'center', padding: '40px 0' }}>
+            <Spin size="large" />
+            <div style={{ marginTop: 16 }}>加载中...</div>
+          </div>
+        </Card>
+      </AppLayout>
     );
   }
 
   if (error || !result) {
     return (
-      <div className="container mx-auto p-6">
-        <BackButton />
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
-          {error || '回测结果不存在'}
-        </div>
-      </div>
+      <AppLayout>
+        <Alert
+          message={error || '回测结果不存在'}
+          type="error"
+          showIcon
+        />
+      </AppLayout>
     );
   }
 
   return (
-    <div className="container mx-auto p-6">
-      <BackButton />
-      
-      <div className="mb-6 flex justify-between items-start">
-        <div>
-          <h1 className="text-3xl font-bold mb-2">回测结果详情</h1>
-          {strategy && (
-            <p className="text-gray-600">
-              策略: {strategy.name} ({strategy.type})
-            </p>
-          )}
-          <p className="text-gray-600">
-            时间范围: {formatDate(result.startDate)} ~ {formatDate(result.endDate)}
-          </p>
+    <AppLayout>
+      <Card>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+          <div>
+            <h1 style={{ fontSize: 24, fontWeight: 600, marginBottom: 8 }}>回测结果详情</h1>
+            {strategy && (
+              <div style={{ color: '#666', marginBottom: 4 }}>
+                策略: {strategy.name} ({strategy.type})
+              </div>
+            )}
+            <div style={{ color: '#666' }}>
+              时间范围: {formatDate(result.startDate)} ~ {formatDate(result.endDate)}
+            </div>
+          </div>
+          <Button type="primary" icon={<DownloadOutlined />} onClick={handleExport}>
+            导出JSON
+          </Button>
         </div>
-        <button
-          onClick={handleExport}
-          className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 transition-colors flex items-center gap-2"
-        >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
-          导出JSON
-        </button>
-      </div>
 
-      {/* 性能指标卡片 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <div className="bg-white rounded-lg shadow p-4">
-          <div className="text-sm text-gray-500 mb-1">总收益率</div>
-          <div className={`text-2xl font-bold ${getReturnColor(result.totalReturn)}`}>
-            {result.totalReturn >= 0 ? '+' : ''}{result.totalReturn.toFixed(2)}%
-          </div>
-        </div>
-        <div className="bg-white rounded-lg shadow p-4">
-          <div className="text-sm text-gray-500 mb-1">总交易次数</div>
-          <div className="text-2xl font-bold">{result.totalTrades}</div>
-        </div>
-        <div className="bg-white rounded-lg shadow p-4">
-          <div className="text-sm text-gray-500 mb-1">胜率</div>
-          <div className="text-2xl font-bold">{result.winRate.toFixed(2)}%</div>
-          <div className="text-xs text-gray-400 mt-1">
-            {result.winningTrades} 胜 / {result.losingTrades} 负
-          </div>
-        </div>
-        <div className="bg-white rounded-lg shadow p-4">
-          <div className="text-sm text-gray-500 mb-1">最大回撤</div>
-          <div className={`text-2xl font-bold ${getReturnColor(result.maxDrawdown)}`}>
-            {result.maxDrawdown.toFixed(2)}%
-          </div>
-        </div>
-        <div className="bg-white rounded-lg shadow p-4">
-          <div className="text-sm text-gray-500 mb-1">平均收益率</div>
-          <div className={`text-2xl font-bold ${getReturnColor(result.avgReturn)}`}>
-            {result.avgReturn >= 0 ? '+' : ''}{result.avgReturn.toFixed(2)}%
-          </div>
-        </div>
-        <div className="bg-white rounded-lg shadow p-4">
-          <div className="text-sm text-gray-500 mb-1">夏普比率</div>
-          <div className="text-2xl font-bold">{result.sharpeRatio.toFixed(2)}</div>
-        </div>
-        <div className="bg-white rounded-lg shadow p-4">
-          <div className="text-sm text-gray-500 mb-1">平均持仓时间</div>
-          <div className="text-2xl font-bold">{result.avgHoldingTime.toFixed(1)}</div>
-          <div className="text-xs text-gray-400 mt-1">小时</div>
-        </div>
-      </div>
+        {/* 性能指标卡片 */}
+        <Row gutter={16} style={{ marginBottom: 24 }}>
+          <Col xs={24} sm={12} lg={6}>
+            <Card>
+              <Statistic
+                title="总收益率"
+                value={result.totalReturn.toFixed(2)}
+                suffix="%"
+                prefix={result.totalReturn >= 0 ? '+' : ''}
+                valueStyle={{
+                  color: result.totalReturn >= 0 ? '#52c41a' : '#ff4d4f',
+                  fontSize: 24,
+                  fontWeight: 600,
+                }}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} lg={6}>
+            <Card>
+              <Statistic
+                title="总交易次数"
+                value={result.totalTrades}
+                valueStyle={{ fontSize: 24, fontWeight: 600 }}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} lg={6}>
+            <Card>
+              <Statistic
+                title="胜率"
+                value={result.winRate.toFixed(2)}
+                suffix="%"
+                valueStyle={{ fontSize: 24, fontWeight: 600 }}
+              />
+              <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+                {result.winningTrades} 胜 / {result.losingTrades} 负
+              </div>
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} lg={6}>
+            <Card>
+              <Statistic
+                title="最大回撤"
+                value={result.maxDrawdown.toFixed(2)}
+                suffix="%"
+                valueStyle={{
+                  color: result.maxDrawdown >= 0 ? '#52c41a' : '#ff4d4f',
+                  fontSize: 24,
+                  fontWeight: 600,
+                }}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} lg={6}>
+            <Card>
+              <Statistic
+                title="平均收益率"
+                value={result.avgReturn.toFixed(2)}
+                suffix="%"
+                prefix={result.avgReturn >= 0 ? '+' : ''}
+                valueStyle={{
+                  color: result.avgReturn >= 0 ? '#52c41a' : '#ff4d4f',
+                  fontSize: 24,
+                  fontWeight: 600,
+                }}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} lg={6}>
+            <Card>
+              <Statistic
+                title="夏普比率"
+                value={result.sharpeRatio.toFixed(2)}
+                valueStyle={{ fontSize: 24, fontWeight: 600 }}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} lg={6}>
+            <Card>
+              <Statistic
+                title="平均持仓时间"
+                value={result.avgHoldingTime.toFixed(1)}
+                suffix="小时"
+                valueStyle={{ fontSize: 24, fontWeight: 600 }}
+              />
+            </Card>
+          </Col>
+        </Row>
 
-      {/* 交易明细 */}
-      <div className="bg-white rounded-lg shadow p-6 mb-6">
-        <h2 className="text-xl font-bold mb-4">交易明细 ({result.trades.length})</h2>
-        {result.trades.length === 0 ? (
-          <div className="text-gray-500 text-center py-4">暂无交易记录</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">标的</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">买入日期</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">卖出日期</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">买入价</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">卖出价</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">数量</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">盈亏</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">卖出原因</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {result.trades.map((trade, index) => (
-                  <tr key={index} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 whitespace-nowrap font-medium">{trade.symbol}</td>
-                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                      {formatDate(trade.entryDate)}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                      {trade.exitDate ? formatDate(trade.exitDate) : '-'}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-sm">${trade.entryPrice.toFixed(2)}</td>
-                    <td className="px-4 py-3 whitespace-nowrap text-sm">
-                      {trade.exitPrice ? `$${trade.exitPrice.toFixed(2)}` : '-'}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-sm">{trade.quantity}</td>
-                    <td className={`px-4 py-3 whitespace-nowrap text-sm font-semibold ${getReturnColor(trade.pnl)}`}>
-                      ${trade.pnl.toFixed(2)} ({trade.pnlPercent >= 0 ? '+' : ''}{trade.pnlPercent.toFixed(2)}%)
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                      {trade.exitReason || '-'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {/* 交易明细 */}
+        <Card style={{ marginBottom: 24 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>交易明细 ({result.trades.length})</h2>
+          <Table
+            dataSource={result.trades}
+            columns={tradeColumns}
+            rowKey={(_, index) => `trade-${index}`}
+            locale={{
+              emptyText: '暂无交易记录',
+            }}
+          />
+        </Card>
+
+        {/* 每日收益曲线（使用 Recharts） */}
+        {result.dailyReturns && result.dailyReturns.length > 0 && (
+          <Card style={{ marginBottom: 24 }}>
+            <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>每日权益变化</h2>
+            <ResponsiveContainer width="100%" height={400}>
+              <AreaChart data={result.dailyReturns}>
+                <defs>
+                  <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.8}/>
+                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis 
+                  dataKey="date" 
+                  tickFormatter={(value) => {
+                    const date = new Date(value);
+                    return `${date.getMonth() + 1}/${date.getDate()}`;
+                  }}
+                />
+                <YAxis 
+                  tickFormatter={(value) => `$${value.toFixed(0)}`}
+                />
+                <Tooltip 
+                  formatter={(value: number) => [`$${value.toFixed(2)}`, '权益']}
+                  labelFormatter={(label) => `日期: ${new Date(label).toLocaleDateString('zh-CN')}`}
+                />
+                <Legend />
+                <Area
+                  type="monotone"
+                  dataKey="equity"
+                  stroke="#3b82f6"
+                  fillOpacity={1}
+                  fill="url(#colorEquity)"
+                  name="权益"
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </Card>
         )}
-      </div>
 
-      {/* 每日收益曲线（使用 Recharts） */}
-      {result.dailyReturns && result.dailyReturns.length > 0 && (
-        <div className="bg-white rounded-lg shadow p-6 mb-6">
-          <h2 className="text-xl font-bold mb-4">每日权益变化</h2>
-          <ResponsiveContainer width="100%" height={400}>
-            <AreaChart data={result.dailyReturns}>
-              <defs>
-                <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.8}/>
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis 
-                dataKey="date" 
-                tickFormatter={(value) => {
-                  const date = new Date(value);
-                  return `${date.getMonth() + 1}/${date.getDate()}`;
-                }}
-              />
-              <YAxis 
-                tickFormatter={(value) => `$${value.toFixed(0)}`}
-              />
-              <Tooltip 
-                formatter={(value: number) => [`$${value.toFixed(2)}`, '权益']}
-                labelFormatter={(label) => `日期: ${new Date(label).toLocaleDateString('zh-CN')}`}
-              />
-              <Legend />
-              <Area
-                type="monotone"
-                dataKey="equity"
-                stroke="#3b82f6"
-                fillOpacity={1}
-                fill="url(#colorEquity)"
-                name="权益"
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      )}
+        {/* 每日收益率 */}
+        {result.dailyReturns && result.dailyReturns.length > 0 && (
+          <Card style={{ marginBottom: 24 }}>
+            <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>每日收益率</h2>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={result.dailyReturns}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis 
+                  dataKey="date" 
+                  tickFormatter={(value) => {
+                    const date = new Date(value);
+                    return `${date.getMonth() + 1}/${date.getDate()}`;
+                  }}
+                />
+                <YAxis 
+                  tickFormatter={(value) => `${value.toFixed(2)}%`}
+                />
+                <Tooltip 
+                  formatter={(value: number) => [
+                    <span style={{ color: value >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 600 }}>
+                      {value >= 0 ? '+' : ''}{value.toFixed(2)}%
+                    </span>,
+                    '收益率'
+                  ]}
+                  labelFormatter={(label) => `日期: ${new Date(label).toLocaleDateString('zh-CN')}`}
+                />
+                <Legend />
+                <Bar 
+                  dataKey="return" 
+                  name="收益率"
+                  radius={[4, 4, 0, 0]}
+                >
+                  {result.dailyReturns.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.return >= 0 ? '#52c41a' : '#ff4d4f'} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+        )}
 
-      {/* 每日收益率 */}
-      {result.dailyReturns && result.dailyReturns.length > 0 && (
-        <div className="bg-white rounded-lg shadow p-6 mb-6">
-          <h2 className="text-xl font-bold mb-4">每日收益率</h2>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={result.dailyReturns}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis 
-                dataKey="date" 
-                tickFormatter={(value) => {
-                  const date = new Date(value);
-                  return `${date.getMonth() + 1}/${date.getDate()}`;
-                }}
-              />
-              <YAxis 
-                tickFormatter={(value) => `${value.toFixed(2)}%`}
-              />
-              <Tooltip 
-                formatter={(value: number) => [`${value >= 0 ? '+' : ''}${value.toFixed(2)}%`, '收益率']}
-                labelFormatter={(label) => `日期: ${new Date(label).toLocaleDateString('zh-CN')}`}
-              />
-              <Legend />
-              <Bar 
-                dataKey="return" 
-                fill="#10b981"
-                name="收益率"
-                radius={[4, 4, 0, 0]}
-              >
-                {result.dailyReturns.map((entry, index) => (
-                  <Bar key={index} fill={entry.return >= 0 ? '#10b981' : '#ef4444'} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* 累计收益率曲线 */}
-      {result.dailyReturns && result.dailyReturns.length > 0 && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-xl font-bold mb-4">累计收益率</h2>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={result.dailyReturns.map((day, index) => {
-              const initialEquity = result.dailyReturns[0].equity;
-              const cumulativeReturn = ((day.equity - initialEquity) / initialEquity) * 100;
-              return {
-                date: day.date,
-                cumulativeReturn: cumulativeReturn,
-              };
-            })}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis 
-                dataKey="date" 
-                tickFormatter={(value) => {
-                  const date = new Date(value);
-                  return `${date.getMonth() + 1}/${date.getDate()}`;
-                }}
-              />
-              <YAxis 
-                tickFormatter={(value) => `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`}
-              />
-              <Tooltip 
-                formatter={(value: number) => [`${value >= 0 ? '+' : ''}${value.toFixed(2)}%`, '累计收益率']}
-                labelFormatter={(label) => `日期: ${new Date(label).toLocaleDateString('zh-CN')}`}
-              />
-              <Legend />
-              <Line
-                type="monotone"
-                dataKey="cumulativeReturn"
-                stroke="#8b5cf6"
-                strokeWidth={2}
-                dot={false}
-                name="累计收益率"
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-    </div>
+        {/* 累计收益率曲线 */}
+        {result.dailyReturns && result.dailyReturns.length > 0 && (
+          <Card>
+            <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>累计收益率</h2>
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={result.dailyReturns.map((day) => {
+                const initialEquity = result.dailyReturns[0].equity;
+                const cumulativeReturn = ((day.equity - initialEquity) / initialEquity) * 100;
+                return {
+                  date: day.date,
+                  cumulativeReturn: cumulativeReturn,
+                };
+              })}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis 
+                  dataKey="date" 
+                  tickFormatter={(value) => {
+                    const date = new Date(value);
+                    return `${date.getMonth() + 1}/${date.getDate()}`;
+                  }}
+                />
+                <YAxis 
+                  tickFormatter={(value) => `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`}
+                />
+                <Tooltip 
+                  formatter={(value: number) => [`${value >= 0 ? '+' : ''}${value.toFixed(2)}%`, '累计收益率']}
+                  labelFormatter={(label) => `日期: ${new Date(label).toLocaleDateString('zh-CN')}`}
+                />
+                <Legend />
+                <Line
+                  type="monotone"
+                  dataKey="cumulativeReturn"
+                  stroke="#722ed1"
+                  strokeWidth={2}
+                  dot={false}
+                  name="累计收益率"
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </Card>
+        )}
+      </Card>
+    </AppLayout>
   );
 }
 

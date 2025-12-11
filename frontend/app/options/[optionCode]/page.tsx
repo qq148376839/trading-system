@@ -1,10 +1,22 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { optionsApi } from '@/lib/api'
-import BackButton from '@/components/BackButton'
+import AppLayout from '@/components/AppLayout'
 import OptionTradeModal from '@/components/OptionTradeModal'
+import { Card, Button, Alert, Spin, Space, Row, Col, Descriptions, Tag, Radio } from 'antd'
+import { ShoppingCartOutlined } from '@ant-design/icons'
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from 'recharts'
 
 interface OptionDetail {
   price: number
@@ -37,7 +49,7 @@ interface OptionDetail {
       hpVega: number
       hpTheta: number
       hpRho: number
-    }
+    },
     leverage: number
     effectiveLeverage: number
     intrinsicValue: number
@@ -72,6 +84,27 @@ export default function OptionDetailPage() {
   const [error, setError] = useState<string | null>(null)
   const [chartType, setChartType] = useState<'minute' | '5day' | 'day'>('minute')
   const [showTradeModal, setShowTradeModal] = useState(false)
+  const [klineData, setKlineData] = useState<Array<{
+    timestamp: number
+    open: number
+    close: number
+    high: number
+    low: number
+    volume: number
+    turnover: number
+    prevClose: number
+    change: number
+    openInterest?: number
+  }>>([])
+  const [minuteData, setMinuteData] = useState<Array<{
+    timestamp: number
+    price: number
+    volume: number
+    turnover: number
+    changeRatio: number
+    changePrice: number
+  }>>([])
+  const [chartLoading, setChartLoading] = useState(false)
 
   // 从URL查询参数获取optionId和underlyingStockId
   useEffect(() => {
@@ -142,6 +175,45 @@ export default function OptionDetailPage() {
     }
   }, [optionId, underlyingStockId])
 
+  // 获取图表数据
+  const fetchChartData = async () => {
+    if (!optionId) return
+
+    setChartLoading(true)
+    try {
+      if (chartType === 'minute') {
+        // 获取分时数据
+        const response = await optionsApi.getOptionMinute({
+          optionId,
+          marketType: 2,
+        })
+        if (response.success && response.data?.minuteData) {
+          setMinuteData(response.data.minuteData)
+        }
+      } else {
+        // 获取日K数据
+        const response = await optionsApi.getOptionKline({
+          optionId,
+          marketType: 2,
+          count: chartType === '5day' ? 5 : 100,
+        })
+        if (response.success && response.data?.klineData) {
+          setKlineData(response.data.klineData)
+        }
+      }
+    } catch (err: any) {
+      console.error('获取图表数据失败:', err.message)
+    } finally {
+      setChartLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (optionId) {
+      fetchChartData()
+    }
+  }, [optionId, chartType])
+
   // 格式化价格
   const formatPrice = (price: number) => {
     return isNaN(price) ? '--' : price.toFixed(2)
@@ -157,291 +229,295 @@ export default function OptionDetailPage() {
     return isNaN(num) ? '--' : num.toLocaleString()
   }
 
+  // 准备图表数据
+  const chartData = useMemo(() => {
+    if (chartType === 'minute') {
+      return minuteData.map(item => ({
+        time: new Date(item.timestamp * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+        price: item.price,
+        volume: item.volume,
+        changeRatio: item.changeRatio,
+      }))
+    } else {
+      const data = chartType === '5day' 
+        ? klineData.slice(-5) 
+        : klineData
+      
+      return data.map(item => ({
+        date: new Date(item.timestamp * 1000).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }),
+        close: item.close,
+        open: item.open,
+        high: item.high,
+        low: item.low,
+        volume: item.volume,
+        change: item.change,
+      }))
+    }
+  }, [chartType, minuteData, klineData])
+
   if (!optionId || !underlyingStockId) {
     return (
-      <div className="min-h-screen bg-gray-50">
-        <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-          <div className="px-4 py-6 sm:px-0">
-            <BackButton />
-            <div className="bg-white shadow rounded-lg p-6">
-              <div className="text-center py-8 text-red-600">
-                {error || '缺少必需参数'}
-              </div>
-            </div>
+      <AppLayout>
+        <Card>
+          <Alert
+            message={error || '缺少必需参数'}
+            type="error"
+            showIcon
+          />
+        </Card>
+      </AppLayout>
+    )
+  }
+
+  if (loading && !detail) {
+    return (
+      <AppLayout>
+        <Card>
+          <div style={{ textAlign: 'center', padding: '40px 0' }}>
+            <Spin size="large" />
+            <div style={{ marginTop: 16 }}>加载中...</div>
           </div>
-        </div>
-      </div>
+        </Card>
+      </AppLayout>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div className="px-4 py-6 sm:px-0">
-          <div className="mb-4">
-            <BackButton />
+    <AppLayout>
+      <Card>
+        {/* 顶部信息栏 */}
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+            <h1 style={{ fontSize: 28, fontWeight: 600, margin: 0 }}>
+              {optionCode || '--'}
+            </h1>
+            <Button
+              type="primary"
+              size="large"
+              icon={<ShoppingCartOutlined />}
+              onClick={() => setShowTradeModal(true)}
+            >
+              交易
+            </Button>
           </div>
           
-          <div className="bg-white shadow rounded-lg p-6">
-            {/* 顶部信息栏 */}
-            <div className="mb-6">
-              <div className="flex items-center justify-between mb-2">
-                <h1 className="text-3xl font-bold text-gray-900">
-                  {optionCode || '--'}
-                </h1>
-                <button
-                  onClick={() => setShowTradeModal(true)}
-                  className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 font-semibold"
-                >
-                  交易
-                </button>
+          {detail && (
+            <Space size="large" align="start">
+              <div>
+                <div style={{
+                  fontSize: 36,
+                  fontWeight: 600,
+                  color: detail.change >= 0 ? '#ff4d4f' : '#52c41a',
+                  lineHeight: 1.2,
+                }}>
+                  {formatPrice(detail.price)}
+                </div>
+                <div style={{
+                  fontSize: 16,
+                  color: detail.change >= 0 ? '#ff4d4f' : '#52c41a',
+                  marginTop: 4,
+                }}>
+                  {detail.change >= 0 ? '+' : ''}{formatPrice(detail.change)} ({formatPercentage(detail.changeRatio)})
+                </div>
               </div>
               
-              {detail && (
-                <div className="flex items-center gap-4">
-                  <div>
-                    <div className={`text-4xl font-bold ${
-                      detail.change >= 0 ? 'text-red-600' : 'text-green-600'
-                    }`}>
-                      {formatPrice(detail.price)}
-                    </div>
-                    <div className={`text-lg ${
-                      detail.change >= 0 ? 'text-red-600' : 'text-green-600'
-                    }`}>
-                      {detail.change >= 0 ? '+' : ''}{formatPrice(detail.change)} ({formatPercentage(detail.changeRatio)})
-                    </div>
-                  </div>
-                  
-                  {detail.delayTime > 0 && (
-                    <div className="text-sm text-gray-500">
-                      延时{detail.delayTime}秒行情 | {detail.marketStatusText}
-                    </div>
-                  )}
+              {detail.delayTime > 0 && (
+                <div style={{ color: '#999', fontSize: 14, marginTop: 8 }}>
+                  延时{detail.delayTime}秒行情 | {detail.marketStatusText}
                 </div>
               )}
-            </div>
-
-            {/* 错误提示 */}
-            {error && (
-              <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
-                {error}
-              </div>
-            )}
-
-            {/* 图表区域 */}
-            {detail && (
-              <div className="mb-6">
-                <div className="flex gap-2 mb-4">
-                  <button
-                    onClick={() => setChartType('minute')}
-                    className={`px-4 py-2 rounded-md ${
-                      chartType === 'minute'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
-                  >
-                    分时
-                  </button>
-                  <button
-                    onClick={() => setChartType('5day')}
-                    className={`px-4 py-2 rounded-md ${
-                      chartType === '5day'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
-                  >
-                    5日
-                  </button>
-                  <button
-                    onClick={() => setChartType('day')}
-                    className={`px-4 py-2 rounded-md ${
-                      chartType === 'day'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
-                  >
-                    日K
-                  </button>
-                </div>
-                
-                <div className="border border-gray-300 rounded-lg p-4 bg-gray-50">
-                  <div className="text-center text-gray-500 py-20">
-                    图表功能待实现
-                    <br />
-                    <span className="text-sm">（需要集成K线数据API）</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* 详细信息面板 */}
-            {detail && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* 价格信息 */}
-                <div className="border border-gray-300 rounded-lg p-4">
-                  <h2 className="text-lg font-semibold mb-4">价格信息</h2>
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">最高价:</span>
-                      <span className="font-medium">{formatPrice(detail.priceHighest)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">最低价:</span>
-                      <span className="font-medium">{formatPrice(detail.priceLowest)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">今开:</span>
-                      <span className="font-medium">{formatPrice(detail.priceOpen)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">昨收:</span>
-                      <span className="font-medium">{formatPrice(detail.priceLastClose)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">买盘:</span>
-                      <span className="font-medium">{formatPrice(detail.priceBid)} (x{detail.volumeBid})</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">卖盘:</span>
-                      <span className="font-medium">{formatPrice(detail.priceAsk)} (x{detail.volumeAsk})</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 成交量信息 */}
-                <div className="border border-gray-300 rounded-lg p-4">
-                  <h2 className="text-lg font-semibold mb-4">成交量信息</h2>
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">成交量:</span>
-                      <span className="font-medium">{formatNumber(detail.volume)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">成交额:</span>
-                      <span className="font-medium">{formatNumber(detail.turnover)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">未平仓合约数:</span>
-                      <span className="font-medium">{formatNumber(detail.option.openInterest)}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 期权参数 */}
-                <div className="border border-gray-300 rounded-lg p-4">
-                  <h2 className="text-lg font-semibold mb-4">期权参数</h2>
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">行权价:</span>
-                      <span className="font-medium">{formatPrice(detail.option.strikePrice)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">到期日:</span>
-                      <span className="font-medium">{detail.option.daysToExpiration}天</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">合约乘数:</span>
-                      <span className="font-medium">{detail.option.multiplier}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">合约规模:</span>
-                      <span className="font-medium">{detail.option.contractSize}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">期权类型:</span>
-                      <span className="font-medium">{detail.option.optionType === 'Call' ? '看涨' : '看跌'}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">隐含波动率:</span>
-                      <span className="font-medium">{formatPercentage(detail.option.impliedVolatility)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">溢价:</span>
-                      <span className="font-medium">{formatPercentage(detail.option.premium)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">内在价值:</span>
-                      <span className="font-medium">{formatPrice(detail.option.intrinsicValue)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">时间价值:</span>
-                      <span className="font-medium">{formatPrice(detail.option.timeValue)}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Greeks */}
-                <div className="border border-gray-300 rounded-lg p-4">
-                  <h2 className="text-lg font-semibold mb-4">Greeks</h2>
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Delta:</span>
-                      <span className="font-medium">{formatPrice(detail.option.greeks.delta)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Gamma:</span>
-                      <span className="font-medium">{formatPrice(detail.option.greeks.gamma)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Vega:</span>
-                      <span className="font-medium">{formatPrice(detail.option.greeks.vega)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Theta:</span>
-                      <span className="font-medium">{formatPrice(detail.option.greeks.theta)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Rho:</span>
-                      <span className="font-medium">{formatPrice(detail.option.greeks.rho)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">杠杆倍数:</span>
-                      <span className="font-medium">{formatPrice(detail.option.leverage)}x</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">有效杠杆:</span>
-                      <span className="font-medium">{formatPrice(detail.option.effectiveLeverage)}x</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 正股信息 */}
-                <div className="border border-gray-300 rounded-lg p-4 md:col-span-2">
-                  <h2 className="text-lg font-semibold mb-4">正股信息</h2>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                    <div>
-                      <span className="text-gray-600">代码:</span>
-                      <span className="ml-2 font-medium">{detail.underlyingStock.code}</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-600">名称:</span>
-                      <span className="ml-2 font-medium">{detail.underlyingStock.name}</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-600">价格:</span>
-                      <span className="ml-2 font-medium">{formatPrice(detail.underlyingStock.price)}</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-600">涨跌幅:</span>
-                      <span className={`ml-2 font-medium ${
-                        detail.underlyingStock.change >= 0 ? 'text-red-600' : 'text-green-600'
-                      }`}>
-                        {formatPercentage(detail.underlyingStock.changeRatio)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {loading && (
-              <div className="text-center py-8 text-gray-500">
-                加载中...
-              </div>
-            )}
-          </div>
+            </Space>
+          )}
         </div>
-      </div>
+
+        {/* 错误提示 */}
+        {error && (
+          <Alert
+            message={error}
+            type="error"
+            showIcon
+            closable
+            onClose={() => setError(null)}
+            style={{ marginBottom: 24 }}
+          />
+        )}
+
+        {/* 图表区域 */}
+        {detail && (
+          <Card style={{ marginBottom: 24 }}>
+            <Radio.Group
+              value={chartType}
+              onChange={(e) => setChartType(e.target.value)}
+              style={{ marginBottom: 16 }}
+            >
+              <Radio.Button value="minute">分时</Radio.Button>
+              <Radio.Button value="5day">5日</Radio.Button>
+              <Radio.Button value="day">日K</Radio.Button>
+            </Radio.Group>
+            
+            {chartLoading ? (
+              <div style={{ textAlign: 'center', padding: '80px 0' }}>
+                <Spin size="large" />
+                <div style={{ marginTop: 16, color: '#999' }}>加载图表数据...</div>
+              </div>
+            ) : chartData.length === 0 ? (
+              <div style={{ textAlign: 'center', color: '#999', padding: '80px 0' }}>
+                暂无图表数据
+              </div>
+            ) : chartType === 'minute' ? (
+              <ResponsiveContainer width="100%" height={400}>
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis 
+                    dataKey="time" 
+                    tick={{ fontSize: 12 }}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis 
+                    domain={['dataMin - 0.1', 'dataMax + 0.1']}
+                    tick={{ fontSize: 12 }}
+                    tickFormatter={(value) => `$${value.toFixed(2)}`}
+                  />
+                  <Tooltip 
+                    formatter={(value: number) => [`$${value.toFixed(2)}`, '价格']}
+                    labelFormatter={(label) => `时间: ${label}`}
+                    contentStyle={{
+                      backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                      border: '1px solid #d9d9d9',
+                      borderRadius: 4,
+                    }}
+                  />
+                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="price"
+                    stroke="#1890ff"
+                    strokeWidth={2}
+                    dot={false}
+                    name="价格"
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <ResponsiveContainer width="100%" height={400}>
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis 
+                    dataKey="date" 
+                    tick={{ fontSize: 12 }}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis 
+                    domain={['dataMin - 0.1', 'dataMax + 0.1']}
+                    tick={{ fontSize: 12 }}
+                    tickFormatter={(value) => `$${value.toFixed(2)}`}
+                  />
+                  <Tooltip 
+                    formatter={(value: number) => [`$${value.toFixed(2)}`, '收盘价']}
+                    labelFormatter={(label) => `日期: ${label}`}
+                    contentStyle={{
+                      backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                      border: '1px solid #d9d9d9',
+                      borderRadius: 4,
+                    }}
+                  />
+                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="close"
+                    stroke="#1890ff"
+                    strokeWidth={2}
+                    dot={false}
+                    name="收盘价"
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </Card>
+        )}
+
+        {/* 详细信息面板 */}
+        {detail && (
+          <Row gutter={[16, 16]}>
+            {/* 价格信息 */}
+            <Col xs={24} md={12}>
+              <Card title="价格信息" size="small">
+                <Descriptions column={1} size="small">
+                  <Descriptions.Item label="最高价">{formatPrice(detail.priceHighest)}</Descriptions.Item>
+                  <Descriptions.Item label="最低价">{formatPrice(detail.priceLowest)}</Descriptions.Item>
+                  <Descriptions.Item label="今开">{formatPrice(detail.priceOpen)}</Descriptions.Item>
+                  <Descriptions.Item label="昨收">{formatPrice(detail.priceLastClose)}</Descriptions.Item>
+                  <Descriptions.Item label="买盘">{formatPrice(detail.priceBid)} (x{detail.volumeBid})</Descriptions.Item>
+                  <Descriptions.Item label="卖盘">{formatPrice(detail.priceAsk)} (x{detail.volumeAsk})</Descriptions.Item>
+                </Descriptions>
+              </Card>
+            </Col>
+
+            {/* 成交量信息 */}
+            <Col xs={24} md={12}>
+              <Card title="成交量信息" size="small">
+                <Descriptions column={1} size="small">
+                  <Descriptions.Item label="成交量">{formatNumber(detail.volume)}</Descriptions.Item>
+                  <Descriptions.Item label="成交额">{formatNumber(detail.turnover)}</Descriptions.Item>
+                  <Descriptions.Item label="未平仓合约数">{formatNumber(detail.option.openInterest)}</Descriptions.Item>
+                </Descriptions>
+              </Card>
+            </Col>
+
+            {/* 期权参数 */}
+            <Col xs={24} md={12}>
+              <Card title="期权参数" size="small">
+                <Descriptions column={1} size="small">
+                  <Descriptions.Item label="行权价">{formatPrice(detail.option.strikePrice)}</Descriptions.Item>
+                  <Descriptions.Item label="到期日">{detail.option.daysToExpiration}天</Descriptions.Item>
+                  <Descriptions.Item label="合约乘数">{detail.option.multiplier}</Descriptions.Item>
+                  <Descriptions.Item label="合约规模">{detail.option.contractSize}</Descriptions.Item>
+                  <Descriptions.Item label="期权类型">
+                    <Tag color={detail.option.optionType === 'Call' ? 'red' : 'green'}>
+                      {detail.option.optionType === 'Call' ? '看涨' : '看跌'}
+                    </Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="隐含波动率">{formatPercentage(detail.option.impliedVolatility)}</Descriptions.Item>
+                  <Descriptions.Item label="溢价">{formatPercentage(detail.option.premium)}</Descriptions.Item>
+                  <Descriptions.Item label="内在价值">{formatPrice(detail.option.intrinsicValue)}</Descriptions.Item>
+                  <Descriptions.Item label="时间价值">{formatPrice(detail.option.timeValue)}</Descriptions.Item>
+                </Descriptions>
+              </Card>
+            </Col>
+
+            {/* Greeks */}
+            <Col xs={24} md={12}>
+              <Card title="Greeks" size="small">
+                <Descriptions column={1} size="small">
+                  <Descriptions.Item label="Delta">{formatPrice(detail.option.greeks.delta)}</Descriptions.Item>
+                  <Descriptions.Item label="Gamma">{formatPrice(detail.option.greeks.gamma)}</Descriptions.Item>
+                  <Descriptions.Item label="Vega">{formatPrice(detail.option.greeks.vega)}</Descriptions.Item>
+                  <Descriptions.Item label="Theta">{formatPrice(detail.option.greeks.theta)}</Descriptions.Item>
+                  <Descriptions.Item label="Rho">{formatPrice(detail.option.greeks.rho)}</Descriptions.Item>
+                  <Descriptions.Item label="杠杆倍数">{formatPrice(detail.option.leverage)}x</Descriptions.Item>
+                  <Descriptions.Item label="有效杠杆">{formatPrice(detail.option.effectiveLeverage)}x</Descriptions.Item>
+                </Descriptions>
+              </Card>
+            </Col>
+
+            {/* 正股信息 */}
+            <Col xs={24}>
+              <Card title="正股信息" size="small">
+                <Descriptions column={{ xs: 1, sm: 2, md: 4 }}>
+                  <Descriptions.Item label="代码">{detail.underlyingStock.code}</Descriptions.Item>
+                  <Descriptions.Item label="名称">{detail.underlyingStock.name}</Descriptions.Item>
+                  <Descriptions.Item label="价格">{formatPrice(detail.underlyingStock.price)}</Descriptions.Item>
+                  <Descriptions.Item label="涨跌幅">
+                    <span style={{ color: detail.underlyingStock.change >= 0 ? '#ff4d4f' : '#52c41a' }}>
+                      {formatPercentage(detail.underlyingStock.changeRatio)}
+                    </span>
+                  </Descriptions.Item>
+                </Descriptions>
+              </Card>
+            </Col>
+          </Row>
+        )}
+      </Card>
 
       {/* 期权交易模态框 */}
       {showTradeModal && (
@@ -462,7 +538,7 @@ export default function OptionDetailPage() {
           }}
         />
       )}
-    </div>
+    </AppLayout>
   )
 }
 

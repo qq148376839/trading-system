@@ -3,7 +3,9 @@
 import { useEffect, useState, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { optionsApi, quoteApi } from '@/lib/api'
-import BackButton from '@/components/BackButton'
+import AppLayout from '@/components/AppLayout'
+import { Card, Input, Button, Table, Tag, Space, Alert, Spin, AutoComplete, message } from 'antd'
+import { SearchOutlined } from '@ant-design/icons'
 
 interface StrikeDate {
   strikeDate: number
@@ -241,263 +243,380 @@ export default function OptionChainPage() {
     }
   }, [optionChain, stockId])
 
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div className="px-4 py-6 sm:px-0">
-          <div className="mb-4">
-            <BackButton />
+  const optionChainColumns = [
+    {
+      title: '成交量',
+      key: 'callVolume',
+      render: (_: any, record: OptionChainRow) => record.callOption?.openInterest || '--',
+    },
+    {
+      title: '涨跌额',
+      key: 'callChange',
+      render: () => '--',
+    },
+    {
+      title: '涨跌幅',
+      key: 'callChangePercent',
+      render: () => '--',
+    },
+    {
+      title: '最新价',
+      key: 'callPrice',
+      render: (_: any, record: OptionChainRow) => (
+        record.callOption ? (
+          <span
+            style={{ color: '#ff4d4f', fontWeight: 600, cursor: 'pointer' }}
+            onClick={() => handleOptionClick(record.callOption!.optionId, record.callOption!.code)}
+            title="点击查看详情"
+          >
+            {record.callOption.code}
+          </span>
+        ) : '--'
+      ),
+    },
+    {
+      title: '卖盘',
+      key: 'callAsk',
+      render: () => '--',
+    },
+    {
+      title: '买盘',
+      key: 'callBid',
+      render: () => '--',
+    },
+    {
+      title: '行权价',
+      key: 'strikePrice',
+      render: (_: any, record: OptionChainRow) => {
+        const strikePrice = record.callOption?.strikePrice || record.putOption?.strikePrice || '0'
+        const isHighlighted = highlightedStrike === strikePrice
+        return (
+          <div
+            style={{
+              background: isHighlighted ? '#fffbe6' : '#fafafa',
+              padding: '8px',
+              fontWeight: 500,
+              textAlign: 'center',
+              border: isHighlighted ? '2px solid #faad14' : 'none',
+            }}
+          >
+            {formatPrice(strikePrice)}
           </div>
-          
-          <div className="bg-white shadow rounded-lg p-6">
-            <h1 className="text-2xl font-bold text-gray-900 mb-4">期权链</h1>
-            
-            {/* 股票搜索框 */}
-            <div className="mb-6 relative">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                股票代码
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  value={symbol}
-                  onChange={(e) => {
-                    setSymbol(e.target.value)
-                    searchStock(e.target.value)
-                  }}
-                  onFocus={() => {
-                    if (searchSuggestions.length > 0) {
-                      setShowSuggestions(true)
-                    }
-                  }}
-                  placeholder="请输入股票代码，例如：TSLA.US"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                
-                {/* 搜索建议下拉框 */}
-                {showSuggestions && searchSuggestions.length > 0 && (
-                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-auto">
-                    {searchSuggestions.map((stock) => (
-                      <div
-                        key={stock.symbol}
-                        onClick={() => selectStock(stock.symbol)}
-                        className="px-4 py-2 hover:bg-gray-100 cursor-pointer"
-                      >
-                        <div className="font-medium">{stock.symbol}</div>
-                        <div className="text-sm text-gray-500">
-                          {stock.name_cn || stock.name_en}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              
-              <button
-                onClick={fetchStrikeDates}
-                disabled={loading || !symbol.trim()}
-                className="mt-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400"
-              >
-                {loading ? '查询中...' : '查询'}
-              </button>
-            </div>
+        )
+      },
+    },
+    {
+      title: '买盘',
+      key: 'putBid',
+      render: () => '--',
+    },
+    {
+      title: '卖盘',
+      key: 'putAsk',
+      render: () => '--',
+    },
+    {
+      title: '最新价',
+      key: 'putPrice',
+      render: (_: any, record: OptionChainRow) => (
+        record.putOption ? (
+          <span
+            style={{ color: '#52c41a', fontWeight: 600, cursor: 'pointer' }}
+            onClick={() => handleOptionClick(record.putOption!.optionId, record.putOption!.code)}
+            title="点击查看详情"
+          >
+            {record.putOption.code}
+          </span>
+        ) : '--'
+      ),
+    },
+    {
+      title: '涨跌幅',
+      key: 'putChangePercent',
+      render: () => '--',
+    },
+    {
+      title: '涨跌额',
+      key: 'putChange',
+      render: () => '--',
+    },
+    {
+      title: '成交量',
+      key: 'putVolume',
+      render: (_: any, record: OptionChainRow) => record.putOption?.openInterest || '--',
+    },
+  ]
 
-            {/* 错误提示 */}
-            {error && (
-              <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
-                {error}
-              </div>
-            )}
-
-            {/* 成交量统计 */}
-            {volStats && (
-              <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-md">
-                <div className="flex items-center justify-between">
+  return (
+    <AppLayout>
+      <Card>
+        <h1 style={{ fontSize: 24, fontWeight: 600, marginBottom: 16 }}>期权链</h1>
+        
+        {/* 股票搜索框 */}
+        <Card style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 8, fontWeight: 500 }}>股票代码</div>
+          <Space.Compact style={{ width: '100%', marginBottom: 8 }}>
+            <AutoComplete
+              value={symbol}
+              onChange={(value) => {
+                setSymbol(value)
+                searchStock(value)
+              }}
+              onFocus={() => {
+                if (searchSuggestions.length > 0) {
+                  setShowSuggestions(true)
+                }
+              }}
+              onBlur={() => {
+                setTimeout(() => setShowSuggestions(false), 200)
+              }}
+              options={showSuggestions ? searchSuggestions.map((stock) => ({
+                value: stock.symbol,
+                label: (
                   <div>
-                    <span className="text-sm text-gray-600">看涨期权成交量: </span>
-                    <span className="font-semibold text-red-600">{volStats.callNum}</span>
-                    <span className="text-sm text-gray-600 ml-2">({volStats.callRatio}%)</span>
+                    <div style={{ fontWeight: 500 }}>{stock.symbol}</div>
+                    <div style={{ fontSize: 12, color: '#999' }}>
+                      {stock.name_cn || stock.name_en}
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-sm text-gray-600">看跌期权成交量: </span>
-                    <span className="font-semibold text-green-600">{volStats.putNum}</span>
-                    <span className="text-sm text-gray-600 ml-2">({volStats.putRatio}%)</span>
-                  </div>
-                </div>
-              </div>
-            )}
+                ),
+              })) : []}
+              placeholder="请输入股票代码，例如：TSLA.US"
+              style={{ flex: 1 }}
+              onSelect={(value) => selectStock(value)}
+            />
+            <Button
+              type="primary"
+              icon={<SearchOutlined />}
+              onClick={fetchStrikeDates}
+              loading={loading}
+              disabled={!symbol.trim()}
+            >
+              查询
+            </Button>
+          </Space.Compact>
+        </Card>
 
-            {/* 到期日期选择器 */}
-            {strikeDates.length > 0 && (
-              <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  到期日期
-                </label>
-                <div className="flex gap-2 overflow-x-auto pb-2">
-                  {strikeDates.map((date) => (
-                    <button
-                      key={date.strikeDate}
-                      onClick={() => setSelectedStrikeDate(date.strikeDate)}
-                      className={`px-4 py-2 rounded-md whitespace-nowrap ${
-                        selectedStrikeDate === date.strikeDate
-                          ? 'bg-blue-600 text-white'
-                          : date.expiration === 0
-                          ? 'bg-gray-200 text-gray-500'
-                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                      }`}
-                    >
-                      {formatDate(date.strikeDate)}{date.suffix}
-                      {date.leftDay > 0 && (
-                        <span className="ml-1 text-xs">({date.leftDay}天)</span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
+        {/* 错误提示 */}
+        {error && (
+          <Alert
+            message={error}
+            type="error"
+            showIcon
+            closable
+            onClose={() => setError(null)}
+            style={{ marginBottom: 16 }}
+          />
+        )}
 
-            {/* 正股价格显示 */}
-            {underlyingPrice !== null && (
-              <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-gray-600">正股当前价格:</span>
-                  <span className="text-lg font-bold text-blue-600">{underlyingPrice.toFixed(2)}</span>
-                  {highlightedStrike && (
-                    <span className="text-sm text-gray-500">
-                      (已高亮最近行权价: {highlightedStrike})
-                    </span>
+        {/* 成交量统计 */}
+        {volStats && (
+          <Alert
+            message={
+              <Space split={<span style={{ color: '#d9d9d9' }}>|</span>}>
+                <span>
+                  <span style={{ color: '#666' }}>看涨期权成交量: </span>
+                  <span style={{ fontWeight: 600, color: '#ff4d4f' }}>{volStats.callNum}</span>
+                  <span style={{ color: '#666', marginLeft: 8 }}>({volStats.callRatio}%)</span>
+                </span>
+                <span>
+                  <span style={{ color: '#666' }}>看跌期权成交量: </span>
+                  <span style={{ fontWeight: 600, color: '#52c41a' }}>{volStats.putNum}</span>
+                  <span style={{ color: '#666', marginLeft: 8 }}>({volStats.putRatio}%)</span>
+                </span>
+              </Space>
+            }
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+          />
+        )}
+
+        {/* 到期日期选择器 */}
+        {strikeDates.length > 0 && (
+          <Card style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 8, fontWeight: 500 }}>到期日期</div>
+            <Space wrap>
+              {strikeDates.map((date) => (
+                <Button
+                  key={date.strikeDate}
+                  type={selectedStrikeDate === date.strikeDate ? 'primary' : 'default'}
+                  disabled={date.expiration === 0}
+                  onClick={() => setSelectedStrikeDate(date.strikeDate)}
+                >
+                  {formatDate(date.strikeDate)}{date.suffix}
+                  {date.leftDay > 0 && (
+                    <span style={{ marginLeft: 4, fontSize: 12 }}>({date.leftDay}天)</span>
                   )}
-                </div>
-              </div>
-            )}
+                </Button>
+              ))}
+            </Space>
+          </Card>
+        )}
 
-            {/* 期权链表格 */}
-            {optionChain.length > 0 && (
-              <div className="relative" style={{ maxHeight: '70vh', overflow: 'auto' }}>
-                <table ref={tableRef} className="min-w-full divide-y divide-gray-200 border border-gray-300">
-                  <thead className="bg-gray-50 sticky top-0 z-20 shadow-sm">
-                    <tr>
-                      {/* 看涨期权列 */}
-                      <th colSpan={6} className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase bg-red-50">
-                        看涨期权 (Call)
-                      </th>
-                      {/* 行权价列 */}
-                      <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase bg-gray-100">
-                        行权价
-                      </th>
-                      {/* 看跌期权列 */}
-                      <th colSpan={6} className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase bg-green-50">
-                        看跌期权 (Put)
-                      </th>
-                    </tr>
-                    <tr>
-                      {/* 看涨期权表头 */}
-                      <th className="px-2 py-2 text-xs font-medium text-gray-500">成交量</th>
-                      <th className="px-2 py-2 text-xs font-medium text-gray-500">涨跌额</th>
-                      <th className="px-2 py-2 text-xs font-medium text-gray-500">涨跌幅</th>
-                      <th className="px-2 py-2 text-xs font-medium text-gray-500">最新价</th>
-                      <th className="px-2 py-2 text-xs font-medium text-gray-500">卖盘</th>
-                      <th className="px-2 py-2 text-xs font-medium text-gray-500">买盘</th>
-                      {/* 行权价表头 */}
-                      <th className="px-4 py-2 text-xs font-medium text-gray-700 bg-gray-100">行权价</th>
-                      {/* 看跌期权表头 */}
-                      <th className="px-2 py-2 text-xs font-medium text-gray-500">买盘</th>
-                      <th className="px-2 py-2 text-xs font-medium text-gray-500">卖盘</th>
-                      <th className="px-2 py-2 text-xs font-medium text-gray-500">最新价</th>
-                      <th className="px-2 py-2 text-xs font-medium text-gray-500">涨跌幅</th>
-                      <th className="px-2 py-2 text-xs font-medium text-gray-500">涨跌额</th>
-                      <th className="px-2 py-2 text-xs font-medium text-gray-500">成交量</th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {optionChain.map((row, index) => {
-                      const strikePrice = row.callOption?.strikePrice || row.putOption?.strikePrice || '0'
-                      const isHighlighted = highlightedStrike === strikePrice
-                      
-                      return (
-                        <tr
-                          key={index}
-                          ref={(el) => {
-                            if (el) rowRefs.current.set(strikePrice, el)
-                          }}
-                          className={`hover:bg-gray-50 ${isHighlighted ? 'bg-yellow-100 border-2 border-yellow-400' : ''}`}
-                        >
-                          {/* 看涨期权数据 */}
-                          {row.callOption ? (
-                            <>
-                              <td className="px-2 py-2 text-xs text-gray-600">
-                                {row.callOption.openInterest || '--'}
-                              </td>
-                              <td className="px-2 py-2 text-xs text-red-600">--</td>
-                              <td className="px-2 py-2 text-xs text-red-600">--</td>
-                              <td 
-                                className="px-2 py-2 text-xs text-red-600 font-semibold cursor-pointer hover:underline"
-                                onClick={() => handleOptionClick(row.callOption!.optionId, row.callOption!.code)}
-                                title="点击查看详情"
-                              >
-                                {row.callOption.code}
-                              </td>
-                              <td className="px-2 py-2 text-xs text-gray-600">--</td>
-                              <td className="px-2 py-2 text-xs text-gray-600">--</td>
-                            </>
-                          ) : (
-                            <td colSpan={6} className="px-2 py-2 text-xs text-gray-400 text-center">--</td>
-                          )}
-                          
-                          {/* 行权价 */}
-                          <td className="px-4 py-2 text-sm font-medium text-gray-900 bg-gray-50 text-center">
-                            {formatPrice(strikePrice)}
-                          </td>
-                          
-                          {/* 看跌期权数据 */}
-                          {row.putOption ? (
-                            <>
-                              <td className="px-2 py-2 text-xs text-gray-600">--</td>
-                              <td className="px-2 py-2 text-xs text-gray-600">--</td>
-                              <td 
-                                className="px-2 py-2 text-xs text-green-600 font-semibold cursor-pointer hover:underline"
-                                onClick={() => handleOptionClick(row.putOption!.optionId, row.putOption!.code)}
-                                title="点击查看详情"
-                              >
-                                {row.putOption.code}
-                              </td>
-                              <td className="px-2 py-2 text-xs text-green-600">--</td>
-                              <td className="px-2 py-2 text-xs text-green-600">--</td>
-                              <td className="px-2 py-2 text-xs text-gray-600">
-                                {row.putOption.openInterest || '--'}
-                              </td>
-                            </>
-                          ) : (
-                            <td colSpan={6} className="px-2 py-2 text-xs text-gray-400 text-center">--</td>
-                          )}
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-                
-                <div className="mt-4 text-sm text-gray-500">
-                  <p>注意：期权链数据需要点击期权获取实时行情。当前显示的是基础信息（行权价、未平仓合约数）。</p>
+        {/* 正股价格显示 */}
+        {underlyingPrice !== null && (
+          <Alert
+            message={
+              <Space>
+                <span style={{ color: '#666' }}>正股当前价格:</span>
+                <span style={{ fontSize: 18, fontWeight: 600, color: '#1890ff' }}>
+                  {underlyingPrice.toFixed(2)}
+                </span>
+                {highlightedStrike && (
+                  <span style={{ color: '#999', fontSize: 12 }}>
+                    (已高亮最近行权价: {highlightedStrike})
+                  </span>
+                )}
+              </Space>
+            }
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+          />
+        )}
+
+        {/* 期权链表格 */}
+        {optionChain.length > 0 && (
+          <Card>
+            <div style={{ position: 'relative', maxHeight: '70vh', overflow: 'auto' }}>
+              <table ref={tableRef} style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead style={{ position: 'sticky', top: 0, zIndex: 20, background: '#fff' }}>
+                  <tr>
+                    <th colSpan={6} style={{ padding: '12px', textAlign: 'center', background: '#fff1f0', border: '1px solid #d9d9d9' }}>
+                      看涨期权 (Call)
+                    </th>
+                    <th style={{ padding: '12px', textAlign: 'center', background: '#fafafa', border: '1px solid #d9d9d9' }}>
+                      行权价
+                    </th>
+                    <th colSpan={6} style={{ padding: '12px', textAlign: 'center', background: '#f6ffed', border: '1px solid #d9d9d9' }}>
+                      看跌期权 (Put)
+                    </th>
+                  </tr>
+                  <tr>
+                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>成交量</th>
+                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>涨跌额</th>
+                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>涨跌幅</th>
+                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>最新价</th>
+                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>卖盘</th>
+                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>买盘</th>
+                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9', background: '#fafafa' }}>行权价</th>
+                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>买盘</th>
+                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>卖盘</th>
+                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>最新价</th>
+                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>涨跌幅</th>
+                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>涨跌额</th>
+                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>成交量</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {optionChain.map((row, index) => {
+                    const strikePrice = row.callOption?.strikePrice || row.putOption?.strikePrice || '0'
+                    const isHighlighted = highlightedStrike === strikePrice
+                    
+                    return (
+                      <tr
+                        key={index}
+                        ref={(el) => {
+                          if (el) rowRefs.current.set(strikePrice, el)
+                        }}
+                        style={{
+                          background: isHighlighted ? '#fffbe6' : undefined,
+                          border: isHighlighted ? '2px solid #faad14' : undefined,
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = '#f5f5f5'
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = isHighlighted ? '#fffbe6' : undefined
+                        }}
+                      >
+                        {/* 看涨期权数据 */}
+                        {row.callOption ? (
+                          <>
+                            <td style={{ padding: '8px', fontSize: 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>
+                              {row.callOption.openInterest || '--'}
+                            </td>
+                            <td style={{ padding: '8px', fontSize: 12, color: '#ff4d4f', border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td style={{ padding: '8px', fontSize: 12, color: '#ff4d4f', border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td
+                              style={{ padding: '8px', fontSize: 12, color: '#ff4d4f', fontWeight: 600, cursor: 'pointer', border: '1px solid #d9d9d9', textAlign: 'center' }}
+                              onClick={() => handleOptionClick(row.callOption!.optionId, row.callOption!.code)}
+                              title="点击查看详情"
+                            >
+                              {row.callOption.code}
+                            </td>
+                            <td style={{ padding: '8px', fontSize: 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td style={{ padding: '8px', fontSize: 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                          </>
+                        ) : (
+                          <td colSpan={6} style={{ padding: '8px', fontSize: 12, color: '#999', textAlign: 'center', border: '1px solid #d9d9d9' }}>--</td>
+                        )}
+                        
+                        {/* 行权价 */}
+                        <td style={{ padding: '8px', fontSize: 14, fontWeight: 500, background: '#fafafa', textAlign: 'center', border: '1px solid #d9d9d9' }}>
+                          {formatPrice(strikePrice)}
+                        </td>
+                        
+                        {/* 看跌期权数据 */}
+                        {row.putOption ? (
+                          <>
+                            <td style={{ padding: '8px', fontSize: 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td style={{ padding: '8px', fontSize: 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td
+                              style={{ padding: '8px', fontSize: 12, color: '#52c41a', fontWeight: 600, cursor: 'pointer', border: '1px solid #d9d9d9', textAlign: 'center' }}
+                              onClick={() => handleOptionClick(row.putOption!.optionId, row.putOption!.code)}
+                              title="点击查看详情"
+                            >
+                              {row.putOption.code}
+                            </td>
+                            <td style={{ padding: '8px', fontSize: 12, color: '#52c41a', border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td style={{ padding: '8px', fontSize: 12, color: '#52c41a', border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td style={{ padding: '8px', fontSize: 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>
+                              {row.putOption.openInterest || '--'}
+                            </td>
+                          </>
+                        ) : (
+                          <td colSpan={6} style={{ padding: '8px', fontSize: 12, color: '#999', textAlign: 'center', border: '1px solid #d9d9d9' }}>--</td>
+                        )}
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <Alert
+              message="注意"
+              description={
+                <div>
+                  <p>期权链数据需要点击期权获取实时行情。当前显示的是基础信息（行权价、未平仓合约数）。</p>
                   <p>点击期权代码可查看详细信息和实时价格。</p>
                 </div>
-              </div>
-            )}
+              }
+              type="info"
+              showIcon
+              style={{ marginTop: 16 }}
+            />
+          </Card>
+        )}
 
-            {optionChain.length === 0 && !loading && !error && strikeDates.length > 0 && (
-              <div className="text-center py-8 text-gray-500">
-                请选择到期日期查看期权链
-              </div>
-            )}
+        {optionChain.length === 0 && !loading && !error && strikeDates.length > 0 && (
+          <Card>
+            <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+              请选择到期日期查看期权链
+            </div>
+          </Card>
+        )}
 
-            {strikeDates.length === 0 && !loading && !error && (
-              <div className="text-center py-8 text-gray-500">
-                请输入股票代码查询期权
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
+        {strikeDates.length === 0 && !loading && !error && (
+          <Card>
+            <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+              请输入股票代码查询期权
+            </div>
+          </Card>
+        )}
+      </Card>
+    </AppLayout>
   )
 }
 

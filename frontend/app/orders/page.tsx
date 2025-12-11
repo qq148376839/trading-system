@@ -1,11 +1,18 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef } from 'react'
-import { ordersApi } from '@/lib/api'
-import BackButton from '@/components/BackButton'
-import { DatePicker } from 'antd'
-import type { Dayjs } from 'dayjs'
-import dayjs from 'dayjs'
+// 重定向到量化模块的订单管理页面
+import { useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+
+export default function OrdersPage() {
+  const router = useRouter()
+  
+  useEffect(() => {
+    router.replace('/quant/orders')
+  }, [router])
+  
+  return null
+}
 
 interface Order {
   orderId: string
@@ -204,22 +211,25 @@ export default function OrdersPage() {
   }, [autoRefresh, activeTab, fetchTodayOrders]) // 只依赖必要的变量
 
   const handleCancelOrder = async (orderId: string) => {
-    if (!confirm('确定要取消这个订单吗？')) {
-      return
-    }
-
-    try {
-      await ordersApi.cancelOrder(orderId)
-      setError(null)
-      // 刷新订单列表（重置请求状态，允许刷新）
-      isFetchingRef.current = false
-      lastFetchParamsRef.current = ''
-      await fetchOrdersOptimized()
-      // 关闭详情弹窗
-      setSelectedOrder(null)
-    } catch (err: any) {
-      setError(err.message || '取消订单失败')
-    }
+    Modal.confirm({
+      title: '确认取消订单',
+      content: '确定要取消这个订单吗？',
+      onOk: async () => {
+        try {
+          await ordersApi.cancelOrder(orderId)
+          setError(null)
+          message.success('订单取消成功')
+          // 刷新订单列表（重置请求状态，允许刷新）
+          isFetchingRef.current = false
+          lastFetchParamsRef.current = ''
+          await fetchOrdersOptimized()
+          // 关闭详情弹窗
+          setSelectedOrder(null)
+        } catch (err: any) {
+          setError(err.message || '取消订单失败')
+        }
+      }
+    })
   }
 
   const getStatusColor = (status: string) => {
@@ -327,109 +337,93 @@ export default function OrdersPage() {
   }
 
   // 客户端筛选（如果需要的话，但主要筛选已经在服务端完成）
-  const filteredOrders = orders
+  const filteredOrders = orders;
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div className="px-4 py-6 sm:px-0">
-          <div className="mb-4">
-            <BackButton />
-          </div>
-          <div className="bg-white shadow rounded-lg p-6">
-            <div className="flex justify-between items-center mb-4">
-              <h1 className="text-2xl font-bold text-gray-900">订单管理</h1>
-              <div className="flex items-center gap-4">
-                {activeTab === 'today' && (
-                  <label className="flex items-center">
-                    <input
-                      type="checkbox"
-                      checked={autoRefresh}
-                      onChange={(e) => setAutoRefresh(e.target.checked)}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    />
-                    <span className="ml-2 text-sm text-gray-700">自动刷新</span>
-                  </label>
-                )}
-                <button
-                  onClick={() => {
-                    // 手动刷新时，重置请求状态
-                    isFetchingRef.current = false
-                    lastFetchParamsRef.current = ''
-                    fetchOrdersOptimized()
-                  }}
-                  disabled={loading}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 text-sm"
-                >
-                  {loading ? '刷新中...' : '刷新'}
-                </button>
-              </div>
-            </div>
-
-            {/* Tab切换 */}
-            <div className="mb-6 border-b border-gray-200">
-              <nav className="-mb-px flex space-x-8">
-                <button
-                  onClick={() => setActiveTab('today')}
-                  className={`py-4 px-1 border-b-2 font-medium text-sm ${
-                    activeTab === 'today'
-                      ? 'border-blue-500 text-blue-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }`}
-                >
-                  今日订单
-                </button>
-                <button
-                  onClick={() => setActiveTab('history')}
-                  className={`py-4 px-1 border-b-2 font-medium text-sm ${
-                    activeTab === 'history'
-                      ? 'border-blue-500 text-blue-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }`}
-                >
-                  历史订单
-                </button>
-              </nav>
-            </div>
-
-            {/* 统一筛选器 */}
-            <div className="mb-4 space-y-3">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-                <input
-                  type="text"
-                  placeholder="标的代码..."
-                  value={filters.symbol}
-                  onChange={(e) => setFilters({ ...filters, symbol: e.target.value })}
-                  className="px-3 py-2 border border-gray-300 rounded-md text-sm"
+    <AppLayout>
+      <Card>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <h1 style={{ fontSize: 24, fontWeight: 600, margin: 0 }}>订单管理</h1>
+          <Space>
+            {activeTab === 'today' && (
+              <Space>
+                <Switch
+                  checked={autoRefresh}
+                  onChange={setAutoRefresh}
                 />
-                <select
-                  value={filters.side}
-                  onChange={(e) => setFilters({ ...filters, side: e.target.value as 'Buy' | 'Sell' | '' })}
-                  className="px-3 py-2 border border-gray-300 rounded-md text-sm"
-                >
-                  <option value="">全部方向</option>
-                  <option value="Buy">买入</option>
-                  <option value="Sell">卖出</option>
-                </select>
-                <select
-                  value={filters.market}
-                  onChange={(e) => setFilters({ ...filters, market: e.target.value as 'US' | 'HK' | '' })}
-                  className="px-3 py-2 border border-gray-300 rounded-md text-sm"
-                >
-                  <option value="">全部市场</option>
-                  <option value="US">美股</option>
-                  <option value="HK">港股</option>
-                </select>
-                {activeTab === 'today' && (
-                  <input
-                    type="text"
-                    placeholder="订单ID..."
-                    value={filters.order_id}
-                    onChange={(e) => setFilters({ ...filters, order_id: e.target.value })}
-                    className="px-3 py-2 border border-gray-300 rounded-md text-sm"
-                  />
-                )}
-              </div>
+                <span>自动刷新</span>
+              </Space>
+            )}
+            <Button
+              type="primary"
+              onClick={() => {
+                isFetchingRef.current = false
+                lastFetchParamsRef.current = ''
+                fetchOrdersOptimized()
+              }}
+              loading={loading}
+            >
+              刷新
+            </Button>
+          </Space>
+        </div>
+
+        {/* Tab切换 */}
+        <Tabs
+          activeKey={activeTab}
+          onChange={(key) => setActiveTab(key as TabType)}
+          items={[
+            {
+              key: 'today',
+              label: '今日订单',
+            },
+            {
+              key: 'history',
+              label: '历史订单',
+            },
+          ]}
+        />
+
+        {/* 统一筛选器 */}
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Space wrap>
+            <Input
+              placeholder="标的代码..."
+              value={filters.symbol}
+              onChange={(e) => setFilters({ ...filters, symbol: e.target.value })}
+              style={{ width: 150 }}
+            />
+            <Select
+              value={filters.side || undefined}
+              onChange={(value) => setFilters({ ...filters, side: value as 'Buy' | 'Sell' | '' })}
+              style={{ width: 120 }}
+              placeholder="全部方向"
+              options={[
+                { value: '', label: '全部方向' },
+                { value: 'Buy', label: '买入' },
+                { value: 'Sell', label: '卖出' },
+              ]}
+            />
+            <Select
+              value={filters.market || undefined}
+              onChange={(value) => setFilters({ ...filters, market: value as 'US' | 'HK' | '' })}
+              style={{ width: 120 }}
+              placeholder="全部市场"
+              options={[
+                { value: '', label: '全部市场' },
+                { value: 'US', label: '美股' },
+                { value: 'HK', label: '港股' },
+              ]}
+            />
+            {activeTab === 'today' && (
+              <Input
+                placeholder="订单ID..."
+                value={filters.order_id}
+                onChange={(e) => setFilters({ ...filters, order_id: e.target.value })}
+                style={{ width: 150 }}
+              />
+            )}
+          </Space>
               
               {/* 历史订单时间范围 */}
               {activeTab === 'history' && (
@@ -481,179 +475,173 @@ export default function OrdersPage() {
                 </div>
               )}
               
-              {/* 状态筛选 */}
-              <div className="flex gap-2 flex-wrap">
-                <button
-                  onClick={() => setFilters({ ...filters, status: [] })}
-                  className={`px-3 py-1 text-sm rounded ${
-                    filters.status.length === 0
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  全部状态
-                </button>
-                <button
-                  onClick={() => setFilters({ ...filters, status: ['Filled', 'FilledStatus', 'PartialFilledStatus'] })}
-                  className={`px-3 py-1 text-sm rounded ${
-                    filters.status.some(s => s.includes('Filled'))
-                      ? 'bg-green-600 text-white'
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  已成交
-                </button>
-                <button
-                  onClick={() => setFilters({ ...filters, status: ['New', 'NewStatus', 'NotReported', 'WaitToNew'] })}
-                  className={`px-3 py-1 text-sm rounded ${
-                    filters.status.some(s => ['New', 'NotReported', 'WaitToNew'].includes(s))
-                      ? 'bg-yellow-600 text-white'
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  待处理
-                </button>
-                <button
-                  onClick={() => setFilters({ ...filters, status: ['CanceledStatus', 'PendingCancelStatus', 'WaitToCancel'] })}
-                  className={`px-3 py-1 text-sm rounded ${
-                    filters.status.some(s => s.includes('Cancel'))
-                      ? 'bg-gray-600 text-white'
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  已取消
-                </button>
-                <button
-                  onClick={() => setFilters({ ...filters, status: ['RejectedStatus'] })}
-                  className={`px-3 py-1 text-sm rounded ${
-                    filters.status.includes('RejectedStatus')
-                      ? 'bg-red-600 text-white'
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  已拒绝
-                </button>
-              </div>
-            </div>
+          {/* 状态筛选 */}
+          <Space wrap>
+            <Button
+              type={filters.status.length === 0 ? 'primary' : 'default'}
+              onClick={() => setFilters({ ...filters, status: [] })}
+            >
+              全部状态
+            </Button>
+            <Button
+              type={filters.status.some(s => s.includes('Filled')) ? 'primary' : 'default'}
+              onClick={() => setFilters({ ...filters, status: ['Filled', 'FilledStatus', 'PartialFilledStatus'] })}
+            >
+              已成交
+            </Button>
+            <Button
+              type={filters.status.some(s => ['New', 'NotReported', 'WaitToNew'].includes(s)) ? 'primary' : 'default'}
+              onClick={() => setFilters({ ...filters, status: ['New', 'NewStatus', 'NotReported', 'WaitToNew'] })}
+            >
+              待处理
+            </Button>
+            <Button
+              type={filters.status.some(s => s.includes('Cancel')) ? 'primary' : 'default'}
+              onClick={() => setFilters({ ...filters, status: ['CanceledStatus', 'PendingCancelStatus', 'WaitToCancel'] })}
+            >
+              已取消
+            </Button>
+            <Button
+              type={filters.status.includes('RejectedStatus') ? 'primary' : 'default'}
+              onClick={() => setFilters({ ...filters, status: ['RejectedStatus'] })}
+            >
+              已拒绝
+            </Button>
+          </Space>
+        </Space>
 
-            {/* 错误提示 */}
-            {error && (
-              <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
-                {error}
-              </div>
-            )}
+        {/* 错误提示 */}
+        {error && (
+          <Alert
+            message={error}
+            type="error"
+            showIcon
+            closable
+            onClose={() => setError(null)}
+            style={{ marginBottom: 16 }}
+          />
+        )}
 
-            {/* 订单列表 */}
-            {filteredOrders.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        标的代码
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        方向
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        订单类型
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        数量
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        价格
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        状态
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        下单时间
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        操作
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {filteredOrders.map((order) => (
-                      <tr key={order.orderId} className="hover:bg-gray-50">
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                          {order.symbol}
-                          {order.stockName && (
-                            <div className="text-xs text-gray-500">{order.stockName}</div>
-                          )}
-                        </td>
-                        <td className={`px-6 py-4 whitespace-nowrap text-sm font-medium ${order.side === 'Buy' ? 'text-red-600' : 'text-green-600'}`}>
-                          {order.side === 'Buy' ? '买入' : '卖出'}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {order.orderTypeText || order.orderType}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {order.executedQuantity !== '0' ? (
-                            <span>
-                              {order.executedQuantity} / {order.quantity}
-                            </span>
-                          ) : (
-                            order.quantity
-                          )}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {order.executedPrice !== '0' ? (
-                            <span>
-                              {order.executedPrice} <span className="text-gray-400">({order.price})</span>
-                            </span>
-                          ) : (
-                            order.price || '-'
-                          )}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <span className={`px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(order.status)}`}>
-                            {getStatusText(order.status)}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {order.submittedAt ? new Date(order.submittedAt).toLocaleString('zh-CN') : '-'}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm">
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => setSelectedOrder(order)}
-                              className="text-blue-600 hover:text-blue-800"
-                            >
-                              详情
-                            </button>
-                            {activeTab === 'today' && canCancelOrder(order.status) && (
-                              <button
-                                onClick={() => handleCancelOrder(order.orderId)}
-                                className="text-red-600 hover:text-red-800"
-                              >
-                                取消
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                
-                {/* 分页提示（历史订单） */}
-                {activeTab === 'history' && hasMore && (
-                  <div className="mt-4 text-center text-sm text-gray-500">
-                    提示：还有更多订单，请缩小查询范围查看
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="text-center py-8 text-gray-500">
-                {loading ? '加载中...' : '暂无订单'}
-              </div>
-            )}
+        {/* 订单列表 */}
+        <Table
+          dataSource={filteredOrders}
+          loading={loading}
+          rowKey="orderId"
+          pagination={false}
+          scroll={{ x: 'max-content' }}
+          locale={{
+            emptyText: filteredOrders.length === 0 && !loading ? '暂无订单' : undefined
+          }}
+          columns={[
+            {
+              title: '标的代码',
+              key: 'symbol',
+              width: 150,
+              render: (_, order: Order) => (
+                <div>
+                  <div>{order.symbol}</div>
+                  {order.stockName && (
+                    <div style={{ fontSize: 12, color: '#999' }}>{order.stockName}</div>
+                  )}
+                </div>
+              )
+            },
+            {
+              title: '方向',
+              key: 'side',
+              width: 80,
+              render: (_, order: Order) => (
+                <span style={{ color: order.side === 'Buy' ? '#ff4d4f' : '#52c41a', fontWeight: 600 }}>
+                  {order.side === 'Buy' ? '买入' : '卖出'}
+                </span>
+              )
+            },
+            {
+              title: '订单类型',
+              key: 'orderType',
+              width: 120,
+              render: (_, order: Order) => order.orderTypeText || order.orderType
+            },
+            {
+              title: '数量',
+              key: 'quantity',
+              width: 120,
+              render: (_, order: Order) => (
+                order.executedQuantity !== '0' ? (
+                  <span>
+                    {order.executedQuantity} / {order.quantity}
+                  </span>
+                ) : (
+                  order.quantity
+                )
+              )
+            },
+            {
+              title: '价格',
+              key: 'price',
+              width: 150,
+              render: (_, order: Order) => (
+                order.executedPrice !== '0' ? (
+                  <span>
+                    {order.executedPrice} <span style={{ color: '#999' }}>({order.price})</span>
+                  </span>
+                ) : (
+                  order.price || '-'
+                )
+              )
+            },
+            {
+              title: '状态',
+              key: 'status',
+              width: 120,
+              render: (_, order: Order) => {
+                const statusStr = order.status?.toString() || ''
+                let color = 'default'
+                if (statusStr === 'FilledStatus' || statusStr === 'PartialFilledStatus' || statusStr.includes('Filled')) {
+                  color = 'success'
+                } else if (statusStr === 'RejectedStatus' || statusStr.includes('Reject')) {
+                  color = 'error'
+                } else if (statusStr === 'CanceledStatus' || statusStr.includes('Cancel')) {
+                  color = 'default'
+                } else if (statusStr === 'NewStatus' || statusStr === 'NotReported' || statusStr === 'WaitToNew') {
+                  color = 'processing'
+                }
+                return <Tag color={color}>{getStatusText(order.status)}</Tag>
+              }
+            },
+            {
+              title: '下单时间',
+              key: 'submittedAt',
+              width: 180,
+              render: (_, order: Order) => order.submittedAt ? new Date(order.submittedAt).toLocaleString('zh-CN') : '-'
+            },
+            {
+              title: '操作',
+              key: 'actions',
+              width: 120,
+              render: (_, order: Order) => (
+                <Space>
+                  <Button type="link" onClick={() => setSelectedOrder(order)}>
+                    详情
+                  </Button>
+                  {activeTab === 'today' && canCancelOrder(order.status) && (
+                    <Button type="link" danger onClick={() => handleCancelOrder(order.orderId)}>
+                      取消
+                    </Button>
+                  )}
+                </Space>
+              )
+            }
+          ]}
+        />
+        
+        {/* 分页提示（历史订单） */}
+        {activeTab === 'history' && hasMore && (
+          <div style={{ marginTop: 16, textAlign: 'center', color: '#999', fontSize: 12 }}>
+            提示：还有更多订单，请缩小查询范围查看
           </div>
-        </div>
-      </div>
+        )}
+      </Card>
 
       {/* 订单详情弹窗 */}
       {selectedOrder && (
@@ -670,7 +658,7 @@ export default function OrdersPage() {
           }}
         />
       )}
-    </div>
+    </AppLayout>
   )
 }
 

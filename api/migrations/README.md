@@ -1,6 +1,6 @@
 # 数据库初始化脚本使用说明
 
-> **重要更新**：所有历史迁移脚本（001-007）已移动到 `archive/` 目录。  
+> **重要更新**：所有历史迁移脚本（001-011）已移动到 `archive/` 目录。  
 > **新项目请使用 `000_init_schema.sql` 统一初始化脚本。**
 
 ## 快速开始
@@ -37,7 +37,7 @@ psql -d trading_db -f migrations/000_init_schema.sql
 **统一初始化脚本**，包含所有表结构和配置：
 - ✅ 新项目：直接运行即可完成初始化
 - ✅ 已有项目：可安全重复运行，不会影响已有数据
-- ✅ 包含所有迁移内容（001-009）
+- ✅ 包含所有迁移内容（001-011）
 
 **特点：**
 - 所有 `CREATE TABLE` 使用 `IF NOT EXISTS`
@@ -47,7 +47,9 @@ psql -d trading_db -f migrations/000_init_schema.sql
 
 ### 历史迁移脚本（已归档）
 
-开发过程中的迭代迁移脚本（001-007）已移动到 `archive/` 目录：
+开发过程中的迭代迁移脚本（001-011）已移动到 `archive/` 目录：
+
+**基础迁移脚本（001-007）：**
 - `archive/001_initial_schema.sql` - 基础表结构
 - `archive/002_add_positions_and_trading_rules.sql` - 持仓和交易规则表
 - `archive/003_config_management.sql` - 配置管理表
@@ -56,10 +58,19 @@ psql -d trading_db -f migrations/000_init_schema.sql
 - `archive/006_add_option_quote_config.sql` - 期权行情配置
 - `archive/007_add_futunn_search_cookies.sql` - 富途搜索Cookies配置
 
+**回测功能迁移脚本（008-009）：**
+- `archive/008_add_backtest_results.sql` - 回测结果表
+- `archive/009_add_backtest_status.sql` - 回测状态字段
+
+**量化交易优化迁移脚本（010-011）：**
+- `archive/010_add_is_system_to_capital_allocations.sql` - 资金分配表is_system字段
+- `archive/011_add_signal_id_to_execution_orders.sql` - 执行订单表signal_id字段
+
 **注意：** 
 - 新项目请使用 `000_init_schema.sql`，不要使用归档目录中的脚本
 - 归档脚本仅作为历史记录保留，不建议在新项目中使用
-- 008和009（回测相关）已合并到 `000_init_schema.sql` 中
+- 008-011已合并到 `000_init_schema.sql` 中，并已归档到 `archive/` 目录
+- 012（历史数据回填脚本）**不在初始化时执行**，仅用于修复历史数据，保留在主目录
 
 ## 表结构说明
 
@@ -268,7 +279,7 @@ docker-compose exec api node scripts/create-admin.js admin your_password
 
 A: 直接运行 `000_init_schema.sql`，脚本使用 `IF NOT EXISTS` 和 `ON CONFLICT`，不会影响已有数据。
 
-### Q: 旧的迁移脚本（001-007）在哪里？
+### Q: 旧的迁移脚本（001-011）在哪里？
 
 A: 已移动到 `archive/` 目录，仅作为历史记录保留。新项目只需使用 `000_init_schema.sql`。
 

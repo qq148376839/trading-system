@@ -33,11 +33,17 @@ async function generateQuoteToken(params) {
 
 以下接口会自动计算并添加 `quote-token`：
 
+**行情接口**：
 - `/quote-api/quote-v2/get-kline` - K线数据
 - `/quote-api/quote-v2/get-quote-minute` - 分时数据
 - `/quote-api/quote-v2/get-stock-quote` - 股票行情
 - `/quote-api/quote-v2/get-option-chain` - 期权链
 - `/quote-api/quote-v2/get-option-strike-dates` - 期权到期日期
+
+**机构选股接口**：
+- `/quote-api/quote-v2/get-popular-position` - 热门机构列表
+- `/quote-api/quote-v2/get-share-holding-list` - 机构持仓列表
+- `/quote-api/quote-v2/get-owner-position-list` - 机构列表（支持分页）
 
 ### 3. 参数提取规则
 

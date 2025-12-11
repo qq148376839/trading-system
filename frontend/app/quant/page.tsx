@@ -3,11 +3,15 @@
 import { useState, useEffect } from 'react';
 import { quantApi } from '@/lib/api';
 import Link from 'next/link';
+import AppLayout from '@/components/AppLayout';
+import { Card, Table, Tag, Space, Button, Spin, Row, Col, Statistic, Tooltip } from 'antd';
 
 interface Overview {
   runningStrategies: number;
   totalCapital: number;
   todayTrades: number;
+  todayBuyOrders?: number;  // 新增：今日买入订单数量
+  todaySellOrders?: number; // 新增：今日卖出订单数量
   todayPnl: number;
 }
 
@@ -42,20 +46,19 @@ export default function QuantTradingPage() {
       const capitalRes = await quantApi.getCapitalUsage();
       const totalCapital = capitalRes.data?.totalCapital || 0;
 
-      const tradesRes = await quantApi.getTrades({ limit: 100 });
-      const trades = tradesRes.data || [];
-      const today = new Date().toISOString().split('T')[0];
-      const todayTrades = trades.filter((t: any) => 
-        t.open_time?.startsWith(today)
-      ).length;
-      const todayPnl = trades
-        .filter((t: any) => t.open_time?.startsWith(today) && t.pnl)
-        .reduce((sum: number, t: any) => sum + parseFloat(t.pnl || 0), 0);
+      // 调用新的统计接口获取今日盈亏和今日交易数量
+      const statsRes = await quantApi.getDashboardStats();
+      const todayPnl = statsRes.data?.todayPnl || 0;
+      const todayTrades = statsRes.data?.todayTrades || 0;
+      const todayBuyOrders = statsRes.data?.todayBuyOrders || 0;
+      const todaySellOrders = statsRes.data?.todaySellOrders || 0;
 
       setOverview({
         runningStrategies,
         totalCapital,
         todayTrades,
+        todayBuyOrders,
+        todaySellOrders,
         todayPnl,
       });
 
@@ -69,153 +72,139 @@ export default function QuantTradingPage() {
     }
   };
 
+  const signalColumns = [
+    {
+      title: '时间',
+      key: 'created_at',
+      dataIndex: 'created_at',
+      render: (text: string) => new Date(text).toLocaleString('zh-CN'),
+    },
+    {
+      title: '标的',
+      key: 'symbol',
+      dataIndex: 'symbol',
+      render: (text: string) => <span style={{ fontFamily: 'monospace' }}>{text}</span>,
+    },
+    {
+      title: '信号',
+      key: 'signal_type',
+      dataIndex: 'signal_type',
+      render: (text: string) => (
+        <Tag color={text === 'BUY' ? 'success' : 'error'}>{text}</Tag>
+      ),
+    },
+    {
+      title: '价格',
+      key: 'price',
+      dataIndex: 'price',
+      render: (price: number | null) =>
+        price != null ? `$${parseFloat(String(price)).toFixed(2)}` : '-',
+    },
+    {
+      title: '状态',
+      key: 'status',
+      dataIndex: 'status',
+      render: (status: string) => {
+        const statusMap: Record<string, { color: string; text: string }> = {
+          EXECUTED: { color: 'processing', text: '已执行' },
+          REJECTED: { color: 'error', text: '已拒绝' },
+          PENDING: { color: 'default', text: '待处理' },
+        };
+        const config = statusMap[status] || { color: 'default', text: status };
+        return <Tag color={config.color}>{config.text}</Tag>;
+      },
+    },
+  ];
+
   if (loading) {
     return (
-      <div className="container mx-auto p-6">
-        <div className="text-center">加载中...</div>
-      </div>
+      <AppLayout>
+        <Card>
+          <div style={{ textAlign: 'center', padding: '40px 0' }}>
+            <Spin size="large" />
+            <div style={{ marginTop: 16 }}>加载中...</div>
+          </div>
+        </Card>
+      </AppLayout>
     );
   }
 
   return (
-    <div className="container mx-auto p-6">
-      {/* 顶部导航栏 */}
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-3xl font-bold text-gray-900">量化交易</h1>
-        <div className="flex gap-4">
-          <Link
-            href="/orders"
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors flex items-center gap-2"
-          >
-            <span>📋</span>
-            <span>订单查询</span>
-          </Link>
-        </div>
-      </div>
-      <h1 className="text-3xl font-bold mb-6">量化交易中心</h1>
+    <AppLayout>
+      <Card>
+        <h1 style={{ fontSize: 24, fontWeight: 600, marginBottom: 24 }}>量化交易中心</h1>
 
-      {/* 总览卡片 */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <div className="bg-white p-4 rounded-lg shadow">
-          <div className="text-gray-500 text-sm">运行中策略</div>
-          <div className="text-2xl font-bold">{overview?.runningStrategies || 0}</div>
-        </div>
-        <div className="bg-white p-4 rounded-lg shadow">
-          <div className="text-gray-500 text-sm">总资金</div>
-          <div className="text-2xl font-bold">${(overview?.totalCapital || 0).toFixed(2)}</div>
-        </div>
-        <div className="bg-white p-4 rounded-lg shadow">
-          <div className="text-gray-500 text-sm">今日交易</div>
-          <div className="text-2xl font-bold">{overview?.todayTrades || 0}</div>
-        </div>
-        <div className={`bg-white p-4 rounded-lg shadow ${(overview?.todayPnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-          <div className="text-gray-500 text-sm">今日盈亏</div>
-          <div className="text-2xl font-bold">${(overview?.todayPnl || 0).toFixed(2)}</div>
-        </div>
-      </div>
+        {/* 总览卡片 */}
+        <Row gutter={16} style={{ marginBottom: 24 }}>
+          <Col xs={24} sm={12} md={6}>
+            <Card>
+              <Statistic
+                title="运行中策略"
+                value={overview?.runningStrategies || 0}
+                valueStyle={{ fontSize: 24, fontWeight: 600 }}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} md={6}>
+            <Card>
+              <Statistic
+                title="总资金"
+                value={(overview?.totalCapital || 0).toFixed(2)}
+                prefix="$"
+                valueStyle={{ fontSize: 24, fontWeight: 600 }}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} md={6}>
+            <Card>
+              <Tooltip
+                title={
+                  <div>
+                    <div>总交易：{overview?.todayTrades || 0}笔</div>
+                    <div>买入：{overview?.todayBuyOrders || 0}笔</div>
+                    <div>卖出：{overview?.todaySellOrders || 0}笔</div>
+                  </div>
+                }
+              >
+                <Statistic
+                  title="今日交易"
+                  value={overview?.todayTrades || 0}
+                  valueStyle={{ fontSize: 24, fontWeight: 600, cursor: 'help' }}
+                />
+              </Tooltip>
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} md={6}>
+            <Card>
+              <Statistic
+                title="今日盈亏"
+                value={(overview?.todayPnl || 0).toFixed(2)}
+                prefix="$"
+                valueStyle={{
+                  fontSize: 24,
+                  fontWeight: 600,
+                  color: (overview?.todayPnl || 0) >= 0 ? '#52c41a' : '#ff4d4f',
+                }}
+              />
+            </Card>
+          </Col>
+        </Row>
 
-      {/* 快速操作 */}
-      <div className="mb-6 flex gap-4 flex-wrap">
-        <Link
-          href="/quant/strategies"
-          className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 transition-colors"
-        >
-          策略管理
-        </Link>
-        <Link
-          href="/quant/capital"
-          className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 transition-colors"
-        >
-          资金管理
-        </Link>
-        <Link
-          href="/quant/signals"
-          className="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600 transition-colors"
-        >
-          信号日志
-        </Link>
-        <Link
-          href="/quant/trades"
-          className="bg-orange-500 text-white px-4 py-2 rounded hover:bg-orange-600 transition-colors"
-        >
-          交易记录
-        </Link>
-        <Link
-          href="/quant/backtest"
-          className="bg-teal-500 text-white px-4 py-2 rounded hover:bg-teal-600 transition-colors"
-        >
-          回测管理
-        </Link>
-        <Link
-          href="/orders"
-          className="bg-indigo-500 text-white px-4 py-2 rounded hover:bg-indigo-600 transition-colors flex items-center gap-2"
-        >
-          <span>📋</span>
-          <span>订单查询</span>
-        </Link>
-      </div>
-
-      {/* 实时信号流 */}
-      <div className="bg-white p-4 rounded-lg shadow">
-        <h2 className="text-xl font-bold mb-4">最近信号</h2>
-        {recentSignals.length === 0 ? (
-          <div className="text-gray-500 text-center py-8">暂无信号</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead>
-                <tr>
-                  <th className="px-4 py-2 text-left">时间</th>
-                  <th className="px-4 py-2 text-left">标的</th>
-                  <th className="px-4 py-2 text-left">信号</th>
-                  <th className="px-4 py-2 text-left">价格</th>
-                  <th className="px-4 py-2 text-left">状态</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentSignals.map((signal) => (
-                  <tr key={signal.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-2">
-                      {new Date(signal.created_at).toLocaleString()}
-                    </td>
-                    <td className="px-4 py-2 font-mono">{signal.symbol}</td>
-                    <td className="px-4 py-2">
-                      <span
-                        className={`px-2 py-1 rounded ${
-                          signal.signal_type === 'BUY'
-                            ? 'bg-green-100 text-green-800'
-                            : 'bg-red-100 text-red-800'
-                        }`}
-                      >
-                        {signal.signal_type}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2">
-                      {signal.price != null 
-                        ? `$${parseFloat(String(signal.price)).toFixed(2)}` 
-                        : '-'}
-                    </td>
-                    <td className="px-4 py-2">
-                      <span
-                        className={`px-2 py-1 rounded ${
-                          signal.status === 'EXECUTED'
-                            ? 'bg-blue-100 text-blue-800'
-                            : signal.status === 'REJECTED'
-                            ? 'bg-red-100 text-red-800'
-                            : 'bg-gray-100 text-gray-800'
-                        }`}
-                      >
-                        {signal.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </div>
+        {/* 实时信号流 */}
+        <Card>
+          <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>最近信号</h2>
+          <Table
+            dataSource={recentSignals}
+            columns={signalColumns}
+            rowKey="id"
+            pagination={false}
+            locale={{
+              emptyText: '暂无信号',
+            }}
+          />
+        </Card>
+      </Card>
+    </AppLayout>
   );
 }
 

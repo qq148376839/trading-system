@@ -1,5 +1,45 @@
 # 更新日志
 
+## 2025-12-08
+
+### 期权图表功能实现 ✅ 新功能
+
+**功能**: 实现了期权详情页面的图表功能，支持分时图、5日图和日K图显示。
+
+**实现内容**:
+
+1. **后端API实现**
+   - ✅ 新增 `getOptionKline()` 函数：获取期权日K线数据
+   - ✅ 新增 `getOptionMinute()` 函数：获取期权分时数据
+   - ✅ 新增 `GET /api/options/kline` 端点：K线数据API
+   - ✅ 新增 `GET /api/options/minute` 端点：分时数据API
+   - ✅ 使用边缘函数代理调用Moomoo API，解决IP限制问题
+
+2. **前端图表实现**
+   - ✅ 实现分时图：显示实时价格走势
+   - ✅ 实现5日图：显示最近5天的收盘价走势
+   - ✅ 实现日K图：显示历史收盘价走势
+   - ✅ 统一使用折线图（LineChart）显示，提供一致的用户体验
+   - ✅ 使用Recharts库绘制图表
+   - ✅ 实现图表切换功能
+   - ✅ 添加加载状态和错误处理
+
+**技术要点**:
+- 通过Cloudflare边缘函数代理调用Moomoo API
+- 自动处理cookies、CSRF token和quote-token
+- 数据格式转换（时间戳、价格单位等）
+- 完善的错误处理和用户提示
+
+**修改文件**:
+- `api/src/services/futunn-option-chain.service.ts` - 新增K线和分时数据获取函数
+- `api/src/routes/options.ts` - 新增API端点
+- `frontend/lib/api.ts` - 新增API客户端方法
+- `frontend/app/options/[optionCode]/page.tsx` - 实现图表组件
+
+**相关文档**:
+- [期权图表功能实施总结](docs/features/OPTION_CHART_IMPLEMENTATION.md)
+- [期权图表API分析文档](docs/OPTION_CHART_API_ANALYSIS.md)
+
 ## 2025-12-05
 
 ### 资金使用差异BUG修复 ⚠️ 关键修复

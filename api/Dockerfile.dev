@@ -1,6 +1,9 @@
 # API 服务开发环境 Dockerfile
 FROM node:20-alpine
 
+# 安装 curl 用于健康检查
+RUN apk add --no-cache curl
+
 # 设置工作目录
 WORKDIR /app
 
@@ -15,6 +18,10 @@ COPY tsconfig.json ./
 
 # 暴露端口
 EXPOSE 3001
+
+# 健康检查（开发环境）
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:3001/api/health || exit 1
 
 # 开发模式使用 tsx watch，支持热重载
 CMD ["npm", "run", "dev"]

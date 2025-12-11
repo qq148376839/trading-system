@@ -1,5 +1,6 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import pool from '../config/database';
+import { ErrorFactory, normalizeError } from '../utils/errors';
 
 export const watchlistRouter = Router();
 
@@ -7,7 +8,7 @@ export const watchlistRouter = Router();
  * GET /api/watchlist
  * 获取关注股票列表
  */
-watchlistRouter.get('/', async (req: Request, res: Response) => {
+watchlistRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { enabled } = req.query;
     
@@ -30,14 +31,8 @@ watchlistRouter.get('/', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('获取关注列表失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -45,31 +40,19 @@ watchlistRouter.get('/', async (req: Request, res: Response) => {
  * POST /api/watchlist
  * 添加关注股票
  */
-watchlistRouter.post('/', async (req: Request, res: Response) => {
+watchlistRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { symbol } = req.body;
 
     if (!symbol) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: symbol',
-        },
-      });
+      return next(ErrorFactory.missingParameter('symbol'));
     }
 
     // 验证symbol格式（支持 ticker.region 和 .ticker.region 格式）
     // 支持格式：AAPL.US, 700.HK, .SPX.US (标普500指数带前导点)
     const symbolPattern = /^\.?[A-Z0-9]+\.[A-Z]{2}$/;
     if (!symbolPattern.test(symbol)) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_SYMBOL_FORMAT',
-          message: '无效的标的代码格式。请使用 ticker.region 格式，例如：700.HK 或 .SPX.US',
-        },
-      });
+      return next(ErrorFactory.validationError('无效的标的代码格式。请使用 ticker.region 格式，例如：700.HK 或 .SPX.US'));
     }
 
     // 检查是否已存在
@@ -79,13 +62,7 @@ watchlistRouter.post('/', async (req: Request, res: Response) => {
     );
 
     if (existing.rows.length > 0) {
-      return res.status(409).json({
-        success: false,
-        error: {
-          code: 'DUPLICATE_SYMBOL',
-          message: '该股票已在关注列表中',
-        },
-      });
+      return next(ErrorFactory.resourceConflict('该股票已在关注列表中'));
     }
 
     // 插入新记录
@@ -101,14 +78,8 @@ watchlistRouter.post('/', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('添加关注股票失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -116,7 +87,7 @@ watchlistRouter.post('/', async (req: Request, res: Response) => {
  * DELETE /api/watchlist/:symbol
  * 移除关注股票
  */
-watchlistRouter.delete('/:symbol', async (req: Request, res: Response) => {
+watchlistRouter.delete('/:symbol', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { symbol } = req.params;
 
@@ -126,13 +97,7 @@ watchlistRouter.delete('/:symbol', async (req: Request, res: Response) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'NOT_FOUND',
-          message: '未找到该关注股票',
-        },
-      });
+      return next(ErrorFactory.notFound('关注股票'));
     }
 
     res.json({
@@ -142,14 +107,8 @@ watchlistRouter.delete('/:symbol', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('移除关注股票失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -157,19 +116,13 @@ watchlistRouter.delete('/:symbol', async (req: Request, res: Response) => {
  * PUT /api/watchlist/:symbol
  * 启用/禁用关注股票
  */
-watchlistRouter.put('/:symbol', async (req: Request, res: Response) => {
+watchlistRouter.put('/:symbol', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { symbol } = req.params;
     const { enabled } = req.body;
 
     if (typeof enabled !== 'boolean') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_PARAMETER',
-          message: 'enabled参数必须是布尔值',
-        },
-      });
+      return next(ErrorFactory.validationError('enabled参数必须是布尔值'));
     }
 
     const result = await pool.query(
@@ -178,13 +131,7 @@ watchlistRouter.put('/:symbol', async (req: Request, res: Response) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'NOT_FOUND',
-          message: '未找到该关注股票',
-        },
-      });
+      return next(ErrorFactory.notFound('关注股票'));
     }
 
     res.json({
@@ -194,14 +141,8 @@ watchlistRouter.put('/:symbol', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('更新关注股票失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 

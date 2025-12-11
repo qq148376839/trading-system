@@ -9,7 +9,8 @@ import pool from '../../config/database';
 export interface TradingIntent {
   action: 'BUY' | 'SELL' | 'HOLD';
   symbol: string;
-  entryPrice?: number;
+  entryPrice?: number;        // 入场价格：买入场景=买入价格，平仓场景=买入价格(用于记录)，做空场景=做空价格
+  sellPrice?: number;         // 卖出价格：平仓场景=当前市场价格(用于提交订单)，做空场景=不使用
   entryPriceRange?: { min: number; max: number };
   stopLoss?: number;
   takeProfit?: number;
@@ -68,12 +69,14 @@ export abstract class StrategyBase {
 
   /**
    * 记录信号到数据库
+   * @returns signal_id 返回信号ID，用于关联订单
    */
-  protected async logSignal(intent: TradingIntent): Promise<void> {
-    await pool.query(
+  protected async logSignal(intent: TradingIntent): Promise<number> {
+    const result = await pool.query(
       `INSERT INTO strategy_signals 
        (strategy_id, symbol, signal_type, price, reason, metadata, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'PENDING')`,
+       VALUES ($1, $2, $3, $4, $5, $6, 'PENDING')
+       RETURNING id`,
       [
         this.strategyId,
         intent.symbol,
@@ -83,6 +86,7 @@ export abstract class StrategyBase {
         intent.metadata ? JSON.stringify(intent.metadata) : null,
       ]
     );
+    return result.rows[0].id;
   }
 
   /**

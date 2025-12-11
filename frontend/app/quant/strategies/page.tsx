@@ -4,7 +4,10 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { quantApi, watchlistApi } from '@/lib/api';
 import Link from 'next/link';
-import BackButton from '@/components/BackButton';
+import AppLayout from '@/components/AppLayout';
+import InstitutionStockSelector from '@/components/InstitutionStockSelector';
+import EditStrategyModal from '@/components/EditStrategyModal';
+import { Button, Input, Table, Tag, Card, Space, Modal, message, Alert, Radio, Spin, Select } from 'antd';
 
 interface Strategy {
   id: number;
@@ -25,6 +28,8 @@ export default function StrategiesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingStrategy, setEditingStrategy] = useState<Strategy | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
@@ -50,35 +55,50 @@ export default function StrategiesPage() {
   const handleStart = async (id: number) => {
     try {
       await quantApi.startStrategy(id);
+      message.success('策略启动成功');
       await loadStrategies();
     } catch (err: any) {
-      alert(err.message || '启动策略失败');
+      message.error(err.message || '启动策略失败');
     }
   };
 
   const handleStop = async (id: number) => {
-    if (!confirm('确定要停止该策略吗？')) return;
-    try {
-      await quantApi.stopStrategy(id);
-      await loadStrategies();
-    } catch (err: any) {
-      alert(err.message || '停止策略失败');
-    }
+    Modal.confirm({
+      title: '确认停止策略',
+      content: '确定要停止该策略吗？',
+      onOk: async () => {
+        try {
+          await quantApi.stopStrategy(id);
+          message.success('策略已停止');
+          await loadStrategies();
+        } catch (err: any) {
+          message.error(err.message || '停止策略失败');
+        }
+      },
+    });
   };
 
-  const handleEdit = (id: number) => {
-    router.push(`/quant/strategies/${id}`);
+  const handleEdit = (strategy: Strategy) => {
+    setEditingStrategy(strategy);
+    setShowEditModal(true);
   };
 
   const handleDelete = async (id: number) => {
-    if (!confirm('确定要删除该策略吗？此操作不可恢复！')) return;
-    try {
-      await quantApi.deleteStrategy(id);
-      alert('策略已删除');
-      await loadStrategies();
-    } catch (err: any) {
-      alert(err.message || '删除策略失败');
-    }
+    Modal.confirm({
+      title: '确认删除策略',
+      content: '确定要删除该策略吗？此操作不可恢复！',
+      okText: '删除',
+      okType: 'danger',
+      onOk: async () => {
+        try {
+          await quantApi.deleteStrategy(id);
+          message.success('策略已删除');
+          await loadStrategies();
+        } catch (err: any) {
+          message.error(err.message || '删除策略失败');
+        }
+      },
+    });
   };
 
   const filteredStrategies = strategies.filter((s) =>
@@ -86,131 +106,118 @@ export default function StrategiesPage() {
     s.type.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const getStatusTag = (status: string) => {
+    const statusMap: Record<string, { color: string; text: string }> = {
+      RUNNING: { color: 'success', text: '运行中' },
+      ERROR: { color: 'error', text: '错误' },
+      PAUSED: { color: 'warning', text: '暂停' },
+      STOPPED: { color: 'default', text: '已停止' },
+    };
+    const config = statusMap[status] || { color: 'default', text: status };
+    return <Tag color={config.color}>{config.text}</Tag>;
+  };
+
+  const columns = [
+    {
+      title: '名称',
+      key: 'name',
+      dataIndex: 'name',
+      render: (_: any, record: Strategy) => (
+        <Link href={`/quant/strategies/${record.id}`} style={{ color: '#1890ff' }}>
+          {record.name}
+        </Link>
+      ),
+    },
+    {
+      title: '类型',
+      key: 'type',
+      dataIndex: 'type',
+    },
+    {
+      title: '状态',
+      key: 'status',
+      dataIndex: 'status',
+      render: (_: any, record: Strategy) => getStatusTag(record.status),
+    },
+    {
+      title: '资金分配',
+      key: 'allocationName',
+      dataIndex: 'allocationName',
+      render: (text: string) => text || '-',
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      render: (_: any, record: Strategy) => (
+        <Space>
+          {record.status === 'STOPPED' && (
+            <Button type="link" onClick={() => handleStart(record.id)} style={{ color: '#52c41a' }}>
+              启动
+            </Button>
+          )}
+          {record.status === 'RUNNING' && (
+            <Button type="link" danger onClick={() => handleStop(record.id)}>
+              停止
+            </Button>
+          )}
+          {record.status === 'STOPPED' && (
+            <Button type="link" onClick={() => handleEdit(record)}>
+              编辑
+            </Button>
+          )}
+          {record.status === 'STOPPED' && (
+            <Button type="link" danger onClick={() => handleDelete(record.id)}>
+              删除
+            </Button>
+          )}
+          <Link href={`/quant/strategies/${record.id}`} style={{ color: '#1890ff' }}>
+            详情
+          </Link>
+        </Space>
+      ),
+    },
+  ];
+
   return (
-    <div className="container mx-auto p-6">
-      <BackButton />
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold">策略管理</h1>
-        <button
-          onClick={() => setShowCreateModal(true)}
-          className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
-        >
-          创建策略
-        </button>
-      </div>
-
-      {error && (
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
-          {error}
+    <AppLayout>
+      <Card>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <h1 style={{ fontSize: 24, fontWeight: 600, margin: 0 }}>策略管理</h1>
+          <Button type="primary" onClick={() => setShowCreateModal(true)}>
+            创建策略
+          </Button>
         </div>
-      )}
 
-      <div className="mb-4">
-        <input
-          type="text"
-          placeholder="搜索策略..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="border rounded px-3 py-2 w-full max-w-md"
+        {error && (
+          <Alert
+            message={error}
+            type="error"
+            showIcon
+            closable
+            onClose={() => setError(null)}
+            style={{ marginBottom: 16 }}
+          />
+        )}
+
+        <div style={{ marginBottom: 16 }}>
+          <Input
+            placeholder="搜索策略..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            style={{ maxWidth: 400 }}
+            allowClear
+          />
+        </div>
+
+        <Table
+          dataSource={filteredStrategies}
+          columns={columns}
+          rowKey="id"
+          loading={loading}
+          locale={{
+            emptyText: filteredStrategies.length === 0 && !loading ? '暂无策略' : undefined,
+          }}
         />
-      </div>
-
-      {loading ? (
-        <div className="text-center py-8">加载中...</div>
-      ) : filteredStrategies.length === 0 ? (
-        <div className="text-center py-8 text-gray-500">暂无策略</div>
-      ) : (
-        <div className="bg-white rounded-lg shadow overflow-hidden">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">名称</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">类型</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">状态</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">资金分配</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">操作</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {filteredStrategies.map((strategy) => (
-                <tr key={strategy.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <Link
-                      href={`/quant/strategies/${strategy.id}`}
-                      className="text-blue-600 hover:underline"
-                    >
-                      {strategy.name}
-                    </Link>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {strategy.type}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span
-                      className={`px-2 py-1 rounded text-xs font-medium ${
-                        strategy.status === 'RUNNING'
-                          ? 'bg-green-100 text-green-800'
-                          : strategy.status === 'ERROR'
-                          ? 'bg-red-100 text-red-800'
-                          : strategy.status === 'PAUSED'
-                          ? 'bg-yellow-100 text-yellow-800'
-                          : 'bg-gray-100 text-gray-800'
-                      }`}
-                    >
-                      {strategy.status}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {strategy.allocationName || '-'}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm">
-                    <div className="flex gap-2">
-                      {strategy.status === 'STOPPED' && (
-                        <button
-                          onClick={() => handleStart(strategy.id)}
-                          className="text-green-600 hover:text-green-800"
-                        >
-                          启动
-                        </button>
-                      )}
-                      {strategy.status === 'RUNNING' && (
-                        <button
-                          onClick={() => handleStop(strategy.id)}
-                          className="text-red-600 hover:text-red-800"
-                        >
-                          停止
-                        </button>
-                      )}
-                      {strategy.status === 'STOPPED' && (
-                        <button
-                          onClick={() => handleEdit(strategy.id)}
-                          className="text-blue-600 hover:text-blue-800"
-                        >
-                          编辑
-                        </button>
-                      )}
-                      {strategy.status === 'STOPPED' && (
-                        <button
-                          onClick={() => handleDelete(strategy.id)}
-                          className="text-red-600 hover:text-red-800"
-                        >
-                          删除
-                        </button>
-                      )}
-                      <Link
-                        href={`/quant/strategies/${strategy.id}`}
-                        className="text-blue-600 hover:text-blue-800"
-                      >
-                        详情
-                      </Link>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
 
       {showCreateModal && (
         <CreateStrategyModal
@@ -221,7 +228,23 @@ export default function StrategiesPage() {
           }}
         />
       )}
-    </div>
+
+      {showEditModal && editingStrategy && (
+        <EditStrategyModal
+          strategy={editingStrategy}
+          onClose={() => {
+            setShowEditModal(false);
+            setEditingStrategy(null);
+          }}
+          onSuccess={() => {
+            setShowEditModal(false);
+            setEditingStrategy(null);
+            loadStrategies();
+          }}
+        />
+      )}
+      </Card>
+    </AppLayout>
   );
 }
 
@@ -238,20 +261,85 @@ function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSu
   const [newSymbol, setNewSymbol] = useState('');
   const [symbolError, setSymbolError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [availableCapital, setAvailableCapital] = useState(0);
+  const [stockPoolMode, setStockPoolMode] = useState<'STATIC' | 'INSTITUTION'>('STATIC');
+  const [totalCapital, setTotalCapital] = useState(0);
 
   useEffect(() => {
     Promise.all([
       quantApi.getCapitalAllocations(),
       watchlistApi.getWatchlist(true), // 只获取启用的关注股票
-    ]).then(([allocRes, watchRes]) => {
+      quantApi.getCapitalUsage(), // 获取总资金和资金使用情况
+    ]).then(([allocRes, watchRes, usageRes]) => {
       if (allocRes.success) {
         setAllocations(allocRes.data || []);
       }
       if (watchRes.success && watchRes.data?.watchlist) {
         setWatchlist(watchRes.data.watchlist);
       }
+      if (usageRes.success && usageRes.data) {
+        setTotalCapital(usageRes.data.totalCapital || 0);
+        // 更新 allocations 中的实际分配金额（如果是百分比类型）
+        if (usageRes.data.allocations && Array.isArray(usageRes.data.allocations)) {
+          const updatedAllocations = (allocRes.data || []).map((alloc: any) => {
+            const usageAlloc = usageRes.data.allocations.find((u: any) => u.id === alloc.id);
+            if (usageAlloc && alloc.allocationType === 'PERCENTAGE') {
+              // 百分比类型：使用总资金计算实际金额
+              return {
+                ...alloc,
+                actualAllocated: totalCapital * alloc.allocationValue,
+              };
+            }
+            return alloc;
+          });
+          setAllocations(updatedAllocations);
+        }
+      }
     });
   }, []);
+
+  // 当资金分配账户变化时，更新可用资金
+  useEffect(() => {
+    if (formData.capitalAllocationId && allocations.length > 0) {
+      // 从 allocations 数组中找到对应的账户
+      const allocation = allocations.find(
+        (a) => a.id === formData.capitalAllocationId
+      );
+      if (allocation) {
+        // 计算可用资金
+        let allocated: number;
+        
+        if (allocation.allocationType === 'PERCENTAGE') {
+          // 百分比类型：需要乘以总资金
+          allocated = totalCapital * parseFloat(allocation.allocationValue || '0');
+        } else {
+          // 固定金额类型：直接使用 allocationValue
+          allocated = parseFloat(allocation.allocationValue || '0');
+        }
+        
+        const used = parseFloat(allocation.currentUsage || '0');
+        const available = Math.max(0, allocated - used);
+        
+        console.log('[策略创建] 计算可用资金:', {
+          allocationId: allocation.id,
+          allocationName: allocation.name,
+          allocationType: allocation.allocationType,
+          allocationValue: allocation.allocationValue,
+          totalCapital,
+          allocated,
+          used,
+          available,
+        });
+        
+        setAvailableCapital(available);
+      } else {
+        console.warn('[策略创建] 未找到对应的资金分配账户:', formData.capitalAllocationId);
+        setAvailableCapital(0);
+      }
+    } else {
+      setAvailableCapital(0);
+    }
+  }, [formData.capitalAllocationId, allocations, totalCapital]);
 
   // 验证股票代码格式
   const validateSymbol = (symbol: string): string | null => {
@@ -335,228 +423,294 @@ function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSu
     
     // 验证至少有一个股票
     if (formData.symbolPoolConfig.symbols.length === 0) {
-      alert('请至少添加一个股票到股票池');
+      message.warning('请至少添加一个股票到股票池');
       return;
     }
     
     setLoading(true);
     try {
       await quantApi.createStrategy(formData);
+      message.success('策略创建成功');
       onSuccess();
     } catch (err: any) {
-      alert(err.message || '创建策略失败');
+      message.error(err.message || '创建策略失败');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-        <h2 className="text-2xl font-bold mb-4">创建策略</h2>
-        <form onSubmit={handleSubmit}>
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">策略名称</label>
-            <input
-              type="text"
-              required
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              className="border rounded px-3 py-2 w-full"
-            />
-          </div>
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">策略类型</label>
-            <select
-              value={formData.type}
-              onChange={(e) => setFormData({ ...formData, type: e.target.value })}
-              className="border rounded px-3 py-2 w-full"
-            >
-              <option value="RECOMMENDATION_V1">推荐策略 V1</option>
-            </select>
-          </div>
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">资金分配账户</label>
-            <select
-              value={formData.capitalAllocationId || ''}
-              onChange={(e) =>
+    <Modal
+      title="创建策略"
+      open={true}
+      onCancel={onClose}
+      width={800}
+      footer={null}
+      styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
+    >
+      <form onSubmit={handleSubmit} id="create-strategy-form">
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: 'block', marginBottom: 8, fontWeight: 500 }}>策略名称</label>
+          <Input
+            required
+            value={formData.name}
+            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            placeholder="请输入策略名称"
+          />
+        </div>
+        
+        {/* 策略类型说明卡片（放在资金分配账户之前） */}
+        <Alert
+          message="推荐策略 V1"
+          description="基于市场趋势和ATR（平均真实波幅）的智能推荐策略。系统会分析SPX、USD指数、BTC等市场指标，结合ATR计算止损止盈价格，智能生成买卖信号。适合趋势跟踪和风险控制的量化交易场景。"
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+        />
+
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: 'block', marginBottom: 8, fontWeight: 500 }}>资金分配账户</label>
+          <Select
+            value={formData.capitalAllocationId || undefined}
+            onChange={(value) =>
+              setFormData({
+                ...formData,
+                capitalAllocationId: value || null,
+              })
+            }
+            style={{ width: '100%' }}
+            placeholder="请选择资金分配账户"
+            allowClear
+          >
+            {allocations.map((alloc) => (
+              <Select.Option key={alloc.id} value={alloc.id}>
+                {alloc.name}
+              </Select.Option>
+            ))}
+          </Select>
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: 'block', marginBottom: 8, fontWeight: 500 }}>股票池</label>
+          
+          {/* 股票池模式选择 */}
+          <div style={{ marginBottom: 12 }}>
+            <Radio.Group
+              value={stockPoolMode}
+              onChange={(e) => {
+                setStockPoolMode(e.target.value);
                 setFormData({
                   ...formData,
-                  capitalAllocationId: e.target.value ? parseInt(e.target.value) : null,
-                })
-              }
-              className="border rounded px-3 py-2 w-full"
+                  symbolPoolConfig: { mode: e.target.value, symbols: [] },
+                });
+              }}
             >
-              <option value="">无</option>
-              {allocations.map((alloc) => (
-                <option key={alloc.id} value={alloc.id}>
-                  {alloc.name}
-                </option>
-              ))}
-            </select>
+              <Radio value="STATIC">手动输入</Radio>
+              <Radio value="INSTITUTION">机构选股</Radio>
+            </Radio.Group>
           </div>
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">股票池</label>
-            
-            {/* 添加股票输入框 */}
-            <div className="mb-2">
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={newSymbol}
-                  onChange={(e) => {
-                    setNewSymbol(e.target.value);
-                    setSymbolError(null);
-                  }}
-                  onKeyPress={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      handleAddSymbol();
-                    }
-                  }}
-                  placeholder="输入股票代码，例如：AAPL.US"
-                  className="flex-1 border rounded px-3 py-2"
-                />
-                <button
-                  type="button"
-                  onClick={handleAddSymbol}
-                  className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
-                >
-                  添加
-                </button>
-              </div>
-              {symbolError && (
-                <div className="mt-1 text-sm text-red-600">{symbolError}</div>
-              )}
-              <p className="mt-1 text-xs text-gray-500">
-                格式：ticker.region，例如：AAPL.US（美股）、700.HK（港股）
-              </p>
-            </div>
 
-            {/* 从关注列表快速添加 */}
-            {watchlist.length > 0 && (
-              <div className="mb-2">
-                <label className="block text-xs text-gray-500 mb-1">从关注列表快速添加：</label>
-                <div className="flex flex-wrap gap-2">
-                  {watchlist
-                    .filter((item) => !formData.symbolPoolConfig.symbols.includes(item.symbol))
-                    .slice(0, 10)
-                    .map((item) => (
-                      <button
-                        key={item.symbol}
-                        type="button"
-                        onClick={() => handleAddFromWatchlist(item.symbol)}
-                        className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded"
-                      >
-                        + {item.symbol}
-                      </button>
-                    ))}
-                </div>
-              </div>
-            )}
-
-            {/* 已添加的股票列表 */}
-            <div className="border rounded p-2 min-h-[60px] max-h-[200px] overflow-y-auto">
-              {formData.symbolPoolConfig.symbols.length === 0 ? (
-                <div className="text-sm text-gray-400 text-center py-2">暂无股票，请添加</div>
+          {/* 机构选股模式 */}
+          {stockPoolMode === 'INSTITUTION' ? (
+            <Card style={{ marginBottom: 16 }}>
+              {formData.capitalAllocationId ? (
+                availableCapital > 0 ? (
+                  <InstitutionStockSelector
+                    capitalAllocationId={formData.capitalAllocationId}
+                    availableCapital={availableCapital}
+                    onStocksSelected={(symbols) => {
+                      setFormData({
+                        ...formData,
+                        symbolPoolConfig: {
+                          mode: 'INSTITUTION',
+                          symbols,
+                        },
+                      });
+                    }}
+                  />
+                ) : (
+                  <div style={{ textAlign: 'center', padding: '32px 0', color: '#999' }}>
+                    该资金分配账户可用资金不足，请选择其他账户
+                  </div>
+                )
               ) : (
-                <div className="flex flex-wrap gap-2">
-                  {formData.symbolPoolConfig.symbols.map((symbol) => (
-                    <span
-                      key={symbol}
-                      className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-800 rounded text-sm"
-                    >
-                      {symbol}
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveSymbol(symbol)}
-                        className="text-blue-600 hover:text-blue-800"
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
+                <div style={{ textAlign: 'center', padding: '32px 0', color: '#999' }}>
+                  请先选择资金分配账户
                 </div>
               )}
+            </Card>
+          ) : (
+            <>
+          {/* 手动输入模式 - 添加股票输入框 */}
+          <div style={{ marginBottom: 8 }}>
+            <Space.Compact style={{ width: '100%' }}>
+              <Input
+                value={newSymbol}
+                onChange={(e) => {
+                  setNewSymbol(e.target.value);
+                  setSymbolError(null);
+                }}
+                onPressEnter={handleAddSymbol}
+                placeholder="输入股票代码，例如：AAPL.US"
+                style={{ flex: 1 }}
+              />
+              <Button type="primary" onClick={handleAddSymbol}>
+                添加
+              </Button>
+            </Space.Compact>
+            {symbolError && (
+              <Alert message={symbolError} type="error" showIcon style={{ marginTop: 8 }} />
+            )}
+            <p style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+              格式：ticker.region，例如：AAPL.US（美股）、700.HK（港股）
+            </p>
+          </div>
+
+          {/* 从关注列表快速添加 */}
+          {watchlist.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <label style={{ display: 'block', fontSize: 12, color: '#999', marginBottom: 4 }}>
+                从关注列表快速添加：
+              </label>
+              <Space wrap>
+                {watchlist
+                  .filter((item) => !formData.symbolPoolConfig.symbols.includes(item.symbol))
+                  .slice(0, 10)
+                  .map((item) => (
+                    <Button
+                      key={item.symbol}
+                      size="small"
+                      onClick={() => handleAddFromWatchlist(item.symbol)}
+                    >
+                      + {item.symbol}
+                    </Button>
+                  ))}
+              </Space>
             </div>
-          </div>
-          
-          {/* 策略配置 */}
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">策略配置</label>
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">ATR周期</label>
-                <input
-                  type="number"
-                  value={formData.config.atrPeriod || 14}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      config: { ...formData.config, atrPeriod: parseInt(e.target.value) || 14 },
-                    })
-                  }
-                  className="border rounded px-3 py-2 w-full"
-                  min="1"
-                  max="100"
-                />
+          )}
+
+          {/* 已添加的股票列表 */}
+          <Card style={{ minHeight: 60, maxHeight: 200, overflowY: 'auto' }}>
+            {formData.symbolPoolConfig.symbols.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '8px 0', fontSize: 12, color: '#999' }}>
+                暂无股票，请添加
               </div>
+            ) : (
+              <Space wrap>
+                {formData.symbolPoolConfig.symbols.map((symbol) => (
+                  <Tag
+                    key={symbol}
+                    closable
+                    onClose={() => handleRemoveSymbol(symbol)}
+                    color="blue"
+                  >
+                    {symbol}
+                  </Tag>
+                ))}
+              </Space>
+            )}
+          </Card>
+          </>
+          )}
+        </div>
+        
+        {/* 策略参数配置 */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: 'block', marginBottom: 8, fontWeight: 500 }}>
+            策略参数配置
+            <span style={{ fontSize: 12, color: '#999', marginLeft: 8 }}>（用于计算止损止盈价格）</span>
+          </label>
+          <Alert
+            message="参数说明"
+            description={
               <div>
-                <label className="block text-xs text-gray-500 mb-1">ATR倍数</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={formData.config.atrMultiplier || 2.0}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      config: { ...formData.config, atrMultiplier: parseFloat(e.target.value) || 2.0 },
-                    })
-                  }
-                  className="border rounded px-3 py-2 w-full"
-                  min="0.1"
-                  max="10"
-                />
+                <ul style={{ margin: '8px 0', paddingLeft: 20 }}>
+                  <li><strong>ATR周期</strong>：计算平均真实波幅的周期，默认14天。周期越长，ATR值越平滑但反应越慢。</li>
+                  <li><strong>ATR倍数</strong>：用于计算止损距离的倍数，默认2.0。倍数越大，止损距离越远，风险越小但可能错过更多机会。</li>
+                  <li><strong>风险收益比</strong>：止盈价格与止损价格的比例，默认1.5。比例越大，潜在收益越高，但需要更强的趋势支持。</li>
+                </ul>
+                <p style={{ marginTop: 8 }}>
+                  <strong>计算公式：</strong>止损价 = 入场价 - (ATR × ATR倍数)，止盈价 = 入场价 + (止损距离 × 风险收益比)
+                </p>
               </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">风险收益比</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={formData.config.riskRewardRatio || 1.5}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      config: { ...formData.config, riskRewardRatio: parseFloat(e.target.value) || 1.5 },
-                    })
-                  }
-                  className="border rounded px-3 py-2 w-full"
-                  min="0.1"
-                  max="10"
-                />
-              </div>
+            }
+            type="info"
+            showIcon
+            style={{ marginBottom: 12 }}
+          />
+          <Space style={{ width: '100%' }} size="large">
+            <div style={{ flex: 1 }}>
+              <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>
+                ATR周期 <span style={{ color: '#999' }}>(1-100)</span>
+              </label>
+              <Input
+                type="number"
+                value={formData.config.atrPeriod || 14}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    config: { ...formData.config, atrPeriod: parseInt(e.target.value) || 14 },
+                  })
+                }
+                min={1}
+                max={100}
+              />
+              <p style={{ fontSize: 12, color: '#999', marginTop: 4 }}>推荐值：14-21</p>
             </div>
-          </div>
-          
-          <div className="flex gap-2 justify-end">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 border rounded hover:bg-gray-50"
-            >
-              取消
-            </button>
-            <button
-              type="submit"
-              disabled={loading}
-              className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
-            >
-              {loading ? '创建中...' : '创建'}
-            </button>
-          </div>
-        </form>
+            <div style={{ flex: 1 }}>
+              <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>
+                ATR倍数 <span style={{ color: '#999' }}>(0.1-10)</span>
+              </label>
+              <Input
+                type="number"
+                step="0.1"
+                value={formData.config.atrMultiplier || 2.0}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    config: { ...formData.config, atrMultiplier: parseFloat(e.target.value) || 2.0 },
+                  })
+                }
+                min={0.1}
+                max={10}
+              />
+              <p style={{ fontSize: 12, color: '#999', marginTop: 4 }}>推荐值：1.5-3.0</p>
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>
+                风险收益比 <span style={{ color: '#999' }}>(0.1-10)</span>
+              </label>
+              <Input
+                type="number"
+                step="0.1"
+                value={formData.config.riskRewardRatio || 1.5}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    config: { ...formData.config, riskRewardRatio: parseFloat(e.target.value) || 1.5 },
+                  })
+                }
+                min={0.1}
+                max={10}
+              />
+              <p style={{ fontSize: 12, color: '#999', marginTop: 4 }}>推荐值：1.5-3.0</p>
+            </div>
+          </Space>
+        </div>
+      </form>
+      <div style={{ marginTop: 16, textAlign: 'right', borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
+        <Space>
+          <Button onClick={onClose}>取消</Button>
+          <Button
+            type="primary"
+            form="create-strategy-form"
+            htmlType="submit"
+            loading={loading}
+          >
+            创建
+          </Button>
+        </Space>
       </div>
-    </div>
+    </Modal>
   );
 }
 

@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from 'react'
 import { quoteApi } from '@/lib/api'
-import BackButton from '@/components/BackButton'
+import AppLayout from '@/components/AppLayout'
+import { Card, Input, Button, Table, Alert, Space } from 'antd'
+import { SearchOutlined } from '@ant-design/icons'
 
 interface Quote {
   symbol: string
@@ -62,129 +64,140 @@ export default function QuotePage() {
     return { change, changePercent }
   }
 
+  const columns = [
+    {
+      title: '标的代码',
+      key: 'symbol',
+      dataIndex: 'symbol',
+      render: (text: string) => <span style={{ fontFamily: 'monospace', fontWeight: 500 }}>{text}</span>,
+    },
+    {
+      title: '最新价',
+      key: 'last_done',
+      dataIndex: 'last_done',
+      render: (text: string, record: Quote) => {
+        const { change } = calculateChange(record.last_done, record.prev_close)
+        const isPositive = change >= 0
+        return (
+          <span style={{ color: isPositive ? '#ff4d4f' : '#52c41a', fontWeight: 600 }}>
+            {text}
+          </span>
+        )
+      },
+    },
+    {
+      title: '涨跌',
+      key: 'change',
+      render: (_: any, record: Quote) => {
+        const { change } = calculateChange(record.last_done, record.prev_close)
+        const isPositive = change >= 0
+        return (
+          <span style={{ color: isPositive ? '#ff4d4f' : '#52c41a' }}>
+            {isPositive ? '+' : ''}{change.toFixed(2)}
+          </span>
+        )
+      },
+    },
+    {
+      title: '涨跌幅',
+      key: 'changePercent',
+      render: (_: any, record: Quote) => {
+        const { changePercent } = calculateChange(record.last_done, record.prev_close)
+        const isPositive = parseFloat(changePercent) >= 0
+        return (
+          <span style={{ color: isPositive ? '#ff4d4f' : '#52c41a' }}>
+            {isPositive ? '+' : ''}{changePercent}%
+          </span>
+        )
+      },
+    },
+    {
+      title: '开盘价',
+      key: 'open',
+      dataIndex: 'open',
+    },
+    {
+      title: '最高价',
+      key: 'high',
+      dataIndex: 'high',
+    },
+    {
+      title: '最低价',
+      key: 'low',
+      dataIndex: 'low',
+    },
+    {
+      title: '成交量',
+      key: 'volume',
+      dataIndex: 'volume',
+      render: (volume: number) => volume.toLocaleString(),
+    },
+    {
+      title: '成交额',
+      key: 'turnover',
+      dataIndex: 'turnover',
+    },
+  ]
+
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div className="px-4 py-6 sm:px-0">
-          <div className="mb-4">
-            <BackButton />
-          </div>
-          <div className="bg-white shadow rounded-lg p-6">
-            <h1 className="text-2xl font-bold text-gray-900 mb-4">实时行情</h1>
-            
-            {/* 搜索框 */}
-            <div className="mb-6">
-              <div className="flex gap-4">
-                <input
-                  type="text"
-                  value={symbols}
-                  onChange={(e) => setSymbols(e.target.value)}
-                  placeholder="请输入股票代码，用逗号分隔，例如：AAPL.US,TSLA.US（美股）"
-                  className="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <button
-                  onClick={fetchQuotes}
-                  disabled={loading}
-                  className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400"
-                >
-                  {loading ? '查询中...' : '查询'}
-                </button>
-              </div>
+    <AppLayout>
+      <Card>
+        <h1 style={{ fontSize: 24, fontWeight: 600, marginBottom: 16 }}>实时行情</h1>
+        
+        {/* 搜索框 */}
+        <Card style={{ marginBottom: 16 }}>
+          <Space.Compact style={{ width: '100%' }}>
+            <Input
+              value={symbols}
+              onChange={(e) => setSymbols(e.target.value)}
+              placeholder="请输入股票代码，用逗号分隔，例如：AAPL.US,TSLA.US（美股）"
+              onPressEnter={fetchQuotes}
+              style={{ flex: 1 }}
+            />
+            <Button
+              type="primary"
+              icon={<SearchOutlined />}
+              onClick={fetchQuotes}
+              loading={loading}
+            >
+              查询
+            </Button>
+          </Space.Compact>
+        </Card>
+
+        {/* 错误提示 */}
+        {error && (
+          <Alert
+            message={error}
+            type="error"
+            showIcon
+            closable
+            onClose={() => setError(null)}
+            style={{ marginBottom: 16 }}
+          />
+        )}
+
+        {/* 行情列表 */}
+        {quotes.length > 0 && (
+          <Card>
+            <Table
+              dataSource={quotes}
+              columns={columns}
+              rowKey="symbol"
+              pagination={{ pageSize: 20 }}
+            />
+          </Card>
+        )}
+
+        {quotes.length === 0 && !loading && !error && (
+          <Card>
+            <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+              暂无行情数据，请输入股票代码查询
             </div>
-
-            {/* 错误提示 */}
-            {error && (
-              <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
-                {error}
-              </div>
-            )}
-
-            {/* 行情列表 */}
-            {quotes.length > 0 && (
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        标的代码
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        最新价
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        涨跌
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        涨跌幅
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        开盘价
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        最高价
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        最低价
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        成交量
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        成交额
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {quotes.map((quote) => {
-                      const { change, changePercent } = calculateChange(quote.last_done, quote.prev_close)
-                      const isPositive = change >= 0
-
-                      return (
-                        <tr key={quote.symbol} className="hover:bg-gray-50">
-                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                            {quote.symbol}
-                          </td>
-                          <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold ${isPositive ? 'text-red-600' : 'text-green-600'}`}>
-                            {quote.last_done}
-                          </td>
-                          <td className={`px-6 py-4 whitespace-nowrap text-sm ${isPositive ? 'text-red-600' : 'text-green-600'}`}>
-                            {isPositive ? '+' : ''}{change.toFixed(2)}
-                          </td>
-                          <td className={`px-6 py-4 whitespace-nowrap text-sm ${isPositive ? 'text-red-600' : 'text-green-600'}`}>
-                            {isPositive ? '+' : ''}{changePercent}%
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {quote.open}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {quote.high}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {quote.low}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {quote.volume.toLocaleString()}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {quote.turnover}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {quotes.length === 0 && !loading && !error && (
-              <div className="text-center py-8 text-gray-500">
-                暂无行情数据，请输入股票代码查询
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
+          </Card>
+        )}
+      </Card>
+    </AppLayout>
   )
 }
 

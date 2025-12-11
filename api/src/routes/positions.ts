@@ -1,7 +1,8 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import pool from '../config/database';
 import { getTradeContext, getQuoteContext } from '../config/longport';
 import { getFutunnOptionQuotes } from '../services/futunn-option-quote.service';
+import { ErrorFactory, normalizeError } from '../utils/errors';
 
 export const positionsRouter = Router();
 
@@ -20,7 +21,7 @@ function isOptionSymbol(symbol: string): boolean {
  * 获取持仓列表
  * 优先从LongPort API获取真实持仓，如果没有则从数据库获取
  */
-positionsRouter.get('/', async (req: Request, res: Response) => {
+positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     // 优先从LongPort API获取真实持仓
     try {
@@ -501,14 +502,8 @@ positionsRouter.get('/', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('获取持仓列表失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -516,7 +511,7 @@ positionsRouter.get('/', async (req: Request, res: Response) => {
  * GET /api/positions/:symbol
  * 获取单个持仓详情
  */
-positionsRouter.get('/:symbol', async (req: Request, res: Response) => {
+positionsRouter.get('/:symbol', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { symbol } = req.params;
 
@@ -526,13 +521,7 @@ positionsRouter.get('/:symbol', async (req: Request, res: Response) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'NOT_FOUND',
-          message: '未找到该持仓',
-        },
-      });
+      return next(ErrorFactory.notFound('持仓'));
     }
 
     res.json({
@@ -542,14 +531,8 @@ positionsRouter.get('/:symbol', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('获取持仓详情失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -557,7 +540,7 @@ positionsRouter.get('/:symbol', async (req: Request, res: Response) => {
  * POST /api/positions
  * 创建或更新持仓
  */
-positionsRouter.post('/', async (req: Request, res: Response) => {
+positionsRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const {
       symbol,
@@ -571,13 +554,7 @@ positionsRouter.post('/', async (req: Request, res: Response) => {
     } = req.body;
 
     if (!symbol) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: symbol',
-        },
-      });
+      return next(ErrorFactory.missingParameter('symbol'));
     }
 
     // 计算市值和盈亏
@@ -630,14 +607,8 @@ positionsRouter.post('/', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('创建/更新持仓失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -645,7 +616,7 @@ positionsRouter.post('/', async (req: Request, res: Response) => {
  * DELETE /api/positions/:symbol
  * 删除持仓（清仓）
  */
-positionsRouter.delete('/:symbol', async (req: Request, res: Response) => {
+positionsRouter.delete('/:symbol', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { symbol } = req.params;
 
@@ -655,13 +626,7 @@ positionsRouter.delete('/:symbol', async (req: Request, res: Response) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'NOT_FOUND',
-          message: '未找到该持仓',
-        },
-      });
+      return next(ErrorFactory.notFound('持仓'));
     }
 
     res.json({
@@ -671,14 +636,8 @@ positionsRouter.delete('/:symbol', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('删除持仓失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message,
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 

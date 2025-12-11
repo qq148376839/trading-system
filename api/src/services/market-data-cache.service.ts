@@ -86,6 +86,17 @@ class MarketDataCacheService {
     console.log(`获取新的市场数据（${tradingStatus}，缓存时长: ${duration}秒，包含分时: ${includeIntraday}）`);
     
     this.fetchPromise = marketDataService.getAllMarketData(count, includeIntraday).then((marketData) => {
+      // 再次验证数据完整性（双重检查）
+      if (!marketData.spx || marketData.spx.length < 50) {
+        throw new Error(`SPX数据不足（${marketData.spx?.length || 0} < 50），无法提供交易建议`);
+      }
+      if (!marketData.usdIndex || marketData.usdIndex.length < 50) {
+        throw new Error(`USD Index数据不足（${marketData.usdIndex?.length || 0} < 50），无法提供交易建议`);
+      }
+      if (!marketData.btc || marketData.btc.length < 50) {
+        throw new Error(`BTC数据不足（${marketData.btc?.length || 0} < 50），无法提供交易建议`);
+      }
+
       this.cache = {
         spx: marketData.spx,
         usdIndex: marketData.usdIndex,
@@ -104,8 +115,11 @@ class MarketDataCacheService {
       this.fetchPromise = null;
       return this.cache;
     }).catch((error) => {
+      // 清除缓存，避免使用无效数据
+      this.cache = null;
       this.isFetching = false;
       this.fetchPromise = null;
+      // 抛出错误，让调用方知道数据获取失败
       throw error;
     });
 

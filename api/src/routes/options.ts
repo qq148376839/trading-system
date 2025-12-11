@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { rateLimiter } from '../middleware/rateLimiter';
 import {
   getOptionStrikeDates,
@@ -6,7 +6,10 @@ import {
   getOptionDetail,
   getStockIdBySymbol,
   getUnderlyingStockQuote,
+  getOptionKline,
+  getOptionMinute,
 } from '../services/futunn-option-chain.service';
+import { ErrorFactory, normalizeError } from '../utils/errors';
 
 export const optionsRouter = Router();
 
@@ -22,7 +25,7 @@ export const optionsRouter = Router();
  * - strikeDates: 到期日期列表
  * - vol: 成交量统计
  */
-optionsRouter.get('/strike-dates', rateLimiter, async (req: Request, res: Response) => {
+optionsRouter.get('/strike-dates', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { stockId, symbol } = req.query;
 
@@ -35,34 +38,16 @@ optionsRouter.get('/strike-dates', rateLimiter, async (req: Request, res: Respon
       // 通过symbol查找stockId
       finalStockId = await getStockIdBySymbol(symbol);
       if (!finalStockId) {
-        return res.status(404).json({
-          success: false,
-          error: {
-            code: 'STOCK_NOT_FOUND',
-            message: `未找到股票: ${symbol}`,
-          },
-        });
+        return next(ErrorFactory.notFound(`股票: ${symbol}`));
       }
     } else {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: stockId 或 symbol',
-        },
-      });
+      return next(ErrorFactory.missingParameter('stockId 或 symbol'));
     }
 
     const result = await getOptionStrikeDates(finalStockId);
 
     if (!result) {
-      return res.status(500).json({
-        success: false,
-        error: {
-          code: 'API_ERROR',
-          message: '获取期权到期日期列表失败',
-        },
-      });
+      return next(ErrorFactory.externalApiError('获取期权到期日期列表失败'));
     }
 
     res.json({
@@ -73,14 +58,8 @@ optionsRouter.get('/strike-dates', rateLimiter, async (req: Request, res: Respon
       },
     });
   } catch (error: any) {
-    console.error('获取期权到期日期列表失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message || '服务器内部错误',
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -96,7 +75,7 @@ optionsRouter.get('/strike-dates', rateLimiter, async (req: Request, res: Respon
  * 响应：
  * - chain: 期权链数据数组，每个元素包含callOption和putOption
  */
-optionsRouter.get('/chain', rateLimiter, async (req: Request, res: Response) => {
+optionsRouter.get('/chain', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { stockId, strikeDate, symbol } = req.query;
 
@@ -108,56 +87,26 @@ optionsRouter.get('/chain', rateLimiter, async (req: Request, res: Response) => 
     } else if (symbol && typeof symbol === 'string') {
       finalStockId = await getStockIdBySymbol(symbol);
       if (!finalStockId) {
-        return res.status(404).json({
-          success: false,
-          error: {
-            code: 'STOCK_NOT_FOUND',
-            message: `未找到股票: ${symbol}`,
-          },
-        });
+        return next(ErrorFactory.notFound(`股票: ${symbol}`));
       }
     } else {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: stockId 或 symbol',
-        },
-      });
+      return next(ErrorFactory.missingParameter('stockId 或 symbol'));
     }
 
     // 验证strikeDate参数
     if (!strikeDate) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: strikeDate',
-        },
-      });
+      return next(ErrorFactory.missingParameter('strikeDate'));
     }
 
     const strikeDateNum = parseInt(String(strikeDate));
     if (isNaN(strikeDateNum)) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_PARAMETER',
-          message: 'strikeDate必须是有效的时间戳（秒级）',
-        },
-      });
+      return next(ErrorFactory.validationError('strikeDate必须是有效的时间戳（秒级）'));
     }
 
     const result = await getOptionChain(finalStockId, strikeDateNum);
 
     if (!result) {
-      return res.status(500).json({
-        success: false,
-        error: {
-          code: 'API_ERROR',
-          message: '获取期权链失败',
-        },
-      });
+      return next(ErrorFactory.externalApiError('富途API', '获取期权链失败'));
     }
 
     res.json({
@@ -169,14 +118,8 @@ optionsRouter.get('/chain', rateLimiter, async (req: Request, res: Response) => 
       },
     });
   } catch (error: any) {
-    console.error('获取期权链失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message || '服务器内部错误',
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -192,28 +135,16 @@ optionsRouter.get('/chain', rateLimiter, async (req: Request, res: Response) => 
  * 响应：
  * - detail: 期权详情数据
  */
-optionsRouter.get('/detail', rateLimiter, async (req: Request, res: Response) => {
+optionsRouter.get('/detail', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { optionId, underlyingStockId, marketType } = req.query;
 
     if (!optionId || typeof optionId !== 'string') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: optionId',
-        },
-      });
+      return next(ErrorFactory.missingParameter('optionId'));
     }
 
     if (!underlyingStockId || typeof underlyingStockId !== 'string') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: underlyingStockId',
-        },
-      });
+      return next(ErrorFactory.missingParameter('underlyingStockId'));
     }
 
     const marketTypeNum = marketType ? parseInt(String(marketType)) : 2;
@@ -221,13 +152,7 @@ optionsRouter.get('/detail', rateLimiter, async (req: Request, res: Response) =>
     const result = await getOptionDetail(optionId, underlyingStockId, marketTypeNum);
 
     if (!result) {
-      return res.status(500).json({
-        success: false,
-        error: {
-          code: 'API_ERROR',
-          message: '获取期权详情失败',
-        },
-      });
+      return next(ErrorFactory.externalApiError('富途API', '获取期权详情失败'));
     }
 
     res.json({
@@ -235,14 +160,8 @@ optionsRouter.get('/detail', rateLimiter, async (req: Request, res: Response) =>
       data: result,
     });
   } catch (error: any) {
-    console.error('获取期权详情失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message || '服务器内部错误',
-      },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -257,7 +176,7 @@ optionsRouter.get('/detail', rateLimiter, async (req: Request, res: Response) =>
  * 响应：
  * - 正股行情数据
  */
-optionsRouter.get('/underlying-quote', rateLimiter, async (req: Request, res: Response) => {
+optionsRouter.get('/underlying-quote', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { stockId, symbol } = req.query;
 
@@ -268,34 +187,16 @@ optionsRouter.get('/underlying-quote', rateLimiter, async (req: Request, res: Re
     } else if (symbol && typeof symbol === 'string') {
       finalStockId = await getStockIdBySymbol(symbol);
       if (!finalStockId) {
-        return res.status(404).json({
-          success: false,
-          error: {
-            code: 'STOCK_NOT_FOUND',
-            message: `未找到股票: ${symbol}`,
-          },
-        });
+        return next(ErrorFactory.notFound(`股票: ${symbol}`));
       }
     } else {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PARAMETER',
-          message: '缺少必需参数: stockId 或 symbol',
-        },
-      });
+      return next(ErrorFactory.missingParameter('stockId 或 symbol'));
     }
 
     const result = await getUnderlyingStockQuote(finalStockId);
 
     if (!result) {
-      return res.status(500).json({
-        success: false,
-        error: {
-          code: 'API_ERROR',
-          message: '获取正股行情失败',
-        },
-      });
+      return next(ErrorFactory.externalApiError('富途API', '获取正股行情失败'));
     }
 
     res.json({
@@ -303,14 +204,80 @@ optionsRouter.get('/underlying-quote', rateLimiter, async (req: Request, res: Re
       data: result,
     });
   } catch (error: any) {
-    console.error('获取正股行情失败:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error.message || '服务器内部错误',
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
+ * GET /api/options/kline
+ * 获取期权K线数据（日K）
+ * 
+ * 请求参数：
+ * - optionId: string (必需) - 期权ID
+ * - marketType: number (可选) - 市场类型，默认2（美股）
+ * - count: number (可选) - 数据条数，默认100
+ * 
+ * 响应：
+ * - klineData: K线数据数组
+ */
+optionsRouter.get('/kline', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { optionId, marketType, count } = req.query;
+
+    if (!optionId || typeof optionId !== 'string') {
+      return next(ErrorFactory.missingParameter('optionId'));
+    }
+
+    const marketTypeNum = marketType ? parseInt(String(marketType)) : 2;
+    const countNum = count ? parseInt(String(count)) : 100;
+
+    const result = await getOptionKline(optionId, marketTypeNum, countNum);
+
+    res.json({
+      success: true,
+      data: {
+        klineData: result,
       },
     });
+  } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
+ * GET /api/options/minute
+ * 获取期权分时数据
+ * 
+ * 请求参数：
+ * - optionId: string (必需) - 期权ID
+ * - marketType: number (可选) - 市场类型，默认2（美股）
+ * 
+ * 响应：
+ * - minuteData: 分时数据数组
+ */
+optionsRouter.get('/minute', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { optionId, marketType } = req.query;
+
+    if (!optionId || typeof optionId !== 'string') {
+      return next(ErrorFactory.missingParameter('optionId'));
+    }
+
+    const marketTypeNum = marketType ? parseInt(String(marketType)) : 2;
+
+    const result = await getOptionMinute(optionId, marketTypeNum);
+
+    res.json({
+      success: true,
+      data: {
+        minuteData: result,
+      },
+    });
+  } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 

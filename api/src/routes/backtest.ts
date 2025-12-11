@@ -2,10 +2,11 @@
  * 回测API路由
  */
 
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import backtestService from '../services/backtest.service';
 import pool from '../config/database';
 import { logger } from '../utils/logger';
+import { ErrorFactory, normalizeError } from '../utils/errors';
 
 const backtestRouter = express.Router();
 
@@ -13,39 +14,27 @@ const backtestRouter = express.Router();
  * 创建回测任务（异步）
  * POST /api/quant/backtest
  */
-backtestRouter.post('/', async (req: Request, res: Response) => {
+backtestRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { strategyId, symbols, startDate, endDate, config } = req.body;
 
     if (!strategyId || !symbols || !Array.isArray(symbols) || symbols.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: '缺少必要参数: strategyId, symbols (数组)',
-      });
+      return next(ErrorFactory.missingParameter('strategyId 或 symbols (数组)'));
     }
 
     if (!startDate || !endDate) {
-      return res.status(400).json({
-        success: false,
-        error: '缺少必要参数: startDate, endDate',
-      });
+      return next(ErrorFactory.missingParameter('startDate 或 endDate'));
     }
 
     const start = new Date(startDate);
     const end = new Date(endDate);
 
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-      return res.status(400).json({
-        success: false,
-        error: '日期格式错误',
-      });
+      return next(ErrorFactory.validationError('日期格式错误'));
     }
 
     if (start >= end) {
-      return res.status(400).json({
-        success: false,
-        error: '开始日期必须早于结束日期',
-      });
+      return next(ErrorFactory.validationError('开始日期必须早于结束日期'));
     }
 
     logger.log(`创建回测任务: 策略ID=${strategyId}, 标的=${symbols.join(',')}`);
@@ -75,11 +64,8 @@ backtestRouter.post('/', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    logger.error('创建回测任务失败:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || '创建回测任务失败',
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -87,24 +73,18 @@ backtestRouter.post('/', async (req: Request, res: Response) => {
  * 获取回测结果
  * GET /api/quant/backtest/:id
  */
-backtestRouter.get('/:id', async (req: Request, res: Response) => {
+backtestRouter.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = parseInt(req.params.id);
 
     if (isNaN(id)) {
-      return res.status(400).json({
-        success: false,
-        error: '无效的回测ID',
-      });
+      return next(ErrorFactory.validationError('无效的回测ID'));
     }
 
     const result = await backtestService.getBacktestResult(id, true);
 
     if (!result) {
-      return res.status(404).json({
-        success: false,
-        error: '回测结果不存在',
-      });
+      return next(ErrorFactory.notFound('回测结果'));
     }
 
     // 限制返回的数据量，避免响应过大
@@ -128,11 +108,8 @@ backtestRouter.get('/:id', async (req: Request, res: Response) => {
       data: responseData,
     });
   } catch (error: any) {
-    logger.error('获取回测结果失败:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || '获取回测结果失败',
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -140,24 +117,18 @@ backtestRouter.get('/:id', async (req: Request, res: Response) => {
  * 获取回测状态
  * GET /api/quant/backtest/:id/status
  */
-backtestRouter.get('/:id/status', async (req: Request, res: Response) => {
+backtestRouter.get('/:id/status', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = parseInt(req.params.id);
 
     if (isNaN(id)) {
-      return res.status(400).json({
-        success: false,
-        error: '无效的回测ID',
-      });
+      return next(ErrorFactory.validationError('无效的回测ID'));
     }
 
     const status = await backtestService.getBacktestStatus(id);
 
     if (!status) {
-      return res.status(404).json({
-        success: false,
-        error: '回测任务不存在',
-      });
+      return next(ErrorFactory.notFound('回测任务'));
     }
 
     res.json({
@@ -165,11 +136,8 @@ backtestRouter.get('/:id/status', async (req: Request, res: Response) => {
       data: status,
     });
   } catch (error: any) {
-    logger.error('获取回测状态失败:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || '获取回测状态失败',
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -177,15 +145,12 @@ backtestRouter.get('/:id/status', async (req: Request, res: Response) => {
  * 重试失败的回测任务
  * POST /api/quant/backtest/:id/retry
  */
-backtestRouter.post('/:id/retry', async (req: Request, res: Response) => {
+backtestRouter.post('/:id/retry', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = parseInt(req.params.id);
 
     if (isNaN(id)) {
-      return res.status(400).json({
-        success: false,
-        error: '无效的回测ID',
-      });
+      return next(ErrorFactory.validationError('无效的回测ID'));
     }
 
     // 获取回测任务信息
@@ -196,18 +161,12 @@ backtestRouter.post('/:id/retry', async (req: Request, res: Response) => {
     );
 
     if (query.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: '回测任务不存在',
-      });
+      return next(ErrorFactory.notFound('回测任务'));
     }
 
     const row = query.rows[0];
     if (row.status !== 'FAILED') {
-      return res.status(400).json({
-        success: false,
-        error: '只能重试失败的回测任务',
-      });
+      return next(ErrorFactory.validationError('只能重试失败的回测任务'));
     }
 
     const config = typeof row.config === 'string' ? JSON.parse(row.config) : (row.config || {});
@@ -217,10 +176,7 @@ backtestRouter.post('/:id/retry', async (req: Request, res: Response) => {
     // 从请求中获取标的代码
     const { symbols } = req.body;
     if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: '缺少必要参数: symbols (数组)',
-      });
+      return next(ErrorFactory.missingParameter('symbols (数组)'));
     }
 
     // 重置状态为PENDING
@@ -247,11 +203,8 @@ backtestRouter.post('/:id/retry', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    logger.error('重试回测任务失败:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || '重试回测任务失败',
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -259,15 +212,12 @@ backtestRouter.post('/:id/retry', async (req: Request, res: Response) => {
  * 获取策略的所有回测结果
  * GET /api/quant/backtest/strategy/:strategyId
  */
-backtestRouter.get('/strategy/:strategyId', async (req: Request, res: Response) => {
+backtestRouter.get('/strategy/:strategyId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const strategyId = parseInt(req.params.strategyId);
 
     if (isNaN(strategyId)) {
-      return res.status(400).json({
-        success: false,
-        error: '无效的策略ID',
-      });
+      return next(ErrorFactory.validationError('无效的策略ID'));
     }
 
     const results = await backtestService.getBacktestResultsByStrategy(strategyId);
@@ -277,11 +227,8 @@ backtestRouter.get('/strategy/:strategyId', async (req: Request, res: Response) 
       data: results,
     });
   } catch (error: any) {
-    logger.error('获取回测结果列表失败:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || '获取回测结果列表失败',
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -289,25 +236,19 @@ backtestRouter.get('/strategy/:strategyId', async (req: Request, res: Response) 
  * 导出回测结果为JSON文件
  * GET /api/quant/backtest/:id/export
  */
-backtestRouter.get('/:id/export', async (req: Request, res: Response) => {
+backtestRouter.get('/:id/export', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = parseInt(req.params.id);
 
     if (isNaN(id)) {
-      return res.status(400).json({
-        success: false,
-        error: '无效的回测ID',
-      });
+      return next(ErrorFactory.validationError('无效的回测ID'));
     }
 
     // 获取完整的回测结果（不限制数据量）
     const result = await backtestService.getBacktestResult(id, true);
 
     if (!result) {
-      return res.status(404).json({
-        success: false,
-        error: '回测结果不存在',
-      });
+      return next(ErrorFactory.notFound('回测结果'));
     }
 
     // 获取策略信息
@@ -387,11 +328,8 @@ backtestRouter.get('/:id/export', async (req: Request, res: Response) => {
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
     res.json(exportData);
   } catch (error: any) {
-    logger.error('导出回测结果失败:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || '导出回测结果失败',
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -399,24 +337,18 @@ backtestRouter.get('/:id/export', async (req: Request, res: Response) => {
  * 批量删除回测结果
  * DELETE /api/quant/backtest/batch
  */
-backtestRouter.delete('/batch', async (req: Request, res: Response) => {
+backtestRouter.delete('/batch', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { ids } = req.body;
 
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: '缺少必要参数: ids (数组)',
-      });
+      return next(ErrorFactory.missingParameter('ids (数组)'));
     }
 
     // 验证所有ID都是数字
     const validIds = ids.filter(id => !isNaN(parseInt(String(id)))).map(id => parseInt(String(id)));
     if (validIds.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: '无效的回测ID列表',
-      });
+      return next(ErrorFactory.validationError('无效的回测ID列表'));
     }
 
     // 批量删除
@@ -430,11 +362,8 @@ backtestRouter.delete('/batch', async (req: Request, res: Response) => {
       deletedCount: result.rows.length,
     });
   } catch (error: any) {
-    logger.error('批量删除回测结果失败:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || '批量删除回测结果失败',
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -442,24 +371,18 @@ backtestRouter.delete('/batch', async (req: Request, res: Response) => {
  * 删除回测结果
  * DELETE /api/quant/backtest/:id
  */
-backtestRouter.delete('/:id', async (req: Request, res: Response) => {
+backtestRouter.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = parseInt(req.params.id);
 
     if (isNaN(id)) {
-      return res.status(400).json({
-        success: false,
-        error: '无效的回测ID',
-      });
+      return next(ErrorFactory.validationError('无效的回测ID'));
     }
 
     const query = await pool.query('DELETE FROM backtest_results WHERE id = $1 RETURNING id', [id]);
 
     if (query.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: '回测结果不存在',
-      });
+      return next(ErrorFactory.notFound('回测结果'));
     }
 
     res.json({
@@ -467,11 +390,8 @@ backtestRouter.delete('/:id', async (req: Request, res: Response) => {
       message: '回测结果已删除',
     });
   } catch (error: any) {
-    logger.error('删除回测结果失败:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || '删除回测结果失败',
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 

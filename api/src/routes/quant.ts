@@ -3,13 +3,23 @@
  * Phase 1: 核心引擎与选股/资金框架
  */
 
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import pool from '../config/database';
 import capitalManager, { CapitalAllocation, AllocationRequest } from '../services/capital-manager.service';
 import stockSelector from '../services/stock-selector.service';
 import accountBalanceSyncService from '../services/account-balance-sync.service';
 import strategyScheduler from '../services/strategy-scheduler.service';
 import stateManager from '../services/state-manager.service';
+import { ErrorFactory, normalizeError } from '../utils/errors';
+import {
+  getPopularInstitutions,
+  getInstitutionList,
+  getInstitutionHoldings,
+  selectStocksByInstitution,
+  InstitutionHolding,
+} from '../services/institution-stock-selector.service';
+import { getTradeContext } from '../config/longport';
+import { logger } from '../utils/logger';
 
 export const quantRouter = Router();
 
@@ -19,7 +29,7 @@ export const quantRouter = Router();
  * GET /api/quant/capital/allocations
  * 获取所有资金分配账户
  */
-quantRouter.get('/capital/allocations', async (req: Request, res: Response) => {
+quantRouter.get('/capital/allocations', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await pool.query(
       'SELECT * FROM capital_allocations ORDER BY created_at DESC'
@@ -34,16 +44,15 @@ quantRouter.get('/capital/allocations', async (req: Request, res: Response) => {
         allocationType: row.allocation_type,
         allocationValue: parseFloat(row.allocation_value),
         currentUsage: parseFloat(row.current_usage || '0'),
+        isSystem: row.is_system || false,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       })),
     });
   } catch (error: any) {
-    console.error('获取资金分配失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    // 使用统一的错误处理
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -51,15 +60,12 @@ quantRouter.get('/capital/allocations', async (req: Request, res: Response) => {
  * POST /api/quant/capital/allocations
  * 创建资金分配账户
  */
-quantRouter.post('/capital/allocations', async (req: Request, res: Response) => {
+quantRouter.post('/capital/allocations', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, parentId, allocationType, allocationValue } = req.body;
 
     if (!name || !allocationType || allocationValue === undefined) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'MISSING_PARAMETER', message: '缺少必需参数' },
-      });
+      return next(ErrorFactory.missingParameter('name, allocationType, 或 allocationValue'));
     }
 
     const allocation = await capitalManager.createAllocation({
@@ -74,11 +80,8 @@ quantRouter.post('/capital/allocations', async (req: Request, res: Response) => 
       data: { allocation },
     });
   } catch (error: any) {
-    console.error('创建资金分配失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -86,21 +89,24 @@ quantRouter.post('/capital/allocations', async (req: Request, res: Response) => 
  * PUT /api/quant/capital/allocations/:id
  * 更新资金分配账户
  */
-quantRouter.put('/capital/allocations/:id', async (req: Request, res: Response) => {
+quantRouter.put('/capital/allocations/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const { name, allocationType, allocationValue } = req.body;
 
     // 检查是否存在
     const checkResult = await pool.query(
-      'SELECT id FROM capital_allocations WHERE id = $1',
+      'SELECT id, name, is_system FROM capital_allocations WHERE id = $1',
       [id]
     );
     if (checkResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: { code: 'NOT_FOUND', message: '资金分配账户不存在' },
-      });
+      return next(ErrorFactory.notFound('资金分配账户'));
+    }
+
+    // 检查是否是系统账户，系统账户不允许修改名称
+    const isSystem = checkResult.rows[0].is_system || false;
+    if (isSystem && name !== undefined && name !== checkResult.rows[0].name) {
+      return next(ErrorFactory.resourceConflict('系统账户不允许修改名称'));
     }
 
     // 检查是否有策略在使用此账户
@@ -110,10 +116,10 @@ quantRouter.put('/capital/allocations/:id', async (req: Request, res: Response) 
     );
     const strategyCount = parseInt(strategiesResult.rows[0].count || '0');
     if (strategyCount > 0) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'IN_USE', message: `该资金分配账户正在被 ${strategyCount} 个策略使用，无法修改` },
-      });
+      return next(ErrorFactory.resourceConflict(
+        `该资金分配账户正在被 ${strategyCount} 个策略使用，无法修改`,
+        { strategyCount }
+      ));
     }
 
     // 如果修改名称，检查名称是否已存在
@@ -123,10 +129,10 @@ quantRouter.put('/capital/allocations/:id', async (req: Request, res: Response) 
         [name, id]
       );
       if (nameCheckResult.rows.length > 0) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'DUPLICATE_NAME', message: `资金分配账户名称 "${name}" 已存在` },
-        });
+        return next(ErrorFactory.resourceConflict(
+          `资金分配账户名称 "${name}" 已存在`,
+          { name }
+        ));
       }
     }
 
@@ -145,13 +151,9 @@ quantRouter.put('/capital/allocations/:id', async (req: Request, res: Response) 
       );
       const existingTotal = parseFloat(siblingsResult.rows[0]?.total || '0');
       if (existingTotal + finalAllocationValue > 1.0) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'PERCENTAGE_OVERFLOW',
-            message: `百分比总和超过 100%: ${(existingTotal * 100).toFixed(1)}% + ${(finalAllocationValue * 100).toFixed(1)}%`,
-          },
-        });
+        return next(ErrorFactory.validationError(
+          `百分比总和超过 100%: ${(existingTotal * 100).toFixed(1)}% + ${(finalAllocationValue * 100).toFixed(1)}%`
+        ));
       }
     }
 
@@ -174,10 +176,7 @@ quantRouter.put('/capital/allocations/:id', async (req: Request, res: Response) 
     }
 
     if (updateFields.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'MISSING_PARAMETER', message: '没有提供要更新的字段' },
-      });
+      return next(ErrorFactory.missingParameter('要更新的字段'));
     }
 
     updateFields.push(`updated_at = NOW()`);
@@ -203,17 +202,15 @@ quantRouter.put('/capital/allocations/:id', async (req: Request, res: Response) 
           allocationType: updatedResult.rows[0].allocation_type,
           allocationValue: parseFloat(updatedResult.rows[0].allocation_value),
           currentUsage: parseFloat(updatedResult.rows[0].current_usage || '0'),
+          isSystem: updatedResult.rows[0].is_system || false,
           createdAt: updatedResult.rows[0].created_at,
           updatedAt: updatedResult.rows[0].updated_at,
         },
       },
     });
   } catch (error: any) {
-    console.error('更新资金分配失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -221,20 +218,23 @@ quantRouter.put('/capital/allocations/:id', async (req: Request, res: Response) 
  * DELETE /api/quant/capital/allocations/:id
  * 删除资金分配账户
  */
-quantRouter.delete('/capital/allocations/:id', async (req: Request, res: Response) => {
+quantRouter.delete('/capital/allocations/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
 
     // 检查是否存在
     const checkResult = await pool.query(
-      'SELECT id, name FROM capital_allocations WHERE id = $1',
+      'SELECT id, name, is_system FROM capital_allocations WHERE id = $1',
       [id]
     );
     if (checkResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: { code: 'NOT_FOUND', message: '资金分配账户不存在' },
-      });
+      return next(ErrorFactory.notFound('资金分配账户'));
+    }
+
+    // 检查是否是系统账户，系统账户不允许删除
+    const isSystem = checkResult.rows[0].is_system || false;
+    if (isSystem) {
+      return next(ErrorFactory.resourceConflict('系统账户无法删除'));
     }
 
     // 检查是否有策略在使用此账户
@@ -244,10 +244,10 @@ quantRouter.delete('/capital/allocations/:id', async (req: Request, res: Respons
     );
     const strategyCount = parseInt(strategiesResult.rows[0].count || '0');
     if (strategyCount > 0) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'IN_USE', message: `该资金分配账户正在被 ${strategyCount} 个策略使用，无法删除` },
-      });
+      return next(ErrorFactory.resourceConflict(
+        `该资金分配账户正在被 ${strategyCount} 个策略使用，无法删除`,
+        { strategyCount }
+      ));
     }
 
     // 检查是否有子账户
@@ -257,18 +257,10 @@ quantRouter.delete('/capital/allocations/:id', async (req: Request, res: Respons
     );
     const childrenCount = parseInt(childrenResult.rows[0].count || '0');
     if (childrenCount > 0) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'HAS_CHILDREN', message: `该资金分配账户有 ${childrenCount} 个子账户，无法删除` },
-      });
-    }
-
-    // 检查是否是GLOBAL账户
-    if (checkResult.rows[0].name === 'GLOBAL') {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'PROTECTED', message: 'GLOBAL账户是系统根账户，无法删除' },
-      });
+      return next(ErrorFactory.resourceConflict(
+        `该资金分配账户有 ${childrenCount} 个子账户，无法删除`,
+        { childrenCount }
+      ));
     }
 
     // 删除
@@ -279,11 +271,99 @@ quantRouter.delete('/capital/allocations/:id', async (req: Request, res: Respons
       data: { message: '资金分配账户已删除' },
     });
   } catch (error: any) {
-    console.error('删除资金分配失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
+ * GET /api/quant/capital/allocations/:id/usage-detail
+ * 获取资金分配账户的使用记录详情（调试用）
+ */
+quantRouter.get('/capital/allocations/:id/usage-detail', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    
+    // 查询账户信息
+    const accountResult = await pool.query(
+      'SELECT * FROM capital_allocations WHERE id = $1',
+      [id]
+    );
+    
+    if (accountResult.rows.length === 0) {
+      return next(ErrorFactory.notFound('资金分配账户'));
+    }
+    
+    const account = accountResult.rows[0];
+    
+    // 查询关联的策略
+    const strategiesResult = await pool.query(
+      `SELECT s.id, s.name, s.status 
+       FROM strategies s 
+       WHERE s.capital_allocation_id = $1`,
+      [id]
+    );
+    
+    // 查询策略实例（持仓）
+    const instancesResult = await pool.query(
+      `SELECT si.strategy_id, si.symbol, si.current_state, si.context,
+              s.name as strategy_name
+       FROM strategy_instances si
+       JOIN strategies s ON s.id = si.strategy_id
+       WHERE s.capital_allocation_id = $1
+         AND si.current_state IN ('HOLDING', 'OPENING', 'CLOSING')`,
+      [id]
+    );
+    
+    // 查询未成交订单
+    const pendingOrdersResult = await pool.query(
+      `SELECT eo.order_id, eo.symbol, eo.side, eo.quantity, eo.price, eo.current_status,
+              s.name as strategy_name
+       FROM execution_orders eo
+       JOIN strategies s ON s.id = eo.strategy_id
+       WHERE s.capital_allocation_id = $1
+         AND eo.current_status NOT IN ('FILLED', 'CANCELLED', 'REJECTED')
+         AND eo.created_at >= NOW() - INTERVAL '7 days'`,
+      [id]
+    );
+    
+    res.json({
+      success: true,
+      data: {
+        account: {
+          id: account.id,
+          name: account.name,
+          allocationType: account.allocation_type,
+          allocationValue: parseFloat(account.allocation_value),
+          currentUsage: parseFloat(account.current_usage || '0'),
+          isSystem: account.is_system || false,
+        },
+        strategies: strategiesResult.rows.map((row: any) => ({
+          id: row.id,
+          name: row.name,
+          status: row.status,
+        })),
+        instances: instancesResult.rows.map((row: any) => ({
+          strategyId: row.strategy_id,
+          strategyName: row.strategy_name,
+          symbol: row.symbol,
+          state: row.current_state,
+          context: row.context,
+        })),
+        pendingOrders: pendingOrdersResult.rows.map((row: any) => ({
+          orderId: row.order_id,
+          strategyName: row.strategy_name,
+          symbol: row.symbol,
+          side: row.side,
+          quantity: row.quantity,
+          price: parseFloat(row.price),
+          status: row.current_status,
+        })),
+      },
     });
+  } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -291,7 +371,7 @@ quantRouter.delete('/capital/allocations/:id', async (req: Request, res: Respons
  * GET /api/quant/capital/usage
  * 获取资金使用情况
  */
-quantRouter.get('/capital/usage', async (req: Request, res: Response) => {
+quantRouter.get('/capital/usage', async (req: Request, res: Response, next: NextFunction) => {
   try {
     let totalCapital: number;
     try {
@@ -330,15 +410,13 @@ quantRouter.get('/capital/usage', async (req: Request, res: Response) => {
           currentUsage: parseFloat(row.current_usage || '0'),
           strategyCount: parseInt(row.strategy_count || '0'),
           childrenCount: parseInt(row.children_count || '0'),
+          isSystem: row.is_system || false,
         })),
       },
     });
   } catch (error: any) {
-    console.error('获取资金使用情况失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -346,7 +424,7 @@ quantRouter.get('/capital/usage', async (req: Request, res: Response) => {
  * POST /api/quant/capital/sync-balance
  * 手动触发余额同步
  */
-quantRouter.post('/capital/sync-balance', async (req: Request, res: Response) => {
+quantRouter.post('/capital/sync-balance', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await accountBalanceSyncService.syncAccountBalance();
     res.json({
@@ -354,11 +432,65 @@ quantRouter.post('/capital/sync-balance', async (req: Request, res: Response) =>
       data: result,
     });
   } catch (error: any) {
-    console.error('余额同步失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
+ * GET /api/quant/capital/alerts
+ * 获取资金差异告警列表
+ */
+quantRouter.get('/capital/alerts', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const syncResult = await accountBalanceSyncService.syncAccountBalance();
+    
+    if (!syncResult.success || !syncResult.discrepancies || syncResult.discrepancies.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          alerts: [],
+          totalAlerts: 0,
+          errorAlerts: 0,
+          warningAlerts: 0,
+          lastSyncTime: syncResult.lastSyncTime || new Date(),
+        },
+      });
+    }
+    
+    // 过滤出需要告警的差异（WARNING和ERROR级别）
+    const alerts = syncResult.discrepancies
+      .filter((d) => d.severity === 'ERROR' || d.severity === 'WARNING')
+      .map((d) => {
+        const strategy = syncResult.strategies?.find((s) => s.id === d.strategyId);
+        return {
+          strategyId: d.strategyId,
+          strategyName: strategy?.name || `策略 ${d.strategyId}`,
+          recordedUsage: d.expected,
+          actualUsage: d.actual,
+          difference: d.difference,
+          differencePercent: d.differencePercent || 0,
+          severity: d.severity || 'WARNING',
+          expectedAllocation: strategy?.expectedAllocation || 0,
+        };
+      });
+    
+    const errorAlerts = alerts.filter((a) => a.severity === 'ERROR').length;
+    const warningAlerts = alerts.filter((a) => a.severity === 'WARNING').length;
+    
+    res.json({
+      success: true,
+      data: {
+        alerts,
+        totalAlerts: alerts.length,
+        errorAlerts,
+        warningAlerts,
+        lastSyncTime: syncResult.lastSyncTime || new Date(),
+      },
     });
+  } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -366,7 +498,7 @@ quantRouter.post('/capital/sync-balance', async (req: Request, res: Response) =>
  * GET /api/quant/capital/balance-discrepancies
  * 查询余额差异
  */
-quantRouter.get('/capital/balance-discrepancies', async (req: Request, res: Response) => {
+quantRouter.get('/capital/balance-discrepancies', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const validationResult = await capitalManager.validateUsage();
     res.json({
@@ -374,11 +506,8 @@ quantRouter.get('/capital/balance-discrepancies', async (req: Request, res: Resp
       data: validationResult,
     });
   } catch (error: any) {
-    console.error('查询余额差异失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -396,11 +525,8 @@ quantRouter.get('/stock-selector/blacklist', async (req: Request, res: Response)
       data: blacklist,
     });
   } catch (error: any) {
-    console.error('获取黑名单失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -408,15 +534,12 @@ quantRouter.get('/stock-selector/blacklist', async (req: Request, res: Response)
  * POST /api/quant/stock-selector/blacklist
  * 添加股票到黑名单
  */
-quantRouter.post('/stock-selector/blacklist', async (req: Request, res: Response) => {
+quantRouter.post('/stock-selector/blacklist', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { symbol, reason } = req.body;
 
     if (!symbol || !reason) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'MISSING_PARAMETER', message: '缺少 symbol 或 reason' },
-      });
+      return next(ErrorFactory.missingParameter('symbol 或 reason'));
     }
 
     await stockSelector.addToBlacklist(symbol, reason, 'api');
@@ -425,11 +548,8 @@ quantRouter.post('/stock-selector/blacklist', async (req: Request, res: Response
       message: '已添加到黑名单',
     });
   } catch (error: any) {
-    console.error('添加黑名单失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -437,7 +557,7 @@ quantRouter.post('/stock-selector/blacklist', async (req: Request, res: Response
  * DELETE /api/quant/stock-selector/blacklist/:symbol
  * 从黑名单移除股票
  */
-quantRouter.delete('/stock-selector/blacklist/:symbol', async (req: Request, res: Response) => {
+quantRouter.delete('/stock-selector/blacklist/:symbol', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { symbol } = req.params;
     await stockSelector.removeFromBlacklist(symbol);
@@ -446,11 +566,8 @@ quantRouter.delete('/stock-selector/blacklist/:symbol', async (req: Request, res
       message: '已从黑名单移除',
     });
   } catch (error: any) {
-    console.error('移除黑名单失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -460,7 +577,7 @@ quantRouter.delete('/stock-selector/blacklist/:symbol', async (req: Request, res
  * GET /api/quant/strategies
  * 获取所有策略
  */
-quantRouter.get('/strategies', async (req: Request, res: Response) => {
+quantRouter.get('/strategies', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await pool.query(`
       SELECT s.*, ca.name as allocation_name
@@ -485,11 +602,8 @@ quantRouter.get('/strategies', async (req: Request, res: Response) => {
       })),
     });
   } catch (error: any) {
-    console.error('获取策略列表失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -497,30 +611,21 @@ quantRouter.get('/strategies', async (req: Request, res: Response) => {
  * POST /api/quant/strategies
  * 创建策略
  */
-quantRouter.post('/strategies', async (req: Request, res: Response) => {
+quantRouter.post('/strategies', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, type, capitalAllocationId, symbolPoolConfig, config } = req.body;
 
     if (!name || !type || !symbolPoolConfig || !config) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'MISSING_PARAMETER', message: '缺少必需参数' },
-      });
+      return next(ErrorFactory.missingParameter('name, type, symbolPoolConfig, 或 config'));
     }
 
     // 验证股票池配置
     if (!symbolPoolConfig.symbols || !Array.isArray(symbolPoolConfig.symbols)) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'INVALID_SYMBOL_POOL_CONFIG', message: '股票池配置格式错误：symbols必须是数组' },
-      });
+      return next(ErrorFactory.validationError('股票池配置格式错误：symbols必须是数组'));
     }
 
     if (symbolPoolConfig.symbols.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'EMPTY_SYMBOL_POOL', message: '股票池不能为空，请至少添加一个股票' },
-      });
+      return next(ErrorFactory.validationError('股票池不能为空，请至少添加一个股票'));
     }
 
     // 验证股票代码格式（支持 ticker.region 和 .ticker.region 格式）
@@ -546,13 +651,10 @@ quantRouter.post('/strategies', async (req: Request, res: Response) => {
     }
 
     if (invalidSymbols.length > 0) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_SYMBOL_FORMAT',
-          message: `无效的标的代码格式: ${invalidSymbols.join(', ')}。请使用 ticker.region 格式，例如：AAPL.US 或 700.HK`,
-        },
-      });
+      return next(ErrorFactory.validationError(
+        `无效的标的代码格式: ${invalidSymbols.join(', ')}。请使用 ticker.region 格式，例如：AAPL.US 或 700.HK`,
+        { invalidSymbols }
+      ));
     }
 
     // 去重
@@ -579,11 +681,8 @@ quantRouter.post('/strategies', async (req: Request, res: Response) => {
       data: result.rows[0],
     });
   } catch (error: any) {
-    console.error('创建策略失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -591,7 +690,7 @@ quantRouter.post('/strategies', async (req: Request, res: Response) => {
  * GET /api/quant/strategies/:id
  * 获取策略详情
  */
-quantRouter.get('/strategies/:id', async (req: Request, res: Response) => {
+quantRouter.get('/strategies/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const result = await pool.query(
@@ -603,10 +702,7 @@ quantRouter.get('/strategies/:id', async (req: Request, res: Response) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: { code: 'NOT_FOUND', message: '策略不存在' },
-      });
+      return next(ErrorFactory.notFound('策略'));
     }
 
     const row = result.rows[0];
@@ -626,11 +722,8 @@ quantRouter.get('/strategies/:id', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('获取策略详情失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -638,7 +731,7 @@ quantRouter.get('/strategies/:id', async (req: Request, res: Response) => {
  * PUT /api/quant/strategies/:id
  * 更新策略
  */
-quantRouter.put('/strategies/:id', async (req: Request, res: Response) => {
+quantRouter.put('/strategies/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const { name, type, capitalAllocationId, symbolPoolConfig, config } = req.body;
@@ -646,18 +739,12 @@ quantRouter.put('/strategies/:id', async (req: Request, res: Response) => {
     // 检查是否存在
     const checkResult = await pool.query('SELECT id, status FROM strategies WHERE id = $1', [id]);
     if (checkResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: { code: 'NOT_FOUND', message: '策略不存在' },
-      });
+      return next(ErrorFactory.notFound('策略'));
     }
 
     // 如果策略正在运行，不允许修改
     if (checkResult.rows[0].status === 'RUNNING') {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'STRATEGY_RUNNING', message: '策略正在运行中，请先停止策略再修改' },
-      });
+      return next(ErrorFactory.resourceConflict('策略正在运行中，请先停止策略再修改'));
     }
 
     // 更新
@@ -680,17 +767,11 @@ quantRouter.put('/strategies/:id', async (req: Request, res: Response) => {
     if (symbolPoolConfig !== undefined) {
       // 验证股票池配置
       if (!symbolPoolConfig.symbols || !Array.isArray(symbolPoolConfig.symbols)) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'INVALID_SYMBOL_POOL_CONFIG', message: '股票池配置格式错误：symbols必须是数组' },
-        });
+        return next(ErrorFactory.validationError('股票池配置格式错误：symbols必须是数组'));
       }
 
       if (symbolPoolConfig.symbols.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'EMPTY_SYMBOL_POOL', message: '股票池不能为空，请至少添加一个股票' },
-        });
+        return next(ErrorFactory.validationError('股票池不能为空，请至少添加一个股票'));
       }
 
       // 验证股票代码格式
@@ -716,13 +797,10 @@ quantRouter.put('/strategies/:id', async (req: Request, res: Response) => {
       }
 
       if (invalidSymbols.length > 0) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'INVALID_SYMBOL_FORMAT',
-            message: `无效的标的代码格式: ${invalidSymbols.join(', ')}。请使用 ticker.region 格式，例如：AAPL.US 或 700.HK`,
-          },
-        });
+        return next(ErrorFactory.validationError(
+          `无效的标的代码格式: ${invalidSymbols.join(', ')}。请使用 ticker.region 格式，例如：AAPL.US 或 700.HK`,
+          { invalidSymbols }
+        ));
       }
 
       // 去重
@@ -746,10 +824,7 @@ quantRouter.put('/strategies/:id', async (req: Request, res: Response) => {
     }
 
     if (updateFields.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'MISSING_PARAMETER', message: '没有提供要更新的字段' },
-      });
+      return next(ErrorFactory.missingParameter('要更新的字段'));
     }
 
     updateFields.push(`updated_at = NOW()`);
@@ -797,17 +872,14 @@ quantRouter.put('/strategies/:id', async (req: Request, res: Response) => {
  * DELETE /api/quant/strategies/:id
  * 删除策略
  */
-quantRouter.delete('/strategies/:id', async (req: Request, res: Response) => {
+quantRouter.delete('/strategies/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
 
     // 检查是否存在
     const checkResult = await pool.query('SELECT id, status FROM strategies WHERE id = $1', [id]);
     if (checkResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: { code: 'NOT_FOUND', message: '策略不存在' },
-      });
+      return next(ErrorFactory.notFound('策略'));
     }
 
     // 如果策略正在运行，先停止
@@ -830,11 +902,8 @@ quantRouter.delete('/strategies/:id', async (req: Request, res: Response) => {
       data: { message: '策略已删除' },
     });
   } catch (error: any) {
-    console.error('删除策略失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -842,7 +911,7 @@ quantRouter.delete('/strategies/:id', async (req: Request, res: Response) => {
  * POST /api/quant/strategies/:id/start
  * 启动策略
  */
-quantRouter.post('/strategies/:id/start', async (req: Request, res: Response) => {
+quantRouter.post('/strategies/:id/start', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
 
@@ -857,11 +926,8 @@ quantRouter.post('/strategies/:id/start', async (req: Request, res: Response) =>
       message: '策略已启动',
     });
   } catch (error: any) {
-    console.error('启动策略失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -869,7 +935,7 @@ quantRouter.post('/strategies/:id/start', async (req: Request, res: Response) =>
  * POST /api/quant/strategies/:id/stop
  * 停止策略
  */
-quantRouter.post('/strategies/:id/stop', async (req: Request, res: Response) => {
+quantRouter.post('/strategies/:id/stop', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
 
@@ -881,11 +947,8 @@ quantRouter.post('/strategies/:id/stop', async (req: Request, res: Response) => 
       message: '策略已停止',
     });
   } catch (error: any) {
-    console.error('停止策略失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -893,7 +956,7 @@ quantRouter.post('/strategies/:id/stop', async (req: Request, res: Response) => 
  * GET /api/quant/strategies/:id/instances
  * 获取策略实例状态
  */
-quantRouter.get('/strategies/:id/instances', async (req: Request, res: Response) => {
+quantRouter.get('/strategies/:id/instances', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const instances = await stateManager.getStrategyInstances(parseInt(id));
@@ -903,11 +966,85 @@ quantRouter.get('/strategies/:id/instances', async (req: Request, res: Response)
       data: instances,
     });
   } catch (error: any) {
-    console.error('获取策略实例失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
+ * GET /api/quant/strategies/:id/holdings
+ * 获取策略已有持仓（用于修订策略时的资金计算）
+ */
+quantRouter.get('/strategies/:id/holdings', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    const strategyId = parseInt(id);
+
+    if (isNaN(strategyId)) {
+      return next(ErrorFactory.validationError('策略ID无效'));
+    }
+
+    // 查询策略的已有持仓（状态为HOLDING的实例）
+    const instancesResult = await pool.query(
+      `SELECT symbol, current_state, context, last_updated
+       FROM strategy_instances
+       WHERE strategy_id = $1 AND current_state = 'HOLDING'`,
+      [strategyId]
+    );
+
+    if (instancesResult.rows.length === 0) {
+      return res.json({
+        success: true,
+        data: [],
+      });
+    }
+
+    // 获取当前价格并计算持仓价值
+    const { getQuoteContext } = await import('../config/longport');
+    const quoteCtx = await getQuoteContext();
+    const symbols = instancesResult.rows.map((row) => row.symbol);
+
+    let quotes: any[] = [];
+    try {
+      quotes = await quoteCtx.quote(symbols);
+    } catch (error: any) {
+      console.warn(`[策略持仓] 获取股票价格失败:`, error.message);
+    }
+
+    const holdings = await Promise.all(
+      instancesResult.rows.map(async (row) => {
+        const context = row.context || {};
+        const quantity = context.quantity || 0;
+        const entryPrice = context.entryPrice || 0;
+
+        // 查找当前价格（Longbridge SDK返回的是驼峰命名：lastDone）
+        const quote = quotes.find((q) => (q.symbol || q.stock_name) === row.symbol);
+        const currentPrice = quote?.lastDone 
+          ? parseFloat(quote.lastDone.toString()) 
+          : quote?.last_done
+          ? parseFloat(quote.last_done.toString())
+          : entryPrice || 0;
+
+        return {
+          symbol: row.symbol,
+          quantity,
+          entryPrice,
+          currentPrice,
+          holdingValue: quantity * currentPrice,
+          state: row.current_state,
+          context,
+          lastUpdated: row.last_updated,
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      data: holdings,
     });
+  } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -916,16 +1053,13 @@ quantRouter.get('/strategies/:id/instances', async (req: Request, res: Response)
  * 获取策略监控状态（诊断用）
  * 显示所有标的的状态、持仓信息、止盈止损设置等
  */
-quantRouter.get('/strategies/:id/monitoring-status', async (req: Request, res: Response) => {
+quantRouter.get('/strategies/:id/monitoring-status', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const strategyId = parseInt(id);
 
     if (isNaN(strategyId)) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'INVALID_ID', message: '策略ID无效' },
-      });
+      return next(ErrorFactory.validationError('策略ID无效'));
     }
 
     // 1. 获取策略配置
@@ -935,10 +1069,7 @@ quantRouter.get('/strategies/:id/monitoring-status', async (req: Request, res: R
     );
 
     if (strategyResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: { code: 'NOT_FOUND', message: '策略不存在' },
-      });
+      return next(ErrorFactory.notFound('策略'));
     }
 
     const strategy = strategyResult.rows[0];
@@ -1111,11 +1242,8 @@ quantRouter.get('/strategies/:id/monitoring-status', async (req: Request, res: R
       },
     });
   } catch (error: any) {
-    console.error('获取策略监控状态失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
@@ -1125,7 +1253,7 @@ quantRouter.get('/strategies/:id/monitoring-status', async (req: Request, res: R
  * GET /api/quant/signals
  * 获取信号日志
  */
-quantRouter.get('/signals', async (req: Request, res: Response) => {
+quantRouter.get('/signals', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { strategyId, status, limit = 100 } = req.query;
 
@@ -1153,53 +1281,501 @@ quantRouter.get('/signals', async (req: Request, res: Response) => {
       data: result.rows,
     });
   } catch (error: any) {
-    console.error('获取信号日志失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
-    });
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 
 // ==================== 交易记录 API ====================
 
+// ==================== Dashboard 统计 API ====================
+
 /**
- * GET /api/quant/trades
- * 获取自动交易记录
+ * GET /api/quant/dashboard/stats
+ * 获取Dashboard统计数据（今日盈亏、今日交易数量等）
  */
-quantRouter.get('/trades', async (req: Request, res: Response) => {
+quantRouter.get('/dashboard/stats', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { strategyId, symbol, limit = 100 } = req.query;
+    logger.debug('[Dashboard统计API] 开始计算统计数据');
+    
+    // 1. 获取今日已平仓交易盈亏（主要数据源）
+    const closedTradesResult = await pool.query(`
+      SELECT COALESCE(SUM(pnl), 0) as total_pnl
+      FROM auto_trades
+      WHERE DATE(close_time) = CURRENT_DATE
+        AND status = 'FILLED'
+        AND pnl IS NOT NULL
+    `);
+    const closedTradesPnl = parseFloat(closedTradesResult.rows[0]?.total_pnl || '0');
+    logger.debug(`[Dashboard统计API] 今日已平仓交易盈亏: ${closedTradesPnl}`);
 
-    let query = 'SELECT * FROM auto_trades WHERE 1=1';
-    const params: any[] = [];
-    let paramIndex = 1;
+    // 2. 获取持仓盈亏（主要数据源）
+    let holdingPnl = 0;
+    try {
+      logger.debug('[Dashboard统计API] 开始获取持仓盈亏');
+      const tradeCtx = await getTradeContext();
+      let positions: any;
+      try {
+        positions = await tradeCtx.stockPositions();
+      } catch (rateLimitError: any) {
+        // API限流时，记录警告但不阻塞主流程
+        if (rateLimitError.message && rateLimitError.message.includes('429002')) {
+          logger.warn('[Dashboard统计API] 持仓API限流，跳过持仓盈亏计算');
+          positions = null;
+        } else {
+          throw rateLimitError;
+        }
+      }
+      
+      logger.debug(`[Dashboard统计API] 持仓数据类型: ${positions ? (Array.isArray(positions) ? `数组(${positions.length}个)` : typeof positions) : 'null'}`);
+      
+      // 处理持仓数据：可能是数组或对象（包含channels数组）
+      let actualPositions: any[] = [];
+      if (Array.isArray(positions)) {
+        actualPositions = positions;
+      } else if (positions && typeof positions === 'object') {
+        // 处理对象格式：{ channels: [{ accountChannel: "...", positions: [...] }] }
+        if (positions.channels && Array.isArray(positions.channels) && positions.channels.length > 0) {
+          // 从第一个channel中提取positions
+          const firstChannel = positions.channels[0];
+          if (firstChannel.positions && Array.isArray(firstChannel.positions)) {
+            actualPositions = firstChannel.positions;
+            logger.debug(`[Dashboard统计API] 从channels[0].positions提取到 ${actualPositions.length} 个持仓`);
+          }
+        }
+        if (actualPositions.length === 0) {
+          logger.debug(`[Dashboard统计API] 持仓数据详情: ${JSON.stringify(positions, null, 2)}`);
+        }
+      }
 
-    if (strategyId) {
-      query += ` AND strategy_id = $${paramIndex++}`;
-      params.push(strategyId);
+      if (actualPositions.length > 0) {
+        const symbols = actualPositions.map((pos: any) => pos.symbol).filter(Boolean);
+        logger.debug(`[Dashboard统计API] 持仓标的列表: ${symbols.join(', ')}`);
+        
+        if (symbols.length > 0) {
+          // 批量获取当前价格
+          const { getQuoteContext } = await import('../config/longport');
+          const quoteCtx = await getQuoteContext();
+          const quotes = await quoteCtx.quote(symbols);
+          logger.debug(`[Dashboard统计API] 获取到 ${quotes ? quotes.length : 0} 个行情数据`);
+
+          // 创建symbol到quote的映射
+          const quoteMap = new Map<string, any>();
+          for (const quote of quotes) {
+            const symbol = quote.symbol || (quote as any).stock_name;
+            if (symbol) {
+              quoteMap.set(symbol, quote);
+            }
+          }
+
+          // 计算持仓盈亏
+          for (const pos of actualPositions) {
+            const symbol = pos.symbol;
+            // 处理costPrice字段：可能是costPrice或cost_price
+            const costPrice = parseFloat(pos.costPrice?.toString() || pos.cost_price?.toString() || '0');
+            // 处理quantity字段：可能是quantity或availableQuantity
+            const quantity = parseInt(pos.quantity?.toString() || pos.availableQuantity?.toString() || '0');
+
+            if (costPrice > 0 && quantity > 0 && symbol) {
+              const quote = quoteMap.get(symbol);
+              if (quote) {
+                const currentPrice = parseFloat(
+                  quote.lastPrice?.toString() || 
+                  quote.lastDone?.toString() || 
+                  quote.last_done?.toString() || 
+                  '0'
+                );
+
+                if (currentPrice > 0) {
+                  const positionPnl = (currentPrice - costPrice) * quantity;
+                  holdingPnl += positionPnl;
+                  logger.debug(`[Dashboard统计API] 持仓 ${symbol}: 成本价=${costPrice}, 当前价=${currentPrice}, 数量=${quantity}, 盈亏=${positionPnl.toFixed(2)}`);
+                } else {
+                  logger.warn(`[Dashboard统计API] 持仓 ${symbol}: 无法获取当前价格`);
+                }
+              } else {
+                logger.warn(`[Dashboard统计API] 持仓 ${symbol}: 未找到行情数据`);
+              }
+            }
+          }
+          logger.debug(`[Dashboard统计API] 持仓盈亏总计: ${holdingPnl}`);
+        } else {
+          logger.debug('[Dashboard统计API] 无持仓标的');
+        }
+      } else {
+        logger.debug('[Dashboard统计API] 无持仓数据');
+      }
+    } catch (error: any) {
+      logger.error('[Dashboard统计API] 获取持仓盈亏失败:', error);
+      // 继续执行，不阻塞主流程
     }
 
-    if (symbol) {
-      query += ` AND symbol = $${paramIndex++}`;
-      params.push(symbol);
+    // 3. 计算今日交易数量（使用长桥API todayOrders，更准确）
+    let todayTrades = 0;
+    let todayBuyOrders = 0;
+    let todaySellOrders = 0;
+    
+    try {
+      logger.debug('[Dashboard统计API] 开始获取今日订单（从长桥API）');
+      const tradeCtx = await getTradeContext();
+      const todayOrders = await tradeCtx.todayOrders({});
+      const ordersArray = Array.isArray(todayOrders) ? todayOrders : [];
+      
+      logger.debug(`[Dashboard统计API] 获取到 ${ordersArray.length} 个今日订单`);
+      
+      // 导入normalizeStatus和normalizeSide函数（从orders.ts）
+      const ordersModule = await import('./orders');
+      const normalizeStatus = ordersModule.normalizeStatus;
+      const normalizeSide = ordersModule.normalizeSide;
+      
+      // 筛选已成交订单
+      const filledOrders = ordersArray.filter((order: any) => {
+        const status = normalizeStatus(order.status);
+        // normalizeStatus返回完整形式：FilledStatus, PartialFilledStatus
+        return status === 'FilledStatus' || status === 'PartialFilledStatus';
+      });
+      
+      todayTrades = filledOrders.length;
+      
+      // 区分买入和卖出订单
+      todayBuyOrders = filledOrders.filter((order: any) => {
+        const side = normalizeSide(order.side);
+        return side === 'Buy' || side === 'BUY';
+      }).length;
+      
+      todaySellOrders = filledOrders.filter((order: any) => {
+        const side = normalizeSide(order.side);
+        return side === 'Sell' || side === 'SELL';
+      }).length;
+      
+      logger.debug(`[Dashboard统计API] 今日交易数量统计: 总计=${todayTrades}, 买入=${todayBuyOrders}, 卖出=${todaySellOrders}`);
+    } catch (error: any) {
+      logger.error('[Dashboard统计API] 获取今日订单失败，使用数据库统计:', error);
+      
+      // 降级方案：使用数据库统计（如果API失败）
+      const todayStart = new Date();
+      todayStart.setUTCHours(0, 0, 0, 0);
+      const todayEnd = new Date();
+      todayEnd.setUTCHours(23, 59, 59, 999);
+      
+      const todayOrdersResult = await pool.query(`
+        SELECT COUNT(*) as count
+        FROM execution_orders
+        WHERE created_at >= $1 
+          AND created_at <= $2
+          AND current_status IN ('FILLED', 'PARTIALLY_FILLED')
+      `, [todayStart, todayEnd]);
+      todayTrades = parseInt(todayOrdersResult.rows[0]?.count || '0');
+      
+      logger.warn(`[Dashboard统计API] 使用数据库统计，今日交易数量: ${todayTrades}`);
     }
 
-    query += ` ORDER BY open_time DESC LIMIT $${paramIndex++}`;
-    params.push(parseInt(limit as string));
+    // 4. 验证数据（辅助验证，不阻塞主流程）
+    let verificationData = null;
+    try {
+      logger.debug('[Dashboard统计API] 开始获取账户资金验证数据');
+      const tradeCtx = await getTradeContext();
+      const accountBalance = await tradeCtx.accountBalance();
+      logger.debug(`[Dashboard统计API] accountBalance原始数据: ${JSON.stringify(accountBalance, null, 2)}`);
+      
+      // accountBalance可能返回数组或单个对象
+      let balanceData: any;
+      if (Array.isArray(accountBalance)) {
+        logger.debug(`[Dashboard统计API] accountBalance是数组，长度: ${accountBalance.length}`);
+        // 如果是数组，取第一个USD账户
+        balanceData = accountBalance.find((b: any) => b.currency === 'USD') || accountBalance[0] || {};
+        logger.debug(`[Dashboard统计API] 选择的账户数据: ${JSON.stringify(balanceData, null, 2)}`);
+      } else {
+        logger.debug('[Dashboard统计API] accountBalance是对象');
+        balanceData = accountBalance || {};
+      }
+      
+      // 尝试多种字段名获取数据
+      // totalAssets可能在不同字段：totalAssets, total_assets, netAssets, net_assets
+      // 从日志看，accountBalance返回的是数组，且包含netAssets字段
+      const totalAssets = parseFloat(
+        balanceData.netAssets?.toString() ||
+        balanceData.net_assets?.toString() ||
+        balanceData.totalAssets?.toString() || 
+        balanceData.total_assets?.toString() || 
+        '0'
+      );
+      // availableCash从cashInfos数组中获取USD账户的可用资金
+      let availableCash = 0;
+      if (balanceData.cashInfos && Array.isArray(balanceData.cashInfos)) {
+        const usdCashInfo = balanceData.cashInfos.find((info: any) => info.currency === 'USD');
+        if (usdCashInfo) {
+          availableCash = parseFloat(usdCashInfo.availableCash?.toString() || '0');
+        } else if (balanceData.cashInfos.length > 0) {
+          // 如果没有USD账户，使用第一个账户
+          availableCash = parseFloat(balanceData.cashInfos[0].availableCash?.toString() || '0');
+        }
+      } else {
+        // 如果没有cashInfos数组，尝试直接获取
+        availableCash = parseFloat(
+          balanceData.availableCash?.toString() || 
+          balanceData.available_cash?.toString() || 
+          '0'
+        );
+      }
+      
+      logger.debug(`[Dashboard统计API] 解析后的账户资金 - totalAssets: ${totalAssets} (来源: ${balanceData.netAssets ? 'netAssets' : balanceData.totalAssets ? 'totalAssets' : '未找到'}), availableCash: ${availableCash}`);
+      
+      logger.debug(`[Dashboard统计API] 解析后的账户资金 - totalAssets: ${totalAssets}, availableCash: ${availableCash}`);
+      
+      verificationData = {
+        totalAssets,
+        availableCash,
+      };
+    } catch (error: any) {
+      logger.error('[Dashboard统计API] 获取账户资金验证数据失败:', error);
+      // 不设置verificationData，保持为null
+    }
 
-    const result = await pool.query(query, params);
+    const todayPnl = closedTradesPnl + holdingPnl;
+    
+    logger.debug(`[Dashboard统计API] 最终计算结果 - 今日盈亏: ${todayPnl}, 已平仓盈亏: ${closedTradesPnl}, 持仓盈亏: ${holdingPnl}, 今日交易: ${todayTrades}`);
 
     res.json({
       success: true,
-      data: result.rows,
+      data: {
+        todayPnl, // 主要数据源计算结果
+        todayTrades,
+        todayBuyOrders,  // 新增：今日买入订单数量
+        todaySellOrders, // 新增：今日卖出订单数量
+        closedTradesPnl,
+        holdingPnl,
+        verificationData, // 验证数据（可选）
+      },
     });
   } catch (error: any) {
-    console.error('获取交易记录失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: error.message },
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+// ==================== 机构选股 API ====================
+
+/**
+ * GET /api/quant/institutions/popular
+ * 获取热门机构列表
+ */
+quantRouter.get('/institutions/popular', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const institutions = await getPopularInstitutions();
+    res.json({
+      success: true,
+      data: institutions,
     });
+  } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
+ * GET /api/quant/institutions/list
+ * 获取机构列表（支持分页）
+ */
+quantRouter.get('/institutions/list', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const page = parseInt(req.query.page as string) || 0;
+    const pageSize = parseInt(req.query.pageSize as string) || 15;
+
+    const result = await getInstitutionList(page, pageSize);
+    
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
+ * GET /api/quant/institutions/:institutionId/holdings
+ * 获取机构持仓列表
+ */
+quantRouter.get('/institutions/:institutionId/holdings', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { institutionId } = req.params;
+    const periodId = parseInt(req.query.periodId as string) || 88;
+    const page = parseInt(req.query.page as string) || 0;
+    const pageSize = parseInt(req.query.pageSize as string) || 50;
+
+    if (!institutionId) {
+      return next(ErrorFactory.missingParameter('institutionId'));
+    }
+
+    const result = await getInstitutionHoldings(institutionId, periodId, page, pageSize);
+    
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
+ * POST /api/quant/institutions/select-stocks
+ * 智能选股：根据机构持仓占比排序并筛选
+ */
+quantRouter.post('/institutions/select-stocks', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { institutionId, minHoldingRatio, maxStocks } = req.body;
+
+    if (!institutionId) {
+      return next(ErrorFactory.missingParameter('institutionId'));
+    }
+
+    const minRatio = minHoldingRatio ? parseFloat(minHoldingRatio) : 1.0;
+    const max = maxStocks ? parseInt(maxStocks) : undefined;
+
+    const stocks = await selectStocksByInstitution(institutionId, minRatio, max);
+    
+    res.json({
+      success: true,
+      data: {
+        stocks,
+        totalSelected: stocks.length,
+      },
+    });
+  } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
+ * POST /api/quant/institutions/calculate-allocation
+ * 计算资金分配方案
+ */
+quantRouter.post('/institutions/calculate-allocation', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const {
+      strategyId,
+      stocks,
+      allocationMode = 'PROPORTIONAL',
+      maxPositionPerSymbol,
+      minInvestmentAmount = 100,
+    } = req.body;
+
+    if (!strategyId || !stocks || !Array.isArray(stocks) || stocks.length === 0) {
+      return next(ErrorFactory.missingParameter('strategyId 或 stocks'));
+    }
+
+    // 获取策略可用资金
+    const availableCapital = await capitalManager.getAvailableCapital(strategyId);
+    if (availableCapital <= 0) {
+      return res.json({
+        success: false,
+        error: '可用资金不足',
+        data: {
+          availableCapital: 0,
+          allocations: [],
+        },
+      });
+    }
+
+    // 获取股票当前价格
+    const tradeCtx = await getTradeContext();
+    const allocations: Array<{
+      symbol: string;
+      holdingRatio: number;
+      allocationRatio: number;
+      allocationAmount: number;
+      currentPrice: number;
+      quantity: number;
+    }> = [];
+
+    let totalHoldingRatio = 0;
+    const stockPrices: Record<string, number> = {};
+
+    // 获取所有股票的价格
+    for (const stock of stocks) {
+      try {
+        const symbol = stock.symbol || stock;
+        const quote = await tradeCtx.quote([symbol]);
+        if (quote && quote.length > 0) {
+          stockPrices[symbol] = parseFloat(quote[0].lastPrice || '0');
+        } else {
+          stockPrices[symbol] = 0;
+        }
+      } catch (error) {
+        console.warn(`[资金分配] 获取股票价格失败: ${stock.symbol || stock}`);
+        stockPrices[stock.symbol || stock] = 0;
+      }
+    }
+
+    // 计算总持仓占比
+    for (const stock of stocks) {
+      const holdingRatio = parseFloat(stock.holdingRatio || stock.percentOfPortfolio || '0');
+      totalHoldingRatio += holdingRatio;
+    }
+
+    if (totalHoldingRatio === 0) {
+      return next(ErrorFactory.validationError('持仓占比总和为0，无法计算资金分配'));
+    }
+
+    // 按持仓占比分配资金
+    for (const stock of stocks) {
+      const symbol = stock.symbol || stock;
+      const holdingRatio = parseFloat(stock.holdingRatio || stock.percentOfPortfolio || '0');
+      const currentPrice = stockPrices[symbol] || stock.price || 0;
+
+      if (currentPrice <= 0) {
+        console.warn(`[资金分配] 股票 ${symbol} 价格无效，跳过`);
+        continue;
+      }
+
+      // 计算分配比例和金额
+      const allocationRatio = (holdingRatio / totalHoldingRatio) * 100;
+      let allocationAmount = (availableCapital * holdingRatio) / totalHoldingRatio;
+
+      // 应用单只股票上限
+      if (maxPositionPerSymbol && allocationAmount > maxPositionPerSymbol) {
+        allocationAmount = maxPositionPerSymbol;
+      }
+
+      // 应用最小投资金额
+      if (allocationAmount < minInvestmentAmount) {
+        allocationAmount = minInvestmentAmount;
+      }
+
+      // 计算购买数量
+      const quantity = Math.max(1, Math.floor(allocationAmount / currentPrice));
+
+      allocations.push({
+        symbol,
+        holdingRatio,
+        allocationRatio,
+        allocationAmount: Math.round(allocationAmount * 100) / 100,
+        currentPrice,
+        quantity,
+      });
+    }
+
+    // 计算总分配金额
+    const totalAllocation = allocations.reduce((sum, item) => sum + item.allocationAmount, 0);
+    const totalRatio = allocations.reduce((sum, item) => sum + item.allocationRatio, 0);
+
+    res.json({
+      success: true,
+      data: {
+        availableCapital,
+        allocations,
+        totalAllocation: Math.round(totalAllocation * 100) / 100,
+        totalRatio: Math.round(totalRatio * 100) / 100,
+      },
+    });
+  } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
   }
 });
 

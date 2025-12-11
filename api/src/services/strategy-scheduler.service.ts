@@ -13,6 +13,7 @@ import basicExecutionService from './basic-execution.service';
 import dynamicPositionManager from './dynamic-position-manager.service';
 import tradingRecommendationService from './trading-recommendation.service';
 import { logger } from '../utils/logger';
+import { getTradeContext } from '../config/longport';
 
 class StrategyScheduler {
   private runningStrategies: Map<number, NodeJS.Timeout> = new Map();
@@ -24,6 +25,9 @@ class StrategyScheduler {
   // 今日订单缓存：避免频繁调用 todayOrders() API
   private todayOrdersCache: { orders: any[]; timestamp: number } | null = null;
   private readonly TODAY_ORDERS_CACHE_TTL = 60 * 1000; // 60秒缓存（增加缓存时间，减少API请求频率）
+  // 订单提交缓存：防止重复提交订单
+  private orderSubmissionCache: Map<string, { timestamp: number; orderId?: string }> = new Map();
+  private readonly ORDER_CACHE_TTL = 60000; // 60秒缓存
 
   /**
    * 启动策略调度器
@@ -313,7 +317,7 @@ class StrategyScheduler {
           
           // 更新数据库状态
           let dbStatus = 'SUBMITTED';
-          if (status === 'FilledStatus') {
+          if (status === 'FilledStatus' || status === 'PartialFilledStatus') {
             dbStatus = 'FILLED';
             // 记录已成交订单，后续更新策略实例状态
             const avgPrice = parseFloat(apiOrder.executedPrice?.toString() || apiOrder.executed_price?.toString() || '0');
@@ -326,17 +330,38 @@ class StrategyScheduler {
                 filledQuantity,
               });
             }
+            
+            // 更新信号状态为EXECUTED（如果订单已成交）
+            try {
+              await basicExecutionService.updateSignalStatusByOrderId(dbOrder.order_id, 'EXECUTED');
+            } catch (signalError: any) {
+              logger.warn(`更新信号状态失败 (orderId: ${dbOrder.order_id}):`, signalError.message);
+            }
           } else if (status === 'CanceledStatus' || status === 'PendingCancelStatus' || status === 'WaitToCancel') {
             dbStatus = 'CANCELLED';
             // 只有在状态发生变化时才处理（避免重复处理）
             if (dbOrder.current_status !== 'CANCELLED') {
               await this.handleOrderCancelled(strategyId, dbOrder.symbol, dbOrder.order_id);
+              
+              // 更新信号状态为IGNORED（如果订单被取消）
+              try {
+                await basicExecutionService.updateSignalStatusByOrderId(dbOrder.order_id, 'IGNORED');
+              } catch (signalError: any) {
+                logger.warn(`更新信号状态失败 (orderId: ${dbOrder.order_id}):`, signalError.message);
+              }
             }
           } else if (status === 'RejectedStatus') {
             dbStatus = 'FAILED';
             // 只有在状态发生变化时才处理（避免重复处理）
             if (dbOrder.current_status !== 'FAILED') {
               await this.handleOrderRejected(strategyId, dbOrder.symbol, dbOrder.order_id);
+              
+              // 更新信号状态为REJECTED（如果订单被拒绝）
+              try {
+                await basicExecutionService.updateSignalStatusByOrderId(dbOrder.order_id, 'REJECTED');
+              } catch (signalError: any) {
+                logger.warn(`更新信号状态失败 (orderId: ${dbOrder.order_id}):`, signalError.message);
+              }
             }
           } else if (pendingStatuses.includes(status)) {
             dbStatus = 'NEW';
@@ -365,6 +390,9 @@ class StrategyScheduler {
         const strategyConfig = strategyConfigResult.rows[0]?.config || {};
         const strategyInstance = this.createStrategyInstance(strategyType, strategyId, strategyConfig);
         
+        // 用于跟踪已处理的订单，避免重复处理
+        const processedOrders = new Set<string>();
+        
         for (const dbOrder of strategyOrders.rows) {
           const apiOrder = todayOrders.find((o: any) => 
             (o.orderId || o.order_id) === dbOrder.order_id
@@ -376,7 +404,10 @@ class StrategyScheduler {
           const isBuy = dbOrder.side === 'BUY' || dbOrder.side === 'Buy' || dbOrder.side === 1;
           const isSell = dbOrder.side === 'SELL' || dbOrder.side === 'Sell' || dbOrder.side === 2;
           
-          if (status === 'FilledStatus' && dbOrder.current_status !== 'FILLED') {
+          // 检查订单是否已处理：1) 数据库状态已经是FILLED，或 2) 在当前循环中已处理过
+          if (status === 'FilledStatus' && dbOrder.current_status !== 'FILLED' && !processedOrders.has(dbOrder.order_id)) {
+            // 标记为已处理，避免重复处理
+            processedOrders.add(dbOrder.order_id);
             const avgPrice = parseFloat(apiOrder.executedPrice?.toString() || apiOrder.executed_price?.toString() || '0');
             const filledQuantity = parseInt(apiOrder.executedQuantity?.toString() || apiOrder.executed_quantity?.toString() || '0');
             
@@ -440,36 +471,90 @@ class StrategyScheduler {
                   // 卖出订单成交：更新状态为IDLE，释放资金
                   await strategyInstance.updateState(dbOrder.symbol, 'IDLE');
                   
-                  // 释放资金（从持仓金额中扣除）
-                  const instanceResult = await pool.query(
-                    `SELECT context FROM strategy_instances 
-                     WHERE strategy_id = $1 AND symbol = $2`,
-                    [strategyId, dbOrder.symbol]
-                  );
+                  // 释放资金：使用实际成交金额（卖出价格 * 成交数量）
+                  // 优先使用实际成交金额，如果没有则使用context中的持仓价值
+                  let releaseAmount = 0;
                   
-                  if (instanceResult.rows.length > 0 && instanceResult.rows[0].context) {
-                    let context: any = {};
-                    try {
-                      context = typeof instanceResult.rows[0].context === 'string' 
-                        ? JSON.parse(instanceResult.rows[0].context)
-                        : instanceResult.rows[0].context;
-                      
-                      if (context.allocationAmount) {
-                        await capitalManager.releaseAllocation(
-                          strategyId,
-                          context.allocationAmount,
-                          dbOrder.symbol
-                        );
+                  // 方法1：使用实际成交金额（最准确）
+                  if (avgPrice > 0 && filledQuantity > 0) {
+                    releaseAmount = avgPrice * filledQuantity;
+                    logger.log(
+                      `策略 ${strategyId} 标的 ${dbOrder.symbol} 卖出订单已成交，` +
+                      `使用实际成交金额释放资金: ${releaseAmount.toFixed(2)} ` +
+                      `(成交价=${avgPrice.toFixed(2)}, 数量=${filledQuantity})`
+                    );
+                  } else {
+                    // 方法2：从context中获取持仓价值（fallback）
+                    const instanceResult = await pool.query(
+                      `SELECT context FROM strategy_instances 
+                       WHERE strategy_id = $1 AND symbol = $2`,
+                      [strategyId, dbOrder.symbol]
+                    );
+                    
+                    if (instanceResult.rows.length > 0 && instanceResult.rows[0].context) {
+                      let context: any = {};
+                      try {
+                        context = typeof instanceResult.rows[0].context === 'string' 
+                          ? JSON.parse(instanceResult.rows[0].context)
+                          : instanceResult.rows[0].context;
+                        
+                        // 优先使用allocationAmount（买入时申请的金额）
+                        if (context.allocationAmount) {
+                          releaseAmount = parseFloat(context.allocationAmount.toString() || '0');
+                          logger.log(
+                            `策略 ${strategyId} 标的 ${dbOrder.symbol} 卖出订单已成交，` +
+                            `使用context中的allocationAmount释放资金: ${releaseAmount.toFixed(2)}`
+                          );
+                        } 
+                        // 如果没有allocationAmount，使用entryPrice * quantity计算
+                        else if (context.entryPrice && context.quantity) {
+                          releaseAmount = parseFloat(context.entryPrice.toString() || '0') * 
+                                         parseInt(context.quantity.toString() || '0');
+                          logger.log(
+                            `策略 ${strategyId} 标的 ${dbOrder.symbol} 卖出订单已成交，` +
+                            `使用entryPrice * quantity释放资金: ${releaseAmount.toFixed(2)} ` +
+                            `(入场价=${context.entryPrice}, 数量=${context.quantity})`
+                          );
+                        }
+                      } catch (e) {
+                        logger.error(`策略 ${strategyId} 标的 ${dbOrder.symbol} 解析context失败:`, e);
                       }
-                    } catch (e) {
-                      // 忽略JSON解析错误
                     }
                   }
                   
-                  logger.log(`策略 ${strategyId} 标的 ${dbOrder.symbol} 卖出订单已成交，更新状态为IDLE，订单ID: ${dbOrder.order_id}`);
+                  // 释放资金
+                  if (releaseAmount > 0) {
+                    await capitalManager.releaseAllocation(
+                      strategyId,
+                      releaseAmount,
+                      dbOrder.symbol
+                    );
+                    logger.log(
+                      `策略 ${strategyId} 标的 ${dbOrder.symbol} 卖出订单已成交，` +
+                      `已释放资金 ${releaseAmount.toFixed(2)}，更新状态为IDLE，订单ID: ${dbOrder.order_id}`
+                    );
+                  } else {
+                    logger.warn(
+                      `策略 ${strategyId} 标的 ${dbOrder.symbol} 卖出订单已成交，` +
+                      `但无法确定释放金额（成交价=${avgPrice}, 数量=${filledQuantity}），` +
+                      `请检查资金使用情况`
+                    );
+                  }
+                  
+                  // 立即更新数据库状态为FILLED，防止重复处理
+                  await pool.query(
+                    `UPDATE execution_orders 
+                     SET current_status = 'FILLED', updated_at = NOW()
+                     WHERE order_id = $1 AND current_status != 'FILLED'`,
+                    [dbOrder.order_id]
+                  );
                 }
               } catch (error: any) {
                 logger.error(`更新已成交订单状态失败 (${dbOrder.order_id}):`, error);
+                // 即使出错，也要标记为已处理，避免重复处理
+                if (processedOrders) {
+                  processedOrders.add(dbOrder.order_id);
+                }
               }
             }
           }
@@ -808,6 +893,32 @@ class StrategyScheduler {
 
       logger.log(`策略 ${strategyId} 标的 ${symbol}: 生成信号 ${intent.action}, 价格=${intent.entryPrice?.toFixed(2) || 'N/A'}, 原因=${intent.reason?.substring(0, 50) || 'N/A'}`);
 
+      // 验证策略执行是否安全（防止高买低卖、重复下单等）
+      const validation = await this.validateStrategyExecution(strategyId, symbol, intent);
+      if (!validation.valid) {
+        logger.warn(
+          `[策略执行验证] 策略 ${strategyId} 标的 ${symbol} 执行被阻止: ${validation.reason}`
+        );
+        
+        // 记录验证失败日志
+        await pool.query(
+          `INSERT INTO signal_logs (strategy_id, symbol, signal_type, signal_data, created_at)
+           VALUES ($1, $2, $3, $4, NOW())`,
+          [
+            strategyId,
+            symbol,
+            'VALIDATION_FAILED',
+            JSON.stringify({
+              intent,
+              reason: validation.reason,
+              timestamp: new Date().toISOString(),
+            }),
+          ]
+        );
+        
+        return; // 跳过这个标的，继续处理下一个
+      }
+
       // 如果是买入信号，执行交易
       if (intent.action === 'BUY') {
         // 申请资金额度
@@ -866,6 +977,11 @@ class StrategyScheduler {
 
         // 执行买入
         const executionResult = await basicExecutionService.executeBuyIntent(intent, strategyId);
+
+        // 标记订单已提交（用于去重）
+        if (executionResult.submitted && executionResult.orderId) {
+          this.markOrderSubmitted(strategyId, symbol, 'BUY', executionResult.orderId);
+        }
 
         if (executionResult.success) {
           // 获取当前市场环境（用于保存到上下文）
@@ -1209,17 +1325,67 @@ class StrategyScheduler {
 
       let context: any = {};
       try {
-        context = typeof instanceResult.rows[0].context === 'string' 
-          ? JSON.parse(instanceResult.rows[0].context)
-          : instanceResult.rows[0].context;
+        const contextData = instanceResult.rows[0].context;
+        if (!contextData) {
+          logger.warn(`策略 ${strategyId} 标的 ${symbol}: 持仓状态但context为空，尝试从持仓数据恢复`);
+          // 尝试从持仓数据恢复context
+          const tradeCtx = await getTradeContext();
+          const positions = await tradeCtx.stockPositions();
+          let actualPositions: any[] = [];
+          if (Array.isArray(positions)) {
+            actualPositions = positions;
+          } else if (positions && typeof positions === 'object' && positions.channels) {
+            const firstChannel = positions.channels[0];
+            if (firstChannel && firstChannel.positions) {
+              actualPositions = firstChannel.positions;
+            }
+          }
+          const position = actualPositions.find((p: any) => p.symbol === symbol);
+          if (position) {
+            // 根据实际日志数据，字段名是 costPrice（字符串格式，如 "75.180"）
+            const costPrice = parseFloat(position.costPrice?.toString() || '0');
+            // 根据实际日志数据，字段名是 quantity（数字，如 40）
+            const quantity = parseInt(position.quantity?.toString() || '0');
+            if (costPrice > 0 && quantity > 0) {
+              // 恢复context
+              context = {
+                entryPrice: costPrice,
+                quantity: quantity,
+                stopLoss: costPrice * 0.95, // 默认止损
+                takeProfit: costPrice * 1.10, // 默认止盈
+              };
+              // 更新数据库
+              await pool.query(
+                `UPDATE strategy_instances SET context = $1 WHERE strategy_id = $2 AND symbol = $3`,
+                [JSON.stringify(context), strategyId, symbol]
+              );
+              logger.log(`策略 ${strategyId} 标的 ${symbol}: 已从持仓数据恢复context，入场价=${costPrice}, 数量=${quantity}`);
+            } else {
+              logger.error(`策略 ${strategyId} 标的 ${symbol}: 无法从持仓数据恢复context，成本价或数量无效`);
+              return;
+            }
+          } else {
+            logger.error(`策略 ${strategyId} 标的 ${symbol}: 无法从持仓数据恢复context，未找到持仓`);
+            return;
+          }
+        } else {
+          context = typeof contextData === 'string' 
+            ? JSON.parse(contextData)
+            : contextData;
+        }
       } catch (e) {
         logger.error(`策略 ${strategyId} 标的 ${symbol}: 解析上下文失败`, e);
         return;
       }
 
+      if (!context || typeof context !== 'object') {
+        logger.error(`策略 ${strategyId} 标的 ${symbol}: context无效`);
+        return;
+      }
+
       const entryPrice = context.entryPrice;
-      const stopLoss = context.stopLoss;
-      const takeProfit = context.takeProfit;
+      let stopLoss = context.stopLoss;
+      let takeProfit = context.takeProfit;
       const quantity = context.quantity;
 
       if (!entryPrice || !quantity) {
@@ -1287,17 +1453,53 @@ class StrategyScheduler {
 
       logger.log(`策略 ${strategyId} 标的 ${symbol}: 持仓监控 - 当前价=${currentPrice.toFixed(2)}, 盈亏=${pnl.toFixed(2)} (${pnlPercent > 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)`);
 
-      // 3. 获取完整的持仓上下文
+      // 3. 如果止损/止盈未设置，设置默认值（基于入场价的百分比）
+      // 默认止损：入场价的 -5%
+      // 默认止盈：入场价的 +10%
+      let defaultStopLoss = stopLoss;
+      let defaultTakeProfit = takeProfit;
+      let needsUpdate = false;
+      
+      if (!defaultStopLoss && entryPrice > 0) {
+        defaultStopLoss = entryPrice * 0.95; // -5%
+        needsUpdate = true;
+        logger.log(`策略 ${strategyId} 标的 ${symbol}: 止损未设置，设置默认止损=${defaultStopLoss.toFixed(2)} (入场价的95%)`);
+      }
+      if (!defaultTakeProfit && entryPrice > 0) {
+        defaultTakeProfit = entryPrice * 1.10; // +10%
+        needsUpdate = true;
+        logger.log(`策略 ${strategyId} 标的 ${symbol}: 止盈未设置，设置默认止盈=${defaultTakeProfit.toFixed(2)} (入场价的110%)`);
+      }
+      
+      // 如果需要更新，先更新上下文
+      if (needsUpdate) {
+        const updatedContext = {
+          ...context,
+          stopLoss: defaultStopLoss,
+          takeProfit: defaultTakeProfit,
+          originalStopLoss: context.originalStopLoss || defaultStopLoss,
+          originalTakeProfit: context.originalTakeProfit || defaultTakeProfit,
+          currentStopLoss: context.currentStopLoss || defaultStopLoss,
+          currentTakeProfit: context.currentTakeProfit || defaultTakeProfit,
+        };
+        await strategyInstance.updateState(symbol, 'HOLDING', updatedContext);
+        // 更新本地变量
+        context = updatedContext;
+        stopLoss = defaultStopLoss;
+        takeProfit = defaultTakeProfit;
+      }
+
+      // 4. 获取完整的持仓上下文
       const positionContext = await dynamicPositionManager.getPositionContext(
         strategyId,
         symbol,
         context
       );
 
-      // 4. 获取当前市场环境
+      // 5. 获取当前市场环境
       const marketEnv = await dynamicPositionManager.getCurrentMarketEnvironment(symbol);
 
-      // 5. 检查固定止盈/止损（使用当前调整后的值）
+      // 6. 检查固定止盈/止损（使用当前调整后的值）
       const currentStopLoss = positionContext.currentStopLoss || stopLoss;
       const currentTakeProfit = positionContext.currentTakeProfit || takeProfit;
 
@@ -1396,17 +1598,56 @@ class StrategyScheduler {
           exitPrice,
         });
 
+        // 在提交卖出订单前，重新获取最新市场价格（避免使用过时价格）
+        let latestPrice = currentPrice;
+        try {
+          const { getQuoteContext } = await import('../config/longport');
+          const quoteCtx = await getQuoteContext();
+          const quotes = await quoteCtx.quote([symbol]);
+          if (quotes && quotes.length > 0) {
+            const quote = quotes[0];
+            const newPrice = parseFloat(quote.lastDone?.toString() || quote.last_done?.toString() || '0');
+            if (newPrice > 0) {
+              latestPrice = newPrice;
+              logger.log(`策略 ${strategyId} 标的 ${symbol}: 卖出前获取最新价格 ${latestPrice.toFixed(2)} (之前价格: ${currentPrice.toFixed(2)})`);
+            }
+          }
+        } catch (priceError: any) {
+          logger.warn(`策略 ${strategyId} 标的 ${symbol}: 获取最新价格失败，使用当前价格 ${currentPrice.toFixed(2)}:`, priceError.message);
+        }
+
         // 创建卖出意图
+        // entryPrice: 使用实际的买入价格（从context获取，用于记录和计算盈亏）
+        // sellPrice: 使用最新市场价格（用于提交卖出订单）
+        
+        // 如果entryPrice不存在，记录警告（这应该是异常情况）
+        if (!context.entryPrice) {
+          logger.warn(`策略 ${strategyId} 标的 ${symbol}: 持仓状态但缺少entryPrice，使用latestPrice作为fallback。这可能导致盈亏计算不准确。`);
+        }
+        
         const sellIntent = {
           action: 'SELL' as const,
           symbol,
-          entryPrice: exitPrice,
+          entryPrice: context.entryPrice || latestPrice, // ✅ 使用实际买入价格，如果不存在则使用latestPrice作为fallback
+          sellPrice: latestPrice, // ✅ 使用最新市场价格作为卖出价格
           quantity: quantity,
           reason: `自动卖出: ${exitReason}`,
         };
 
+        // 记录价格信息，便于调试和问题追踪
+        logger.log(`策略 ${strategyId} 标的 ${symbol}: 创建卖出意图 - ` +
+          `买入价(entryPrice)=${sellIntent.entryPrice?.toFixed(2)}, ` +
+          `卖出价(sellPrice)=${sellIntent.sellPrice?.toFixed(2)}, ` +
+          `数量=${quantity}, ` +
+          `原因=${exitReason}`);
+
         // 执行卖出
         const executionResult = await basicExecutionService.executeSellIntent(sellIntent, strategyId);
+
+        // 标记订单已提交（用于去重）
+        if (executionResult.submitted && executionResult.orderId) {
+          this.markOrderSubmitted(strategyId, symbol, 'SELL', executionResult.orderId);
+        }
 
         if (executionResult.success) {
           // 卖出成功，状态会在订单追踪中更新为IDLE
@@ -1628,6 +1869,123 @@ class StrategyScheduler {
       logger.error(`检查未成交卖出订单失败 (${symbol}):`, error);
       // 出错时返回true，保守处理，避免重复提交
       return true;
+    }
+  }
+
+  /**
+   * 验证策略执行是否安全
+   * 防止高买低卖、重复下单等问题
+   */
+  private async validateStrategyExecution(
+    strategyId: number,
+    symbol: string,
+    intent: { action: string; price?: number; quantity?: number; entryPrice?: number }
+  ): Promise<{ valid: boolean; reason?: string }> {
+    try {
+      // 1. 检查是否已有持仓
+      const instanceResult = await pool.query(
+        `SELECT symbol, current_state, context 
+         FROM strategy_instances 
+         WHERE strategy_id = $1 AND symbol = $2`,
+        [strategyId, symbol]
+      );
+      
+      if (instanceResult.rows.length > 0) {
+        const instance = instanceResult.rows[0];
+        const context = instance.context ? JSON.parse(instance.context) : {};
+        
+        // 如果已有持仓，检查卖出逻辑
+        if (intent.action === 'SELL' && instance.current_state === 'HOLDING') {
+          // 获取买入价格
+          const buyPrice = context.buyPrice || context.entryPrice;
+          const sellPrice = intent.price || intent.entryPrice;
+          
+          if (buyPrice && sellPrice && sellPrice < buyPrice * 0.95) {
+            // 卖出价格低于买入价格5%，可能是高买低卖
+            return {
+              valid: false,
+              reason: `卖出价格 ${sellPrice.toFixed(2)} 低于买入价格 ${buyPrice.toFixed(2)} 超过5%，疑似高买低卖`
+            };
+          }
+        }
+        
+        // 如果已有持仓，不允许再次买入
+        if (intent.action === 'BUY' && instance.current_state === 'HOLDING') {
+          return {
+            valid: false,
+            reason: `标的 ${symbol} 已有持仓，不允许重复买入`
+          };
+        }
+      }
+      
+      // 2. 检查是否有未成交订单（防止重复下单）
+      const hasPendingOrder = await this.checkPendingOrder(strategyId, symbol);
+      if (hasPendingOrder) {
+        return {
+          valid: false,
+          reason: `标的 ${symbol} 已有未成交订单，不允许重复下单`
+        };
+      }
+      
+      // 3. 检查订单提交缓存（防止竞态条件导致的重复提交）
+      const cacheKey = `${strategyId}:${symbol}:${intent.action}`;
+      const cached = this.orderSubmissionCache.get(cacheKey);
+      
+      if (cached && Date.now() - cached.timestamp < this.ORDER_CACHE_TTL) {
+        return {
+          valid: false,
+          reason: `标的 ${symbol} 在最近60秒内已提交过 ${intent.action} 订单，防止重复提交`
+        };
+      }
+      
+      // 4. 验证信号用途（SELL信号用于做空，不是平仓）
+      if (intent.action === 'SELL' && instanceResult.rows.length > 0) {
+        const instance = instanceResult.rows[0];
+        const context = instance.context ? JSON.parse(instance.context) : {};
+        
+        // 如果context中没有止盈/止损信息，可能是错误的信号
+        // 注意：这里只做警告，不阻止执行，因为可能是手动平仓
+        if (!context.stopLoss && !context.takeProfit && !context.currentStopLoss && !context.currentTakeProfit) {
+          logger.warn(
+            `[策略执行验证] SELL信号用于平仓，但未找到止盈/止损信息，可能是信号误用 (${symbol})`
+          );
+          // 不阻止执行，只记录警告
+        }
+      }
+      
+      return { valid: true };
+    } catch (error: any) {
+      logger.error(`验证策略执行失败 (${strategyId}, ${symbol}):`, error);
+      return {
+        valid: false,
+        reason: `验证过程出错: ${error.message}`
+      };
+    }
+  }
+
+  /**
+   * 标记订单已提交（用于去重）
+   */
+  private markOrderSubmitted(
+    strategyId: number,
+    symbol: string,
+    action: string,
+    orderId?: string
+  ): void {
+    const cacheKey = `${strategyId}:${symbol}:${action}`;
+    this.orderSubmissionCache.set(cacheKey, {
+      timestamp: Date.now(),
+      orderId,
+    });
+    
+    // 清理过期缓存（避免内存泄漏）
+    if (this.orderSubmissionCache.size > 1000) {
+      const now = Date.now();
+      for (const [key, value] of this.orderSubmissionCache.entries()) {
+        if (now - value.timestamp > this.ORDER_CACHE_TTL) {
+          this.orderSubmissionCache.delete(key);
+        }
+      }
     }
   }
 

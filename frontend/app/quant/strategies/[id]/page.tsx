@@ -2,8 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { quantApi, watchlistApi } from '@/lib/api';
-import BackButton from '@/components/BackButton';
+import { quantApi, watchlistApi, quoteApi } from '@/lib/api';
+import AppLayout from '@/components/AppLayout';
+import EditStrategyModal from '@/components/EditStrategyModal';
+import { Card, Table, Tag, Space, Button, Alert, Spin, Row, Col, Descriptions, Modal, message, Typography } from 'antd';
 
 interface Strategy {
   id: number;
@@ -25,21 +27,36 @@ interface StrategyInstance {
   lastUpdated: string;
 }
 
+interface InstanceWithDetails extends StrategyInstance {
+  entryPrice?: number;
+  quantity?: number;
+  stopLoss?: number;
+  takeProfit?: number;
+  entryTime?: string;
+  currentPrice?: number;
+  pnl?: number;
+  pnlPercent?: number;
+  marketValue?: number;
+  holdingDuration?: string;
+}
+
 export default function StrategyDetailPage() {
   const params = useParams();
   const router = useRouter();
   const strategyId = parseInt(params.id as string);
 
   const [strategy, setStrategy] = useState<Strategy | null>(null);
-  const [instances, setInstances] = useState<StrategyInstance[]>([]);
+  const [instances, setInstances] = useState<InstanceWithDetails[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
+  const [pricesLoading, setPricesLoading] = useState(false);
 
   useEffect(() => {
     if (strategyId) {
       loadData();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategyId]);
 
   const loadData = async () => {
@@ -57,7 +74,49 @@ export default function StrategyDetailPage() {
       }
 
       if (instancesRes.success) {
-        setInstances(instancesRes.data || []);
+        const instancesData = instancesRes.data || [];
+        // 处理实例数据，提取context中的信息
+        const processedInstances = instancesData.map((instance: StrategyInstance) => {
+          const context = instance.context || {};
+          const entryPrice = context.entryPrice;
+          const quantity = context.quantity;
+          const stopLoss = context.stopLoss || context.currentStopLoss;
+          const takeProfit = context.takeProfit || context.currentTakeProfit;
+          const entryTime = context.entryTime || instance.lastUpdated;
+          
+          // 计算持仓时长
+          let holdingDuration = '-';
+          if (entryTime) {
+            const entryDate = new Date(entryTime);
+            const now = new Date();
+            const diffMs = now.getTime() - entryDate.getTime();
+            const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+            const diffHours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+            if (diffDays > 0) {
+              holdingDuration = `${diffDays}天${diffHours > 0 ? diffHours + '小时' : ''}`;
+            } else if (diffHours > 0) {
+              holdingDuration = `${diffHours}小时`;
+            } else {
+              const diffMinutes = Math.floor(diffMs / (1000 * 60));
+              holdingDuration = diffMinutes > 0 ? `${diffMinutes}分钟` : '刚刚';
+            }
+          }
+          
+          return {
+            ...instance,
+            entryPrice,
+            quantity,
+            stopLoss,
+            takeProfit,
+            entryTime,
+            holdingDuration,
+          } as InstanceWithDetails;
+        });
+        
+        setInstances(processedInstances);
+        
+        // 异步加载当前价格
+        loadCurrentPrices(processedInstances);
       }
     } catch (err: any) {
       setError(err.message || '加载策略详情失败');
@@ -66,194 +125,344 @@ export default function StrategyDetailPage() {
     }
   };
 
+  const loadCurrentPrices = async (instances: InstanceWithDetails[]) => {
+    const holdingInstances = instances.filter(i => i.currentState === 'HOLDING' && i.symbol);
+    if (holdingInstances.length === 0) return;
+    
+    try {
+      setPricesLoading(true);
+      const symbols = holdingInstances.map(i => i.symbol);
+      const quoteRes = await quoteApi.getQuote(symbols);
+      
+      if (quoteRes.success && quoteRes.data) {
+        const quotes = Array.isArray(quoteRes.data) ? quoteRes.data : [quoteRes.data];
+        const priceMap: Record<string, number> = {};
+        
+        quotes.forEach((quote: any) => {
+          const symbol = quote.symbol || quote.code;
+          const price = parseFloat(quote.lastPrice || quote.price || '0');
+          if (symbol && price > 0) {
+            priceMap[symbol] = price;
+          }
+        });
+        
+        // 更新实例的当前价格和盈亏
+        setInstances(prev => prev.map(instance => {
+          if (instance.currentState === 'HOLDING' && priceMap[instance.symbol]) {
+            const currentPrice = priceMap[instance.symbol];
+            const entryPrice = instance.entryPrice || 0;
+            const quantity = instance.quantity || 0;
+            const pnl = entryPrice > 0 && quantity > 0 
+              ? (currentPrice - entryPrice) * quantity 
+              : 0;
+            const pnlPercent = entryPrice > 0 
+              ? ((currentPrice - entryPrice) / entryPrice) * 100 
+              : 0;
+            const marketValue = currentPrice * quantity;
+            
+            return {
+              ...instance,
+              currentPrice,
+              pnl,
+              pnlPercent,
+              marketValue,
+            };
+          }
+          return instance;
+        }));
+      }
+    } catch (err) {
+      console.error('加载当前价格失败:', err);
+    } finally {
+      setPricesLoading(false);
+    }
+  };
+
   const handleStart = async () => {
     try {
       await quantApi.startStrategy(strategyId);
-      alert('策略已启动');
+      message.success('策略已启动');
       await loadData();
     } catch (err: any) {
-      alert(err.message || '启动策略失败');
+      message.error(err.message || '启动策略失败');
     }
   };
 
   const handleStop = async () => {
-    if (!confirm('确定要停止该策略吗？')) return;
-    try {
-      await quantApi.stopStrategy(strategyId);
-      alert('策略已停止');
-      await loadData();
-    } catch (err: any) {
-      alert(err.message || '停止策略失败');
-    }
+    Modal.confirm({
+      title: '确认停止',
+      content: '确定要停止该策略吗？',
+      onOk: async () => {
+        try {
+          await quantApi.stopStrategy(strategyId);
+          message.success('策略已停止');
+          await loadData();
+        } catch (err: any) {
+          message.error(err.message || '停止策略失败');
+        }
+      },
+    });
   };
 
   const handleDelete = async () => {
-    if (!confirm('确定要删除该策略吗？此操作不可恢复！')) return;
-    try {
-      await quantApi.deleteStrategy(strategyId);
-      alert('策略已删除');
-      router.push('/quant/strategies');
-    } catch (err: any) {
-      alert(err.message || '删除策略失败');
-    }
+    Modal.confirm({
+      title: '确认删除',
+      content: '确定要删除该策略吗？此操作不可恢复！',
+      okText: '删除',
+      okType: 'danger',
+      onOk: async () => {
+        try {
+          await quantApi.deleteStrategy(strategyId);
+          message.success('策略已删除');
+          router.push('/quant/strategies');
+        } catch (err: any) {
+          message.error(err.message || '删除策略失败');
+        }
+      },
+    });
+  };
+
+  const getStatusTag = (status: string) => {
+    const statusMap: Record<string, { color: string; text: string }> = {
+      RUNNING: { color: 'success', text: '🟢 运行中' },
+      STOPPED: { color: 'default', text: '⚪ 已停止' },
+      ERROR: { color: 'error', text: '🔴 错误' },
+      PAUSED: { color: 'warning', text: '🟡 已暂停' },
+    };
+    const config = statusMap[status] || { color: 'default', text: status };
+    return <Tag color={config.color}>{config.text}</Tag>;
+  };
+
+  const getInstanceStateTag = (state: string) => {
+    const stateMap: Record<string, { color: string; text: string }> = {
+      HOLDING: { color: 'success', text: '🟢 持仓中' },
+      OPENING: { color: 'warning', text: '🟡 买入中' },
+      CLOSING: { color: 'warning', text: '🟡 卖出中' },
+      IDLE: { color: 'default', text: '⚪ 空闲' },
+    };
+    const config = stateMap[state] || { color: 'default', text: state };
+    return <Tag color={config.color}>{config.text}</Tag>;
   };
 
   if (loading) {
     return (
-      <div className="container mx-auto p-6">
-        <div className="text-center">加载中...</div>
-      </div>
+      <AppLayout>
+        <Card>
+          <div style={{ textAlign: 'center', padding: '40px 0' }}>
+            <Spin size="large" />
+            <div style={{ marginTop: 16 }}>加载中...</div>
+          </div>
+        </Card>
+      </AppLayout>
     );
   }
 
   if (error || !strategy) {
     return (
-      <div className="container mx-auto p-6">
-        <BackButton />
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mt-4">
-          {error || '策略不存在'}
-        </div>
-      </div>
+      <AppLayout>
+        <Alert
+          message={error || '策略不存在'}
+          type="error"
+          showIcon
+        />
+      </AppLayout>
     );
   }
 
-  return (
-    <div className="container mx-auto p-6">
-      <div className="flex justify-between items-center mb-6">
-        <BackButton />
-        <div className="flex gap-2">
-          {strategy.status === 'STOPPED' && (
-            <button
-              onClick={handleStart}
-              className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
-            >
-              启动策略
-            </button>
-          )}
-          {strategy.status === 'RUNNING' && (
-            <button
-              onClick={handleStop}
-              className="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
-            >
-              停止策略
-            </button>
-          )}
-          {strategy.status === 'STOPPED' && (
-            <button
-              onClick={() => setShowEditModal(true)}
-              className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
-            >
-              编辑
-            </button>
-          )}
-          <button
-            onClick={handleDelete}
-            className="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
-          >
-            删除
-          </button>
-        </div>
-      </div>
+  const hasHoldingInstances = instances.some(i => i.currentState === 'HOLDING');
+  
+  const baseColumns = [
+    {
+      title: '标的',
+      key: 'symbol',
+      dataIndex: 'symbol',
+      render: (text: string) => <span style={{ fontFamily: 'monospace', fontWeight: 500 }}>{text}</span>,
+    },
+    {
+      title: '状态',
+      key: 'currentState',
+      dataIndex: 'currentState',
+      render: (state: string) => getInstanceStateTag(state || 'HOLDING'),
+    },
+  ];
 
-      <h1 className="text-3xl font-bold mb-6">{strategy.name}</h1>
-
-      <div className="bg-white rounded-lg shadow p-6 mb-6">
-        <h2 className="text-xl font-bold mb-4">基本信息</h2>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="text-sm font-medium text-gray-500">策略ID</label>
-            <div className="text-lg">{strategy.id}</div>
-          </div>
-          <div>
-            <label className="text-sm font-medium text-gray-500">策略类型</label>
-            <div className="text-lg">{strategy.type}</div>
-          </div>
-          <div>
-            <label className="text-sm font-medium text-gray-500">状态</label>
-            <div>
-              <span
-                className={`px-2 py-1 rounded text-xs font-medium ${
-                  strategy.status === 'RUNNING'
-                    ? 'bg-green-100 text-green-800'
-                    : strategy.status === 'ERROR'
-                    ? 'bg-red-100 text-red-800'
-                    : strategy.status === 'PAUSED'
-                    ? 'bg-yellow-100 text-yellow-800'
-                    : 'bg-gray-100 text-gray-800'
-                }`}
-              >
-                {strategy.status}
+  const holdingColumns = hasHoldingInstances ? [
+    {
+      title: '持仓价格',
+      key: 'entryPrice',
+      render: (_: any, record: InstanceWithDetails) =>
+        record.entryPrice && record.quantity ? `$${record.entryPrice.toFixed(2)}` : '-',
+    },
+    {
+      title: '当前价格',
+      key: 'currentPrice',
+      render: (_: any, record: InstanceWithDetails) => {
+        if (record.currentState === 'HOLDING') {
+          return record.currentPrice ? `$${record.currentPrice.toFixed(2)}` : '加载中...';
+        }
+        return '-';
+      },
+    },
+    {
+      title: '盈亏',
+      key: 'pnl',
+      render: (_: any, record: InstanceWithDetails) => {
+        if (record.pnl !== undefined && record.pnlPercent !== undefined) {
+          return (
+            <div style={{ color: record.pnl >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 600 }}>
+              {record.pnl >= 0 ? '+' : ''}${record.pnl.toFixed(2)}
+              <span style={{ marginLeft: 4, fontSize: 12 }}>
+                ({record.pnlPercent >= 0 ? '+' : ''}{record.pnlPercent.toFixed(2)}%)
               </span>
             </div>
-          </div>
-          <div>
-            <label className="text-sm font-medium text-gray-500">资金分配</label>
-            <div className="text-lg">{strategy.allocationName || '-'}</div>
-          </div>
-          <div>
-            <label className="text-sm font-medium text-gray-500">创建时间</label>
-            <div className="text-lg">{new Date(strategy.createdAt).toLocaleString()}</div>
-          </div>
-          <div>
-            <label className="text-sm font-medium text-gray-500">更新时间</label>
-            <div className="text-lg">{new Date(strategy.updatedAt).toLocaleString()}</div>
-          </div>
+          );
+        }
+        return <span style={{ color: '#999' }}>-</span>;
+      },
+    },
+    {
+      title: '数量',
+      key: 'quantity',
+      render: (_: any, record: InstanceWithDetails) =>
+        record.entryPrice && record.quantity ? record.quantity : '-',
+    },
+    {
+      title: '市值',
+      key: 'marketValue',
+      render: (_: any, record: InstanceWithDetails) =>
+        record.marketValue ? `$${record.marketValue.toFixed(2)}` : '-',
+    },
+    {
+      title: '入场时间',
+      key: 'entryTime',
+      render: (_: any, record: InstanceWithDetails) =>
+        record.entryTime ? new Date(record.entryTime).toLocaleString('zh-CN') : '-',
+    },
+    {
+      title: '持仓时长',
+      key: 'holdingDuration',
+      dataIndex: 'holdingDuration',
+      render: (text: string) => text || '-',
+    },
+  ] : [];
+
+  const instanceColumns = [
+    ...baseColumns,
+    ...holdingColumns,
+    {
+      title: '最后更新',
+      key: 'lastUpdated',
+      dataIndex: 'lastUpdated',
+      render: (text: string) => new Date(text).toLocaleString('zh-CN'),
+    },
+  ];
+
+  return (
+    <AppLayout>
+      <Card>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <Typography.Title level={2} style={{ margin: 0 }}>{strategy.name}</Typography.Title>
+          <Space>
+            {strategy.status === 'STOPPED' && (
+              <Button type="primary" style={{ background: '#52c41a', borderColor: '#52c41a' }} onClick={handleStart}>
+                启动策略
+              </Button>
+            )}
+            {strategy.status === 'RUNNING' && (
+              <Button danger onClick={handleStop}>
+                停止策略
+              </Button>
+            )}
+            {strategy.status === 'STOPPED' && (
+              <Button type="primary" onClick={() => setShowEditModal(true)}>
+                编辑
+              </Button>
+            )}
+            <Button danger onClick={handleDelete}>
+              删除
+            </Button>
+          </Space>
         </div>
-      </div>
 
-      <div className="bg-white rounded-lg shadow p-6 mb-6">
-        <h2 className="text-xl font-bold mb-4">标的池配置</h2>
-        <pre className="bg-gray-50 p-4 rounded overflow-auto">
-          {JSON.stringify(strategy.symbolPoolConfig, null, 2)}
-        </pre>
-      </div>
+        <Card style={{ marginBottom: 16 }}>
+          <Typography.Title level={4} style={{ marginBottom: 16 }}>基本信息</Typography.Title>
+          <Descriptions column={2} bordered>
+            <Descriptions.Item label="策略ID">{strategy.id}</Descriptions.Item>
+            <Descriptions.Item label="策略类型">{strategy.type}</Descriptions.Item>
+            <Descriptions.Item label="状态">{getStatusTag(strategy.status)}</Descriptions.Item>
+            <Descriptions.Item label="资金分配">{strategy.allocationName || '-'}</Descriptions.Item>
+            <Descriptions.Item label="创建时间">{new Date(strategy.createdAt).toLocaleString('zh-CN')}</Descriptions.Item>
+            <Descriptions.Item label="更新时间">{new Date(strategy.updatedAt).toLocaleString('zh-CN')}</Descriptions.Item>
+          </Descriptions>
+        </Card>
 
-      <div className="bg-white rounded-lg shadow p-6 mb-6">
-        <h2 className="text-xl font-bold mb-4">策略配置</h2>
-        <pre className="bg-gray-50 p-4 rounded overflow-auto">
-          {JSON.stringify(strategy.config, null, 2)}
-        </pre>
-      </div>
+        <Card style={{ marginBottom: 16 }}>
+          <Typography.Title level={4} style={{ marginBottom: 16 }}>标的池配置</Typography.Title>
+          <Descriptions column={1} bordered>
+            <Descriptions.Item label="模式">
+              {strategy.symbolPoolConfig?.mode === 'INSTITUTION' ? '机构选股' : '静态列表'}
+            </Descriptions.Item>
+            <Descriptions.Item label="股票数量">
+              {Array.isArray(strategy.symbolPoolConfig?.symbols) 
+                ? strategy.symbolPoolConfig.symbols.length 
+                : 0}只
+            </Descriptions.Item>
+            {Array.isArray(strategy.symbolPoolConfig?.symbols) && strategy.symbolPoolConfig.symbols.length > 0 && (
+              <Descriptions.Item label="股票列表">
+                <Space wrap>
+                  {strategy.symbolPoolConfig.symbols.map((symbol: string) => (
+                    <Tag key={symbol} color="blue">{symbol}</Tag>
+                  ))}
+                </Space>
+              </Descriptions.Item>
+            )}
+          </Descriptions>
+        </Card>
 
-      <div className="bg-white rounded-lg shadow p-6">
-        <h2 className="text-xl font-bold mb-4">策略实例 ({instances.length})</h2>
-        {instances.length === 0 ? (
-          <div className="text-gray-500 text-center py-4">暂无实例</div>
-        ) : (
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">标的</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">状态</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">最后更新</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {instances.map((instance) => (
-                <tr key={instance.symbol} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap font-medium">{instance.symbol}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span
-                      className={`px-2 py-1 rounded text-xs font-medium ${
-                        instance.currentState === 'HOLDING'
-                          ? 'bg-green-100 text-green-800'
-                          : instance.currentState === 'OPENING' || instance.currentState === 'CLOSING'
-                          ? 'bg-yellow-100 text-yellow-800'
-                          : 'bg-gray-100 text-gray-800'
-                      }`}
-                    >
-                      {instance.currentState}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {new Date(instance.lastUpdated).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+        <Card style={{ marginBottom: 16 }}>
+          <Typography.Title level={4} style={{ marginBottom: 16 }}>策略参数配置</Typography.Title>
+          <Descriptions column={3} bordered>
+            <Descriptions.Item label="ATR周期">{strategy.config?.atrPeriod || 14}天</Descriptions.Item>
+            <Descriptions.Item label="ATR倍数">{strategy.config?.atrMultiplier || 2.0}</Descriptions.Item>
+            <Descriptions.Item label="风险收益比">{strategy.config?.riskRewardRatio || 1.5}</Descriptions.Item>
+          </Descriptions>
+          <Alert
+            message="💡 参数说明"
+            description={
+              <div>
+                <ul style={{ marginTop: 8, paddingLeft: 20 }}>
+                  <li><strong>ATR周期</strong>：计算平均真实波幅的周期，默认14天。周期越长，ATR值越平滑但反应越慢。</li>
+                  <li><strong>ATR倍数</strong>：用于计算止损距离的倍数，默认2.0。倍数越大，止损距离越远，风险越小但可能错过更多机会。</li>
+                  <li><strong>风险收益比</strong>：止盈价格与止损价格的比例，默认1.5。比例越大，潜在收益越高，但需要更强的趋势支持。</li>
+                </ul>
+                <p style={{ marginTop: 8, marginBottom: 0 }}>
+                  <strong>计算公式：</strong>止损价 = 入场价 - (ATR × ATR倍数)，止盈价 = 入场价 + (止损距离 × 风险收益比)
+                </p>
+              </div>
+            }
+            type="info"
+            showIcon
+            style={{ marginTop: 16 }}
+          />
+        </Card>
+
+        <Card>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <Typography.Title level={4} style={{ margin: 0 }}>策略实例 ({instances.length})</Typography.Title>
+            {pricesLoading && (
+              <span style={{ fontSize: 12, color: '#999' }}>正在加载价格...</span>
+            )}
+          </div>
+          <Table
+            dataSource={instances}
+            columns={instanceColumns}
+            rowKey="symbol"
+            locale={{
+              emptyText: '暂无实例',
+            }}
+          />
+        </Card>
+      </Card>
 
       {showEditModal && strategy && (
         <EditStrategyModal
@@ -265,353 +474,7 @@ export default function StrategyDetailPage() {
           }}
         />
       )}
-    </div>
-  );
-}
-
-function EditStrategyModal({
-  strategy,
-  onClose,
-  onSuccess,
-}: {
-  strategy: Strategy;
-  onClose: () => void;
-  onSuccess: () => void;
-}) {
-  const [formData, setFormData] = useState({
-    name: strategy.name,
-    type: strategy.type,
-    capitalAllocationId: strategy.capitalAllocationId,
-    symbolPoolConfig: {
-      mode: strategy.symbolPoolConfig?.mode || 'STATIC',
-      symbols: Array.isArray(strategy.symbolPoolConfig?.symbols) 
-        ? strategy.symbolPoolConfig.symbols 
-        : [],
-    },
-    config: strategy.config,
-  });
-  const [allocations, setAllocations] = useState<any[]>([]);
-  const [watchlist, setWatchlist] = useState<any[]>([]);
-  const [newSymbol, setNewSymbol] = useState('');
-  const [symbolError, setSymbolError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    Promise.all([
-      quantApi.getCapitalAllocations(),
-      watchlistApi.getWatchlist(true), // 只获取启用的关注股票
-    ]).then(([allocRes, watchRes]) => {
-      if (allocRes.success) {
-        setAllocations(allocRes.data || []);
-      }
-      if (watchRes.success && watchRes.data?.watchlist) {
-        setWatchlist(watchRes.data.watchlist);
-      }
-    });
-  }, []);
-
-  // 验证股票代码格式
-  const validateSymbol = (symbol: string): string | null => {
-    const trimmed = symbol.trim().toUpperCase();
-    if (!trimmed) {
-      return '请输入股票代码';
-    }
-    
-    // 自动修正常见错误：APPL -> AAPL
-    let corrected = trimmed;
-    if (corrected === 'APPL.US') {
-      corrected = 'AAPL.US';
-    }
-    
-    // 验证格式：ticker.region 或 .ticker.region
-    const symbolPattern = /^\.?[A-Z0-9]+\.[A-Z]{2}$/;
-    if (!symbolPattern.test(corrected)) {
-      return '无效的标的代码格式。请使用 ticker.region 格式，例如：AAPL.US 或 700.HK';
-    }
-    
-    return corrected;
-  };
-
-  // 添加股票
-  const handleAddSymbol = () => {
-    setSymbolError(null);
-    const validation = validateSymbol(newSymbol);
-    
-    if (typeof validation === 'string' && validation.startsWith('无效')) {
-      setSymbolError(validation);
-      return;
-    }
-    
-    if (typeof validation === 'string') {
-      const symbol = validation;
-      
-      // 检查是否已存在
-      if (formData.symbolPoolConfig.symbols.includes(symbol)) {
-        setSymbolError('该股票已在股票池中');
-        return;
-      }
-      
-      // 添加到股票池
-      setFormData({
-        ...formData,
-        symbolPoolConfig: {
-          ...formData.symbolPoolConfig,
-          symbols: [...formData.symbolPoolConfig.symbols, symbol],
-        },
-      });
-      setNewSymbol('');
-    }
-  };
-
-  // 从关注列表添加
-  const handleAddFromWatchlist = (symbol: string) => {
-    if (!formData.symbolPoolConfig.symbols.includes(symbol)) {
-      setFormData({
-        ...formData,
-        symbolPoolConfig: {
-          ...formData.symbolPoolConfig,
-          symbols: [...formData.symbolPoolConfig.symbols, symbol],
-        },
-      });
-    }
-  };
-
-  // 移除股票
-  const handleRemoveSymbol = (symbol: string) => {
-    setFormData({
-      ...formData,
-      symbolPoolConfig: {
-        ...formData.symbolPoolConfig,
-        symbols: formData.symbolPoolConfig.symbols.filter((s) => s !== symbol),
-      },
-    });
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    // 验证至少有一个股票
-    if (formData.symbolPoolConfig.symbols.length === 0) {
-      alert('请至少添加一个股票到股票池');
-      return;
-    }
-    
-    setLoading(true);
-    try {
-      await quantApi.updateStrategy(strategy.id, formData);
-      alert('策略已更新');
-      onSuccess();
-    } catch (err: any) {
-      alert(err.message || '更新策略失败');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-        <h2 className="text-2xl font-bold mb-4">编辑策略</h2>
-        <form onSubmit={handleSubmit}>
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">策略名称</label>
-            <input
-              type="text"
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              className="border rounded px-3 py-2 w-full"
-              required
-            />
-          </div>
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">策略类型</label>
-            <select
-              value={formData.type}
-              onChange={(e) => setFormData({ ...formData, type: e.target.value })}
-              className="border rounded px-3 py-2 w-full"
-            >
-              <option value="RECOMMENDATION_V1">推荐策略 V1</option>
-            </select>
-          </div>
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">资金分配账户</label>
-            <select
-              value={formData.capitalAllocationId || ''}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  capitalAllocationId: e.target.value ? parseInt(e.target.value) : null,
-                })
-              }
-              className="border rounded px-3 py-2 w-full"
-            >
-              <option value="">无</option>
-              {allocations.map((alloc) => (
-                <option key={alloc.id} value={alloc.id}>
-                  {alloc.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">股票池</label>
-            
-            {/* 添加股票输入框 */}
-            <div className="mb-2">
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={newSymbol}
-                  onChange={(e) => {
-                    setNewSymbol(e.target.value);
-                    setSymbolError(null);
-                  }}
-                  onKeyPress={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      handleAddSymbol();
-                    }
-                  }}
-                  placeholder="输入股票代码，例如：AAPL.US"
-                  className="flex-1 border rounded px-3 py-2"
-                />
-                <button
-                  type="button"
-                  onClick={handleAddSymbol}
-                  className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
-                >
-                  添加
-                </button>
-              </div>
-              {symbolError && (
-                <div className="mt-1 text-sm text-red-600">{symbolError}</div>
-              )}
-              <p className="mt-1 text-xs text-gray-500">
-                格式：ticker.region，例如：AAPL.US（美股）、700.HK（港股）
-              </p>
-            </div>
-
-            {/* 从关注列表快速添加 */}
-            {watchlist.length > 0 && (
-              <div className="mb-2">
-                <label className="block text-xs text-gray-500 mb-1">从关注列表快速添加：</label>
-                <div className="flex flex-wrap gap-2">
-                  {watchlist
-                    .filter((item) => !formData.symbolPoolConfig.symbols.includes(item.symbol))
-                    .slice(0, 10)
-                    .map((item) => (
-                      <button
-                        key={item.symbol}
-                        type="button"
-                        onClick={() => handleAddFromWatchlist(item.symbol)}
-                        className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded"
-                      >
-                        + {item.symbol}
-                      </button>
-                    ))}
-                </div>
-              </div>
-            )}
-
-            {/* 已添加的股票列表 */}
-            <div className="border rounded p-2 min-h-[60px] max-h-[200px] overflow-y-auto">
-              {formData.symbolPoolConfig.symbols.length === 0 ? (
-                <div className="text-sm text-gray-400 text-center py-2">暂无股票，请添加</div>
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  {formData.symbolPoolConfig.symbols.map((symbol) => (
-                    <span
-                      key={symbol}
-                      className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-800 rounded text-sm"
-                    >
-                      {symbol}
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveSymbol(symbol)}
-                        className="text-blue-600 hover:text-blue-800"
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">策略配置</label>
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">ATR周期</label>
-                <input
-                  type="number"
-                  value={formData.config.atrPeriod || 14}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      config: { ...formData.config, atrPeriod: parseInt(e.target.value) || 14 },
-                    })
-                  }
-                  className="border rounded px-3 py-2 w-full"
-                  min="1"
-                  max="100"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">ATR倍数</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={formData.config.atrMultiplier || 2.0}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      config: { ...formData.config, atrMultiplier: parseFloat(e.target.value) || 2.0 },
-                    })
-                  }
-                  className="border rounded px-3 py-2 w-full"
-                  min="0.1"
-                  max="10"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">风险收益比</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={formData.config.riskRewardRatio || 1.5}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      config: { ...formData.config, riskRewardRatio: parseFloat(e.target.value) || 1.5 },
-                    })
-                  }
-                  className="border rounded px-3 py-2 w-full"
-                  min="0.1"
-                  max="10"
-                />
-              </div>
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <button
-              type="submit"
-              disabled={loading}
-              className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 disabled:opacity-50"
-            >
-              {loading ? '保存中...' : '保存'}
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="bg-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-400"
-            >
-              取消
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    </AppLayout>
   );
 }
 

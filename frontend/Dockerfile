@@ -19,13 +19,16 @@ RUN npm run build
 # 生产环境镜像
 FROM node:20-alpine AS runner
 
+# 安装 curl 用于健康检查
+RUN apk add --no-cache curl
+
 WORKDIR /app
 
 ENV NODE_ENV production
 
 # 创建非 root 用户
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 nextjs
 
 # 复制构建产物（standalone 模式）
 COPY --from=builder /app/public ./public
@@ -39,6 +42,10 @@ EXPOSE 3000
 
 ENV PORT 3000
 ENV HOSTNAME "0.0.0.0"
+
+# 健康检查（检查根路径）
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD curl -f http://localhost:3000/ || exit 1
 
 # 启动服务（standalone 模式的入口文件）
 CMD ["node", "server.js"]
