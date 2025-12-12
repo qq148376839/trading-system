@@ -76,7 +76,9 @@ services:
       dockerfile: Dockerfile
     container_name: trading-frontend
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:3001
+      # 使用服务名而不是 localhost，因为前端在浏览器中运行，需要从外部访问
+      # 如果前端需要从浏览器访问 API，应该使用宿主机的地址或域名
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
       NODE_ENV: production
     ports:
       - "3000:3000"
