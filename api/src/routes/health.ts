@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import pool from '../config/database';
-import { ErrorCode, ErrorSeverity, AppError } from '../utils/errors';
+import { ErrorCode, ErrorSeverity, ErrorCategory, AppError } from '../utils/errors';
 
 export const healthRouter = Router();
 
@@ -28,9 +28,10 @@ healthRouter.get('/', async (req: Request, res: Response, next: NextFunction) =>
     const appError = new AppError(
       ErrorCode.EXTERNAL_API_ERROR, // 使用EXTERNAL_API_ERROR，因为数据库是外部服务
       '数据库连接失败',
-      ErrorSeverity.HIGH,
-      503,
-      { originalError: error.message }
+      503, // statusCode
+      ErrorSeverity.HIGH, // severity
+      ErrorCategory.EXTERNAL_ERROR, // category
+      { originalError: error.message } // details
     );
     return next(appError);
   }

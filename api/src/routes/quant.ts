@@ -517,7 +517,7 @@ quantRouter.get('/capital/balance-discrepancies', async (req: Request, res: Resp
  * GET /api/quant/stock-selector/blacklist
  * 获取黑名单列表
  */
-quantRouter.get('/stock-selector/blacklist', async (req: Request, res: Response) => {
+quantRouter.get('/stock-selector/blacklist', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const blacklist = await stockSelector.getBlacklist();
     res.json({
@@ -526,7 +526,7 @@ quantRouter.get('/stock-selector/blacklist', async (req: Request, res: Response)
     });
   } catch (error: any) {
     const appError = normalizeError(error);
-    return next(appError);
+    next(appError);
   }
 });
 

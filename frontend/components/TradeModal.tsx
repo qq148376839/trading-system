@@ -136,13 +136,13 @@ export default function TradeModal({ symbol, currentPrice, onClose, onSuccess }:
     }
 
     // 价格验证
-    if (orderConfig?.requiresPrice && (!price || isNaN(parseFloat(price)))) {
+    if (orderConfig && 'requiresPrice' in orderConfig && orderConfig.requiresPrice && (!price || isNaN(parseFloat(price)))) {
       setError(`${orderConfig.label}需要提供价格`)
       return
     }
 
     // 触发价格验证
-    if (orderConfig?.requiresTrigger && (!triggerPrice || isNaN(parseFloat(triggerPrice)))) {
+    if (orderConfig && 'requiresTrigger' in orderConfig && orderConfig.requiresTrigger && (!triggerPrice || isNaN(parseFloat(triggerPrice)))) {
       setError(`${orderConfig.label}需要提供触发价格`)
       return
     }
@@ -367,8 +367,8 @@ export default function TradeModal({ symbol, currentPrice, onClose, onSuccess }:
               </optgroup>
             </select>
             <p className="mt-1 text-xs text-gray-500">
-              {orderConfig?.label} - {orderConfig?.requiresPrice ? '需要指定价格' : '不需要指定价格'}
-              {orderConfig?.requiresTrigger && ' - 需要触发价格'}
+              {orderConfig?.label} - {orderConfig && 'requiresPrice' in orderConfig && orderConfig.requiresPrice ? '需要指定价格' : '不需要指定价格'}
+              {orderConfig && 'requiresTrigger' in orderConfig && orderConfig.requiresTrigger && ' - 需要触发价格'}
             </p>
           </div>
 
@@ -438,7 +438,7 @@ export default function TradeModal({ symbol, currentPrice, onClose, onSuccess }:
           </div>
 
           {/* 价格（限价单需要） */}
-          {orderConfig?.requiresPrice && (
+          {orderConfig && 'requiresPrice' in orderConfig && orderConfig.requiresPrice && (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 价格 <span className="text-red-500">*</span> {currentPrice && `(当前价: ${currentPrice})`}
@@ -481,7 +481,7 @@ export default function TradeModal({ symbol, currentPrice, onClose, onSuccess }:
           )}
 
           {/* 触发价格（条件单需要） */}
-          {orderConfig?.requiresTrigger && (
+          {orderConfig && 'requiresTrigger' in orderConfig && orderConfig.requiresTrigger && (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 触发价格 <span className="text-red-500">*</span>

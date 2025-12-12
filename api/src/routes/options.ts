@@ -47,7 +47,7 @@ optionsRouter.get('/strike-dates', rateLimiter, async (req: Request, res: Respon
     const result = await getOptionStrikeDates(finalStockId);
 
     if (!result) {
-      return next(ErrorFactory.externalApiError('获取期权到期日期列表失败'));
+      return next(ErrorFactory.externalApiError('富途API', '获取期权到期日期列表失败'));
     }
 
     res.json({

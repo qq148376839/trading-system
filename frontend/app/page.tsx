@@ -383,14 +383,14 @@ export default function Home() {
 
         // 更新stocks状态，添加推荐信息
         // 如果是刷新，保留旧数据；如果是首次加载，替换数据
-        setStocks(prevStocks =>
-          prevStocks.map(stock => {
+        setStocks((prevStocks: StockRow[]) =>
+          prevStocks.map((stock: StockRow) => {
             const newRecommendation = recommendationsMap.get(stock.symbol)
             if (newRecommendation) {
               return {
                 ...stock,
                 tradingRecommendation: newRecommendation,
-              }
+              } as StockRow
             }
             // 如果没有新数据，保留旧数据（避免闪烁和布局跳动）
             return stock

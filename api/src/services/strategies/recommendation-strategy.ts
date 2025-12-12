@@ -7,6 +7,10 @@ import { StrategyBase, TradingIntent } from './strategy-base';
 import tradingRecommendationService from '../trading-recommendation.service';
 
 export class RecommendationStrategy extends StrategyBase {
+  constructor(strategyId: number, config: Record<string, any> = {}) {
+    super(strategyId, config);
+  }
+
   /**
    * 生成交易信号
    * 复用 TradingRecommendationService 的逻辑

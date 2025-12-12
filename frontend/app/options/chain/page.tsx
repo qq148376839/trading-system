@@ -108,7 +108,7 @@ export default function OptionChainPage() {
         }
         
         // 自动选择第一个未过期的到期日期
-        const firstActive = dates.find(d => d.expiration === 1)
+        const firstActive = dates.find((d: any) => d.expiration === 1)
         if (firstActive) {
           setSelectedStrikeDate(firstActive.strikeDate)
         } else if (dates.length > 0) {
@@ -528,7 +528,7 @@ export default function OptionChainPage() {
                           e.currentTarget.style.background = '#f5f5f5'
                         }}
                         onMouseLeave={(e) => {
-                          e.currentTarget.style.background = isHighlighted ? '#fffbe6' : undefined
+                          e.currentTarget.style.background = isHighlighted ? '#fffbe6' : ''
                         }}
                       >
                         {/* 看涨期权数据 */}

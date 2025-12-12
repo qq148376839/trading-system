@@ -170,7 +170,7 @@ class BacktestService {
     const sortedDates = Array.from(allDates).sort();
 
     // 创建策略实例
-    const strategy = new RecommendationStrategy(strategyId);
+    const strategy = new RecommendationStrategy(strategyId, {});
 
     // 按日期遍历
     for (const dateStr of sortedDates) {

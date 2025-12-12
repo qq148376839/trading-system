@@ -188,7 +188,8 @@ export default function BacktestPage() {
         // 刷新列表
         await loadData();
       } else {
-        message.error(response.error || '创建回测任务失败');
+        const errorMsg = typeof response.error === 'string' ? response.error : response.error?.message || '创建回测任务失败';
+        message.error(errorMsg);
       }
     } catch (err: any) {
       message.error(err.message || '创建回测任务失败');
@@ -274,7 +275,8 @@ export default function BacktestPage() {
               startPolling(result.id);
               await loadData();
             } else {
-              message.error(retryRes.error || '重试失败');
+              const errorMsg = typeof retryRes.error === 'string' ? retryRes.error : retryRes.error?.message || '重试失败';
+              message.error(errorMsg);
             }
           }
         } catch (err: any) {
@@ -298,7 +300,8 @@ export default function BacktestPage() {
             message.success('回测结果已删除');
             await loadData();
           } else {
-            message.error(response.error || '删除失败');
+            const errorMsg = typeof response.error === 'string' ? response.error : response.error?.message || '删除失败';
+            message.error(errorMsg);
           }
         } catch (err: any) {
           message.error(err.message || '删除失败');
@@ -327,7 +330,8 @@ export default function BacktestPage() {
             setSelectedForCompare([]);
             await loadData();
           } else {
-            message.error(response.error || '批量删除失败');
+            const errorMsg = typeof response.error === 'string' ? response.error : response.error?.message || '批量删除失败';
+            message.error(errorMsg);
           }
         } catch (err: any) {
           message.error(err.message || '批量删除失败');

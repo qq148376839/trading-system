@@ -46,7 +46,7 @@ export const quoteApi = {
    * 获取标的实时行情
    * @param symbols 标的代码列表，例如：['700.HK', 'AAPL.US']
    */
-  getQuote: (symbols: string[]) => {
+  getQuote: (symbols: string[]): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     const symbolsParam = symbols.join(',')
     return api.get('/quote', { params: { symbol: symbolsParam } })
   },
@@ -62,7 +62,7 @@ export const quoteApi = {
    * 获取美股标的列表（用于自动完成）
    * @param query 搜索关键词，可选
    */
-  getSecurityList: (query?: string) => {
+  getSecurityList: (query?: string): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/quote/security-list', { params: query ? { query } : {} })
   },
 }
@@ -74,7 +74,7 @@ export const candlesticksApi = {
    * @param period K线周期：1m, 5m, 15m, 30m, 60m, day, week, month, year
    * @param count K线数量
    */
-  getCandlesticks: (symbol: string, period: string, count: number) => {
+  getCandlesticks: (symbol: string, period: string, count: number): Promise<{ success: boolean; data?: { candlesticks: any[] }; error?: { message: string } }> => {
     return api.get('/candlesticks', {
       params: { symbol, period, count },
     })
@@ -85,7 +85,7 @@ export const watchlistApi = {
   /**
    * 获取关注股票列表
    */
-  getWatchlist: (enabled?: boolean) => {
+  getWatchlist: (enabled?: boolean): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/watchlist', {
       params: enabled !== undefined ? { enabled: enabled.toString() } : {},
     })
@@ -137,7 +137,7 @@ export const positionsApi = {
   /**
    * 获取持仓列表
    */
-  getPositions: () => {
+  getPositions: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/positions')
   },
 
@@ -247,7 +247,7 @@ export const ordersApi = {
     outside_rth?: 'RTH_ONLY' | 'ANY_TIME' | 'OVERNIGHT'
     time_in_force?: 'Day' | 'GTC' | 'GTD'
     remark?: string
-  }) => {
+  }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.post('/orders/submit', data)
   },
 
@@ -262,7 +262,7 @@ export const ordersApi = {
     currency?: string
     order_id?: string
     use_margin?: boolean | string
-  }) => {
+  }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/orders/estimate-max-quantity', { params })
   },
 
@@ -277,7 +277,7 @@ export const ordersApi = {
   /**
    * 查询账户余额
    */
-  getAccountBalance: (currency?: string) => {
+  getAccountBalance: (currency?: string): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/orders/account-balance', { params: currency ? { currency } : {} })
   },
 
@@ -290,7 +290,7 @@ export const ordersApi = {
     side?: 'Buy' | 'Sell'
     market?: 'US' | 'HK'
     order_id?: string
-  }) => {
+  }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/orders/today', { params })
   },
 
@@ -304,7 +304,7 @@ export const ordersApi = {
     market?: 'US' | 'HK'
     start_at?: number | string  // 时间戳（秒）或ISO字符串
     end_at?: number | string    // 时间戳（秒）或ISO字符串
-  }) => {
+  }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/orders/history', { params })
   },
 
@@ -312,8 +312,16 @@ export const ordersApi = {
    * 查询订单详情
    * @param orderId 订单ID
    */
-  getOrderDetail: (orderId: string) => {
+  getOrderDetail: (orderId: string): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get(`/orders/${orderId}`)
+  },
+
+  /**
+   * 获取标的基础信息（包含最小交易单位lot size）
+   * @param symbol 标的代码
+   */
+  getSecurityInfo: (symbol: string): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
+    return api.get('/orders/security-info', { params: { symbol } })
   },
 
   /**
@@ -340,7 +348,7 @@ export const forexApi = {
   /**
    * 获取支持的外汇产品列表
    */
-  getProducts: () => {
+  getProducts: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/forex/products')
   },
 
@@ -348,7 +356,7 @@ export const forexApi = {
    * 获取外汇实时报价
    * @param product 外汇产品代码：USDINDEX, EURINDEX, XAUUSD
    */
-  getQuote: (product: string) => {
+  getQuote: (product: string): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/forex/quote', { params: { product } })
   },
 
@@ -357,7 +365,7 @@ export const forexApi = {
    * @param product 外汇产品代码：USDINDEX, EURINDEX, XAUUSD
    * @param type K线类型：minute, 5day, day, week, month, quarter, year
    */
-  getCandlestick: (product: string, type: string) => {
+  getCandlestick: (product: string, type: string): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/forex/candlestick', { params: { product, type } })
   },
 }
@@ -375,42 +383,42 @@ export const configApi = {
   /**
    * 管理员登录
    */
-  login: (username: string, password: string) => {
+  login: (username: string, password: string): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.post('/config/auth', { username, password })
   },
 
   /**
    * 获取所有配置
    */
-  getConfigs: (username: string, password: string) => {
+  getConfigs: (username: string, password: string): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.post('/config', { username, password })
   },
 
   /**
    * 更新配置
    */
-  updateConfig: (key: string, value: string, encrypted: boolean, username: string, password: string) => {
+  updateConfig: (key: string, value: string, encrypted: boolean, username: string, password: string): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.put(`/config/${key}`, { value, encrypted, username, password })
   },
 
   /**
    * 批量更新配置
    */
-  batchUpdateConfigs: (configs: Array<{ key: string; value: string; encrypted?: boolean }>, username: string, password: string) => {
+  batchUpdateConfigs: (configs: Array<{ key: string; value: string; encrypted?: boolean }>, username: string, password: string): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.post('/config/batch', { configs, username, password })
   },
 
   /**
    * 删除配置
    */
-  deleteConfig: (key: string, username: string, password: string) => {
+  deleteConfig: (key: string, username: string, password: string): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.delete(`/config/${key}`, { data: { username, password } })
   },
 
   /**
    * 获取管理员列表
    */
-  getAdminList: (username: string, password: string) => {
+  getAdminList: (username: string, password: string): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.post('/config/admin/list', { username, password })
   },
 
@@ -432,7 +440,7 @@ export const configApi = {
     }, 
     username: string, 
     password: string
-  ) => {
+  ): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     // 构建请求体，确保认证字段不被覆盖
     const requestBody: any = {
       // 认证字段（用于requireAdmin中间件）- 必须存在
@@ -463,7 +471,7 @@ export const configApi = {
   /**
    * 创建管理员账户
    */
-  createAdmin: (newUsername: string, newPassword: string, username: string, password: string) => {
+  createAdmin: (newUsername: string, newPassword: string, username: string, password: string): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.post('/config/admin', { newUsername, newPassword, username, password })
   },
 }
@@ -472,14 +480,14 @@ export const tokenRefreshApi = {
   /**
    * 手动刷新Token
    */
-  refreshToken: () => {
+  refreshToken: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.post('/token-refresh/refresh')
   },
 
   /**
    * 获取Token状态
    */
-  getTokenStatus: () => {
+  getTokenStatus: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/token-refresh/status')
   },
 
@@ -496,7 +504,7 @@ export const tradingRecommendationApi = {
    * 获取交易推荐（批量）
    * @param symbols 股票代码列表，例如：['AAPL.US', 'TSLA.US']
    */
-  getRecommendations: (symbols: string[]) => {
+  getRecommendations: (symbols: string[]): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     const symbolsParam = symbols.join(',')
     return api.get('/trading-recommendation', { params: { symbols: symbolsParam } })
   },
@@ -516,7 +524,7 @@ export const optionsApi = {
    * @param stockId 正股ID（可选，如果提供则直接使用）
    * @param symbol 股票代码（可选，例如：'TSLA.US'，如果提供symbol会自动查找stockId）
    */
-  getStrikeDates: (params?: { stockId?: string; symbol?: string }) => {
+  getStrikeDates: (params?: { stockId?: string; symbol?: string }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/options/strike-dates', { params })
   },
 
@@ -530,7 +538,7 @@ export const optionsApi = {
     stockId?: string
     strikeDate: number
     symbol?: string
-  }) => {
+  }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/options/chain', { params })
   },
 
@@ -544,7 +552,7 @@ export const optionsApi = {
     optionId: string
     underlyingStockId: string
     marketType?: number
-  }) => {
+  }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/options/detail', { params })
   },
 
@@ -553,7 +561,7 @@ export const optionsApi = {
    * @param stockId 正股ID（可选）
    * @param symbol 股票代码（可选，例如：'TSLA.US'）
    */
-  getUnderlyingQuote: (params?: { stockId?: string; symbol?: string }) => {
+  getUnderlyingQuote: (params?: { stockId?: string; symbol?: string }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/options/underlying-quote', { params })
   },
 
@@ -567,7 +575,7 @@ export const optionsApi = {
     optionId: string
     marketType?: number
     count?: number
-  }) => {
+  }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/options/kline', { params })
   },
 
@@ -579,7 +587,7 @@ export const optionsApi = {
   getOptionMinute: (params: {
     optionId: string
     marketType?: number
-  }) => {
+  }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/options/minute', { params })
   },
 }
@@ -595,48 +603,48 @@ export const backtestApi = {
     startDate: string;
     endDate: string;
     config?: any;
-  }) => {
+  }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.post('/quant/backtest', data);
   },
 
   /**
    * 获取回测结果
    */
-  getBacktestResult: (id: number) => {
+  getBacktestResult: (id: number): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get(`/quant/backtest/${id}`);
   },
 
   /**
    * 获取回测状态
    */
-  getBacktestStatus: (id: number) => {
+  getBacktestStatus: (id: number): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get(`/quant/backtest/${id}/status`);
   },
 
   /**
    * 重试失败的回测任务
    */
-  retryBacktest: (id: number, symbols: string[]) => {
+  retryBacktest: (id: number, symbols: string[]): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.post(`/quant/backtest/${id}/retry`, { symbols });
   },
 
   /**
    * 获取策略的所有回测结果
    */
-  getBacktestResultsByStrategy: (strategyId: number) => {
+  getBacktestResultsByStrategy: (strategyId: number): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get(`/quant/backtest/strategy/${strategyId}`);
   },
   /**
    * 删除回测结果
    */
-  deleteBacktestResult: (id: number) => {
+  deleteBacktestResult: (id: number): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.delete(`/quant/backtest/${id}`);
   },
 
   /**
    * 批量删除回测结果
    */
-  deleteBacktestResults: (ids: number[]) => {
+  deleteBacktestResults: (ids: number[]): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.delete('/quant/backtest/batch', { data: { ids } });
   },
 
@@ -654,10 +662,10 @@ export const backtestApi = {
 
 export const quantApi = {
   // 策略管理
-  getStrategies: () => {
+  getStrategies: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/quant/strategies')
   },
-  getStrategy: (id: number) => {
+  getStrategy: (id: number): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get(`/quant/strategies/${id}`)
   },
   createStrategy: (data: any) => {
@@ -675,15 +683,15 @@ export const quantApi = {
   stopStrategy: (id: number) => {
     return api.post(`/quant/strategies/${id}/stop`)
   },
-  getStrategyInstances: (id: number) => {
+  getStrategyInstances: (id: number): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get(`/quant/strategies/${id}/instances`)
   },
-  getStrategyHoldings: (id: number) => {
+  getStrategyHoldings: (id: number): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get(`/quant/strategies/${id}/holdings`)
   },
 
   // 资金管理
-  getCapitalAllocations: () => {
+  getCapitalAllocations: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/quant/capital/allocations')
   },
   createCapitalAllocation: (data: any) => {
@@ -695,20 +703,20 @@ export const quantApi = {
   deleteCapitalAllocation: (id: number) => {
     return api.delete(`/quant/capital/allocations/${id}`)
   },
-  getCapitalUsage: () => {
+  getCapitalUsage: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/quant/capital/usage')
   },
 
   /**
    * 获取资金差异告警列表
    */
-  getCapitalAlerts: () => {
+  getCapitalAlerts: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/quant/capital/alerts')
   },
   syncBalance: () => {
     return api.post('/quant/capital/sync-balance')
   },
-  getBalanceDiscrepancies: () => {
+  getBalanceDiscrepancies: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/quant/capital/balance-discrepancies')
   },
 
@@ -724,7 +732,7 @@ export const quantApi = {
   },
 
   // 信号日志
-  getSignals: (params?: { strategyId?: number; status?: string; limit?: number }) => {
+  getSignals: (params?: { strategyId?: number; status?: string; limit?: number }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/quant/signals', { params })
   },
 
@@ -760,16 +768,16 @@ export const quantApi = {
   },
 
   // 机构选股
-  getPopularInstitutions: () => {
+  getPopularInstitutions: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/quant/institutions/popular')
   },
-  getInstitutionList: (params?: { page?: number; pageSize?: number }) => {
+  getInstitutionList: (params?: { page?: number; pageSize?: number }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/quant/institutions/list', { params })
   },
-  getInstitutionHoldings: (institutionId: string, params?: { periodId?: number; page?: number; pageSize?: number }) => {
+  getInstitutionHoldings: (institutionId: string, params?: { periodId?: number; page?: number; pageSize?: number }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get(`/quant/institutions/${institutionId}/holdings`, { params })
   },
-  selectStocksByInstitution: (data: { institutionId: string; minHoldingRatio?: number; maxStocks?: number }) => {
+  selectStocksByInstitution: (data: { institutionId: string; minHoldingRatio?: number; maxStocks?: number }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.post('/quant/institutions/select-stocks', data)
   },
   calculateAllocation: (data: {

@@ -3,9 +3,10 @@
  * 为持仓和关注列表中的US股票生成交易推荐
  */
 
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import tradingRecommendationService from '../services/trading-recommendation.service';
 import { rateLimiter } from '../middleware/rateLimiter';
+import { ErrorFactory, normalizeError } from '../utils/errors';
 
 export const tradingRecommendationRouter = Router();
 

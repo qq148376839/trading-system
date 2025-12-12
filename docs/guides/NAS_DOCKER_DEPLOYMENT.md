@@ -538,6 +538,53 @@ docker-compose up -d
 2. **备份策略**：定期备份数据库（使用 pg_dump）
 3. **安全配置**：使用强密码，保护 `.env` 文件
 4. **监控**：使用健康检查监控服务状态
+5. **本地构建测试**：在推送到NAS之前，先在本地测试构建（见Q9）
+
+---
+
+## 🧪 本地构建测试（推荐）
+
+### Q9: 是否应该在本地先测试构建？
+
+**A: 强烈推荐！** ✅
+
+在推送到NAS之前，建议先在本地测试构建，原因：
+
+1. **环境相似性**：本地环境与NAS Docker环境相似（Node.js、TypeScript）
+2. **快速迭代**：本地构建更快，便于快速发现和修复问题
+3. **成功率预测**：本地构建成功，NAS上大概率也能成功
+4. **节省时间**：避免在NAS上反复构建失败
+
+### 本地构建测试步骤
+
+```bash
+# 1. 测试API构建
+cd api
+npm install  # 如果需要
+npm run build
+
+# 2. 测试前端构建
+cd ../frontend
+npm install  # 如果需要
+npm run build
+
+# 3. 如果构建成功，再推送到NAS
+git add .
+git commit -m "修复构建错误"
+git push
+```
+
+### 构建成功标准
+
+- ✅ API构建：`npm run build` 成功，0错误
+- ✅ 前端构建：`npm run build` 成功，TypeScript编译通过
+- ⚠️ 注意：Next.js运行时警告（如`useSearchParams()`需要Suspense边界）不影响构建，但建议后续修复
+
+### 常见构建错误
+
+如果遇到构建错误，请参考：
+- [构建错误修复总结](../features/BUILD_ERROR_FIX_SUMMARY.md)
+- [Docker优化文档](../../DOCKER_OPTIMIZATION.md)
 
 ---
 

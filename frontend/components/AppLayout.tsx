@@ -131,7 +131,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
 
   // 生成面包屑
   const getBreadcrumbItems = () => {
-    const items = [{ title: <Link href="/">首页</Link> }]
+    const items: Array<{ title: React.ReactNode }> = [{ title: <Link href="/">首页</Link> }]
     
     if (pathname === '/') {
       return items
@@ -145,7 +145,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
       const isLast = index === paths.length - 1
       
       if (path === 'quant') {
-        items.push({ title: '量化交易' })
+        items.push({ title: isLast ? '量化交易' : <Link href={currentPath}>量化交易</Link> })
       } else if (path === 'strategies') {
         items.push({ title: isLast ? '策略管理' : <Link href={currentPath}>策略管理</Link> })
       } else if (path === 'capital') {

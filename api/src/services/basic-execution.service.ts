@@ -305,7 +305,8 @@ class BasicExecutionService {
     side: 'BUY' | 'SELL',
     quantity: number,
     price: number,
-    strategyId: number
+    strategyId: number,
+    signalId?: number
   ): Promise<ExecutionResult> {
     try {
       const tradeCtx = await getTradeContext();
@@ -558,7 +559,7 @@ class BasicExecutionService {
           await new Promise((resolve) => setTimeout(resolve, 2000));
         } catch (queryError: any) {
           // 如果查询失败，记录错误但继续重试
-          lastError = queryError;
+          // lastError = queryError; // Commented out unused variable
           
           // 如果是频率限制错误，延长等待时间
           if (queryError.message && (queryError.message.includes('429') || queryError.message.includes('429002'))) {
@@ -776,7 +777,7 @@ class BasicExecutionService {
           ]
         );
         
-        if (result.rowCount > 0) {
+        if (result.rowCount !== null && result.rowCount > 0) {
           const signalIds = result.rows.map(r => r.id);
           logger.debug(`订单 ${orderId} 通过时间窗口匹配更新了信号状态: ${signalIds.join(',')}`);
           

@@ -175,12 +175,40 @@ export function validateOrderParams(params: SubmitOrderRequest): ValidationResul
  * 规范化订单参数（处理兼容性）
  */
 export function normalizeOrderParams(params: any): SubmitOrderRequest {
+  // 处理 side：支持数字枚举值
+  let side: string;
+  const sideParam = params.side;
+  if (typeof sideParam === 'number') {
+    side = sideParam === 1 ? 'Buy' : sideParam === 2 ? 'Sell' : String(sideParam);
+  } else if (typeof sideParam === 'string') {
+    side = sideParam;
+  } else {
+    side = 'Buy';
+  }
+
+  // 处理 order_type：支持数字枚举值（部分）
+  let order_type: string;
+  const orderTypeParam = params.order_type || params.orderType;
+  if (typeof orderTypeParam === 'number') {
+    const orderTypeMap: Record<number, string> = {
+      1: 'LO',
+      2: 'AO',
+      3: 'ELO',
+      4: 'EAO',
+    };
+    order_type = orderTypeMap[orderTypeParam] || String(orderTypeParam);
+  } else if (typeof orderTypeParam === 'string') {
+    order_type = orderTypeParam;
+  } else {
+    order_type = 'LO';
+  }
+
   // 处理旧的参数命名（向后兼容）
   const normalized: SubmitOrderRequest = {
-    symbol: params.symbol || params.symbol,
-    order_type: params.order_type || params.orderType || params.order_type,
-    side: params.side || params.side,
-    submitted_quantity: params.submitted_quantity || params.quantity || params.submitted_quantity,
+    symbol: params.symbol || '',
+    order_type: order_type,
+    side: side,
+    submitted_quantity: params.submitted_quantity || params.quantity || '',
     submitted_price: params.submitted_price || params.price,
     trigger_price: params.trigger_price || params.triggerPrice,
     limit_offset: params.limit_offset || params.limitOffset,
@@ -191,23 +219,7 @@ export function normalizeOrderParams(params: any): SubmitOrderRequest {
     time_in_force: params.time_in_force || params.timeInForce || 'Day',
     remark: params.remark,
   };
-
-  // 处理 side：支持数字枚举值
-  if (typeof normalized.side === 'number') {
-    normalized.side = normalized.side === 1 ? 'Buy' : normalized.side === 2 ? 'Sell' : normalized.side.toString();
-  }
-
-  // 处理 order_type：支持数字枚举值（部分）
-  if (typeof normalized.order_type === 'number') {
-    const orderTypeMap: Record<number, string> = {
-      1: 'LO',
-      2: 'AO',
-      3: 'ELO',
-      4: 'EAO',
-    };
-    normalized.order_type = orderTypeMap[normalized.order_type] || normalized.order_type.toString();
-  }
-
+  
   return normalized;
 }
 

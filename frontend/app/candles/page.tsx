@@ -135,7 +135,7 @@ function CandlesContent() {
               second: '2-digit',
             })}</div>
             {record.trade_session !== undefined && (
-              <Tag size="small" style={{ marginTop: 4 }}>
+              <Tag style={{ marginTop: 4, fontSize: '12px' }}>
                 {getTradeSessionLabel(record.trade_session)}
               </Tag>
             )}

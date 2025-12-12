@@ -127,14 +127,6 @@ class MarketDataCacheService {
   }
 
   /**
-   * 清除缓存（强制刷新）
-   */
-  clearCache() {
-    console.log('清除市场数据缓存');
-    this.cache = null;
-  }
-
-  /**
    * 获取缓存状态
    */
   getCacheStatus() {

@@ -79,6 +79,7 @@ docs/
 
 ### Bug修复
 - **[策略Bug修复说明](features/STRATEGY_BUG_FIX_20251203.md)** - 高买低卖和重复卖出单问题修复说明
+- **[构建错误修复总结](features/BUILD_ERROR_FIX_SUMMARY.md)** - TypeScript编译错误修复总结 ⭐ 新增
 
 ### 机构选股功能
 - **[机构选股功能PRD](features/INSTITUTION_STOCK_SELECTOR_PRD.md)** - 产品需求文档
@@ -93,6 +94,9 @@ docs/
 - **[量化交易订单管理重构PRD](features/QUANT_ORDER_MANAGEMENT_REFACTOR_PRD.md)** - 产品需求文档 ⭐
 - **[量化交易订单管理重构实施总结](features/QUANT_ORDER_MANAGEMENT_REFACTOR_IMPLEMENTATION_SUMMARY.md)** - 实施完成总结 ✅ 新增
 - **[信号日志历史数据修复方案](features/SIGNAL_ORDER_HISTORICAL_DATA_FIX.md)** - 历史数据修复方案（可选）
+
+### 构建和部署
+- **[构建错误修复总结](features/BUILD_ERROR_FIX_SUMMARY.md)** - TypeScript编译错误修复总结 ⭐ 新增
 
 ### 期权功能
 - **[期权图表功能实施总结](features/OPTION_CHART_IMPLEMENTATION.md)** - 期权图表功能实施总结 ✅ 新增

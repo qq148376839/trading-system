@@ -182,7 +182,7 @@ export default function EditStrategyModal({
       ...formData,
       symbolPoolConfig: {
         ...formData.symbolPoolConfig,
-        symbols: formData.symbolPoolConfig.symbols.filter((s) => s !== symbol),
+        symbols: formData.symbolPoolConfig.symbols.filter((s: string) => s !== symbol),
       },
     });
   };
@@ -397,7 +397,7 @@ export default function EditStrategyModal({
                       <div className="text-sm text-gray-400 text-center py-2">暂无股票，请添加</div>
                     ) : (
                       <div className="flex flex-wrap gap-2">
-                        {formData.symbolPoolConfig.symbols.map((symbol) => (
+                        {formData.symbolPoolConfig.symbols.map((symbol: string) => (
                           <span
                             key={symbol}
                             className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-800 rounded text-sm"
