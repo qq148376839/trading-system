@@ -60,14 +60,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
+    # 注意：移除了 deploy.resources 配置，因为某些系统（如 Synology NAS）不支持 CPU CFS 调度器
+    # 如果需要资源限制，可以通过 Docker 运行时参数或其他方式设置
 
   # Frontend 服务
   frontend:
@@ -94,14 +88,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
+    # 注意：移除了 deploy.resources 配置，因为某些系统（如 Synology NAS）不支持 CPU CFS 调度器
+    # 如果需要资源限制，可以通过 Docker 运行时参数或其他方式设置
 
 volumes:
   postgres_data:
