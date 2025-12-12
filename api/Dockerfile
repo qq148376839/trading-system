@@ -1,8 +1,13 @@
 # API 服务 Dockerfile
 FROM node:20-alpine
 
+# 安装构建依赖（用于编译原生模块，如 bcrypt）
 # 安装 curl 和 pnpm
-RUN apk add --no-cache curl && \
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    curl && \
     npm install -g pnpm
 
 # 设置工作目录
