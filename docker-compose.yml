@@ -10,8 +10,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-trading_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trading_password}
       POSTGRES_DB: ${POSTGRES_DB:-trading_db}
-    ports:
-      - "5432:5432"
+    # 注意：不映射外部端口，因为容器之间通过 Docker 网络通信
+    # 如果需要从宿主机访问数据库，可以取消下面的注释并修改端口号
+    # ports:
+    #   - "5433:5432"  # 使用 5433 避免与系统 PostgreSQL 冲突
     volumes:
       - postgres_data:/var/lib/postgresql/data
       # 只挂载初始化脚本，避免执行历史迁移脚本
