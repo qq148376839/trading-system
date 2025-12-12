@@ -52,6 +52,8 @@ services:
       # 如果需要热重载，可以挂载源代码（仅开发环境）
       # - ./api/src:/app/src
       # - ./api/dist:/app/dist
+      # 注意：如果 api/.env 文件存在，确保其中的 DATABASE_URL 使用服务名 'postgres' 而不是 'localhost'
+      # 例如：DATABASE_URL=postgresql://trading_user:trading_password@postgres:5432/trading_db
       - ./api/.env:/app/.env:ro
     networks:
       - trading-network
