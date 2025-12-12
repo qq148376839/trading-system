@@ -23,6 +23,9 @@ RUN if [ -f pnpm-lock.yaml ]; then \
 # 复制源代码
 COPY . .
 
+# 确保 public 目录存在（Next.js 需要）
+RUN mkdir -p public
+
 # 构建 Next.js 应用
 RUN if [ -f pnpm-lock.yaml ] || [ ! -f package-lock.json ]; then \
       pnpm run build; \
@@ -45,7 +48,8 @@ RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
 # 复制构建产物（standalone 模式）
-COPY --from=builder /app/public ./public
+# public 目录现在已存在于源代码中，可以直接复制
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
