@@ -8,6 +8,8 @@ import pool from '../config/database';
 import { logger } from '../utils/logger';
 import capitalManager from './capital-manager.service';
 import stateManager from './state-manager.service';
+import basicExecutionService from './basic-execution.service';
+import orderPreventionMetrics from './order-prevention-metrics.service';
 
 interface BalanceDiscrepancy {
   strategyId: number;
@@ -222,9 +224,19 @@ class AccountBalanceSyncService {
       if (positionsArray.length > 0) {
         logger.debug(`[账户余额同步] 获取到 ${positionsArray.length} 个实际持仓`);
         
+        // 检测卖空持仓
+        const shortPositions: Array<{ symbol: string; quantity: number }> = [];
+        
         for (const pos of positionsArray) {
           const symbol = pos.symbol;
           const quantity = parseInt(pos.quantity?.toString() || '0');
+          
+          // 检测卖空持仓（数量为负数）
+          if (quantity < 0) {
+            shortPositions.push({ symbol, quantity });
+            logger.warn(`[账户余额同步] 检测到卖空持仓: ${symbol}, 持仓数量=${quantity}`);
+          }
+          
           // 尝试多种价格字段：currentPrice, costPrice, avgPrice
           const price = parseFloat(
             pos.currentPrice?.toString() || 
@@ -243,6 +255,25 @@ class AccountBalanceSyncService {
             if (normalizedSymbol !== symbol) {
               positionMap.set(normalizedSymbol, positionValue);
               logger.debug(`[账户余额同步] Symbol格式转换: ${symbol} -> ${normalizedSymbol}, 价值=${positionValue.toFixed(2)}`);
+            }
+          }
+        }
+        
+        // 自动平仓卖空持仓
+        if (shortPositions.length > 0) {
+          logger.warn(`[账户余额同步] 检测到 ${shortPositions.length} 个卖空持仓，开始自动平仓`);
+          // 记录监控指标
+          orderPreventionMetrics.recordShortPositionDetected(shortPositions.length);
+          
+          for (const shortPos of shortPositions) {
+            const closeResult = await this.closeShortPosition(shortPos.symbol, shortPos.quantity);
+            // 记录监控指标
+            orderPreventionMetrics.recordShortPositionClose(closeResult.success);
+            
+            if (closeResult.success) {
+              logger.log(`[账户余额同步] 卖空持仓平仓成功: ${shortPos.symbol}, 订单ID=${closeResult.orderId}`);
+            } else {
+              logger.error(`[账户余额同步] 卖空持仓平仓失败: ${shortPos.symbol}, 错误=${closeResult.error}`);
             }
           }
         }
@@ -681,6 +712,125 @@ class AccountBalanceSyncService {
       clearInterval(this.syncInterval);
       this.syncInterval = null;
       logger.log('账户余额定时同步已停止');
+    }
+  }
+
+  /**
+   * 检测卖空持仓
+   * @returns 卖空持仓列表
+   */
+  async detectShortPositions(): Promise<Array<{ symbol: string; quantity: number }>> {
+    try {
+      const tradeCtx = await getTradeContext();
+      const positions = await tradeCtx.stockPositions();
+      
+      // 处理不同的数据结构
+      let positionsArray: any[] = [];
+      if (positions) {
+        if (positions.positions && Array.isArray(positions.positions)) {
+          positionsArray = positions.positions;
+        } else if (positions.channels && Array.isArray(positions.channels)) {
+          for (const channel of positions.channels) {
+            if (channel.positions && Array.isArray(channel.positions)) {
+              positionsArray.push(...channel.positions);
+            }
+          }
+        }
+      }
+      
+      // 筛选卖空持仓（数量为负数）
+      const shortPositions = positionsArray
+        .filter((p: any) => {
+          const quantity = parseInt(p.quantity?.toString() || '0');
+          return quantity < 0;
+        })
+        .map((p: any) => ({
+          symbol: p.symbol,
+          quantity: parseInt(p.quantity?.toString() || '0')
+        }));
+      
+      if (shortPositions.length > 0) {
+        logger.warn(`[卖空检测] 检测到 ${shortPositions.length} 个卖空持仓: ${shortPositions.map(p => `${p.symbol}(${p.quantity})`).join(', ')}`);
+      }
+      
+      return shortPositions;
+    } catch (error: any) {
+      logger.error(`检测卖空持仓失败:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * 自动平仓卖空持仓
+   * @param symbol 标的代码
+   * @param quantity 卖空数量（负数）
+   * @returns 平仓结果
+   */
+  async closeShortPosition(
+    symbol: string,
+    quantity: number
+  ): Promise<{ success: boolean; orderId?: string; error?: string }> {
+    try {
+      // 计算需要买入的数量（取绝对值）
+      const buyQuantity = Math.abs(quantity);
+      
+      logger.warn(`[卖空平仓] 开始平仓卖空持仓: ${symbol}, 卖空数量=${quantity}, 需要买入=${buyQuantity}`);
+      
+      // 获取当前市场价格
+      const { getQuoteContext } = await import('../config/longport');
+      const quoteCtx = await getQuoteContext();
+      const quotes = await quoteCtx.quote([symbol]);
+      
+      if (!quotes || quotes.length === 0) {
+        return {
+          success: false,
+          error: `无法获取 ${symbol} 的市场价格`
+        };
+      }
+      
+      const quote = quotes[0];
+      const currentPrice = parseFloat(quote.lastDone?.toString() || quote.last_done?.toString() || '0');
+      
+      if (currentPrice <= 0) {
+        return {
+          success: false,
+          error: `无法获取 ${symbol} 的有效市场价格`
+        };
+      }
+      
+      // 创建买入平仓订单意图
+      const buyIntent = {
+        action: 'BUY' as const,
+        symbol,
+        entryPrice: currentPrice,
+        quantity: buyQuantity,
+        reason: `自动平仓卖空持仓: 卖空数量=${quantity}`
+      };
+      
+      // 执行买入平仓（使用策略ID -1 表示系统自动平仓，避免与正常策略冲突）
+      // 注意：这里需要传递一个有效的策略ID，但平仓订单不关联具体策略
+      // 暂时使用 0，后续可以考虑创建专门的系统策略
+      const executionResult = await basicExecutionService.executeBuyIntent(buyIntent, -1);
+      
+      if (executionResult.success && executionResult.orderId) {
+        logger.log(`[卖空平仓] 平仓订单提交成功: ${symbol}, 订单ID=${executionResult.orderId}, 买入数量=${buyQuantity}`);
+        return {
+          success: true,
+          orderId: executionResult.orderId
+        };
+      } else {
+        logger.error(`[卖空平仓] 平仓订单提交失败: ${symbol}, 错误=${executionResult.error}`);
+        return {
+          success: false,
+          error: executionResult.error || '平仓订单提交失败'
+        };
+      }
+    } catch (error: any) {
+      logger.error(`平仓卖空持仓失败 (${symbol}):`, error);
+      return {
+        success: false,
+        error: error.message || '未知错误'
+      };
     }
   }
 }

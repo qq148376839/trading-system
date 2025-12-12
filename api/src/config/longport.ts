@@ -103,9 +103,10 @@ export async function getQuoteContext(): Promise<QuoteContextType> {
 
     if (!appKey || !appSecret || !accessToken) {
       quoteContextInitializing = null;
+      const envPathForError = path.resolve(__dirname, '../../.env');
       throw new Error(
         'LongPort credentials not configured. Please set LONGPORT_APP_KEY, LONGPORT_APP_SECRET, and LONGPORT_ACCESS_TOKEN in database or .env file.\n' +
-        `当前.env文件路径: ${envPath}\n` +
+        `当前.env文件路径: ${envPathForError}\n` +
         `LONGPORT_APP_KEY: ${appKey ? '已设置' : '未设置'}\n` +
         `LONGPORT_APP_SECRET: ${appSecret ? '已设置' : '未设置'}\n` +
         `LONGPORT_ACCESS_TOKEN: ${accessToken ? '已设置' : '未设置'}`
@@ -278,6 +279,17 @@ export async function getTradeContext(): Promise<TradeContextType> {
       );
     }
 
+    // 检查网络代理配置
+    const httpProxy = process.env.HTTP_PROXY || process.env.http_proxy;
+    const httpsProxy = process.env.HTTPS_PROXY || process.env.https_proxy;
+    if (httpProxy || httpsProxy) {
+      console.log('检测到网络代理配置:');
+      if (httpProxy) console.log(`  HTTP_PROXY: ${httpProxy}`);
+      if (httpsProxy) console.log(`  HTTPS_PROXY: ${httpsProxy}`);
+    } else {
+      console.log('未检测到网络代理配置（HTTP_PROXY/HTTPS_PROXY）');
+    }
+    
     const config = new Config({
       appKey: appKey.trim(),
       appSecret: appSecret.trim(),
@@ -296,10 +308,41 @@ export async function getTradeContext(): Promise<TradeContextType> {
         : accessToken;
       console.log(`  ACCESS_TOKEN: ${tokenDisplay}`);
       
-      tradeContext = await TradeContext.new(config);
-      console.log('TradeContext initialized successfully');
-      tradeContextInitializing = null;
-      return tradeContext;
+      // 添加重试机制，最多重试3次
+      let lastError: any = null;
+      const maxRetries = 3;
+      const retryDelay = 2000; // 2秒延迟
+      
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          if (attempt > 1) {
+            console.log(`TradeContext初始化重试 (${attempt}/${maxRetries})...`);
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+          }
+          
+          tradeContext = await TradeContext.new(config);
+          console.log('TradeContext initialized successfully');
+          tradeContextInitializing = null;
+          return tradeContext;
+        } catch (error: any) {
+          lastError = error;
+          // 如果是网络错误，继续重试
+          if (error?.message?.includes('error sending request') || 
+              error?.message?.includes('socket') ||
+              error?.code === 'GenericFailure') {
+            if (attempt < maxRetries) {
+              console.warn(`TradeContext初始化失败 (尝试 ${attempt}/${maxRetries}): ${error.message}`);
+              continue;
+            }
+          } else {
+            // 如果是其他错误（如权限错误），不重试
+            throw error;
+          }
+        }
+      }
+      
+      // 所有重试都失败，抛出最后一个错误
+      throw lastError;
     } catch (error: any) {
       tradeContextInitializing = null;
       console.error('Failed to initialize TradeContext:');
@@ -332,6 +375,20 @@ export async function getTradeContext(): Promise<TradeContextType> {
         } else if (error.message.includes('401003')) {
           errorMessage += '错误码401003: App Key或App Secret无效\n';
           errorMessage += '请检查.env文件中的LONGPORT_APP_KEY和LONGPORT_APP_SECRET\n';
+        } else if (error.message.includes('error sending request') || 
+                   error.message.includes('socket') ||
+                   error.code === 'GenericFailure') {
+          errorMessage += '可能的原因：\n';
+          errorMessage += '1. 网络连接问题（请检查网络代理设置）\n';
+          errorMessage += '2. 防火墙阻止了WebSocket连接\n';
+          errorMessage += '3. 长桥API服务暂时不可用\n';
+          errorMessage += '4. SDK版本问题（当前版本: 1.1.7）\n';
+          errorMessage += '5. 配置参数错误\n\n';
+          errorMessage += '解决方案：\n';
+          errorMessage += '1. 检查网络代理设置（HTTP_PROXY/HTTPS_PROXY环境变量）\n';
+          errorMessage += '2. 检查防火墙是否允许WebSocket连接\n';
+          errorMessage += '3. 尝试ping openapi.longportapp.com 确认网络连通性\n';
+          errorMessage += '4. 如果使用代理，确保代理支持WebSocket协议\n';
         } else {
           errorMessage += '可能的原因：\n';
           errorMessage += '1. 网络连接问题\n';

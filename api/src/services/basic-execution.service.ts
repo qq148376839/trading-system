@@ -8,7 +8,8 @@ import pool from '../config/database';
 import { TradingIntent } from './strategies/strategy-base';
 import { detectMarket } from '../utils/order-validation';
 import { logger } from '../utils/logger';
-import { normalizeSide } from '../routes/orders';
+import { normalizeSide, normalizeStatus } from '../routes/orders';
+import orderPreventionMetrics from './order-prevention-metrics.service';
 
 export interface ExecutionResult {
   success: boolean;
@@ -214,6 +215,154 @@ class BasicExecutionService {
   }
 
   /**
+   * 计算可用持仓（扣除未成交卖出订单占用）
+   * @param symbol 标的代码
+   * @returns 可用持仓信息
+   */
+  async calculateAvailablePosition(symbol: string): Promise<{
+    actualQuantity: number;
+    pendingQuantity: number;
+    availableQuantity: number;
+  }> {
+    try {
+      // 1. 获取实际持仓
+      const tradeCtx = await getTradeContext();
+      const positions = await tradeCtx.stockPositions();
+      
+      // 处理不同的数据结构：可能是 positions.positions 或 positions.channels[].positions
+      let positionsArray: any[] = [];
+      
+      if (positions) {
+        if (positions.positions && Array.isArray(positions.positions)) {
+          positionsArray = positions.positions;
+        } else if (positions.channels && Array.isArray(positions.channels)) {
+          for (const channel of positions.channels) {
+            if (channel.positions && Array.isArray(channel.positions)) {
+              positionsArray.push(...channel.positions);
+            }
+          }
+        }
+      }
+      
+      // 查找该标的的实际持仓
+      const position = positionsArray.find((p: any) => p.symbol === symbol);
+      const actualQuantity = position ? parseFloat(position.quantity?.toString() || '0') : 0;
+      
+      // 2. 查询未成交卖出订单
+      const todayOrders = await tradeCtx.todayOrders();
+      const pendingStatuses = [
+        'NotReported',
+        'NewStatus',
+        'WaitToNew',
+        'PartialFilledStatus',
+        'PendingReplaceStatus',
+        'WaitToReplace',
+        'ReplacedNotReported',
+        'ProtectedNotReported',
+        'VarietiesNotReported',
+      ];
+      
+      let pendingQuantity = 0;
+      for (const order of todayOrders) {
+        const orderSymbol = order.symbol || order.stock_name;
+        const orderSide = order.side;
+        const isSell = orderSide === 'Sell' || orderSide === 2 || orderSide === 'SELL' || orderSide === 'sell';
+        
+        if (orderSymbol === symbol && isSell) {
+          // 使用 normalizeStatus 标准化订单状态
+          const normalizedStatus = normalizeStatus(order.status);
+          
+          if (pendingStatuses.includes(normalizedStatus)) {
+            // 计算未成交数量：总数量 - 已成交数量
+            const totalQuantity = parseFloat(order.quantity?.toString() || order.submitted_quantity?.toString() || '0');
+            const executedQuantity = parseFloat(order.executedQuantity?.toString() || order.executed_quantity?.toString() || '0');
+            const pending = Math.max(0, totalQuantity - executedQuantity);
+            pendingQuantity += pending;
+          }
+        }
+      }
+      
+      // 3. 计算可用持仓
+      const availableQuantity = Math.max(0, actualQuantity - pendingQuantity);
+      
+      logger.log(`计算可用持仓: ${symbol}, 实际持仓=${actualQuantity}, 未成交订单占用=${pendingQuantity}, 可用持仓=${availableQuantity}`);
+      
+      return {
+        actualQuantity,
+        pendingQuantity,
+        availableQuantity
+      };
+    } catch (error: any) {
+      logger.error(`计算可用持仓失败 (${symbol}):`, error);
+      // 保守处理，查询失败时返回0，避免卖空
+      return {
+        actualQuantity: 0,
+        pendingQuantity: 0,
+        availableQuantity: 0
+      };
+    }
+  }
+
+  /**
+   * 验证卖出订单持仓
+   * @param symbol 标的代码
+   * @param quantity 卖出数量
+   * @param strategyId 策略ID
+   * @returns 验证结果
+   */
+  async validateSellPosition(
+    symbol: string,
+    quantity: number,
+    strategyId: number
+  ): Promise<{
+    valid: boolean;
+    availableQuantity: number;
+    actualQuantity: number;
+    pendingQuantity: number;
+    reason?: string;
+  }> {
+    try {
+      // 计算可用持仓
+      const positionInfo = await this.calculateAvailablePosition(symbol);
+      
+      // 验证卖出数量
+      if (quantity > positionInfo.availableQuantity) {
+        // 记录监控指标
+        orderPreventionMetrics.recordPositionValidation(false);
+        orderPreventionMetrics.recordOrderRejected('position');
+        
+        return {
+          valid: false,
+          availableQuantity: positionInfo.availableQuantity,
+          actualQuantity: positionInfo.actualQuantity,
+          pendingQuantity: positionInfo.pendingQuantity,
+          reason: `可用持仓不足：实际持仓=${positionInfo.actualQuantity}，未成交订单占用=${positionInfo.pendingQuantity}，可用持仓=${positionInfo.availableQuantity}，请求卖出=${quantity}`
+        };
+      }
+      
+      // 记录监控指标
+      orderPreventionMetrics.recordPositionValidation(true);
+      
+      return {
+        valid: true,
+        availableQuantity: positionInfo.availableQuantity,
+        actualQuantity: positionInfo.actualQuantity,
+        pendingQuantity: positionInfo.pendingQuantity
+      };
+    } catch (error: any) {
+      logger.error(`验证卖出订单持仓失败 (${symbol}):`, error);
+      // 保守处理，验证失败时拒绝卖出
+      return {
+        valid: false,
+        availableQuantity: 0,
+        actualQuantity: 0,
+        pendingQuantity: 0,
+        reason: `持仓验证失败，为安全起见拒绝卖出: ${error.message}`
+      };
+    }
+  }
+
+  /**
    * 执行卖出意图
    * 
    * 价格使用逻辑：
@@ -262,6 +411,26 @@ class BasicExecutionService {
       logger.warn(`策略 ${strategyId} 标的 ${intent.symbol}: ${priceValidation.warning}`);
     }
 
+    // 持仓验证：验证卖出数量是否超过实际可用持仓
+    const positionValidation = await this.validateSellPosition(
+      intent.symbol,
+      intent.quantity,
+      strategyId
+    );
+    
+    if (!positionValidation.valid) {
+      logger.error(`策略 ${strategyId} 标的 ${intent.symbol}: 持仓验证失败 - ${positionValidation.reason}`);
+      // 如果订单提交失败，更新信号状态为REJECTED
+      const signalId = (intent.metadata as any)?.signalId;
+      if (signalId) {
+        await this.updateSignalStatusBySignalId(signalId, 'REJECTED');
+      }
+      return {
+        success: false,
+        error: positionValidation.reason || '持仓验证失败',
+      };
+    }
+
     // 记录价格信息，便于调试和问题追踪
     logger.log(`策略 ${strategyId} 执行卖出意图: ` +
       `标的=${intent.symbol}, ` +
@@ -269,6 +438,7 @@ class BasicExecutionService {
       `卖出价=${sellPrice.toFixed(2)}, ` +
       `买入价(entryPrice)=${intent.entryPrice?.toFixed(2) || 'N/A'}, ` +
       `市场价格=${currentPrice?.toFixed(2) || 'N/A'}, ` +
+      `可用持仓=${positionValidation.availableQuantity}, ` +
       `原因=${intent.reason}`);
 
     // 从intent.metadata中获取signal_id

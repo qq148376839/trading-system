@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { optionsApi, quoteApi } from '@/lib/api'
 import AppLayout from '@/components/AppLayout'
@@ -28,7 +28,7 @@ interface OptionChainRow {
   putOption?: OptionInfo
 }
 
-export default function OptionChainPage() {
+function OptionChainContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [symbol, setSymbol] = useState<string>(searchParams.get('symbol') || 'TSLA.US')
@@ -617,6 +617,20 @@ export default function OptionChainPage() {
         )}
       </Card>
     </AppLayout>
+  )
+}
+
+export default function OptionChainPage() {
+  return (
+    <Suspense fallback={
+      <AppLayout>
+        <Card>
+          <Spin size="large" style={{ display: 'block', textAlign: 'center', padding: '40px 0' }} />
+        </Card>
+      </AppLayout>
+    }>
+      <OptionChainContent />
+    </Suspense>
   )
 }
 

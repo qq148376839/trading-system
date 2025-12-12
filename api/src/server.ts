@@ -18,6 +18,7 @@ import { tokenRefreshRouter } from './routes/token-refresh';
 import { optionsRouter } from './routes/options';
 import { quantRouter } from './routes/quant';
 import backtestRouter from './routes/backtest';
+import { orderPreventionMetricsRouter } from './routes/order-prevention-metrics';
 import { errorHandler } from './middleware/errorHandler';
 
 // 加载环境变量（明确指定路径）
@@ -56,6 +57,7 @@ app.use('/api/token-refresh', tokenRefreshRouter);
 app.use('/api/options', optionsRouter);
 app.use('/api/quant', quantRouter);
 app.use('/api/quant/backtest', backtestRouter);
+app.use('/api/order-prevention-metrics', orderPreventionMetricsRouter);
 app.use('/api/health', healthRouter);
 
 // 错误处理中间件
@@ -121,6 +123,22 @@ app.listen(PORT, '0.0.0.0', () => {
       console.warn('启动策略调度器失败:', error.message);
     }
   }, 5000);
+
+  // 启动交易推送服务（推荐，解决竞态条件）
+  setTimeout(async () => {
+    try {
+      const tradePushService = (await import('./services/trade-push.service')).default;
+      await tradePushService.initialize();
+      if (tradePushService.isActive()) {
+        console.log('交易推送服务已启动（实时订单状态更新）');
+      } else {
+        console.warn('交易推送服务启动失败，将降级到轮询模式');
+      }
+    } catch (error: any) {
+      console.warn('启动交易推送服务失败:', error.message);
+      console.warn('系统将降级到轮询模式（trackPendingOrders）');
+    }
+  }, 6000);
 });
 
 export default app;

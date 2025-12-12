@@ -301,16 +301,14 @@ export default function EditStrategyModal({
                         <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded">
                           <div className="text-sm text-yellow-800">
                             ⚠️ <strong>提示：</strong>当前可用资金不足（已有持仓占用了资金），但您仍可以修改股票池配置。
-                            如需买入新股票，请先平仓部分持仓或增加资金分配。
-                          </div>
+                            如需买入新股票，请先平仓部分持仓或增加资金分配。                          </div>
                         </div>
                       )}
                       {availableCapital <= 0 && existingHoldings.length === 0 && (
                         <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded">
                           <div className="text-sm text-yellow-800">
                             ⚠️ <strong>提示：</strong>当前可用资金不足，但您仍可以修改股票池配置。
-                            如需买入新股票，请先增加资金分配或选择其他账户。
-                          </div>
+                            如需买入新股票，请先增加资金分配或选择其他账户。                          </div>
                         </div>
                       )}
                       <InstitutionStockSelector
@@ -433,11 +431,9 @@ export default function EditStrategyModal({
                     <h3 className="text-sm font-semibold text-gray-900 mb-1">推荐策略 V1</h3>
                     <p className="text-xs text-gray-600 leading-relaxed mb-2">
                       基于市场趋势和ATR（平均真实波幅）的智能推荐策略。系统会分析SPX、USD指数、BTC等市场指标，
-                      结合ATR计算止损止盈价格，智能生成买卖信号。适合趋势跟踪和风险控制的量化交易场景。
-                    </p>
+                      结合ATR计算止损止盈价格，智能生成买卖信号。适合趋势跟踪和风险控制的量化交易场景。                    </p>
                     <p className="text-xs text-gray-500 italic">
-                      ⚠️ 策略类型创建后不可修改。如需使用其他策略类型，请创建新策略。
-                    </p>
+                      ⚠️ 策略类型创建后不可修改。如需使用其他策略类型，请创建新策略。                    </p>
                   </div>
                 </div>
               </div>
@@ -547,4 +543,3 @@ export default function EditStrategyModal({
     </div>
   );
 }
-

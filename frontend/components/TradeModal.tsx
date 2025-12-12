@@ -76,7 +76,7 @@ export default function TradeModal({ symbol, currentPrice, onClose, onSuccess }:
         setLotSize(response.data.lot_size)
       }
     } catch (err) {
-      console.error('获取最小交易单位失败:', err)
+      console.error('获取最小交易单位失败', err)
       setLotSize(null)
     } finally {
       setLoadingLotSize(false)
@@ -110,7 +110,7 @@ export default function TradeModal({ symbol, currentPrice, onClose, onSuccess }:
         })
       }
     } catch (err) {
-      console.error('获取最大可买数量失败:', err)
+      console.error('获取最大可买数量失败', err)
       setMaxQuantity(null)
     } finally {
       setLoadingMaxQty(false)
@@ -634,7 +634,7 @@ export default function TradeModal({ symbol, currentPrice, onClose, onSuccess }:
               {/* 备注 */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  备注（最大64字符）
+                  备注（最多64字符）
                 </label>
                 <input
                   type="text"

@@ -14,6 +14,7 @@ import dynamicPositionManager from './dynamic-position-manager.service';
 import tradingRecommendationService from './trading-recommendation.service';
 import { logger } from '../utils/logger';
 import { getTradeContext } from '../config/longport';
+import orderPreventionMetrics from './order-prevention-metrics.service';
 
 class StrategyScheduler {
   private runningStrategies: Map<number, NodeJS.Timeout> = new Map();
@@ -214,10 +215,19 @@ class StrategyScheduler {
 
     logger.log(`策略 ${strategyId}: 开始处理 ${symbols.length} 个标的: ${symbols.join(', ')}`);
 
-    // 3. 并行处理多个股票
-    await Promise.all(
-      symbols.map((symbol) => this.processSymbol(strategyInstance, strategyId, symbol))
-    );
+    // 3. 分批并行处理多个股票（避免连接池耗尽）
+    // 每批处理10个标的，避免一次性占用过多数据库连接
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+      const batch = symbols.slice(i, i + BATCH_SIZE);
+      await Promise.all(
+        batch.map((symbol) => this.processSymbol(strategyInstance, strategyId, symbol))
+      );
+      // 批次之间稍作延迟，避免数据库压力过大
+      if (i + BATCH_SIZE < symbols.length) {
+        await new Promise(resolve => setTimeout(resolve, 100)); // 100ms延迟
+      }
+    }
   }
 
   /**
@@ -1564,10 +1574,16 @@ class StrategyScheduler {
 
       // 4. 如果需要卖出，执行卖出
       if (shouldSell) {
-        // 检查是否有未成交的卖出订单（强制刷新缓存，避免重复提交）
-        const hasPendingSellOrder = await this.checkPendingSellOrder(strategyId, symbol, true);
-        if (hasPendingSellOrder) {
+        // 检查可用持仓（增强版，包含可用持仓数量）
+        const positionCheck = await this.checkAvailablePosition(strategyId, symbol);
+        if (positionCheck.hasPending) {
           logger.log(`策略 ${strategyId} 标的 ${symbol}: 已有未成交卖出订单，跳过`);
+          return;
+        }
+        
+        // 验证卖出数量是否超过可用持仓
+        if (positionCheck.availableQuantity !== undefined && quantity > positionCheck.availableQuantity) {
+          logger.error(`策略 ${strategyId} 标的 ${symbol}: 卖出数量(${quantity})超过可用持仓(${positionCheck.availableQuantity})，实际持仓=${positionCheck.actualQuantity}，未成交订单占用=${positionCheck.pendingQuantity}`);
           return;
         }
 
@@ -1873,6 +1889,41 @@ class StrategyScheduler {
   }
 
   /**
+   * 检查可用持仓（增强版，返回可用持仓数量）
+   * @param strategyId 策略ID
+   * @param symbol 标的代码
+   * @returns 可用持仓信息
+   */
+  private async checkAvailablePosition(strategyId: number, symbol: string): Promise<{
+    hasPending: boolean;
+    availableQuantity?: number;
+    actualQuantity?: number;
+    pendingQuantity?: number;
+  }> {
+    try {
+      // 检查是否有未成交卖出订单
+      const hasPending = await this.checkPendingSellOrder(strategyId, symbol, false);
+      
+      // 计算可用持仓
+      const positionInfo = await basicExecutionService.calculateAvailablePosition(symbol);
+      
+      return {
+        hasPending,
+        availableQuantity: positionInfo.availableQuantity,
+        actualQuantity: positionInfo.actualQuantity,
+        pendingQuantity: positionInfo.pendingQuantity
+      };
+    } catch (error: any) {
+      logger.error(`检查可用持仓失败 (${symbol}):`, error);
+      // 保守处理，返回有未成交订单
+      return {
+        hasPending: true,
+        availableQuantity: 0
+      };
+    }
+  }
+
+  /**
    * 验证策略执行是否安全
    * 防止高买低卖、重复下单等问题
    */
@@ -1921,24 +1972,48 @@ class StrategyScheduler {
       // 2. 检查是否有未成交订单（防止重复下单）
       const hasPendingOrder = await this.checkPendingOrder(strategyId, symbol);
       if (hasPendingOrder) {
+        // 记录监控指标
+        orderPreventionMetrics.recordDuplicateOrderPrevented('pending');
+        orderPreventionMetrics.recordOrderRejected('duplicate');
+        
         return {
           valid: false,
           reason: `标的 ${symbol} 已有未成交订单，不允许重复下单`
         };
       }
       
-      // 3. 检查订单提交缓存（防止竞态条件导致的重复提交）
+      // 3. 卖出订单持仓验证（新增）
+      if (intent.action === 'SELL' && intent.quantity) {
+        const positionValidation = await basicExecutionService.validateSellPosition(
+          symbol,
+          intent.quantity,
+          strategyId
+        );
+        if (!positionValidation.valid) {
+          return {
+            valid: false,
+            reason: positionValidation.reason || '持仓验证失败'
+          };
+        }
+        logger.log(`策略 ${strategyId} 标的 ${symbol}: 持仓验证通过，可用持仓=${positionValidation.availableQuantity}，请求卖出=${intent.quantity}`);
+      }
+      
+      // 4. 检查订单提交缓存（防止竞态条件导致的重复提交）
       const cacheKey = `${strategyId}:${symbol}:${intent.action}`;
       const cached = this.orderSubmissionCache.get(cacheKey);
       
       if (cached && Date.now() - cached.timestamp < this.ORDER_CACHE_TTL) {
+        // 记录监控指标
+        orderPreventionMetrics.recordDuplicateOrderPrevented('cache');
+        orderPreventionMetrics.recordOrderRejected('duplicate');
+        
         return {
           valid: false,
           reason: `标的 ${symbol} 在最近60秒内已提交过 ${intent.action} 订单，防止重复提交`
         };
       }
       
-      // 4. 验证信号用途（SELL信号用于做空，不是平仓）
+      // 5. 验证信号用途（SELL信号用于做空，不是平仓）
       if (intent.action === 'SELL' && instanceResult.rows.length > 0) {
         const instance = instanceResult.rows[0];
         const context = instance.context ? JSON.parse(instance.context) : {};

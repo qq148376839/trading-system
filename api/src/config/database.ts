@@ -1,13 +1,14 @@
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
 
+// 简单加载.env文件（与旧版本保持一致）
 dotenv.config();
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  max: 20,
+  max: 40, // 增加到40，支持更多并发连接（20个标的 + 其他服务）
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionTimeoutMillis: 10000, // 增加到10秒，避免连接超时
 });
 
 // 测试数据库连接
