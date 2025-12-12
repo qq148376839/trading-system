@@ -76,6 +76,9 @@ services:
     environment:
       # 使用服务名而不是 localhost，因为前端在浏览器中运行，需要从外部访问
       # 如果前端需要从浏览器访问 API，应该使用宿主机的地址或域名
+      # 注意：NEXT_PUBLIC_API_URL 在构建时注入，修改后需要重新构建前端镜像
+      # 默认值使用 localhost，但应该通过 .env 文件或环境变量设置为 NAS 的实际 IP
+      # 例如：NEXT_PUBLIC_API_URL=http://192.168.31.18:3001
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
       NODE_ENV: production
     ports:

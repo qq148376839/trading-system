@@ -1,0 +1,107 @@
+# 前端 API URL 配置指南
+
+## 问题说明
+
+前端应用在浏览器中运行，当使用 `localhost:3001` 时，浏览器会尝试从**用户的电脑**访问 localhost，而不是从 NAS 服务器访问。
+
+## 解决方案
+
+### 方法 1：通过环境变量设置（推荐）
+
+在项目根目录创建或编辑 `.env` 文件：
+
+```bash
+# 设置前端 API URL 为 NAS 的 IP 地址
+NEXT_PUBLIC_API_URL=http://192.168.31.18:3001
+```
+
+然后重新构建并启动前端服务：
+
+```bash
+docker-compose build frontend
+docker-compose up -d frontend
+```
+
+### 方法 2：直接在 docker-compose.yml 中设置
+
+编辑 `docker-compose.yml`，修改 frontend 服务的环境变量：
+
+```yaml
+frontend:
+  environment:
+    NEXT_PUBLIC_API_URL: http://192.168.31.18:3001  # 使用你的 NAS IP
+    NODE_ENV: production
+```
+
+然后重新构建：
+
+```bash
+docker-compose build frontend
+docker-compose up -d frontend
+```
+
+### 方法 3：使用域名（如果配置了）
+
+如果你有域名指向 NAS，可以使用域名：
+
+```bash
+NEXT_PUBLIC_API_URL=http://your-domain.com:3001
+```
+
+或者如果配置了反向代理：
+
+```bash
+NEXT_PUBLIC_API_URL=https://api.your-domain.com
+```
+
+## 重要提示
+
+1. **`NEXT_PUBLIC_*` 变量在构建时注入**：
+   - Next.js 的 `NEXT_PUBLIC_*` 环境变量是在**构建时**注入到客户端代码中的
+   - 修改后必须**重新构建**前端镜像才能生效
+   - 仅仅重启容器是不够的
+
+2. **构建命令**：
+   ```bash
+   # 重新构建前端
+   docker-compose build frontend
+   
+   # 或者强制重新构建（不使用缓存）
+   docker-compose build --no-cache frontend
+   
+   # 重新启动
+   docker-compose up -d frontend
+   ```
+
+3. **验证配置**：
+   - 构建后，可以在浏览器中查看前端页面的源代码
+   - 搜索 `NEXT_PUBLIC_API_URL` 或 `localhost:3001`，确认已更新为正确的 IP
+
+4. **动态 IP 地址**：
+   - 如果 NAS 的 IP 地址会变化，考虑：
+     - 使用固定 IP（DHCP 保留）
+     - 使用域名 + DDNS
+     - 或者创建一个启动脚本动态设置
+
+## 快速修复步骤
+
+```bash
+# 1. 在项目根目录创建或编辑 .env 文件
+echo "NEXT_PUBLIC_API_URL=http://192.168.31.18:3001" >> .env
+
+# 2. 重新构建前端
+docker-compose build frontend
+
+# 3. 重新启动前端服务
+docker-compose up -d frontend
+
+# 4. 查看日志确认启动成功
+docker-compose logs frontend
+```
+
+## 验证
+
+访问前端页面（如 `http://192.168.31.18:3000/config`），尝试登录，应该能够正常连接到 API。
+
+如果仍然失败，检查浏览器控制台（F12）的网络请求，确认请求的 URL 是否正确。
+
