@@ -947,9 +947,17 @@ trading-system/
 #### `frontend/app/options/chain/page.tsx`
 **作用**: 期权链页面
 
+**主要功能**:
+- 显示期权链数据（看涨/看跌期权）
+- 支持股票代码搜索和选择
+- 支持到期日期选择
+- 显示正股价格和高亮最近行权价
+- 使用 `Suspense` 包裹 `useSearchParams()` 以符合Next.js 14要求
+
 **调用关系**:
 - ✅ 使用 `lib/api.ts` - API 调用
-- ✅ 使用 `components/OptionTradeModal.tsx` - 期权交易模态框
+- ✅ 使用 `components/AppLayout.tsx` - 应用布局
+- ✅ 使用 `next/navigation` - `useRouter`, `useSearchParams`（需Suspense包裹）
 
 **被调用**:
 - 📌 Next.js 路由 `/options/chain`

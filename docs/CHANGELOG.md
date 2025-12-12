@@ -2,7 +2,24 @@
 
 ## 2025-12-11
 
-### ✅ 构建错误修复完成
+### ✅ 前端构建错误修复完成（编码问题和Suspense）
+
+#### 🎯 核心修复
+- ✅ **编码问题修复**：修复`TradeModal.tsx`和`EditStrategyModal.tsx`中21处中文编码错误
+- ✅ **Next.js Suspense修复**：修复`/options/chain`页面的`useSearchParams()` Suspense边界问题
+- ✅ **前端构建成功**：`npm run build` 完全通过，无错误，无警告
+
+#### 🔧 技术修复
+- ✅ **编码问题**：修复所有中文字符乱码（如`�?`、`�?`等），确保UI显示正常
+- ✅ **Suspense边界**：将使用`useSearchParams()`的组件提取为独立组件，用`Suspense`包裹
+- ✅ **加载状态**：为Suspense添加友好的加载回退UI
+
+#### 📝 文档更新
+- ✅ 更新 [构建错误修复总结](features/BUILD_ERROR_FIX_SUMMARY.md) - 添加编码问题和Suspense修复
+
+---
+
+### ✅ TypeScript编译错误修复完成
 
 #### 🎯 核心修复
 - ✅ **TypeScript编译错误修复**：修复99+个编译错误，确保项目可以成功构建
