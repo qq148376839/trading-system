@@ -1,17 +1,18 @@
 # API 服务 Dockerfile
-FROM node:20-alpine
+# 使用 node:20 (基于 Debian/glibc) 而不是 alpine，因为 longport 包需要 glibc
+# longport 包不提供 musl 版本的原生模块
+FROM node:20
 
-# 安装运行时依赖和 pnpm
-RUN apk add --no-cache curl && \
-    npm install -g pnpm
-
-# 安装构建依赖（用于编译原生模块如 bcrypt）
-# 使用 --virtual 创建虚拟包组，便于后续清理
-RUN apk add --no-cache --virtual .build-deps \
+# 安装运行时依赖、构建工具和 pnpm
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    curl \
     python3 \
     make \
     g++ \
-    build-base
+    build-essential && \
+    npm install -g pnpm && \
+    rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
 WORKDIR /app
@@ -29,11 +30,13 @@ COPY . .
 RUN pnpm run build
 
 # 清理构建工具以减小镜像大小
-RUN apk del .build-deps
+RUN apt-get purge -y python3 make g++ build-essential && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
 
 # 创建非 root 用户
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
+RUN groupadd -g 1001 nodejs && \
+    useradd -r -u 1001 -g nodejs nodejs
 
 # 设置文件权限
 RUN chown -R nodejs:nodejs /app
@@ -44,7 +47,7 @@ USER nodejs
 # 暴露端口
 EXPOSE 3001
 
-# 健康检查
+# 健康检查（Debian 镜像已包含 curl）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD curl -f http://localhost:3001/api/health || exit 1
 
