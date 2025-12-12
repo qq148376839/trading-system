@@ -1,0 +1,178 @@
+# Next.js 构建缓存问题修复指南
+
+**创建时间**：2025-12-12  
+**问题类型**：构建错误 / 模块解析错误
+
+---
+
+## 📋 问题描述
+
+### 错误信息
+
+```
+Error: Cannot find module './vendor-chunks/antd.js'
+Require stack:
+- D:\Python脚本\trading-system\frontend\.next\server\webpack-runtime.js
+- D:\Python脚本\trading-system\frontend\.next\server\app\quant\backtest\[id]\page.js
+```
+
+### 问题原因
+
+1. **构建缓存损坏**：`.next` 目录中的构建缓存可能损坏或不完整
+2. **模块解析问题**：Next.js 14 在处理 Ant Design 等大型库时可能出现 vendor chunks 解析问题
+3. **依赖版本冲突**：Next.js 14 与 Ant Design 6.0 的兼容性问题
+
+---
+
+## 🔧 解决方案
+
+### 方案1：清理构建缓存（推荐）
+
+**Windows PowerShell**：
+
+```powershell
+cd trading-system/frontend
+
+# 删除 .next 目录
+if (Test-Path .next) {
+    Remove-Item -Recurse -Force .next
+}
+
+# 删除 node_modules 缓存
+if (Test-Path node_modules\.cache) {
+    Remove-Item -Recurse -Force node_modules\.cache
+}
+
+# 重新启动开发服务器
+npm run dev
+```
+
+**使用修复脚本**：
+
+```powershell
+cd trading-system/frontend
+.\scripts\fix-build-cache.ps1
+npm run dev
+```
+
+### 方案2：更新 Next.js 配置
+
+已在 `next.config.js` 中添加以下配置：
+
+```javascript
+module.exports = {
+  // ... 其他配置
+  
+  // 修复 Ant Design 模块解析问题
+  webpack: (config, { isServer }) => {
+    if (!isServer) {
+      config.optimization = {
+        ...config.optimization,
+        splitChunks: {
+          ...config.optimization.splitChunks,
+          cacheGroups: {
+            ...config.optimization.splitChunks?.cacheGroups,
+            default: false,
+            vendors: false,
+          },
+        },
+      };
+    }
+    return config;
+  },
+  
+  // 转译 Ant Design 包
+  transpilePackages: ['antd', '@ant-design/icons'],
+}
+```
+
+### 方案3：重新安装依赖（如果上述方案无效）
+
+```powershell
+cd trading-system/frontend
+
+# 删除 node_modules 和 package-lock.json
+Remove-Item -Recurse -Force node_modules
+Remove-Item -Force package-lock.json
+
+# 清理 npm 缓存
+npm cache clean --force
+
+# 重新安装依赖
+npm install
+
+# 清理构建缓存
+Remove-Item -Recurse -Force .next
+
+# 重新启动
+npm run dev
+```
+
+---
+
+## ✅ 验证修复
+
+修复后，请验证以下内容：
+
+1. **开发服务器正常启动**：
+   ```bash
+   npm run dev
+   ```
+
+2. **页面正常访问**：
+   - 访问 `http://localhost:3000/quant/backtest/37`
+   - 确认页面正常加载，无错误
+
+3. **构建正常**：
+   ```bash
+   npm run build
+   ```
+   - 确认构建成功，无模块解析错误
+
+---
+
+## 📝 预防措施
+
+### 1. 定期清理构建缓存
+
+在以下情况下建议清理构建缓存：
+- 更新依赖后
+- 修改 Next.js 配置后
+- 遇到模块解析错误时
+- 长时间开发后（每周一次）
+
+### 2. 使用修复脚本
+
+已创建 `scripts/fix-build-cache.ps1` 脚本，可以快速清理构建缓存：
+
+```powershell
+.\scripts\fix-build-cache.ps1
+```
+
+### 3. 版本兼容性
+
+确保以下版本兼容：
+- Next.js: `^14.0.0`
+- Ant Design: `^6.0.0`
+- React: `^18.2.0`
+
+---
+
+## 🔍 相关文件
+
+- `frontend/next.config.js` - Next.js 配置文件（已更新）
+- `frontend/scripts/fix-build-cache.ps1` - 构建缓存清理脚本
+- `frontend/app/quant/backtest/[id]/page.tsx` - 出现问题的页面
+
+---
+
+## 📚 参考文档
+
+- [Next.js Webpack Configuration](https://nextjs.org/docs/api-reference/next.config.js/custom-webpack-config)
+- [Next.js Transpile Packages](https://nextjs.org/docs/api-reference/next.config.js/transpile-packages)
+- [Ant Design with Next.js](https://ant.design/docs/react/use-with-next)
+
+---
+
+**最后更新**：2025-12-12
+
