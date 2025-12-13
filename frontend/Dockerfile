@@ -7,6 +7,12 @@ RUN npm install -g pnpm
 # 设置工作目录
 WORKDIR /app
 
+# 接收构建参数（NEXT_PUBLIC_API_URL 需要在构建时注入）
+ARG NEXT_PUBLIC_API_URL=http://localhost:3001
+
+# 设置环境变量（Next.js 构建时需要）
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+
 # 复制 package.json 和 lock 文件
 COPY package.json pnpm-lock.yaml* package-lock.json* ./
 
@@ -26,7 +32,7 @@ COPY . .
 # 确保 public 目录存在（Next.js 需要）
 RUN mkdir -p public
 
-# 构建 Next.js 应用
+# 构建 Next.js 应用（此时 NEXT_PUBLIC_API_URL 已可用）
 RUN if [ -f pnpm-lock.yaml ] || [ ! -f package-lock.json ]; then \
       pnpm run build; \
     else \
