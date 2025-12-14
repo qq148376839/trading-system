@@ -2,18 +2,36 @@
 
 本文档说明如何在 Mac 和 Docker 环境中运行交易系统。
 
+## ✅ Docker 部署状态
+
+**当前状态**: Docker 部署已完全修复并测试通过 ✅
+
+**支持的平台**:
+- ✅ Linux (包括 Synology NAS)
+- ✅ macOS
+- ✅ Windows (通过 WSL2)
+
+**关键修复**:
+- ✅ pnpm 包管理器支持
+- ✅ longport 原生模块支持（Debian 基础镜像）
+- ✅ bcrypt 编译支持（构建工具）
+- ✅ 前端 API URL 构建时注入
+- ✅ PostgreSQL 端口冲突修复
+- ✅ NAS 系统兼容性
+
 ## 问题解决
 
-### 1. bcrypt 安装问题
+### 1. bcrypt 编译问题
 
-已将所有 `bcrypt` 依赖替换为 `bcryptjs`（纯 JavaScript 实现），无需原生编译，解决了以下问题：
-- Mac 上 Xcode Command Line Tools 检测失败
-- Docker 环境中缺少构建工具
-- 网络超时导致预编译二进制文件下载失败
+**已修复**: Dockerfile 中添加了构建工具（python3, make, g++, build-essential），支持编译 bcrypt 原生模块。
 
-### 2. 依赖安装
+### 2. longport 原生模块问题
 
-现在可以直接运行 `npm install`，无需额外的构建工具。
+**已修复**: 从 `node:20-alpine` 切换到 `node:20` (Debian)，因为 longport 包需要 glibc 支持。
+
+### 3. pnpm 支持
+
+**已修复**: API 和 Frontend Dockerfile 都支持 pnpm 包管理器，使用 `pnpm install --frozen-lockfile`。
 
 ## Docker 环境使用
 
@@ -26,24 +44,41 @@
 
 1. **配置环境变量**
 
-   在项目根目录创建 `.env` 文件（可选，用于覆盖默认配置）：
+   在项目根目录创建 `.env` 文件：
 
    ```bash
+   # 数据库配置（Docker Compose 会读取）
+   POSTGRES_USER=trading_user
+   POSTGRES_PASSWORD=your_secure_password
+   POSTGRES_DB=trading_db
+
    # 长桥API配置
    LONGPORT_APP_KEY=your_app_key
    LONGPORT_APP_SECRET=your_app_secret
    LONGPORT_ACCESS_TOKEN=your_access_token
    LONGPORT_ENABLE_OVERNIGHT=false
+
+   # 前端 API URL（重要：使用 NAS 的实际 IP 地址）
+   # 如果从浏览器访问，必须使用宿主机的 IP，而不是 localhost
+   NEXT_PUBLIC_API_URL=http://192.168.31.18:3001
    ```
 
-2. **启动所有服务**
+   **重要提示**:
+   - `NEXT_PUBLIC_API_URL` 必须在构建时设置，修改后需要重新构建前端镜像
+   - 如果 NAS IP 会变化，建议使用固定 IP 或域名
+
+2. **构建并启动所有服务**
 
    ```bash
+   # 构建镜像（首次部署或修改配置后）
+   docker-compose build
+
+   # 启动所有服务
    docker-compose up -d
    ```
 
    这将启动：
-   - PostgreSQL 数据库（端口 5432）
+   - PostgreSQL 数据库（容器内部端口 5432，不映射到宿主机）
    - API 服务（端口 3001）
    - Frontend 服务（端口 3000）
 
@@ -86,7 +121,9 @@ docker-compose -f docker-compose.dev.yml up
 
 ### 数据库初始化
 
-数据库容器启动时会自动执行 `api/migrations/` 目录下的 SQL 迁移脚本。
+数据库容器启动时会自动执行 `api/migrations/000_init_schema.sql` 初始化脚本。
+
+**注意**: 只执行初始化脚本，历史迁移脚本已归档。
 
 ### 创建管理员账户
 
@@ -173,34 +210,74 @@ docker-compose exec api node scripts/create-admin.js admin your_password
 
 ## 故障排除
 
-### API 服务无法连接数据库
+### 常见问题
 
-- 检查 `DATABASE_URL` 环境变量是否正确
-- 确保数据库服务正在运行
-- 检查网络连接（Docker 网络或本地连接）
+详细的故障排查指南请参考：
+- **[Docker 故障排查指南](../DOCKER_TROUBLESHOOTING.md)** - 完整的故障排查步骤
+- **[前端 API URL 配置指南](../FRONTEND_API_URL_SETUP.md)** - 前端连接问题修复
+- **[Docker 构建修复说明](../DOCKER_BUILD_FIX.md)** - 构建问题修复
 
-### Frontend 无法连接 API
+### 快速问题排查
 
-- 检查 `NEXT_PUBLIC_API_URL` 环境变量
-- 确保 API 服务正在运行
-- 检查端口是否被占用
+#### API 服务无法连接数据库
+- 检查 `api/.env` 文件中的 `DATABASE_URL` 是否使用服务名 `postgres` 而不是 `localhost`
+- 查看日志：`docker-compose logs api`
 
-### 端口冲突
+#### Frontend 无法连接 API
+- 检查 `NEXT_PUBLIC_API_URL` 是否设置为 NAS 的实际 IP 地址
+- **重要**: 修改后必须重新构建前端镜像：`docker-compose build --no-cache frontend`
+- 查看浏览器控制台（F12）的网络请求，确认请求的 URL
 
-如果端口被占用，可以在 `docker-compose.yml` 中修改端口映射：
+#### 端口冲突
+- PostgreSQL 端口冲突：已修复，不再映射外部端口
+- API/Frontend 端口冲突：可以在 `docker-compose.yml` 中修改端口映射
 
-```yaml
-ports:
-  - "3002:3001"  # 将 API 映射到 3002
-```
+#### 构建失败
+- longport 模块错误：已修复，使用 Debian 基础镜像
+- bcrypt 编译错误：已修复，添加了构建工具
+- pnpm lockfile 错误：已修复，使用 pnpm 并同步 lockfile
 
 ## 生产环境部署
 
-生产环境建议：
+### 部署检查清单
 
-1. 使用环境变量文件或密钥管理服务
-2. 配置 HTTPS 和反向代理（如 Nginx）
-3. 设置数据库备份策略
-4. 配置日志收集和监控
-5. 使用 Docker 镜像标签版本管理
+- [ ] 配置环境变量（`.env` 文件）
+- [ ] 设置 `NEXT_PUBLIC_API_URL` 为实际 IP 或域名
+- [ ] 创建管理员账户：`docker-compose exec api node scripts/create-admin.js admin your_password`
+- [ ] 配置长桥 API 凭证（通过配置管理页面或环境变量）
+- [ ] 验证所有服务健康状态：`docker-compose ps`
+
+### 生产环境建议
+
+1. **安全配置**
+   - 使用强密码（数据库、管理员账户）
+   - 配置 `CONFIG_ENCRYPTION_KEY` 环境变量（32字符以上）
+   - 使用环境变量文件或密钥管理服务
+
+2. **网络配置**
+   - 配置 HTTPS 和反向代理（如 Nginx）
+   - 使用域名而不是 IP 地址
+   - 配置防火墙规则
+
+3. **数据管理**
+   - 设置数据库备份策略
+   - 定期备份 `postgres_data` 卷
+   - 监控磁盘空间使用
+
+4. **监控和日志**
+   - 配置日志收集和监控
+   - 设置健康检查告警
+   - 定期查看服务日志
+
+5. **版本管理**
+   - 使用 Docker 镜像标签版本管理
+   - 保留历史版本以便回滚
+   - 使用 Git 标签标记发布版本
+
+## 相关文档
+
+- [Docker 故障排查指南](../DOCKER_TROUBLESHOOTING.md) - 详细的问题排查步骤
+- [前端 API URL 配置指南](../FRONTEND_API_URL_SETUP.md) - 前端连接配置
+- [Docker 构建修复说明](../DOCKER_BUILD_FIX.md) - 构建问题修复历史
+- [环境变量配置指南](../ENV_SETUP_GUIDE.md) - 环境变量详细说明
 

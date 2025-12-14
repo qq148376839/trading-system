@@ -23,9 +23,12 @@ docs/
 面向用户的使用指南，帮助您快速上手和使用系统功能。
 
 ### 🚀 快速开始
+- **[Docker 部署完成总结](guides/DOCKER_DEPLOYMENT_SUMMARY.md)** - Docker 部署修复完成总结 ⭐ 最新
 - **[NAS Docker 部署指南](guides/NAS_DOCKER_DEPLOYMENT.md)** - NAS 上 Docker 部署完整指南 ⭐ 新增
 - **[环境变量配置指南](../ENV_SETUP_GUIDE.md)** - 环境变量配置说明（数据库账号密码等）⭐ 新增
-- **[Docker 环境设置指南](guides/DOCKER_SETUP.md)** - Docker 环境配置和部署说明
+- **[Docker 环境设置指南](guides/DOCKER_SETUP.md)** - Docker 环境配置和部署说明（已更新）
+- **[Docker 故障排查指南](../DOCKER_TROUBLESHOOTING.md)** - Docker 部署常见问题排查 ⭐ 新增
+- **[前端 API URL 配置指南](../FRONTEND_API_URL_SETUP.md)** - 前端 API 连接配置说明 ⭐ 新增
 - **[配置管理设置指南](guides/CONFIG_MANAGEMENT_SETUP.md)** - 系统配置管理和 Token 刷新功能设置
 
 ### 💼 功能使用
@@ -150,6 +153,8 @@ docs/
 - 想集成期权 API？→ [期权行情 API](technical/OPTION_QUOTE_API.md)
 
 **🔧 运维**
+- Docker 部署问题？→ [Docker 故障排查指南](../DOCKER_TROUBLESHOOTING.md) ⭐
+- 前端无法连接 API？→ [前端 API URL 配置指南](../FRONTEND_API_URL_SETUP.md) ⭐
 - 配置富途 API？→ [富途 API CSRF 要求](integration/FUTUNN_API_CSRF_REQUIREMENTS.md)
 - 配置搜索 Cookies？→ [富途搜索 Cookies 设置](integration/SEARCH_COOKIES_SETUP.md)
 - 集成边缘函数？→ [Moomoo 边缘函数集成](integration/MOOMOO_EDGE_FUNCTION_INTEGRATION.md)
@@ -202,7 +207,23 @@ docs/
 - **技术文档**：随架构变更而更新
 - **历史文档**：归档后不再更新，仅作为历史记录
 
-## 🆕 最新更新 (2025-12-08)
+## 🆕 最新更新 (2025-12-12)
+
+### ✅ Docker 部署修复完成
+- **完成度**: 100% ✅
+- **修复内容**:
+  - pnpm 包管理器支持（API 和 Frontend）
+  - longport 原生模块支持（切换到 Debian 基础镜像）
+  - bcrypt 编译支持（添加构建工具）
+  - 前端 API URL 构建时注入修复（使用 ARG + ENV）
+  - PostgreSQL 端口冲突修复（移除外部端口映射）
+  - NAS 系统兼容性（移除 CPU CFS 调度器配置）
+- **相关文档**:
+  - [Docker 故障排查指南](../DOCKER_TROUBLESHOOTING.md) ⭐
+  - [前端 API URL 配置指南](../FRONTEND_API_URL_SETUP.md) ⭐
+  - [Docker 构建修复说明](../DOCKER_BUILD_FIX.md)
+
+## 🆕 历史更新 (2025-12-08)
 
 ### ✅ 期权图表功能实现完成
 - **功能**: 实现了期权详情页面的图表功能，支持分时图、5日图和日K图显示
@@ -279,4 +300,4 @@ docs/
 
 ---
 
-**最后更新**: 2025-12-08
+**最后更新**: 2025-12-12

@@ -2,7 +2,7 @@
 
 本文档详细说明了项目中每个文件的作用以及文件之间的调用和关联关系。
 
-**最后更新**: 2025-12-11 (量化交易订单管理重构、Docker优化、数据库迁移脚本清理)
+**最后更新**: 2025-12-12 (Docker部署修复完成、pnpm支持、longport原生模块修复、前端API URL配置修复)
 
 ---
 
@@ -1267,15 +1267,23 @@ trading-system/
 
 **主要功能**:
 - PostgreSQL 数据库服务（带健康检查）
-- API 服务（带健康检查、资源限制）
-- Frontend 服务（带健康检查、资源限制）
+- API 服务（带健康检查）
+- Frontend 服务（带健康检查、构建参数支持）
 - 只挂载初始化脚本（`000_init_schema.sql`）
+- 支持环境变量配置
 
 **优化内容**:
 - ✅ 添加健康检查（所有服务）
-- ✅ 添加资源限制（CPU、内存）
 - ✅ 优化迁移脚本挂载（只挂载初始化脚本）
 - ✅ Frontend 依赖 API 健康状态
+- ✅ PostgreSQL 端口不映射到宿主机（避免端口冲突）
+- ✅ Frontend 支持构建参数（NEXT_PUBLIC_API_URL）
+- ✅ 移除资源限制配置（兼容 NAS 系统）
+
+**关键修复**:
+- ✅ 修复 PostgreSQL 端口冲突（移除外部端口映射）
+- ✅ 修复 CPU CFS 调度器不支持问题（移除 deploy.resources）
+- ✅ 修复前端 API URL 配置（使用 build args）
 
 **调用关系**:
 - ✅ 无外部依赖
@@ -1310,11 +1318,23 @@ trading-system/
 - 构建 TypeScript 代码
 - 创建非 root 用户运行服务
 - 添加健康检查支持
+- 支持 pnpm 包管理器
+- 支持 bcrypt 原生模块编译
 
 **优化内容**:
+- ✅ 使用 `node:20` (Debian/glibc) 而不是 Alpine，因为 longport 包需要 glibc
+- ✅ 安装 pnpm 包管理器
+- ✅ 安装构建工具（python3, make, g++, build-essential）用于编译 bcrypt
+- ✅ 使用 `pnpm install --frozen-lockfile` 安装依赖
+- ✅ 构建后清理构建工具以减小镜像大小
 - ✅ 添加 `curl` 用于健康检查
 - ✅ 添加 `HEALTHCHECK` 指令
 - ✅ 创建非 root 用户（nodejs:1001）
+
+**关键修复**:
+- ✅ 修复 longport 原生模块问题（从 Alpine 切换到 Debian）
+- ✅ 修复 bcrypt 编译问题（添加构建工具）
+- ✅ 修复 pnpm lockfile 同步问题
 
 #### `api/Dockerfile.dev`
 **作用**: API 服务开发环境 Dockerfile
@@ -1331,10 +1351,22 @@ trading-system/
 - 使用 Next.js standalone 模式
 - 创建非 root 用户运行服务
 - 添加健康检查支持
+- 支持 pnpm 包管理器
+- 支持构建时环境变量注入
 
 **优化内容**:
+- ✅ 安装 pnpm 包管理器
+- ✅ 智能检测 lock 文件（pnpm-lock.yaml 或 package-lock.json）
+- ✅ 接收 `NEXT_PUBLIC_API_URL` 作为构建参数（ARG）
+- ✅ 在构建时设置环境变量（ENV），确保 Next.js 能正确注入
+- ✅ 确保 public 目录存在（Next.js standalone 模式需要）
 - ✅ 添加 `curl` 用于健康检查
 - ✅ 添加 `HEALTHCHECK` 指令
+
+**关键修复**:
+- ✅ 修复 NEXT_PUBLIC_API_URL 构建时注入问题（使用 ARG + ENV）
+- ✅ 修复 public 目录缺失问题（创建 public 目录）
+- ✅ 修复 @ant-design/icons 依赖缺失问题
 
 #### `frontend/Dockerfile.dev`
 **作用**: Frontend 服务开发环境 Dockerfile
@@ -1518,21 +1550,36 @@ frontend/app/* (所有页面)
 7. **数据源统一**: 所有交易数据来自长桥API，`auto_trades`表保留用于兼容但不再作为主要数据源
 8. **订单管理统一**: 所有订单管理功能统一在`/quant/orders`页面，`/quant/trades`已删除
 
-## 最新变更（2025-12-11）
+## 最新变更（2025-12-12）
 
-### 量化交易订单管理重构
+### Docker 部署修复完成 ✅
+- ✅ **pnpm 支持**：API 和 Frontend Dockerfile 都支持 pnpm
+- ✅ **longport 原生模块修复**：从 Alpine 切换到 Debian（glibc 支持）
+- ✅ **bcrypt 编译支持**：添加构建工具（python3, make, g++, build-essential）
+- ✅ **前端 API URL 配置修复**：使用构建参数（ARG）确保 NEXT_PUBLIC_API_URL 正确注入
+- ✅ **public 目录创建**：确保 Next.js standalone 模式正常工作
+- ✅ **@ant-design/icons 依赖添加**：修复构建错误
+- ✅ **PostgreSQL 端口冲突修复**：移除外部端口映射，容器间通过 Docker 网络通信
+- ✅ **NAS 兼容性**：移除 CPU CFS 调度器相关配置
+
+### Docker 配置文件更新
+- ✅ `api/Dockerfile`：切换到 Debian 基础镜像，添加构建工具
+- ✅ `frontend/Dockerfile`：添加 ARG 和 ENV 支持构建时环境变量
+- ✅ `docker-compose.yml`：使用 build args 传递 NEXT_PUBLIC_API_URL
+- ✅ 添加故障排查文档：`DOCKER_TROUBLESHOOTING.md`、`DOCKER_BUILD_FIX.md`、`FRONTEND_API_URL_SETUP.md`
+
+### 量化交易订单管理重构（2025-12-11）
 - ✅ 删除`/quant/trades`页面和API
 - ✅ 移动订单管理到`/quant/orders`
 - ✅ 修改今日交易数量统计（使用长桥API）
 - ✅ 修复信号日志状态更新（通过`signal_id`关联）
 
-### Docker 优化
+### Docker 优化（2025-12-11）
 - ✅ 添加健康检查（所有服务）
-- ✅ 添加资源限制
 - ✅ 优化迁移脚本挂载
 - ✅ 创建错误检测脚本
 
-### 数据库迁移脚本清理
+### 数据库迁移脚本清理（2025-12-11）
 - ✅ 合并010和011到`000_init_schema.sql`
 - ✅ 归档历史迁移脚本（001-011）
 - ✅ 保留012作为可选的历史数据修复脚本

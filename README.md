@@ -43,7 +43,9 @@
 - **其他**: dotenv, axios (富途 API)
 
 ### 部署
-- **容器化**: Docker + Docker Compose
+- **容器化**: Docker + Docker Compose ✅ 已完全修复并测试通过
+- **包管理**: pnpm（统一使用）
+- **基础镜像**: Debian (node:20) - 支持原生模块编译
 - **公网访问**: Cloudflare Zero Trust Tunnel
 
 ## 📁 项目结构
@@ -195,9 +197,8 @@ trading-system/
 
 ### 环境要求
 
-- Node.js 20+
-- PostgreSQL 15+
-- Docker & Docker Compose（可选）
+- **Docker 部署（推荐）**: Docker & Docker Compose
+- **本地开发**: Node.js 20+, PostgreSQL 15+
 
 ### 1. 克隆项目
 
@@ -206,7 +207,44 @@ git clone <repository-url>
 cd trading-system
 ```
 
-### 2. 配置环境变量
+### 2. Docker 部署（推荐）
+
+#### 快速开始
+
+```bash
+# 1. 克隆项目
+git clone <repository-url>
+cd trading-system
+
+# 2. 配置环境变量（项目根目录创建 .env 文件）
+cat > .env << EOF
+POSTGRES_USER=trading_user
+POSTGRES_PASSWORD=your_secure_password
+POSTGRES_DB=trading_db
+LONGPORT_APP_KEY=your_app_key
+LONGPORT_APP_SECRET=your_app_secret
+LONGPORT_ACCESS_TOKEN=your_access_token
+NEXT_PUBLIC_API_URL=http://192.168.31.18:3001  # 使用你的 NAS IP
+EOF
+
+# 3. 构建并启动服务
+docker-compose build
+docker-compose up -d
+
+# 4. 创建管理员账户
+docker-compose exec api node scripts/create-admin.js admin your_password
+
+# 5. 访问应用
+# 前端: http://192.168.31.18:3000
+# API: http://192.168.31.18:3001
+```
+
+**详细文档**:
+- 📖 [Docker 环境设置指南](docs/guides/DOCKER_SETUP.md) - 完整的 Docker 部署指南
+- 🔧 [Docker 故障排查指南](DOCKER_TROUBLESHOOTING.md) - 常见问题排查
+- 🌐 [前端 API URL 配置指南](FRONTEND_API_URL_SETUP.md) - 前端连接配置
+
+### 3. 本地开发环境配置
 
 #### API 服务配置 (`api/.env`)
 
@@ -239,18 +277,15 @@ NEXT_PUBLIC_API_URL=http://localhost:3001
 - 如果遇到 401003 或 401004 错误，请检查 Token 是否有效
 - 富途牛牛/Moomoo API 配置已硬编码在代码中（使用游客 cookies），无需环境变量配置
 
-### 3. 初始化数据库
+### 4. 初始化数据库（仅本地开发）
 
 ```bash
 cd api
-# 运行数据库迁移脚本
-psql -U postgres -d trading_db -f migrations/001_initial_schema.sql
-psql -U postgres -d trading_db -f migrations/002_add_positions_and_trading_rules.sql
-psql -U postgres -d trading_db -f migrations/003_config_management.sql
-psql -U postgres -d trading_db -f migrations/004_add_token_auto_refresh_config.sql
+# Docker 部署会自动执行初始化脚本，本地开发需要手动执行
+psql -U postgres -d trading_db -f migrations/000_init_schema.sql
 ```
 
-### 4. 安装依赖并启动服务
+### 5. 安装依赖并启动服务（仅本地开发）
 
 ```bash
 # 启动 API 服务
@@ -266,9 +301,10 @@ npm run dev
 # 前端应用将在 http://localhost:3000 启动
 ```
 
-### 5. 访问应用
+### 6. 访问应用
 
-打开浏览器访问：http://localhost:3000
+- **Docker 部署**: http://你的NAS地址:3000
+- **本地开发**: http://localhost:3000
 
 ## 📚 API 文档
 
@@ -485,6 +521,23 @@ const mappedOrder = mapOrderData(orderDetail);
 
 ## 🐛 故障排除
 
+### Docker 部署问题
+
+1. **前端无法连接 API**
+   - 检查 `NEXT_PUBLIC_API_URL` 是否设置为 NAS 的实际 IP
+   - 修改后必须重新构建：`docker-compose build --no-cache frontend`
+   - 参考：[前端 API URL 配置指南](FRONTEND_API_URL_SETUP.md)
+
+2. **API 容器启动失败（unhealthy）**
+   - 查看日志：`docker-compose logs api`
+   - 检查数据库连接配置（使用服务名 `postgres` 而不是 `localhost`）
+   - 参考：[Docker 故障排查指南](DOCKER_TROUBLESHOOTING.md)
+
+3. **构建失败**
+   - longport 模块错误：已修复，使用 Debian 基础镜像
+   - bcrypt 编译错误：已修复，添加了构建工具
+   - 参考：[Docker 构建修复说明](DOCKER_BUILD_FIX.md)
+
 ### 常见问题
 
 1. **401004 错误（Token 无效）**
@@ -561,4 +614,4 @@ MIT License
 
 ---
 
-**最后更新**: 2025-12-05 (资金使用差异BUG修复完成)
+**最后更新**: 2025-12-12 (Docker 部署修复完成，已可正常使用)
