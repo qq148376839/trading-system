@@ -449,6 +449,159 @@ class MarketDataService {
   }
 
   /**
+   * 获取历史市场数据（截止到指定日期）
+   * @param targetDate 目标日期，获取该日期之前的数据（不包含未来数据）
+   * @param count 需要的数据条数（从目标日期往前推）
+   * @param includeIntraday 是否包含分时数据
+   */
+  async getHistoricalMarketData(targetDate: Date, count: number = 100, includeIntraday: boolean = false) {
+    try {
+      // 计算从目标日期到今天的天数
+      const today = new Date();
+      today.setHours(23, 59, 59, 999);
+      const daysFromTargetToToday = Math.ceil((today.getTime() - targetDate.getTime()) / (1000 * 60 * 60 * 24));
+      
+      // 需要获取的数据量：从目标日期到今天的天数 + 一些缓冲（确保能覆盖到目标日期）
+      // 最多获取1000条（API的限制）
+      const requestCount = Math.min(daysFromTargetToToday + 100, 1000);
+
+      // 关键市场指标：必须全部成功，否则抛出错误
+      const criticalPromises = [
+        this.getSPXCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)),
+        this.getUSDIndexCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)),
+        this.getBTCCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)),
+      ];
+
+      // 分时数据：可选，失败时返回空数组
+      const optionalPromises: Promise<any[]>[] = [];
+      if (includeIntraday) {
+        optionalPromises.push(
+          this.getUSDIndexHourlyCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)).catch(err => {
+            console.warn(`获取USD Index分时历史数据失败（非关键）:`, err.message);
+            return [];
+          }),
+          this.getBTCHourlyCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)).catch(err => {
+            console.warn(`获取BTC分时历史数据失败（非关键）:`, err.message);
+            return [];
+          })
+        );
+      }
+
+      // 先获取关键数据，如果失败会抛出错误
+      const criticalResults = await Promise.all(criticalPromises.map(p => p.catch(err => {
+        console.error(`获取历史市场数据失败:`, err.message);
+        throw new Error(`历史市场数据获取失败: ${err.message}`);
+      })));
+
+      // 检查关键数据是否充足
+      if (!criticalResults[0] || criticalResults[0].length < 50) {
+        throw new Error(`SPX历史数据不足（${criticalResults[0]?.length || 0} < 50），无法提供交易建议`);
+      }
+      if (!criticalResults[1] || criticalResults[1].length < 50) {
+        throw new Error(`USD Index历史数据不足（${criticalResults[1]?.length || 0} < 50），无法提供交易建议`);
+      }
+      if (!criticalResults[2] || criticalResults[2].length < 50) {
+        throw new Error(`BTC历史数据不足（${criticalResults[2]?.length || 0} < 50），无法提供交易建议`);
+      }
+
+      // 获取可选数据（分时数据）
+      const optionalResults = includeIntraday ? await Promise.all(optionalPromises) : [];
+
+      const result: any = {
+        spx: criticalResults[0],
+        usdIndex: criticalResults[1],
+        btc: criticalResults[2],
+      };
+
+      if (includeIntraday) {
+        result.usdIndexHourly = optionalResults[0] || [];
+        result.btcHourly = optionalResults[1] || [];
+      }
+
+      // 输出数据获取结果摘要
+      const dataSummary: Record<string, string> = {
+        '目标日期': targetDate.toISOString().split('T')[0],
+        SPX: `${criticalResults[0].length}条`,
+        'USD Index': `${criticalResults[1].length}条`,
+        BTC: `${criticalResults[2].length}条`,
+      };
+      if (includeIntraday) {
+        dataSummary['USD Index分时'] = `${optionalResults[0]?.length || 0}条`;
+        dataSummary['BTC分时'] = `${optionalResults[1]?.length || 0}条`;
+      }
+      console.log(`历史市场数据获取完成:`, dataSummary);
+
+      return result;
+    } catch (error: any) {
+      console.error('批量获取历史市场数据失败:', error.message);
+      throw new Error(`历史市场数据获取失败，无法提供交易建议: ${error.message}`);
+    }
+  }
+
+  /**
+   * 过滤数据，只保留指定日期之前的数据（不包含未来数据）
+   * @param data K线数据数组
+   * @param targetDate 目标日期
+   * @param maxCount 最大返回条数（取最近的N条）
+   */
+  private filterDataBeforeDate(data: CandlestickData[], targetDate: Date, maxCount: number): CandlestickData[] {
+    // ✅ 使用目标日期的结束时间（23:59:59），确保包含目标日期当天的数据
+    const targetDateEnd = new Date(targetDate);
+    targetDateEnd.setHours(23, 59, 59, 999);
+    const targetTimestampMs = targetDateEnd.getTime(); // 毫秒级时间戳
+    
+    // ✅ 调试日志：查看过滤前后的数据量
+    console.log(`[历史数据过滤] 目标日期: ${targetDate.toISOString().split('T')[0]}, 目标时间戳(ms): ${targetTimestampMs}, 原始数据量: ${data.length}`);
+    
+    // 过滤出目标日期及之前的数据
+    // 注意：CandlestickData.timestamp 可能是秒级或毫秒级，需要统一处理
+    const filtered = data.filter(item => {
+      let itemTimestampMs: number;
+      if (typeof item.timestamp === 'number') {
+        // 判断是秒级还是毫秒级（如果小于1e10则是秒级，否则是毫秒级）
+        itemTimestampMs = item.timestamp < 1e10 ? item.timestamp * 1000 : item.timestamp;
+      } else {
+        itemTimestampMs = new Date(item.timestamp).getTime();
+      }
+      return itemTimestampMs <= targetTimestampMs;
+    });
+    
+    // ✅ 调试日志：查看过滤后的数据量
+    console.log(`[历史数据过滤] 过滤后数据量: ${filtered.length}, 需要返回: ${maxCount}条`);
+    
+    if (filtered.length === 0 && data.length > 0) {
+      // ✅ 调试：如果过滤后没有数据，显示第一条和最后一条数据的时间戳
+      const firstItem = data[0];
+      const lastItem = data[data.length - 1];
+      const firstTimestampMs = typeof firstItem.timestamp === 'number' 
+        ? (firstItem.timestamp < 1e10 ? firstItem.timestamp * 1000 : firstItem.timestamp)
+        : new Date(firstItem.timestamp).getTime();
+      const lastTimestampMs = typeof lastItem.timestamp === 'number'
+        ? (lastItem.timestamp < 1e10 ? lastItem.timestamp * 1000 : lastItem.timestamp)
+        : new Date(lastItem.timestamp).getTime();
+      console.log(`[历史数据过滤] 警告：过滤后无数据！`);
+      console.log(`   目标时间戳(ms): ${targetTimestampMs} (${new Date(targetTimestampMs).toISOString()})`);
+      console.log(`   第一条数据时间戳(ms): ${firstTimestampMs} (${new Date(firstTimestampMs).toISOString()}), 原始值: ${firstItem.timestamp}`);
+      console.log(`   最后一条数据时间戳(ms): ${lastTimestampMs} (${new Date(lastTimestampMs).toISOString()}), 原始值: ${lastItem.timestamp}`);
+      console.log(`   比较结果: ${firstTimestampMs <= targetTimestampMs ? '第一条<=目标' : '第一条>目标'}, ${lastTimestampMs <= targetTimestampMs ? '最后一条<=目标' : '最后一条>目标'}`);
+    }
+
+    // 按时间戳排序（从旧到新）
+    filtered.sort((a, b) => {
+      const timestampAMs = typeof a.timestamp === 'number'
+        ? (a.timestamp < 1e10 ? a.timestamp * 1000 : a.timestamp)
+        : new Date(a.timestamp).getTime();
+      const timestampBMs = typeof b.timestamp === 'number'
+        ? (b.timestamp < 1e10 ? b.timestamp * 1000 : b.timestamp)
+        : new Date(b.timestamp).getTime();
+      return timestampAMs - timestampBMs;
+    });
+
+    // 返回最近的N条数据
+    return filtered.slice(-maxCount);
+  }
+
+  /**
    * 批量获取所有市场数据（包含分时数据）
    * 如果关键市场指标（SPX、USD Index、BTC）获取失败，将抛出错误，而不是返回空数组
    */

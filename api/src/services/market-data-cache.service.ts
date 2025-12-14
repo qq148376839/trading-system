@@ -54,6 +54,45 @@ class MarketDataCacheService {
   }
 
   /**
+   * 获取历史市场数据（截止到指定日期，不缓存）
+   * @param targetDate 目标日期，获取该日期之前的数据
+   * @param count 需要的数据条数
+   * @param includeIntraday 是否包含分时数据
+   */
+  async getHistoricalMarketData(targetDate: Date, count: number = 100, includeIntraday: boolean = false): Promise<MarketDataCache> {
+    console.log(`获取历史市场数据（目标日期: ${targetDate.toISOString().split('T')[0]}，包含分时: ${includeIntraday}）`);
+    
+    const marketData = await marketDataService.getHistoricalMarketData(targetDate, count, includeIntraday);
+    
+    // 验证数据完整性
+    if (!marketData.spx || marketData.spx.length < 50) {
+      throw new Error(`SPX历史数据不足（${marketData.spx?.length || 0} < 50），无法提供交易建议`);
+    }
+    if (!marketData.usdIndex || marketData.usdIndex.length < 50) {
+      throw new Error(`USD Index历史数据不足（${marketData.usdIndex?.length || 0} < 50），无法提供交易建议`);
+    }
+    if (!marketData.btc || marketData.btc.length < 50) {
+      throw new Error(`BTC历史数据不足（${marketData.btc?.length || 0} < 50），无法提供交易建议`);
+    }
+
+    const result: MarketDataCache = {
+      spx: marketData.spx,
+      usdIndex: marketData.usdIndex,
+      btc: marketData.btc,
+      timestamp: targetDate.getTime(), // 使用目标日期作为时间戳
+    };
+
+    // 如果包含分时数据，添加分时数据
+    if (includeIntraday) {
+      result.usdIndexHourly = marketData.usdIndexHourly || [];
+      result.btcHourly = marketData.btcHourly || [];
+      result.hourlyTimestamp = targetDate.getTime();
+    }
+
+    return result;
+  }
+
+  /**
    * 获取市场数据（带缓存）
    */
   async getMarketData(count: number = 100, includeIntraday: boolean = false): Promise<MarketDataCache> {

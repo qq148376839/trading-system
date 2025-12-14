@@ -1,6 +1,8 @@
 /**
- * Moomoo API 代理服务
+ * Moomoo API 代理服务 - 动态 Cookies 版本
  * 用于解决大陆IP无法直接访问Moomoo API的问题
+ * 
+ * 依赖：需要绑定一个名为 MOOMOO_CACHE 的 KV Namespace
  * 
  * 支持的接口：
  * - /api/headfoot-search - 搜索接口
@@ -15,9 +17,12 @@
 
 const MOOMOO_BASE_URL = 'https://www.moomoo.com';
 
-// 默认的cookies和CSRF token（用于行情接口）
-// 注意：这些是硬编码的默认值，如果查询参数中提供了cookies和csrf_token，会优先使用参数中的值
-const DEFAULT_COOKIES = 'cipher_device_id=1763971814778021; ftreport-jssdk%40new_user=1; futu-csrf=niasJM1N1jtj3pyQh6JO4Nknn7c=; device_id=1763971814778021; csrfToken=f51O2KPxQvir0tU5zDCVQpMm; locale=zh-cn';
+// -------------------- KV 缓存配置 --------------------
+const COOKIES_KEY = 'latest_moomoo_cookies';
+const COOKIES_TTL_SECONDS = 3600; // Cookies有效期设置为 1 小时
+
+// 备用硬编码值（如果动态获取失败，使用此值作为回退）
+const FALLBACK_COOKIES = 'cipher_device_id=1763971814778021; ftreport-jssdk%40new_user=1; futu-csrf=niasJM1N1jtj3pyQh6JO4Nknn7c=; device_id=1763971814778021; csrfToken=f51O2KPxQvir0tU5zDCVQpMm; locale=zh-cn';
 const DEFAULT_CSRF_TOKEN = 'f51O2KPxQvir0tU5zDCVQpMm';
 
 // 需要quote-token的接口路径
@@ -137,7 +142,7 @@ function extractTokenParams(queryParams, apiPath) {
     } else if (apiPath.includes('get-popular-position')) {
         // 热门机构列表：根据浏览器请求，这个API不需要任何查询参数
         // 但需要quote-token，使用空对象来计算token
-        // 注意：不设置任何参数，返回空对象
+        // 注意：不设置任何参数，返回空对象 {}
     } else if (apiPath.includes('get-share-holding-list')) {
         // 机构持仓列表：ownerObjectId, periodId, page, pageSize, _
         const keys = ['ownerObjectId', 'periodId', 'page', 'pageSize', '_'];
@@ -162,14 +167,95 @@ function extractTokenParams(queryParams, apiPath) {
     return tokenParams;
 }
 
+// -------------------- 核心函数：动态获取 Cookies --------------------
+
+/**
+ * 访问 Moomoo 主页并提取最新的 Set-Cookie 头部
+ * @returns {Promise<string|null>} 原始 Set-Cookie 字符串，或 null
+ */
+async function getLatestVisitorCookies() {
+    const targetUrl = MOOMOO_BASE_URL + '/'; // 访问主页
+    
+    try {
+        const response = await fetch(targetUrl, {
+            method: 'GET',
+            headers: {
+                // 模拟一个真实的浏览器请求
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            },
+            signal: AbortSignal.timeout(10000), // 10秒超时
+        });
+        
+        if (!response.ok) {
+            console.error('[Cookies更新] 目标网站返回非 200 状态:', response.status);
+            return null;
+        }
+        
+        // 提取 Set-Cookie 头部（可能包含多个 Cookies，用逗号分隔）
+        const setCookieHeader = response.headers.get('Set-Cookie');
+        
+        if (setCookieHeader) {
+            console.log(`[Cookies更新] 成功获取最新 Cookies。长度: ${setCookieHeader.length}`);
+            // 清理 Cookies 字符串，移除 Path, Expires 等属性，只保留 key=value 对
+            const cleanedCookies = setCookieHeader.split(', ').map(cookiePart => {
+                return cookiePart.split(';')[0]; // 取第一个分号前的部分（即 key=value）
+            }).join('; ');
+            
+            // 注意：这里返回原始的 Set-Cookie 字符串，可能包含多个 Cookies
+            // 您也可以选择返回清理后的 key=value 格式，以确保请求头简洁
+            // 我们返回原始头部，让 KV 存储包含所有 Set-Cookie 信息
+            return setCookieHeader;
+        } else {
+            console.warn('[Cookies更新] 响应中未找到 Set-Cookie 头部');
+            return null;
+        }
+    } catch (error) {
+        console.error('[Cookies更新] 获取 Cookies 失败:', error);
+        return null;
+    }
+}
+
+/**
+ * 从 KV 获取 Cookies，如果过期则自动更新
+ * @param {object} env - Cloudflare Worker 环境变量 (包含 MOOMOO_CACHE)
+ * @returns {Promise<string>} 有效的 Cookies 字符串
+ */
+async function getOrUpdateCookies(env) {
+    // 1. 尝试从 KV 读取缓存的 Cookies。KV 会根据 TTL 自动处理过期
+    const cachedCookies = await env.MOOMOO_CACHE.get(COOKIES_KEY);
+    if (cachedCookies) {
+        // 缓存命中，直接返回
+        return cachedCookies;
+    }
+    
+    // 2. 缓存过期或不存在，获取新的 Cookies
+    console.log('[Cookies更新] 缓存过期，正在获取新的 Cookies...');
+    const newCookies = await getLatestVisitorCookies();
+    if (newCookies) {
+        // 3. 将新获取的 Cookies 写入 KV，并设置过期时间（TTL）
+        // 注意：这里使用 PUT 写入操作
+        await env.MOOMOO_CACHE.put(COOKIES_KEY, newCookies, {
+            expirationTtl: COOKIES_TTL_SECONDS
+        });
+        console.log('[Cookies更新] 新 Cookies 已存入 KV。');
+        return newCookies;
+    }
+    
+    // 4. 如果动态获取失败，回退到硬编码默认值
+    console.warn('[Cookies更新] 动态获取失败，使用 FALLBACK_COOKIES。');
+    return FALLBACK_COOKIES;
+}
+
 /**
  * 处理Moomoo API代理请求
  * 
  * @param {Object} queryParams - 查询参数
  * @param {Request} request - 原始请求对象（用于获取headers）
+ * @param {object} env - Cloudflare Worker 环境变量
  * @returns {Promise<Response>}
  */
-export async function moomooApi(queryParams = {}, request = null) {
+export async function moomooApi(queryParams = {}, request = null, env = null) {
     try {
         // 从查询参数中获取目标API路径
         const apiPath = queryParams.path || queryParams.api_path;
@@ -202,8 +288,12 @@ export async function moomooApi(queryParams = {}, request = null) {
         delete requestParams.quoteToken;
         delete requestParams.referer;
         
-        // 对于某些API，如果没有参数，确保传递空对象而不是undefined
-        // 这样可以避免某些API的参数验证错误
+        // 对于某些API，如果没有参数，需要添加 _ 参数以避免参数验证错误
+        // 注意：get-popular-position 不需要添加 _ 参数（官网请求没有参数）
+        // 只有 get-owner-position-list 需要添加 _ 参数
+        if (apiPath.includes('get-owner-position-list') && Object.keys(requestParams).length === 0) {
+            requestParams['_'] = '';
+        }
 
         // 构建查询字符串（确保数字参数正确转换）
         const queryString = Object.entries(requestParams)
@@ -217,8 +307,11 @@ export async function moomooApi(queryParams = {}, request = null) {
 
         const fullUrl = queryString ? `${targetUrl}?${queryString}` : targetUrl;
         
-        // 设置cookies和CSRF token（优先使用参数中的值，否则使用默认值）
-        const cookies = queryParams.cookies || DEFAULT_COOKIES;
+        // !!! 核心修改：动态获取 Cookies !!!
+        const dynamicCookies = env && env.MOOMOO_CACHE ? await getOrUpdateCookies(env) : FALLBACK_COOKIES;
+        
+        // 设置cookies和CSRF token（优先使用参数中的值，否则使用动态获取/默认值）
+        const cookies = queryParams.cookies || dynamicCookies;
         const csrfToken = queryParams.csrf_token || queryParams.csrfToken || DEFAULT_CSRF_TOKEN;
 
         // 如果需要quote-token，自动计算（在删除控制参数之前，使用原始queryParams）
@@ -404,8 +497,10 @@ export async function moomooApi(queryParams = {}, request = null) {
 
 /**
  * POST请求处理（用于需要POST方法的接口）
+ * @param {Request} request - 原始请求对象
+ * @param {object} env - Cloudflare Worker 环境变量
  */
-export async function moomooApiPost(request) {
+export async function moomooApiPost(request, env = null) {
     try {
         const requestBody = await request.json();
         
@@ -433,6 +528,9 @@ export async function moomooApiPost(request) {
 
         const targetUrl = `${MOOMOO_BASE_URL}${apiPath}`;
 
+        // !!! 核心修改：动态获取 Cookies !!!
+        const dynamicCookies = env && env.MOOMOO_CACHE ? await getOrUpdateCookies(env) : FALLBACK_COOKIES;
+
         // 准备headers
         const headers = {
             'authority': 'www.moomoo.com',
@@ -443,7 +541,9 @@ export async function moomooApiPost(request) {
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         };
 
-        if (cookies) headers['Cookie'] = cookies;
+        // 设置 cookies 和 CSRF token（优先使用参数中的值，否则使用动态获取/默认值）
+        const finalCookies = cookies || dynamicCookies;
+        if (finalCookies) headers['Cookie'] = finalCookies;
         if (csrf_token || csrfToken) headers['futu-x-csrf-token'] = csrf_token || csrfToken;
         if (quote_token || quoteToken) headers['quote-token'] = quote_token || quoteToken;
 
@@ -490,3 +590,39 @@ export async function moomooApiPost(request) {
     }
 }
 
+// -------------------- Worker 入口 --------------------
+
+/**
+ * Worker 入口点，处理所有请求并调用相应的函数
+ */
+export default {
+    async fetch(request, env, ctx) {
+        // 允许 OPTIONS 预检请求
+        if (request.method === 'OPTIONS') {
+            return new Response(null, {
+                headers: {
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type, Authorization, futu-x-csrf-token, quote-token',
+                    'Access-Control-Max-Age': '86400', // 缓存预检结果 24 小时
+                },
+            });
+        }
+        
+        const url = new URL(request.url);
+        const queryParams = Object.fromEntries(url.searchParams);
+        
+        // 我们将所有逻辑放在 /api/moomooapi 路径下
+        if (url.pathname.startsWith('/api/moomooapi')) {
+            if (request.method === 'GET') {
+                // GET 请求：传递 queryParams, request, env
+                return moomooApi(queryParams, request, env);
+            } else if (request.method === 'POST') {
+                // POST 请求：传递 request, env
+                return moomooApiPost(request, env);
+            }
+        }
+        
+        return new Response('Moomoo API Proxy Service is running. Use /api/moomooapi route.', { status: 200 });
+    }
+}

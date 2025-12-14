@@ -435,6 +435,14 @@ BEGIN
     ) THEN
         ALTER TABLE backtest_results ADD COLUMN updated_at TIMESTAMP DEFAULT NOW();
     END IF;
+    
+    -- Add diagnostic_log column if not exists
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'backtest_results' AND column_name = 'diagnostic_log'
+    ) THEN
+        ALTER TABLE backtest_results ADD COLUMN diagnostic_log JSONB;
+    END IF;
 END $$;
 
 -- Update existing records to COMPLETED status if status is NULL
@@ -455,6 +463,7 @@ COMMENT ON COLUMN backtest_results.started_at IS 'Backtest start timestamp';
 COMMENT ON COLUMN backtest_results.completed_at IS 'Backtest completion timestamp';
 COMMENT ON COLUMN backtest_results.created_at IS 'Created timestamp';
 COMMENT ON COLUMN backtest_results.updated_at IS 'Last update timestamp';
+COMMENT ON COLUMN backtest_results.diagnostic_log IS '回测诊断日志（记录信号生成、买入尝试、失败原因等）';
 
 -- Add trigger for updated_at
 DROP TRIGGER IF EXISTS update_backtest_results_updated_at ON backtest_results;

@@ -61,27 +61,48 @@ interface SPXBTCCorrelation {
 class TradingRecommendationService {
   /**
    * 计算单个股票的交易推荐
+   * @param symbol 股票代码
+   * @param targetDate 目标日期（可选），如果提供则使用历史数据
+   * @param historicalStockCandlesticks 历史股票K线数据（可选），如果提供则使用此数据而不是实时数据
    */
   async calculateRecommendation(
-    symbol: string
+    symbol: string,
+    targetDate?: Date,
+    historicalStockCandlesticks?: any[]
   ): Promise<TradingRecommendation> {
     try {
-      // 1. 获取市场数据（使用缓存，包含分时数据）
-      const marketData = await marketDataCacheService.getMarketData(100, true);
+      // 1. 获取市场数据（如果提供targetDate则使用历史数据，否则使用实时数据）
+      const marketData = targetDate
+        ? await marketDataCacheService.getHistoricalMarketData(targetDate, 100, true)
+        : await marketDataCacheService.getMarketData(100, true);
+      
+      // ✅ 调试日志：确认使用的是历史数据还是实时数据
+      if (targetDate) {
+        console.log(`[回测] ${symbol} 使用历史市场数据（目标日期: ${targetDate.toISOString().split('T')[0]}）`);
+        console.log(`[回测] SPX数据条数: ${marketData.spx?.length || 0}, USD Index数据条数: ${marketData.usdIndex?.length || 0}, BTC数据条数: ${marketData.btc?.length || 0}`);
+      }
 
-      // 2. 获取股票K线数据
-      const stockCandlesticks = await this.getStockCandlesticks(symbol);
+      // 2. 获取股票K线数据（如果提供了历史数据则使用，否则获取实时数据）
+      let stockCandlesticks: any[];
+      if (historicalStockCandlesticks && historicalStockCandlesticks.length > 0) {
+        // 使用提供的历史数据
+        stockCandlesticks = historicalStockCandlesticks;
+      } else {
+        // 获取实时数据
+        stockCandlesticks = await this.getStockCandlesticks(symbol);
+      }
 
       // 如果股票数据不足，抛出错误（无法计算）
       if (!stockCandlesticks || stockCandlesticks.length < 50) {
         throw new Error(`${symbol} 数据不足，无法计算推荐`);
       }
 
-      // 2.5. 如果在盘前/盘后时间，获取实时价格并更新最后一条K线
+      // 2.5. 如果在盘前/盘后时间且不是历史数据，获取实时价格并更新最后一条K线
       let currentPrice = stockCandlesticks[stockCandlesticks.length - 1].close;
       let isRealtimePrice = false;
       
-      if (isPreMarketHours() || isAfterHours()) {
+      // 只有在非历史数据模式下才获取实时价格
+      if (!targetDate && (isPreMarketHours() || isAfterHours())) {
         const realtimePrice = await this.getRealtimePrice(symbol);
         if (realtimePrice && realtimePrice > 0) {
           // 更新最后一条K线的收盘价为实时价格（用于计算）
@@ -92,21 +113,24 @@ class TradingRecommendationService {
         }
       }
 
-      // 3. 检查市场数据是否充足，如果不足则重新获取
+      // 3. 检查市场数据是否充足（历史数据模式下不重新获取）
       let finalMarketData = marketData;
-      if (!marketData.spx || marketData.spx.length < 50 || 
-          !marketData.usdIndex || marketData.usdIndex.length < 50 ||
-          !marketData.btc || marketData.btc.length < 50) {
-        console.warn('市场数据不足，强制刷新缓存并重新获取...');
-        // 清除缓存，强制重新获取
-        marketDataCacheService.clearCache();
-        finalMarketData = await marketDataCacheService.getMarketData(100, true);
-        
-        // 如果重新获取后仍然不足，抛出错误
-        if (!finalMarketData.spx || finalMarketData.spx.length < 50 || 
-            !finalMarketData.usdIndex || finalMarketData.usdIndex.length < 50 ||
-            !finalMarketData.btc || finalMarketData.btc.length < 50) {
-          throw new Error('市场数据获取失败，无法计算推荐。请检查富途API连接。');
+      if (!targetDate) {
+        // 只有在实时数据模式下才检查并重新获取
+        if (!marketData.spx || marketData.spx.length < 50 || 
+            !marketData.usdIndex || marketData.usdIndex.length < 50 ||
+            !marketData.btc || marketData.btc.length < 50) {
+          console.warn('市场数据不足，强制刷新缓存并重新获取...');
+          // 清除缓存，强制重新获取
+          marketDataCacheService.clearCache();
+          finalMarketData = await marketDataCacheService.getMarketData(100, true);
+          
+          // 如果重新获取后仍然不足，抛出错误
+          if (!finalMarketData.spx || finalMarketData.spx.length < 50 || 
+              !finalMarketData.usdIndex || finalMarketData.usdIndex.length < 50 ||
+              !finalMarketData.btc || finalMarketData.btc.length < 50) {
+            throw new Error('市场数据获取失败，无法计算推荐。请检查富途API连接。');
+          }
         }
       }
 

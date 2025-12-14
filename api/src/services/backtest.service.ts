@@ -46,6 +46,7 @@ export interface BacktestResult {
   avgHoldingTime?: number; // 小时
   trades?: BacktestTrade[];
   dailyReturns?: Array<{ date: string; return: number; equity: number }>;
+  diagnosticLog?: any; // 诊断日志
 }
 
 class BacktestService {
@@ -130,16 +131,43 @@ class BacktestService {
 
   /**
    * 执行回测
+   * @param id 回测任务ID（可选，用于保存诊断日志）
    */
   async runBacktest(
     strategyId: number,
     symbols: string[],
     startDate: Date,
     endDate: Date,
-    config?: any
+    config?: any,
+    id?: number
   ): Promise<BacktestResult> {
     logger.log(`开始回测: 策略ID=${strategyId}, 标的=${symbols.join(',')}`);
     logger.log(`时间范围: ${startDate.toISOString().split('T')[0]} 至 ${endDate.toISOString().split('T')[0]}`);
+
+    // ✅ 添加诊断日志收集
+    const diagnosticLog: {
+      dataFetch: Array<{ symbol: string; success: boolean; count: number; error?: string }>;
+      signalGeneration: Array<{ date: string; symbol: string; signal: string | null; error?: string }>;
+      buyAttempts: Array<{ date: string; symbol: string; success: boolean; reason: string; details?: any }>;
+      summary: {
+        totalDates: number;
+        totalSignals: number;
+        totalBuyAttempts: number;
+        totalBuySuccess: number;
+        buyRejectReasons: Record<string, number>;
+      };
+    } = {
+      dataFetch: [],
+      signalGeneration: [],
+      buyAttempts: [],
+      summary: {
+        totalDates: 0,
+        totalSignals: 0,
+        totalBuyAttempts: 0,
+        totalBuySuccess: 0,
+        buyRejectReasons: {},
+      },
+    };
 
     let currentCapital = this.initialCapital;
     const positions: Map<string, BacktestTrade> = new Map();
@@ -149,14 +177,37 @@ class BacktestService {
     // 获取所有标的的历史数据
     const allCandlesticks: Map<string, Array<{ timestamp: Date; open: number; high: number; low: number; close: number; volume: number }>> = new Map();
     
+    // ✅ 在数据获取时记录日志
     for (const symbol of symbols) {
-      const candlesticks = await this.getHistoricalCandlesticks(symbol, startDate, endDate);
-      if (candlesticks.length > 0) {
-        allCandlesticks.set(symbol, candlesticks);
+      try {
+        const candlesticks = await this.getHistoricalCandlesticks(symbol, startDate, endDate);
+        diagnosticLog.dataFetch.push({
+          symbol,
+          success: true,
+          count: candlesticks.length,
+        });
+        
+        if (candlesticks.length > 0) {
+          allCandlesticks.set(symbol, candlesticks);
+        } else {
+          logger.warn(`回测 ${symbol}: 未获取到任何K线数据`);
+        }
+      } catch (error: any) {
+        diagnosticLog.dataFetch.push({
+          symbol,
+          success: false,
+          count: 0,
+          error: error.message,
+        });
+        logger.error(`回测 ${symbol}: 数据获取失败`, error);
       }
     }
 
     if (allCandlesticks.size === 0) {
+      // ✅ 保存诊断日志后再抛出错误
+      if (id) {
+        await this.saveDiagnosticLog(id, diagnosticLog);
+      }
       throw new Error('无法获取任何历史数据');
     }
 
@@ -168,13 +219,18 @@ class BacktestService {
       });
     });
     const sortedDates = Array.from(allDates).sort();
+    
+    // ✅ 记录总日期数
+    diagnosticLog.summary.totalDates = sortedDates.length;
 
     // 创建策略实例
     const strategy = new RecommendationStrategy(strategyId, {});
 
-    // 按日期遍历
-    for (const dateStr of sortedDates) {
-      const currentDate = new Date(dateStr);
+      // 按日期遍历
+      for (const dateStr of sortedDates) {
+        // ✅ 使用日期的结束时间，确保包含当天的数据
+        const currentDate = new Date(dateStr);
+        currentDate.setHours(23, 59, 59, 999);
 
       // 检查每个标的的持仓
       for (const symbol of symbols) {
@@ -209,10 +265,37 @@ class BacktestService {
         // 如果没有持仓，尝试生成买入信号
         if (!positions.has(symbol)) {
           try {
-            // 注意：generateSignal会调用tradingRecommendationService，它使用当前市场数据
-            // 但回测中我们需要基于历史数据判断，所以这里只检查是否有买入信号
-            // 止损止盈需要基于历史K线数据计算
-            const intent = await strategy.generateSignal(symbol, undefined);
+            // ✅ 传入历史日期和历史K线数据，确保策略基于历史市场条件生成信号
+            // 获取当前日期之前的历史K线数据（用于推荐服务）
+            const historicalCandles = candlesticks.filter(c => 
+              c.timestamp.toISOString().split('T')[0] <= dateStr
+            );
+            
+            // 转换为推荐服务需要的格式（包含timestamp字段）
+            const historicalStockCandlesticks = historicalCandles.map(c => ({
+              close: c.close,
+              open: c.open,
+              high: c.high,
+              low: c.low,
+              volume: c.volume,
+              timestamp: c.timestamp.getTime() / 1000, // 转换为秒级时间戳
+            }));
+            
+            const intent = await strategy.generateSignal(
+              symbol, 
+              undefined, // marketData参数暂时不使用
+              currentDate, // 传入当前回测日期
+              historicalStockCandlesticks // 传入历史K线数据
+            );
+            
+            // ✅ 记录信号生成日志
+            diagnosticLog.summary.totalSignals++;
+            diagnosticLog.signalGeneration.push({
+              date: dateStr,
+              symbol,
+              signal: intent?.action || null,
+            });
+            
             if (intent && intent.action === 'BUY') {
               // 基于历史K线数据计算止损止盈（不使用实时推荐服务的止损止盈）
               const candlesticks = allCandlesticks.get(symbol);
@@ -269,7 +352,9 @@ class BacktestService {
                 takeProfit = currentPrice * 1.10;
               }
               
-              this.simulateBuy(
+              // ✅ 记录买入尝试
+              diagnosticLog.summary.totalBuyAttempts++;
+              const buyResult = this.simulateBuy(
                 symbol, 
                 dateStr, 
                 currentPrice, 
@@ -283,9 +368,38 @@ class BacktestService {
                   currentCapital += amount;
                 }
               );
+              
+              // ✅ 记录买入结果
+              if (buyResult.success) {
+                diagnosticLog.summary.totalBuySuccess++;
+                diagnosticLog.buyAttempts.push({
+                  date: dateStr,
+                  symbol,
+                  success: true,
+                  reason: '买入成功',
+                  details: buyResult.details,
+                });
+              } else {
+                const rejectReason = buyResult.reason || '未知原因';
+                diagnosticLog.buyAttempts.push({
+                  date: dateStr,
+                  symbol,
+                  success: false,
+                  reason: rejectReason,
+                  details: buyResult.details,
+                });
+                diagnosticLog.summary.buyRejectReasons[rejectReason] = 
+                  (diagnosticLog.summary.buyRejectReasons[rejectReason] || 0) + 1;
+              }
             }
           } catch (error: any) {
-            // 忽略错误，继续回测
+            // ✅ 记录信号生成失败
+            diagnosticLog.signalGeneration.push({
+              date: dateStr,
+              symbol,
+              signal: null,
+              error: error.message,
+            });
             logger.warn(`回测生成信号失败 (${symbol}, ${dateStr}):`, error.message);
           }
         }
@@ -340,6 +454,11 @@ class BacktestService {
     // 计算性能指标
     const result = this.calculateMetrics(trades, dailyEquity, this.initialCapital);
 
+    // ✅ 保存诊断日志
+    if (id) {
+      await this.saveDiagnosticLog(id, diagnosticLog);
+    }
+
     return {
       strategyId,
       startDate: startDate.toISOString().split('T')[0],
@@ -384,6 +503,7 @@ class BacktestService {
 
   /**
    * 模拟买入
+   * 返回结果和失败原因，用于诊断日志
    */
   private simulateBuy(
     symbol: string,
@@ -395,16 +515,25 @@ class BacktestService {
     stopLoss: number,
     takeProfit: number,
     onCapitalChange: (amount: number) => void
-  ): boolean {
+  ): { success: boolean; reason?: string; details?: any } {
     if (positions.has(symbol)) {
-      return false;
+      return { success: false, reason: '已有持仓' };
     }
 
     const tradeAmount = currentCapital * 0.1;
     const quantity = Math.floor(tradeAmount / price);
 
     if (quantity <= 0) {
-      return false;
+      return { 
+        success: false, 
+        reason: `资金不足: 可用资金=${currentCapital.toFixed(2)}, 价格=${price.toFixed(2)}, 计算数量=${quantity}`,
+        details: {
+          currentCapital,
+          price,
+          tradeAmount,
+          quantity,
+        }
+      };
     }
 
     // 计算实际买入成本（价格 * 数量）
@@ -429,7 +558,14 @@ class BacktestService {
     // 扣除实际买入成本，而不是计划投入金额
     // 这样可以确保买入扣除和卖出收回的金额匹配
     onCapitalChange(-actualCost);
-    return true;
+    return { 
+      success: true, 
+      details: {
+        quantity,
+        actualCost,
+        entryPrice: price,
+      }
+    };
   }
 
   /**
@@ -636,6 +772,20 @@ class BacktestService {
   }
 
   /**
+   * 保存诊断日志
+   */
+  async saveDiagnosticLog(id: number, diagnosticLog: any): Promise<void> {
+    const query = `
+      UPDATE backtest_results
+      SET diagnostic_log = $1,
+          updated_at = NOW()
+      WHERE id = $2
+    `;
+
+    await pool.query(query, [JSON.stringify(diagnosticLog), id]);
+  }
+
+  /**
    * 异步执行回测
    */
   async executeBacktestAsync(
@@ -650,8 +800,8 @@ class BacktestService {
       // 更新状态为运行中
       await this.updateBacktestStatus(id, 'RUNNING');
 
-      // 执行回测
-      const result = await this.runBacktest(strategyId, symbols, startDate, endDate, config);
+      // ✅ 执行回测，传递id参数用于保存诊断日志
+      const result = await this.runBacktest(strategyId, symbols, startDate, endDate, config, id);
 
       // 保存结果
       await this.updateBacktestResult(id, {
@@ -705,7 +855,7 @@ class BacktestService {
    */
   async getBacktestResult(id: number, includeDetails: boolean = true): Promise<BacktestResult | null> {
     const query = `
-      SELECT id, strategy_id, start_date, end_date, config, result, status, error_message, started_at, completed_at, created_at
+      SELECT id, strategy_id, start_date, end_date, config, result, status, error_message, started_at, completed_at, created_at, diagnostic_log
       FROM backtest_results
       WHERE id = $1
     `;
@@ -763,6 +913,20 @@ class BacktestService {
       }
     }
 
+    // ✅ 解析诊断日志
+    let diagnosticLog: any = null;
+    if (row.diagnostic_log) {
+      if (typeof row.diagnostic_log === 'string') {
+        try {
+          diagnosticLog = JSON.parse(row.diagnostic_log);
+        } catch (e) {
+          logger.error('解析诊断日志失败:', e);
+        }
+      } else if (typeof row.diagnostic_log === 'object') {
+        diagnosticLog = row.diagnostic_log;
+      }
+    }
+
     const result: BacktestResult = {
       id: row.id,
       strategyId: row.strategy_id,
@@ -772,6 +936,7 @@ class BacktestService {
       errorMessage: row.error_message,
       startedAt: row.started_at,
       completedAt: row.completed_at,
+      diagnosticLog, // ✅ 添加诊断日志
       ...resultData,
     };
 

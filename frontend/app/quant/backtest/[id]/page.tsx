@@ -35,6 +35,19 @@ interface BacktestTrade {
   exitReason: string | null;
 }
 
+interface DiagnosticLog {
+  dataFetch: Array<{ symbol: string; success: boolean; count: number; error?: string }>;
+  signalGeneration: Array<{ date: string; symbol: string; signal: string | null; error?: string }>;
+  buyAttempts: Array<{ date: string; symbol: string; success: boolean; reason: string; details?: any }>;
+  summary: {
+    totalDates: number;
+    totalSignals: number;
+    totalBuyAttempts: number;
+    totalBuySuccess: number;
+    buyRejectReasons: Record<string, number>;
+  };
+}
+
 interface BacktestResult {
   id: number;
   strategyId: number;
@@ -51,6 +64,7 @@ interface BacktestResult {
   avgHoldingTime: number;
   trades: BacktestTrade[];
   dailyReturns: Array<{ date: string; return: number; equity: number }>;
+  diagnosticLog?: DiagnosticLog;
 }
 
 interface Strategy {
@@ -327,6 +341,170 @@ export default function BacktestDetailPage() {
             </Card>
           </Col>
         </Row>
+
+        {/* 诊断日志（当没有交易时显示） */}
+        {result.totalTrades === 0 && result.diagnosticLog && (
+          <Card style={{ marginBottom: 24 }}>
+            <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16, color: '#fa8c16' }}>
+              ⚠️ 诊断日志：为什么没有交易数据？
+            </h2>
+            <Alert
+              message="本次回测没有产生任何交易"
+              description="以下是详细的诊断信息，帮助您了解原因"
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+            
+            {/* 数据获取情况 */}
+            <div style={{ marginBottom: 16 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>数据获取情况</h3>
+              <Table
+                dataSource={result.diagnosticLog.dataFetch}
+                columns={[
+                  { title: '标的', dataIndex: 'symbol', key: 'symbol' },
+                  { 
+                    title: '状态', 
+                    key: 'status',
+                    render: (_: any, record: any) => (
+                      <Tag color={record.success ? 'success' : 'error'}>
+                        {record.success ? '成功' : '失败'}
+                      </Tag>
+                    )
+                  },
+                  { title: '数据条数', dataIndex: 'count', key: 'count' },
+                  { 
+                    title: '错误信息', 
+                    dataIndex: 'error', 
+                    key: 'error',
+                    render: (text: string) => text || '-'
+                  },
+                ]}
+                rowKey={(_, index) => `data-${index}`}
+                pagination={false}
+                size="small"
+              />
+            </div>
+
+            {/* 信号生成统计 */}
+            <div style={{ marginBottom: 16 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>信号生成统计</h3>
+              <Row gutter={16}>
+                <Col span={6}>
+                  <Statistic
+                    title="总日期数"
+                    value={result.diagnosticLog.summary.totalDates}
+                  />
+                </Col>
+                <Col span={6}>
+                  <Statistic
+                    title="生成信号数"
+                    value={result.diagnosticLog.summary.totalSignals}
+                  />
+                </Col>
+                <Col span={6}>
+                  <Statistic
+                    title="买入尝试数"
+                    value={result.diagnosticLog.summary.totalBuyAttempts}
+                  />
+                </Col>
+                <Col span={6}>
+                  <Statistic
+                    title="成功买入数"
+                    value={result.diagnosticLog.summary.totalBuySuccess}
+                    valueStyle={{ color: result.diagnosticLog.summary.totalBuySuccess > 0 ? '#52c41a' : '#ff4d4f' }}
+                  />
+                </Col>
+              </Row>
+            </div>
+
+            {/* 买入拒绝原因 */}
+            {Object.keys(result.diagnosticLog.summary.buyRejectReasons).length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>买入拒绝原因统计</h3>
+                <Table
+                  dataSource={Object.entries(result.diagnosticLog.summary.buyRejectReasons).map(([reason, count]) => ({
+                    reason,
+                    count,
+                  }))}
+                  columns={[
+                    { title: '拒绝原因', dataIndex: 'reason', key: 'reason' },
+                    { 
+                      title: '次数', 
+                      dataIndex: 'count', 
+                      key: 'count',
+                      render: (count: number) => <Tag color="red">{count}</Tag>
+                    },
+                  ]}
+                  rowKey="reason"
+                  pagination={false}
+                  size="small"
+                />
+              </div>
+            )}
+
+            {/* 信号生成详情（最近20条） */}
+            {result.diagnosticLog.signalGeneration.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>信号生成详情（最近20条）</h3>
+                <Table
+                  dataSource={result.diagnosticLog.signalGeneration.slice(-20)}
+                  columns={[
+                    { title: '日期', dataIndex: 'date', key: 'date', render: (text: string) => formatDate(text) },
+                    { title: '标的', dataIndex: 'symbol', key: 'symbol' },
+                    { 
+                      title: '信号', 
+                      dataIndex: 'signal', 
+                      key: 'signal',
+                      render: (signal: string | null) => {
+                        if (!signal) return <Tag color="default">无信号</Tag>;
+                        if (signal === 'BUY') return <Tag color="green">买入</Tag>;
+                        return <Tag>{signal}</Tag>;
+                      }
+                    },
+                    { 
+                      title: '错误', 
+                      dataIndex: 'error', 
+                      key: 'error',
+                      render: (text: string) => text ? <span style={{ color: '#ff4d4f' }}>{text}</span> : '-'
+                    },
+                  ]}
+                  rowKey={(_, index) => `signal-${index}`}
+                  pagination={false}
+                  size="small"
+                />
+              </div>
+            )}
+
+            {/* 买入尝试详情（最近20条） */}
+            {result.diagnosticLog.buyAttempts.length > 0 && (
+              <div>
+                <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>买入尝试详情（最近20条）</h3>
+                <Table
+                  dataSource={result.diagnosticLog.buyAttempts.slice(-20)}
+                  columns={[
+                    { title: '日期', dataIndex: 'date', key: 'date', render: (text: string) => formatDate(text) },
+                    { title: '标的', dataIndex: 'symbol', key: 'symbol' },
+                    { 
+                      title: '结果', 
+                      dataIndex: 'success', 
+                      key: 'success',
+                      render: (success: boolean) => (
+                        <Tag color={success ? 'success' : 'error'}>
+                          {success ? '成功' : '失败'}
+                        </Tag>
+                      )
+                    },
+                    { title: '原因', dataIndex: 'reason', key: 'reason' },
+                  ]}
+                  rowKey={(_, index) => `buy-${index}`}
+                  pagination={false}
+                  size="small"
+                />
+              </div>
+            )}
+          </Card>
+        )}
 
         {/* 交易明细 */}
         <Card style={{ marginBottom: 24 }}>

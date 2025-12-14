@@ -14,11 +14,24 @@ export class RecommendationStrategy extends StrategyBase {
   /**
    * 生成交易信号
    * 复用 TradingRecommendationService 的逻辑
+   * @param symbol 股票代码
+   * @param marketData 市场数据（可选，用于回测时传入历史数据）
+   * @param targetDate 目标日期（可选，用于回测时指定历史日期）
+   * @param historicalStockCandlesticks 历史股票K线数据（可选，用于回测）
    */
-  async generateSignal(symbol: string, _marketData?: any): Promise<TradingIntent | null> {
+  async generateSignal(
+    symbol: string, 
+    marketData?: any,
+    targetDate?: Date,
+    historicalStockCandlesticks?: any[]
+  ): Promise<TradingIntent | null> {
     try {
-      // 调用现有的推荐服务生成推荐
-      const recommendation = await tradingRecommendationService.calculateRecommendation(symbol);
+      // 调用现有的推荐服务生成推荐（如果提供了targetDate则使用历史数据）
+      const recommendation = await tradingRecommendationService.calculateRecommendation(
+        symbol,
+        targetDate,
+        historicalStockCandlesticks
+      );
 
       // 如果推荐是 HOLD，返回 null（不生成信号）
       if (recommendation.action === 'HOLD') {
