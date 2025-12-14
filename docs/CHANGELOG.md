@@ -15,7 +15,7 @@
 - ✅ **加载状态**：为Suspense添加友好的加载回退UI
 
 #### 📝 文档更新
-- ✅ 更新 [构建错误修复总结](features/BUILD_ERROR_FIX_SUMMARY.md) - 添加编码问题和Suspense修复
+- ✅ 更新 [构建错误修复总结](features/251211-BUILD_ERROR_FIX_SUMMARY.md) - 添加编码问题和Suspense修复
 
 ---
 
@@ -34,7 +34,7 @@
 - ✅ **组件类型修复**：修复面包屑和表单组件的类型问题
 
 #### 📝 文档更新
-- ✅ 新增 [构建错误修复总结](features/BUILD_ERROR_FIX_SUMMARY.md) ⭐ 新增
+- ✅ 新增 [构建错误修复总结](features/251211-BUILD_ERROR_FIX_SUMMARY.md) ⭐ 新增
 
 ---
 
@@ -58,9 +58,9 @@
 - ✅ API限流时优雅降级（使用数据库查询作为备用）
 
 #### 📝 文档更新
-- ✅ 更新 [量化交易订单管理重构PRD](features/QUANT_ORDER_MANAGEMENT_REFACTOR_PRD.md) - 标记所有功能为已完成
-- ✅ 新增 [量化交易订单管理重构实施总结](features/QUANT_ORDER_MANAGEMENT_REFACTOR_IMPLEMENTATION_SUMMARY.md) ⭐ 新增
-- ✅ 新增 [信号日志历史数据修复方案](features/SIGNAL_ORDER_HISTORICAL_DATA_FIX.md) - 历史数据修复方案（可选）
+- ✅ 更新 [量化交易订单管理重构PRD](features/251211-QUANT_ORDER_MANAGEMENT_REFACTOR_PRD.md) - 标记所有功能为已完成
+- ✅ 新增 [量化交易订单管理重构实施总结](features/251211-QUANT_ORDER_MANAGEMENT_REFACTOR_IMPLEMENTATION_SUMMARY.md) ⭐ 新增
+- ✅ 新增 [信号日志历史数据修复方案](features/251212-SIGNAL_ORDER_HISTORICAL_DATA_FIX.md) - 历史数据修复方案（可选）
 
 #### 🔄 相关变更
 - ✅ 删除`frontend/app/quant/trades/page.tsx`
@@ -109,9 +109,9 @@
 - **分页逻辑**：优化分页判断，支持获取多页数据直到达到目标数量
 
 #### 📝 文档更新
-- 新增 [策略创建UI优化文档](features/STRATEGY_CREATION_UI_OPTIMIZATION.md)
-- 新增 [策略编辑和详情页面优化PRD](features/STRATEGY_EDIT_DETAIL_OPTIMIZATION_PRD.md) ⭐ 新增
-- 更新 [机构选股功能实施总结](features/INSTITUTION_STOCK_SELECTOR_IMPLEMENTATION.md)
+- 新增 [策略创建UI优化文档](features/251208-STRATEGY_CREATION_UI_OPTIMIZATION.md)
+- 新增 [策略编辑和详情页面优化PRD](features/251205-STRATEGY_EDIT_DETAIL_OPTIMIZATION_PRD.md) ⭐ 新增
+- 更新 [机构选股功能实施总结](features/251208-INSTITUTION_STOCK_SELECTOR_IMPLEMENTATION.md)
 
 ---
 
@@ -142,7 +142,7 @@
   - 30+个错误码
   - 4个错误分类（CLIENT_ERROR, SERVER_ERROR, EXTERNAL_ERROR, BUSINESS_ERROR）
   - 4个严重程度级别（LOW, MEDIUM, HIGH, CRITICAL）
-- **相关文档**: [错误处理统一实施文档](fixes/ERROR_HANDLING_IMPLEMENTATION.md)
+- **相关文档**: [错误处理统一实施文档](fixes/251209-ERROR_HANDLING_IMPLEMENTATION.md)
 
 ### ✅ 测试体系建设完成
 - **测试通过率**: 100%（29/29）
@@ -150,7 +150,7 @@
   - 资金管理服务（account-balance-sync.service.ts）
   - 策略执行验证（strategy-scheduler.service.ts）
   - 动态持仓管理（dynamic-position-manager.service.ts）
-- **相关文档**: [测试体系建设完成总结](fixes/TEST_COMPLETION_SUMMARY.md)
+- **相关文档**: [测试体系建设完成总结](fixes/251208-TEST_COMPLETION_SUMMARY.md)
 
 ## 2025-12-05
 
