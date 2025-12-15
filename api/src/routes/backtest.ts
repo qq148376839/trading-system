@@ -36,6 +36,31 @@ backtestRouter.post('/', async (req: Request, res: Response, next: NextFunction)
     if (start >= end) {
       return next(ErrorFactory.validationError('开始日期必须早于结束日期'));
     }
+    
+    // ✅ 验证日期范围，排除周末和未来日期
+    const { validateDateRange, getMarketFromSymbol } = require('../utils/trading-days');
+    // 对于多标的回测，使用第一个标的的市场类型（或默认US）
+    const market = symbols.length > 0 ? getMarketFromSymbol(symbols[0]) : 'US';
+    const validation = validateDateRange(start, end, market);
+    
+    if (!validation.valid) {
+      return next(ErrorFactory.validationError(`日期范围无效: ${validation.error}`));
+    }
+    
+    // 如果日期范围被调整了，使用调整后的范围
+    if (validation.adjustedRange) {
+      const originalStart = start.toISOString().split('T')[0];
+      const originalEnd = end.toISOString().split('T')[0];
+      const adjustedStart = validation.adjustedRange.startDate.toISOString().split('T')[0];
+      const adjustedEnd = validation.adjustedRange.endDate.toISOString().split('T')[0];
+      
+      if (originalStart !== adjustedStart || originalEnd !== adjustedEnd) {
+        logger.log(`日期范围已自动调整: ${originalStart} 至 ${originalEnd} -> ${adjustedStart} 至 ${adjustedEnd}`);
+        // 使用调整后的日期范围
+        start.setTime(validation.adjustedRange.startDate.getTime());
+        end.setTime(validation.adjustedRange.endDate.getTime());
+      }
+    }
 
     logger.log(`创建回测任务: 策略ID=${strategyId}, 标的=${symbols.join(',')}`);
 

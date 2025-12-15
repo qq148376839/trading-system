@@ -193,6 +193,29 @@ trading-system/
 - `GET /api/quant/signals` - 获取信号日志
 - `GET /api/quant/capital/allocations` - 获取资金分配列表
 
+### 8. 回测功能 ⭐ 最新优化
+
+**功能亮点**：
+- ✅ **策略回测**：使用历史数据回测策略表现
+- ✅ **交易日验证**：自动排除周末和未来日期，使用Longbridge SDK获取真实交易日数据
+- ✅ **历史数据优化**：使用Longbridge历史K线API，支持Moomoo降级方案
+- ✅ **数据完整性检查**：自动检查数据量，不足时自动补充
+- ✅ **API频次限制**：自动处理API频次限制（每30秒最多60次）
+- ✅ **配额监控**：监控API配额使用情况，自动预警
+- ✅ **市场环境模拟**：使用日K数据模拟分时市场环境
+- ✅ **交易逻辑分析**：全面分析回测交易逻辑，发现潜在改进点
+
+**API 端点**：
+- `POST /api/quant/backtest` - 创建回测任务
+- `GET /api/quant/backtest/:id` - 获取回测结果
+- `GET /api/quant/backtest/:id/status` - 获取回测状态
+- `GET /api/quant/backtest` - 获取回测任务列表
+
+**相关文档**：
+- 📄 [回测功能修订文档索引](docs/features/251215-BACKTEST_REVISION_INDEX.md) ⭐ 推荐阅读
+- 📄 [回测功能使用指南](docs/features/250101-BACKTEST_USAGE_GUIDE.md)
+- 📄 [回测交易逻辑分析报告](analyze_backtest_logic_final.md)
+
 ## 🚀 快速开始
 
 ### 环境要求
@@ -420,6 +443,39 @@ const mappedOrder = mapOrderData(orderDetail);
 
 ## 📝 重要更新
 
+### 2025-12-15: 回测功能优化 ⭐ 最新
+
+**优化内容**：
+1. ✅ **交易日验证功能**：自动排除周末和未来日期，使用Longbridge SDK获取真实交易日数据
+2. ✅ **交易日服务**：创建专门的交易日服务，实现24小时缓存和分批获取
+3. ✅ **日期范围验证**：自动验证和调整回测日期范围，确保数据准确性
+4. ✅ **交易逻辑分析**：完成回测交易逻辑全面分析，发现并记录潜在改进点
+
+**技术实现**：
+- 新增交易日服务（`trading-days.service.ts`），使用Longbridge `tradingDays`接口
+- 新增交易日工具函数（`trading-days.ts`），支持日期范围验证和调整
+- 集成到回测服务，自动过滤非交易日数据
+- 创建交易逻辑分析工具，全面检查回测逻辑
+
+**相关文档**：
+- 📄 [回测功能修订文档索引](docs/features/251215-BACKTEST_REVISION_INDEX.md) ⭐ 推荐阅读
+- 📄 [回测功能修订总结](docs/features/251215-REVISION_SUMMARY.md)
+- 📄 [回测交易逻辑分析报告](analyze_backtest_logic_final.md)
+
+### 2025-12-14: 回测历史数据优化
+
+**优化内容**：
+1. ✅ **使用Longbridge历史K线API**：使用`historyCandlesticksByDate`和`historyCandlesticksByOffset`替代`candlesticks()`
+2. ✅ **Moomoo降级方案**：Longbridge失败时自动降级到Moomoo日K接口
+3. ✅ **API频次限制处理**：实现每30秒最多60次请求的限制
+4. ✅ **配额监控**：监控每月查询的标的数量，自动预警
+5. ✅ **数据完整性检查**：检查数据量是否满足需求，不足时自动补充
+6. ✅ **市场环境模拟**：使用日K数据的OHLC模拟分时市场环境
+
+**相关文档**：
+- 📄 [回测历史数据优化实施总结](docs/features/251214-IMPLEMENTATION_SUMMARY.md)
+- 📄 [回测历史数据优化PRD](docs/features/251214-BACKTEST_HISTORICAL_DATA_OPTIMIZATION_PRD.md)
+
 ### 2025-01-XX: 期权链功能完整实现
 
 **新增功能**：
@@ -614,4 +670,4 @@ MIT License
 
 ---
 
-**最后更新**: 2025-12-12 (Docker 部署修复完成，已可正常使用)
+**最后更新**: 2025-12-15 (回测功能优化：交易日验证、交易逻辑分析)

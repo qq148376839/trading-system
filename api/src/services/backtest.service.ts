@@ -54,67 +54,340 @@ class BacktestService {
 
   /**
    * 获取历史K线数据
-   * 注意：Longbridge的candlesticks API只返回最近N条数据，不支持指定日期范围
-   * 所以我们需要计算从开始日期到今天的天数，获取足够多的历史数据
+   * 使用Longbridge API的historyCandlesticksByOffset方法获取历史K线数据
+   * 如果失败，降级到Moomoo日K接口
    */
   private async getHistoricalCandlesticks(
     symbol: string,
     startDate: Date,
     endDate: Date
-  ): Promise<Array<{ timestamp: Date; open: number; high: number; low: number; close: number; volume: number }>> {
+  ): Promise<Array<{ timestamp: Date; open: number; high: number; low: number; close: number; volume: number; turnover?: number }>> {
     try {
       const quoteCtx = await getQuoteContext();
       const longport = require('longport');
-      const { Period, AdjustType } = longport;
-
-      // 计算从开始日期到今天的天数（因为API返回的是最近N条数据）
-      const today = new Date();
-      today.setHours(23, 59, 59, 999); // 设置为今天的最后一刻
+      const { Period, AdjustType, NaiveDate, NaiveDatetime } = longport;
+      const { formatLongbridgeCandlestickForBacktest, toDate } = require('../utils/candlestick-formatter');
       
-      // 计算从开始日期到今天的天数差
-      const daysFromStartToToday = Math.ceil((today.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+      // ✅ 验证和调整日期范围，排除周末和未来日期
+      const { getMarketFromSymbol, validateDateRange } = require('../utils/trading-days');
+      const market = getMarketFromSymbol(symbol);
+      const validation = validateDateRange(startDate, endDate, market);
       
-      // 需要获取的数据量：从开始日期到今天的天数 + 一些缓冲（确保能覆盖到开始日期）
-      // 最多获取1000条（Longbridge API的限制）
-      const count = Math.min(daysFromStartToToday + 100, 1000);
+      if (!validation.valid) {
+        logger.warn(`日期范围验证失败 (${symbol}): ${validation.error}`);
+        if (validation.adjustedRange) {
+          logger.log(`使用调整后的日期范围: ${validation.adjustedRange.startDate.toISOString().split('T')[0]} 至 ${validation.adjustedRange.endDate.toISOString().split('T')[0]}`);
+          startDate = validation.adjustedRange.startDate;
+          endDate = validation.adjustedRange.endDate;
+        } else {
+          throw new Error(`日期范围无效 (${symbol}): ${validation.error}`);
+        }
+      } else if (validation.adjustedRange) {
+        // 如果日期范围被调整了，使用调整后的范围
+        const originalStart = startDate.toISOString().split('T')[0];
+        const originalEnd = endDate.toISOString().split('T')[0];
+        startDate = validation.adjustedRange.startDate;
+        endDate = validation.adjustedRange.endDate;
+        const adjustedStart = startDate.toISOString().split('T')[0];
+        const adjustedEnd = endDate.toISOString().split('T')[0];
+        
+        if (originalStart !== adjustedStart || originalEnd !== adjustedEnd) {
+          logger.log(`日期范围已调整 (${symbol}): ${originalStart} 至 ${originalEnd} -> ${adjustedStart} 至 ${adjustedEnd}`);
+        }
+      }
 
-      logger.log(`获取历史数据 (${symbol}): 需要从 ${startDate.toISOString().split('T')[0]} 到 ${endDate.toISOString().split('T')[0]}, 计算count=${count} (从开始日期到今天=${daysFromStartToToday}天)`);
+      // 计算需要获取的数据量
+      const daysDiff = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+      // 需要获取的数据量：日期差 + 缓冲，最多1000条（Longbridge API的限制）
+      const count = Math.min(daysDiff + 100, 1000);
 
-      const candlesticks = await quoteCtx.candlesticks(
-        symbol,
-        Period.Day,
-        count,
-        AdjustType.NoAdjust
-      );
+      logger.log(`获取历史数据 (${symbol}): 需要从 ${startDate.toISOString().split('T')[0]} 到 ${endDate.toISOString().split('T')[0]}, 计算count=${count}`);
+
+      // ✅ API频次限制处理
+      const { apiRateLimiter } = require('../utils/api-rate-limiter');
+      await apiRateLimiter.waitIfNeeded();
+      
+      // ✅ 配额监控
+      const { quotaMonitor } = require('../utils/quota-monitor');
+      await quotaMonitor.recordQuery(symbol);
+      const quotaStatus = await quotaMonitor.checkQuota(1000);
+      if (quotaStatus.isOverQuota) {
+        logger.warn(`[配额警告] 已达到配额上限 (${symbol}): 已使用 ${quotaStatus.currentUsage} 个标的`);
+      } else if (quotaStatus.usageRate > 80) {
+        logger.warn(`[配额警告] 配额使用率较高 (${symbol}): ${quotaStatus.usageRate.toFixed(1)}% (${quotaStatus.currentUsage}/1000)`);
+      }
+
+      // ✅ 使用historyCandlesticksByDate或historyCandlesticksByOffset获取历史K线数据
+      let candlesticks: any[];
+      try {
+        // 计算日期范围
+        const daysDiff = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+        
+        // ✅ 将JavaScript Date转换为NaiveDate（Longbridge SDK要求的格式）
+        // NaiveDate构造函数：new NaiveDate(year, month, day)
+        // 注意：month从1开始（1=1月，12=12月），不是从0开始
+        const startNaiveDate = new NaiveDate(
+          startDate.getFullYear(),
+          startDate.getMonth() + 1, // JavaScript的month从0开始，需要+1
+          startDate.getDate()
+        );
+        const endNaiveDate = new NaiveDate(
+          endDate.getFullYear(),
+          endDate.getMonth() + 1,
+          endDate.getDate()
+        );
+        
+        if (daysDiff <= 1000) {
+          // 日期范围在1000天内，优先使用historyCandlesticksByDate（更精确）
+          try {
+            // ✅ historyCandlesticksByDate参数顺序：
+            // symbol, period, adjustType, start, end, tradeSessions(可选)
+            // 注意：tradeSessions参数是可选的，如果不传则使用默认值
+            candlesticks = await quoteCtx.historyCandlesticksByDate(
+              symbol,
+              Period.Day,
+              AdjustType.NoAdjust,
+              startNaiveDate,
+              endNaiveDate
+            );
+            logger.log(`✅ 使用historyCandlesticksByDate获取到 ${candlesticks?.length || 0} 条历史数据 (${symbol})`);
+          } catch (byDateError: any) {
+            // 如果historyCandlesticksByDate失败，尝试使用historyCandlesticksByOffset
+            logger.warn(`historyCandlesticksByDate失败 (${symbol}): ${byDateError.message}，尝试使用historyCandlesticksByOffset`);
+            throw byDateError; // 继续到historyCandlesticksByOffset的catch块
+          }
+        } else {
+          // 日期范围超过1000天，使用historyCandlesticksByOffset从结束日期往前获取
+          // ✅ 将JavaScript Date转换为NaiveDatetime（Longbridge SDK要求的格式）
+          // NaiveDatetime构造函数：new NaiveDatetime(year, month, day, hour, minute, second)
+          const endNaiveDatetime = new NaiveDatetime(
+            endDate.getFullYear(),
+            endDate.getMonth() + 1,
+            endDate.getDate(),
+            endDate.getHours(),
+            endDate.getMinutes(),
+            endDate.getSeconds()
+          );
+          
+          const count = Math.min(daysDiff + 100, 1000); // 最多1000条
+          // ✅ historyCandlesticksByOffset参数顺序：
+          // symbol, period, adjustType, forward, datetime, count, tradeSessions(可选)
+          candlesticks = await quoteCtx.historyCandlesticksByOffset(
+            symbol,
+            Period.Day,
+            AdjustType.NoAdjust,
+            false,  // forward: false表示向历史数据方向查找
+            endNaiveDatetime,
+            count
+          );
+          logger.log(`✅ 使用historyCandlesticksByOffset获取到 ${candlesticks?.length || 0} 条历史数据 (${symbol})`);
+        }
+      } catch (historyError: any) {
+        // 如果historyCandlesticksByOffset或historyCandlesticksByDate失败，尝试使用candlesticks作为降级方案
+        logger.warn(`Longbridge历史K线API失败 (${symbol}): ${historyError.message}，尝试使用candlesticks方法`);
+        
+        const today = new Date();
+        today.setHours(23, 59, 59, 999);
+        const daysFromStartToToday = Math.ceil((today.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+        const fallbackCount = Math.min(daysFromStartToToday + 100, 1000);
+        
+        candlesticks = await quoteCtx.candlesticks(
+          symbol,
+          Period.Day,
+          fallbackCount,
+          AdjustType.NoAdjust
+        );
+        
+        logger.log(`✅ 使用candlesticks降级方案获取到 ${candlesticks?.length || 0} 条历史数据 (${symbol})`);
+      }
 
       if (!candlesticks || candlesticks.length === 0) {
-        logger.warn(`未获取到任何历史数据 (${symbol})`);
+        logger.warn(`未获取到任何历史数据 (${symbol})，尝试降级到Moomoo`);
+        // ✅ 实现Moomoo降级方案
+        try {
+          const moomooData = await this.getHistoricalCandlesticksFromMoomoo(symbol, startDate, endDate);
+          if (moomooData && moomooData.length > 0) {
+            logger.log(`✅ Moomoo降级方案成功获取到 ${moomooData.length} 条数据 (${symbol})`);
+            return moomooData;
+          }
+        } catch (moomooError: any) {
+          logger.error(`Moomoo降级方案失败 (${symbol}):`, moomooError.message);
+        }
         return [];
       }
 
-      logger.log(`获取到 ${candlesticks.length} 条历史数据 (${symbol}), 最早: ${new Date(candlesticks[candlesticks.length - 1].timestamp).toISOString().split('T')[0]}, 最晚: ${new Date(candlesticks[0].timestamp).toISOString().split('T')[0]}`);
-
-      // 转换为标准格式并过滤日期范围
-      const result = candlesticks
-        .map((c: any) => ({
-          timestamp: new Date(c.timestamp),
-          open: typeof c.open === 'number' ? c.open : parseFloat(String(c.open || 0)),
-          high: typeof c.high === 'number' ? c.high : parseFloat(String(c.high || 0)),
-          low: typeof c.low === 'number' ? c.low : parseFloat(String(c.low || 0)),
-          close: typeof c.close === 'number' ? c.close : parseFloat(String(c.close || 0)),
-          volume: typeof c.volume === 'number' ? c.volume : parseFloat(String(c.volume || 0)),
-        }))
+      // ✅ 使用统一的数据转换工具函数
+      // 注意：getMarketFromSymbol 和 market 已在函数开头声明（第72-73行），这里直接使用
+      const tradingDaysService = require('../services/trading-days.service').default;
+      
+      // ✅ 获取真实的交易日数据（使用Longbridge API）
+      let tradingDaysSet: Set<string>;
+      try {
+        tradingDaysSet = await tradingDaysService.getTradingDays(market, startDate, endDate);
+        logger.log(`[交易日服务] ${symbol}: 获取到 ${tradingDaysSet.size} 个交易日`);
+      } catch (error: any) {
+        logger.warn(`[交易日服务] ${symbol}: 获取交易日数据失败，降级到周末判断: ${error.message}`);
+        tradingDaysSet = new Set(); // 如果失败，使用空集合，后续会降级到周末判断
+      }
+      
+      // ✅ 调试日志：查看API返回的原始数据
+      logger.log(`[数据诊断] ${symbol}: API返回原始数据 ${candlesticks.length} 条`);
+      
+      const formattedCandlesticks = candlesticks.map((c: any) => formatLongbridgeCandlestickForBacktest(c));
+      
+      // ✅ 调试日志：查看日期范围
+      const start = new Date(startDate);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      
+      // ✅ 调试日志：查看格式化后的数据日期范围（只在数据量异常时输出）
+      if (formattedCandlesticks.length > 0 && formattedCandlesticks.length < 50) {
+        const firstDate = new Date(formattedCandlesticks[0].timestamp);
+        const lastDate = new Date(formattedCandlesticks[formattedCandlesticks.length - 1].timestamp);
+        logger.log(`[数据诊断] ${symbol}: 目标日期范围 ${start.toISOString().split('T')[0]} 至 ${end.toISOString().split('T')[0]}`);
+        logger.log(`[数据诊断] ${symbol}: API返回数据日期范围 ${firstDate.toISOString().split('T')[0]} 至 ${lastDate.toISOString().split('T')[0]}`);
+      }
+      
+      // ✅ 辅助函数：将Date转换为YYYYMMDD格式（用于交易日判断）
+      const dateToYYMMDD = (date: Date): string => {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}${month}${day}`;
+      };
+      
+      // ✅ 辅助函数：判断是否为交易日
+      const isTradingDay = (date: Date): boolean => {
+        // 如果成功获取了交易日数据，使用真实数据判断
+        if (tradingDaysSet && tradingDaysSet.size > 0) {
+          const dateStr = dateToYYMMDD(date);
+          return tradingDaysSet.has(dateStr);
+        }
+        
+        // 降级方案：仅判断周末
+        const dayOfWeek = date.getDay();
+        return dayOfWeek !== 0 && dayOfWeek !== 6;
+      };
+      
+      let result = formattedCandlesticks
         .filter((c: any) => {
           // 过滤出指定日期范围内的数据
           const cDate = new Date(c.timestamp);
           cDate.setHours(0, 0, 0, 0);
-          const start = new Date(startDate);
-          start.setHours(0, 0, 0, 0);
-          const end = new Date(endDate);
-          end.setHours(23, 59, 59, 999);
-          return cDate >= start && cDate <= end;
+          
+          // ✅ 交易日判断：只保留交易日的数据（使用Longbridge API的真实交易日数据）
+          if (!isTradingDay(cDate)) {
+            return false;
+          }
+          
+          const inRange = cDate >= start && cDate <= end;
+          return inRange;
         })
         .sort((a: any, b: any) => a.timestamp.getTime() - b.timestamp.getTime());
+      
+      logger.log(`[数据诊断] ${symbol}: 日期范围过滤后 ${result.length} 条`);
+
+      // ✅ 数据完整性检查
+      const requiredDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+      if (result.length < requiredDays * 0.5) {
+        logger.warn(`数据完整性警告 (${symbol}): 需要约${requiredDays}天数据，但只获取到${result.length}条，数据可能不完整`);
+      }
+      
+      // ✅ 确保至少有50条数据（calculateRecommendation的最低要求）
+      if (result.length < 50) {
+        logger.warn(`数据量不足警告 (${symbol}): 只有${result.length}条数据，calculateRecommendation需要至少50条。尝试获取更多数据...`);
+        // 如果数据不足，尝试获取更多数据（从更早的日期开始）
+        try {
+          // ✅ 计算需要补充的数据量：至少需要50条，当前有result.length条，需要补充50-result.length条
+          // 但为了保险，多获取一些（考虑非交易日）
+          const neededCount = Math.max(50 - result.length, 50);
+          const additionalCount = Math.min(neededCount * 2, 1000 - result.length); // 多获取一些以应对非交易日
+          
+          logger.log(`[补充数据] ${symbol}: 尝试获取额外 ${additionalCount} 条数据`);
+          
+          await apiRateLimiter.waitIfNeeded();
+          const additionalCandlesticks = await quoteCtx.candlesticks(
+            symbol,
+            Period.Day,
+            additionalCount,
+            AdjustType.NoAdjust
+          );
+          
+          logger.log(`[补充数据] ${symbol}: API返回 ${additionalCandlesticks?.length || 0} 条额外数据`);
+          
+          if (additionalCandlesticks && additionalCandlesticks.length > 0) {
+            const additionalFormatted = additionalCandlesticks.map((c: any) => formatLongbridgeCandlestickForBacktest(c));
+            
+            // ✅ 获取已有数据的最早日期，补充数据应该是这个日期之前的数据
+            const earliestDate = result.length > 0 
+              ? new Date(result[0].timestamp)
+              : new Date(startDate);
+            earliestDate.setHours(0, 0, 0, 0);
+            
+            // ✅ 去重：避免补充数据与已有数据重复
+            const existingTimestamps = new Set(
+              result.map(r => {
+                const d = new Date(r.timestamp);
+                d.setHours(0, 0, 0, 0);
+                return d.getTime();
+              })
+            );
+            
+            // ✅ 获取补充数据日期范围的交易日数据
+            const supplementStartDate = new Date(earliestDate);
+            supplementStartDate.setDate(supplementStartDate.getDate() - 100); // 往前100天
+            let supplementTradingDaysSet: Set<string>;
+            try {
+              supplementTradingDaysSet = await tradingDaysService.getTradingDays(market, supplementStartDate, earliestDate);
+            } catch (error: any) {
+              logger.warn(`[补充数据] ${symbol}: 获取交易日数据失败，降级到周末判断`);
+              supplementTradingDaysSet = new Set();
+            }
+            
+            const supplementDateToYYMMDD = (date: Date): string => {
+              const year = date.getFullYear();
+              const month = String(date.getMonth() + 1).padStart(2, '0');
+              const day = String(date.getDate()).padStart(2, '0');
+              return `${year}${month}${day}`;
+            };
+            
+            const supplementIsTradingDay = (date: Date): boolean => {
+              if (supplementTradingDaysSet && supplementTradingDaysSet.size > 0) {
+                const dateStr = supplementDateToYYMMDD(date);
+                return supplementTradingDaysSet.has(dateStr);
+              }
+              const dayOfWeek = date.getDay();
+              return dayOfWeek !== 0 && dayOfWeek !== 6;
+            };
+            
+            const additionalResult = additionalFormatted
+              .filter((c: any) => {
+                const cDate = new Date(c.timestamp);
+                cDate.setHours(0, 0, 0, 0);
+                const cTimestamp = cDate.getTime();
+                
+                // ✅ 去重：排除已存在的数据
+                if (existingTimestamps.has(cTimestamp)) {
+                  return false;
+                }
+                
+                // ✅ 只保留在最早日期之前的数据，且是交易日
+                return cDate < earliestDate && supplementIsTradingDay(cDate);
+              })
+              .sort((a: any, b: any) => a.timestamp.getTime() - b.timestamp.getTime());
+            
+            logger.log(`[补充数据] ${symbol}: 过滤后补充数据 ${additionalResult.length} 条`);
+            
+            // 合并数据，确保时间顺序
+            result = [...additionalResult, ...result].sort((a: any, b: any) => a.timestamp.getTime() - b.timestamp.getTime());
+            logger.log(`✅ 补充数据后，共有 ${result.length} 条数据 (${symbol})`);
+          }
+        } catch (additionalError: any) {
+          logger.warn(`补充数据失败 (${symbol}): ${additionalError.message}`);
+          logger.error(`补充数据错误详情:`, additionalError);
+        }
+      }
 
       if (result.length === 0) {
         logger.warn(`过滤后没有数据 (${symbol}): 开始日期=${startDate.toISOString().split('T')[0]}, 结束日期=${endDate.toISOString().split('T')[0]}`);
@@ -125,6 +398,77 @@ class BacktestService {
       return result;
     } catch (error: any) {
       logger.error(`获取历史数据失败 (${symbol}):`, error.message);
+      // ✅ 实现Moomoo降级方案
+      try {
+        const moomooData = await this.getHistoricalCandlesticksFromMoomoo(symbol, startDate, endDate);
+        if (moomooData && moomooData.length > 0) {
+          logger.log(`✅ Moomoo降级方案成功获取到 ${moomooData.length} 条数据 (${symbol})`);
+          return moomooData;
+        }
+      } catch (moomooError: any) {
+        logger.error(`Moomoo降级方案失败 (${symbol}):`, moomooError.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * 从Moomoo获取历史K线数据（降级方案）
+   * @param symbol 股票代码（Longbridge格式，如"700.HK", "AAPL.US"）
+   * @param startDate 开始日期
+   * @param endDate 结束日期
+   * @returns 历史K线数据（回测格式）
+   */
+  private async getHistoricalCandlesticksFromMoomoo(
+    symbol: string,
+    startDate: Date,
+    endDate: Date
+  ): Promise<Array<{ timestamp: Date; open: number; high: number; low: number; close: number; volume: number; turnover?: number }>> {
+    const { symbolToMoomooParams } = require('../utils/symbol-to-moomoo');
+    const marketDataService = require('./market-data.service').default;
+    
+    // 转换symbol为Moomoo参数
+    const moomooParams = symbolToMoomooParams(symbol);
+    if (!moomooParams) {
+      logger.warn(`无法将symbol转换为Moomoo参数 (${symbol})，跳过Moomoo降级方案`);
+      return [];
+    }
+
+    try {
+      // 获取所有日K数据（Moomoo一次性返回所有数据）
+      const allCandlesticks = await marketDataService.getCandlesticks(
+        moomooParams.stockId,
+        moomooParams.marketId,
+        moomooParams.marketCode,
+        moomooParams.instrumentType,
+        moomooParams.subInstrumentType,
+        1000  // 获取最多1000条
+      );
+
+      if (!allCandlesticks || allCandlesticks.length === 0) {
+        logger.warn(`Moomoo未返回任何数据 (${symbol})`);
+        return [];
+      }
+
+      // 转换为回测格式并过滤日期范围
+      const { formatMoomooCandlestickForBacktest } = require('../utils/candlestick-formatter');
+      const result = allCandlesticks
+        .map((c: any) => formatMoomooCandlestickForBacktest(c))
+        .filter((c: any) => {
+          const cDate = new Date(c.timestamp);
+          cDate.setHours(0, 0, 0, 0);
+          const start = new Date(startDate);
+          start.setHours(0, 0, 0, 0);
+          const end = new Date(endDate);
+          end.setHours(23, 59, 59, 999);
+          return cDate >= start && cDate <= end;
+        })
+        .sort((a: any, b: any) => a.timestamp.getTime() - b.timestamp.getTime());
+
+      logger.log(`Moomoo降级方案：过滤后得到 ${result.length} 条数据 (${symbol})`);
+      return result;
+    } catch (error: any) {
+      logger.error(`从Moomoo获取历史数据失败 (${symbol}):`, error.message);
       throw error;
     }
   }
@@ -175,7 +519,7 @@ class BacktestService {
     const dailyEquity: Array<{ date: string; equity: number }> = [];
 
     // 获取所有标的的历史数据
-    const allCandlesticks: Map<string, Array<{ timestamp: Date; open: number; high: number; low: number; close: number; volume: number }>> = new Map();
+    const allCandlesticks: Map<string, Array<{ timestamp: Date; open: number; high: number; low: number; close: number; volume: number; turnover?: number }>> = new Map();
     
     // ✅ 在数据获取时记录日志
     for (const symbol of symbols) {
@@ -211,17 +555,108 @@ class BacktestService {
       throw new Error('无法获取任何历史数据');
     }
 
-    // 获取所有日期（合并所有标的的日期）
+    // ✅ 获取所有日期（合并所有标的的日期），并过滤掉非交易日和未来日期
+    const { getMarketFromSymbol, isFutureDate } = require('../utils/trading-days');
+    const tradingDaysService = require('../services/trading-days.service').default;
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+    
+    // ✅ 获取日期范围内所有标的的交易日数据（合并所有市场）
+    const markets = new Set(symbols.map((s: string) => getMarketFromSymbol(s)));
+    const tradingDaysByMarket = new Map<string, Set<string>>();
+    
+    // 为每个市场获取交易日数据
+    for (const market of markets) {
+      try {
+        const tradingDays = await tradingDaysService.getTradingDays(market, startDate, endDate);
+        tradingDaysByMarket.set(market, tradingDays);
+        logger.log(`[回测] ${market}市场交易日数量: ${tradingDays.size}`);
+      } catch (error: any) {
+        logger.warn(`[回测] ${market}市场交易日数据获取失败，降级到周末判断: ${error.message}`);
+        tradingDaysByMarket.set(market, new Set());
+      }
+    }
+    
+    // ✅ 辅助函数：将Date转换为YYYYMMDD格式
+    const dateToYYMMDD = (date: Date): string => {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}${month}${day}`;
+    };
+    
     const allDates = new Set<string>();
-    allCandlesticks.forEach((candles) => {
+    allCandlesticks.forEach((candles, symbol) => {
+      const market = getMarketFromSymbol(symbol);
+      const marketTradingDays = tradingDaysByMarket.get(market) || new Set();
+      
       candles.forEach((c) => {
-        allDates.add(c.timestamp.toISOString().split('T')[0]);
+        const dateStr = c.timestamp.toISOString().split('T')[0];
+        const date = new Date(dateStr);
+        date.setHours(0, 0, 0, 0);
+        
+        // ✅ 排除未来日期
+        if (isFutureDate(date)) {
+          return;
+        }
+        
+        // ✅ 交易日判断：如果成功获取了交易日数据，使用真实数据；否则降级到周末判断
+        let isTrading = false;
+        if (marketTradingDays.size > 0) {
+          const dateStrYYMMDD = dateToYYMMDD(date);
+          isTrading = marketTradingDays.has(dateStrYYMMDD);
+        } else {
+          // 降级方案：仅判断周末
+          const dayOfWeek = date.getDay();
+          isTrading = dayOfWeek !== 0 && dayOfWeek !== 6;
+        }
+        
+        if (isTrading) {
+          allDates.add(dateStr);
+        }
       });
     });
     const sortedDates = Array.from(allDates).sort();
     
     // ✅ 记录总日期数
     diagnosticLog.summary.totalDates = sortedDates.length;
+    
+    if (sortedDates.length === 0) {
+      throw new Error('日期范围内没有有效的交易日数据');
+    }
+    
+    logger.log(`[回测] 有效交易日数量: ${sortedDates.length} 天`);
+
+    // ✅ 在回测开始前，一次性获取所有市场数据（避免在循环中多次调用）
+    // Moomoo的get-kline接口（type=2）一次性返回所有日K数据，不需要多次调用
+    logger.log(`[回测] 开始一次性获取市场数据（日期范围: ${startDate.toISOString().split('T')[0]} 至 ${endDate.toISOString().split('T')[0]}）`);
+    const marketDataService = require('./market-data.service').default;
+    
+    // 计算需要获取的数据量（从开始日期到今天，确保覆盖回测日期范围）
+    // Moomoo的get-kline接口一次性返回所有数据，所以只需要请求一次，传入足够大的count
+    // 注意：today 已在函数开头声明（第562行），这里直接使用
+    const daysFromStartToToday = Math.ceil((today.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+    const marketDataCount = Math.min(daysFromStartToToday + 200, 1000); // 多获取200条作为缓冲，确保覆盖回测日期范围
+    
+    // 一次性获取所有市场数据（SPX、USD Index、BTC）
+    // 注意：Moomoo的get-kline接口（type=2）一次性返回所有日K数据，不需要多次调用
+    let allMarketData: Map<string, any[]> = new Map();
+    try {
+      const [spxData, usdIndexData, btcData] = await Promise.all([
+        marketDataService.getSPXCandlesticks(marketDataCount),
+        marketDataService.getUSDIndexCandlesticks(marketDataCount),
+        marketDataService.getBTCCandlesticks(marketDataCount),
+      ]);
+      
+      allMarketData.set('SPX', spxData);
+      allMarketData.set('USD Index', usdIndexData);
+      allMarketData.set('BTC', btcData);
+      
+      logger.log(`[回测] 市场数据获取完成: SPX=${spxData.length}条, USD Index=${usdIndexData.length}条, BTC=${btcData.length}条`);
+    } catch (error: any) {
+      logger.error(`[回测] 市场数据获取失败:`, error.message);
+      // 如果市场数据获取失败，回测仍然可以继续，但会在循环中每次调用时失败
+    }
 
     // 创建策略实例
     const strategy = new RecommendationStrategy(strategyId, {});
@@ -231,6 +666,28 @@ class BacktestService {
         // ✅ 使用日期的结束时间，确保包含当天的数据
         const currentDate = new Date(dateStr);
         currentDate.setHours(23, 59, 59, 999);
+        
+        // ✅ 再次验证：确保是交易日且不是未来日期（双重检查）
+        const dateForCheck = new Date(dateStr);
+        dateForCheck.setHours(0, 0, 0, 0);
+        const market = symbols.length > 0 ? getMarketFromSymbol(symbols[0]) : 'US';
+        
+        // ✅ 使用交易日服务判断（如果可用）
+        const marketTradingDays = tradingDaysByMarket.get(market) || new Set();
+        let isTrading = false;
+        if (marketTradingDays.size > 0) {
+          const dateStrYYMMDD = dateToYYMMDD(dateForCheck);
+          isTrading = marketTradingDays.has(dateStrYYMMDD);
+        } else {
+          // 降级方案：仅判断周末
+          const dayOfWeek = dateForCheck.getDay();
+          isTrading = dayOfWeek !== 0 && dayOfWeek !== 6;
+        }
+        
+        if (!isTrading || isFutureDate(dateForCheck)) {
+          logger.warn(`[回测] 跳过非交易日或未来日期: ${dateStr}`);
+          continue;
+        }
 
       // 检查每个标的的持仓
       for (const symbol of symbols) {
@@ -267,25 +724,41 @@ class BacktestService {
           try {
             // ✅ 传入历史日期和历史K线数据，确保策略基于历史市场条件生成信号
             // 获取当前日期之前的历史K线数据（用于推荐服务）
+            // 注意：需要至少50条数据才能计算推荐
             const historicalCandles = candlesticks.filter(c => 
               c.timestamp.toISOString().split('T')[0] <= dateStr
             );
             
-            // 转换为推荐服务需要的格式（包含timestamp字段）
+            // ✅ 如果数据不足50条，跳过该日期（无法计算推荐）
+            if (historicalCandles.length < 50) {
+              logger.warn(`[回测] ${symbol} 历史K线数据不足: 只有${historicalCandles.length}条，需要至少50条。跳过日期 ${dateStr}`);
+              continue; // 跳过该日期，继续下一个日期
+            }
+            
+            // 转换为推荐服务需要的格式（包含timestamp和turnover字段）
             const historicalStockCandlesticks = historicalCandles.map(c => ({
               close: c.close,
               open: c.open,
               high: c.high,
               low: c.low,
               volume: c.volume,
+              turnover: c.turnover || 0, // 添加turnover字段
               timestamp: c.timestamp.getTime() / 1000, // 转换为秒级时间戳
             }));
+            
+            // ✅ 从预获取的市场数据中提取当前日期的数据
+            const preFetchedMarketData = {
+              spx: allMarketData.get('SPX') || [],
+              usdIndex: allMarketData.get('USD Index') || [],
+              btc: allMarketData.get('BTC') || [],
+            };
             
             const intent = await strategy.generateSignal(
               symbol, 
               undefined, // marketData参数暂时不使用
               currentDate, // 传入当前回测日期
-              historicalStockCandlesticks // 传入历史K线数据
+              historicalStockCandlesticks, // 传入历史K线数据
+              preFetchedMarketData // ✅ 传入预获取的市场数据，避免在循环中多次调用API
             );
             
             // ✅ 记录信号生成日志

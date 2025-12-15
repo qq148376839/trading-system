@@ -23,14 +23,16 @@ export class RecommendationStrategy extends StrategyBase {
     symbol: string, 
     marketData?: any,
     targetDate?: Date,
-    historicalStockCandlesticks?: any[]
+    historicalStockCandlesticks?: any[],
+    preFetchedMarketData?: { spx?: any[]; usdIndex?: any[]; btc?: any[] } // ✅ 新增：预获取的市场数据（用于回测优化）
   ): Promise<TradingIntent | null> {
     try {
       // 调用现有的推荐服务生成推荐（如果提供了targetDate则使用历史数据）
       const recommendation = await tradingRecommendationService.calculateRecommendation(
         symbol,
         targetDate,
-        historicalStockCandlesticks
+        historicalStockCandlesticks,
+        preFetchedMarketData // ✅ 传递预获取的市场数据
       );
 
       // 如果推荐是 HOLD，返回 null（不生成信号）

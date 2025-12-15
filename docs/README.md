@@ -76,9 +76,12 @@ docs/
 - **[动态交易策略实施总结](features/251203-DYNAMIC_TRADING_STRATEGY_IMPLEMENTATION.md)** - 实施完成总结
 - **[动态交易策略测试指南](features/251203-DYNAMIC_TRADING_STRATEGY_TESTING_GUIDE.md)** - 功能测试和问题排查指南 ⭐
 
-### 回测功能
-- **[回测功能实施计划](features/250101-BACKTEST_FEATURE_PLAN.md)** - 回测功能实施计划（Phase 1 & 2 已完成）✅
-- **[回测功能使用指南](features/250101-BACKTEST_USAGE_GUIDE.md)** - 回测功能使用说明 ⭐
+### 回测功能 ⭐ 最新更新
+- **[回测功能修订文档索引](features/251215-BACKTEST_REVISION_INDEX.md)** - 回测功能修订文档索引 ⭐ 推荐阅读
+- **[回测功能修订总结](features/251215-REVISION_SUMMARY.md)** - 交易日验证与交易逻辑优化总结 ⭐ 最新
+- **[回测历史数据优化实施总结](features/251214-IMPLEMENTATION_SUMMARY.md)** - 历史数据优化实施总结
+- **[回测功能使用指南](features/250101-BACKTEST_USAGE_GUIDE.md)** - 回测功能使用说明
+- **[回测交易逻辑分析报告](../analyze_backtest_logic_final.md)** - 回测交易逻辑分析报告 ⭐ 最新
 
 ### Bug修复
 - **[策略Bug修复说明](features/251203-STRATEGY_BUG_FIX_20251203.md)** - 高买低卖和重复卖出单问题修复说明
@@ -208,7 +211,36 @@ docs/
 - **历史文档**：归档后不再更新，仅作为历史记录
 - **文档命名规范**：所有文档已按最后更新日期重命名为 `YYMMDD-文件名.md` 格式（如 `251212-BACKTEST_LOGIC_FIX_PRD.md`），方便按日期排序查找
 
-## 🆕 最新更新 (2025-12-12)
+## 🆕 最新更新 (2025-12-15)
+
+### ✅ 回测功能优化完成
+- **完成度**: 100% ✅
+- **优化内容**:
+  - 交易日验证功能（自动排除周末和未来日期）
+  - 交易日服务（使用Longbridge SDK获取真实交易日数据）
+  - 日期范围验证（自动验证和调整回测日期范围）
+  - 交易逻辑分析（全面检查回测逻辑，发现潜在改进点）
+- **相关文档**:
+  - [回测功能修订文档索引](features/251215-BACKTEST_REVISION_INDEX.md) ⭐ 推荐阅读
+  - [回测功能修订总结](features/251215-REVISION_SUMMARY.md)
+  - [回测交易逻辑分析报告](../analyze_backtest_logic_final.md)
+
+## 🆕 历史更新 (2025-12-14)
+
+### ✅ 回测历史数据优化完成
+- **完成度**: 100% ✅
+- **优化内容**:
+  - 使用Longbridge历史K线API（`historyCandlesticksByDate`和`historyCandlesticksByOffset`）
+  - Moomoo降级方案（Longbridge失败时自动降级）
+  - API频次限制处理（每30秒最多60次请求）
+  - 配额监控（监控每月查询的标的数量）
+  - 数据完整性检查（自动检查数据量，不足时自动补充）
+  - 市场环境模拟（使用日K数据模拟分时市场环境）
+- **相关文档**:
+  - [回测历史数据优化实施总结](features/251214-IMPLEMENTATION_SUMMARY.md)
+  - [回测历史数据优化PRD](features/251214-BACKTEST_HISTORICAL_DATA_OPTIMIZATION_PRD.md)
+
+## 🆕 历史更新 (2025-12-12)
 
 ### ✅ 文档重命名完成
 - **完成度**: 100% ✅
@@ -309,4 +341,4 @@ docs/
 
 ---
 
-**最后更新**: 2025-12-12
+**最后更新**: 2025-12-15

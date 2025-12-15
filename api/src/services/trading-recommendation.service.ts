@@ -68,13 +68,33 @@ class TradingRecommendationService {
   async calculateRecommendation(
     symbol: string,
     targetDate?: Date,
-    historicalStockCandlesticks?: any[]
+    historicalStockCandlesticks?: any[],
+    preFetchedMarketData?: { spx?: any[]; usdIndex?: any[]; btc?: any[] } // ✅ 新增：预获取的市场数据（用于回测优化）
   ): Promise<TradingRecommendation> {
     try {
-      // 1. 获取市场数据（如果提供targetDate则使用历史数据，否则使用实时数据）
-      const marketData = targetDate
-        ? await marketDataCacheService.getHistoricalMarketData(targetDate, 100, true)
-        : await marketDataCacheService.getMarketData(100, true);
+      // 1. 获取市场数据
+      let marketData: any;
+      if (preFetchedMarketData && targetDate) {
+        // ✅ 回测优化：使用预获取的市场数据，避免多次调用API
+        // 从预获取的数据中过滤出目标日期之前的数据
+        const marketDataService = require('./market-data.service').default;
+        const spxFiltered = marketDataService.filterDataBeforeDate(preFetchedMarketData.spx || [], targetDate, 100);
+        const usdIndexFiltered = marketDataService.filterDataBeforeDate(preFetchedMarketData.usdIndex || [], targetDate, 100);
+        const btcFiltered = marketDataService.filterDataBeforeDate(preFetchedMarketData.btc || [], targetDate, 100);
+        
+        marketData = {
+          spx: spxFiltered,
+          usdIndex: usdIndexFiltered,
+          btc: btcFiltered,
+          timestamp: targetDate.getTime(),
+        };
+      } else if (targetDate) {
+        // 使用历史数据（如果没有预获取的数据）
+        marketData = await marketDataCacheService.getHistoricalMarketData(targetDate, 100, true);
+      } else {
+        // 使用实时数据
+        marketData = await marketDataCacheService.getMarketData(100, true);
+      }
       
       // ✅ 调试日志：确认使用的是历史数据还是实时数据
       if (targetDate) {
@@ -274,6 +294,7 @@ class TradingRecommendationService {
     const quoteCtx = await getQuoteContext();
     const longport = require('longport');
     const { Period, AdjustType } = longport;
+    const { formatLongbridgeCandlestick } = require('../utils/candlestick-formatter');
 
     const candlesticks = await quoteCtx.candlesticks(
       symbol,
@@ -282,15 +303,8 @@ class TradingRecommendationService {
       AdjustType.NoAdjust
     );
 
-    return candlesticks.map((c: any) => ({
-      close: typeof c.close === 'number' ? c.close : parseFloat(String(c.close || 0)),
-      open: typeof c.open === 'number' ? c.open : parseFloat(String(c.open || 0)),
-      low: typeof c.low === 'number' ? c.low : parseFloat(String(c.low || 0)),
-      high: typeof c.high === 'number' ? c.high : parseFloat(String(c.high || 0)),
-      volume: typeof c.volume === 'number' ? c.volume : parseFloat(String(c.volume || 0)),
-      turnover: typeof c.turnover === 'number' ? c.turnover : parseFloat(String(c.turnover || 0)),
-      timestamp: typeof c.timestamp === 'number' ? c.timestamp : parseFloat(String(c.timestamp || 0)),
-    }));
+    // ✅ 使用统一的数据转换工具函数，修复timestamp转换错误
+    return candlesticks.map((c: any) => formatLongbridgeCandlestick(c));
   }
 
   /**

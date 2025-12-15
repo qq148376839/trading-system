@@ -544,7 +544,8 @@ class MarketDataService {
    * @param targetDate 目标日期
    * @param maxCount 最大返回条数（取最近的N条）
    */
-  private filterDataBeforeDate(data: CandlestickData[], targetDate: Date, maxCount: number): CandlestickData[] {
+  // ✅ 公开方法，供回测服务使用预获取的市场数据
+  filterDataBeforeDate(data: CandlestickData[], targetDate: Date, maxCount: number): CandlestickData[] {
     // ✅ 使用目标日期的结束时间（23:59:59），确保包含目标日期当天的数据
     const targetDateEnd = new Date(targetDate);
     targetDateEnd.setHours(23, 59, 59, 999);

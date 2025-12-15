@@ -1,5 +1,97 @@
 # 更新日志
 
+## 2025-12-15
+
+### 回测功能优化 ⭐ 最新更新
+
+**功能**: 回测功能交易日验证和交易逻辑分析优化
+
+**实现内容**:
+
+1. **交易日验证功能**
+   - ✅ 新增交易日工具函数（`trading-days.ts`）
+     - `isFutureDate()`: 检查未来日期
+     - `adjustDateRangeToTradingDays()`: 自动调整日期范围
+     - `validateDateRange()`: 验证日期范围
+   - ✅ 创建交易日服务（`trading-days.service.ts`）
+     - 使用Longbridge SDK的`tradingDays`接口获取真实交易日数据
+     - 实现24小时缓存机制
+     - 支持日期范围超过30天时的分批获取
+     - 降级方案：API失败时降级到周末判断
+   - ✅ 集成到回测服务
+     - 在`getHistoricalCandlesticks`中验证和调整日期范围
+     - 在`runBacktest`中使用真实交易日数据过滤日期
+
+2. **代码错误修复**
+   - ✅ 修复重复声明错误（`getMarketFromSymbol`, `market`, `today`）
+
+3. **回测交易逻辑分析**
+   - ✅ 创建分析工具（Python脚本）
+   - ✅ 完成交易逻辑分析
+   - ✅ 发现4个潜在改进点（止损止盈执行时机、同一天买卖检查、价格使用优化、滑点和手续费）
+
+**技术要点**:
+- 使用Longbridge SDK的`tradingDays`接口获取真实交易日数据（包括节假日）
+- 自动排除周末和未来日期
+- 实现24小时缓存机制，减少API调用
+- 支持日期范围超过30天时的分批获取
+
+**修改文件**:
+- `api/src/utils/trading-days.ts` - 新增交易日工具函数
+- `api/src/services/trading-days.service.ts` - 新建交易日服务
+- `api/src/services/backtest.service.ts` - 集成交易日验证
+- `api/src/routes/backtest.ts` - 集成日期范围验证
+
+**新增文件**:
+- `analyze_backtest_logic.py` - 基本交易逻辑检查工具
+- `analyze_backtest_logic_detailed.py` - 详细交易逻辑检查工具
+- `analyze_backtest_logic_final.md` - 交易逻辑分析报告
+
+**相关文档**:
+- [回测功能修订文档索引](docs/features/251215-BACKTEST_REVISION_INDEX.md) ⭐ 推荐阅读
+- [回测功能修订总结](docs/features/251215-REVISION_SUMMARY.md)
+- [回测交易逻辑分析报告](analyze_backtest_logic_final.md)
+
+## 2025-12-14
+
+### 回测历史数据优化 ⭐
+
+**功能**: 回测历史K线数据获取优化
+
+**实现内容**:
+
+1. **使用Longbridge历史K线API**
+   - ✅ 使用`historyCandlesticksByDate`和`historyCandlesticksByOffset`替代`candlesticks()`
+   - ✅ 实现降级方案：失败时自动降级到`candlesticks()`
+
+2. **Moomoo降级方案**
+   - ✅ 创建`symbol-to-moomoo.ts`工具函数
+   - ✅ 实现`getHistoricalCandlesticksFromMoomoo()`方法
+
+3. **API频次限制处理**
+   - ✅ 创建`api-rate-limiter.ts`
+   - ✅ 实现每30秒最多60次请求的限制
+
+4. **配额监控**
+   - ✅ 创建`quota-monitor.ts`
+   - ✅ 监控每月查询的标的数量（去重），配额警告
+
+5. **数据完整性检查**
+   - ✅ 检查数据量是否满足需求（50%阈值）
+   - ✅ 数据不足时自动补充
+
+6. **交易日判断逻辑**
+   - ✅ 创建`trading-days.ts`
+   - ✅ 支持不同市场（US、HK、SH、SZ），自动过滤非交易日
+
+7. **日K数据模拟市场环境**
+   - ✅ 创建`market-simulation.ts`
+   - ✅ 实现线性插值算法生成分时价格序列
+
+**相关文档**:
+- [回测历史数据优化实施总结](docs/features/251214-IMPLEMENTATION_SUMMARY.md)
+- [回测历史数据优化PRD](docs/features/251214-BACKTEST_HISTORICAL_DATA_OPTIMIZATION_PRD.md)
+
 ## 2025-12-08
 
 ### 期权图表功能实现 ✅ 新功能

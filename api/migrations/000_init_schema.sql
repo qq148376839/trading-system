@@ -6,12 +6,16 @@
 --   2. 已有项目更新：脚本使用 IF NOT EXISTS 和 ON CONFLICT，可安全重复运行
 -- 
 -- 使用方法：
---   psql -d trading_db -f migrations/000_init_schema.sql
+--   psql -U postgres -d trading_db -f api\migrations\000_init_schema.sql
+--   或者设置环境变量：set PGCLIENTENCODING=UTF8
 -- 
 -- 注意：
 --   运行此脚本后，需要创建管理员账户：
 --   node scripts/create-admin.js admin your_password
 -- ============================================================================
+
+-- 设置客户端编码为UTF-8，避免中文注释编码错误
+SET client_encoding = 'UTF8';
 
 -- ============================================================================
 -- 第一部分：基础表结构（001_initial_schema.sql）
