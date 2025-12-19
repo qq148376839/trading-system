@@ -219,18 +219,50 @@ class TradePushService {
 
   /**
    * 取消订阅交易推送
+   * 修复：添加状态检查、错误处理、回调函数清理
    */
   async unsubscribe(): Promise<void> {
+    // 如果未订阅，直接返回（幂等性）
+    if (!this.isSubscribed) {
+      logger.debug('[交易推送] 未订阅，无需取消订阅');
+      return;
+    }
+
     try {
-      if (this.tradeContext && this.tradeContext.unsubscribe) {
-        const longport = require('longport');
-        const { TopicType } = longport;
-        await this.tradeContext.unsubscribe([TopicType.Private]);
+      if (!this.tradeContext) {
+        logger.warn('[交易推送] TradeContext 不存在，无法取消订阅');
         this.isSubscribed = false;
-        logger.log('[交易推送] 已取消订阅交易推送');
+        return;
       }
+
+      if (!this.tradeContext.unsubscribe) {
+        logger.warn('[交易推送] TradeContext 不支持 unsubscribe 方法');
+        this.isSubscribed = false;
+        return;
+      }
+
+      const longport = require('longport');
+      const { TopicType } = longport;
+      
+      // 取消订阅
+      await this.tradeContext.unsubscribe([TopicType.Private]);
+      
+      // 清理回调函数（如果SDK支持）
+      if (this.tradeContext.clearOnOrderChanged) {
+        this.tradeContext.clearOnOrderChanged();
+        logger.debug('[交易推送] 已清理订单变更回调');
+      } else if (this.tradeContext.setOnOrderChanged) {
+        // 如果SDK不支持清理方法，设置为空函数（避免内存泄漏）
+        this.tradeContext.setOnOrderChanged(() => {});
+        logger.debug('[交易推送] 已重置订单变更回调');
+      }
+      
+      this.isSubscribed = false;
+      logger.log('[交易推送] 已取消订阅交易推送');
     } catch (error: any) {
       logger.error('[交易推送] 取消订阅失败:', error);
+      // 即使失败，也设置 isSubscribed 为 false（避免状态不一致）
+      this.isSubscribed = false;
     }
   }
 

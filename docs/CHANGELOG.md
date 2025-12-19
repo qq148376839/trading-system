@@ -2,6 +2,98 @@
 
 ## 2025-12-19
 
+### 📄 交易推送服务 unsubscribe 功能修复 ✅
+
+#### 🎯 修复成果
+- ✅ **unsubscribe 方法优化**：添加状态检查、回调函数清理、错误处理
+- ✅ **优雅关闭处理**：添加 SIGTERM/SIGINT 信号处理，进程退出时自动清理订阅
+- ✅ **测试文件创建**：创建完整的测试文件，覆盖所有功能场景
+
+#### 📋 修复内容
+- **unsubscribe 方法优化**：
+  - 添加状态检查（幂等性）
+  - 添加回调函数清理逻辑
+  - 完善错误处理和状态一致性保证
+- **优雅关闭处理**：
+  - 保存 server 对象
+  - 注册 SIGTERM/SIGINT 信号处理器
+  - 实现完整的优雅关闭流程（取消订阅、停止调度器、关闭数据库等）
+- **测试文件**：
+  - 创建 `trade-push.service.test.ts` 测试文件
+  - 覆盖 initialize、unsubscribe、isActive、handleOrderChanged 等方法
+  - 包含状态一致性、错误处理、幂等性等测试用例
+
+#### 📝 新增文档
+- ✅ `docs/fixes/251219-TRADE_PUSH_UNSUBSCRIBE_FIX.md` - 问题分析和修复文档
+- ✅ `api/src/tests/trade-push.service.test.ts` - 测试文件
+- ✅ `api/src/tests/trade-push-unsubscribe.test.ts` - 简化的测试文件（已修复语法问题）
+- ✅ `docs/fixes/251219-TRADE_PUSH_UNSUBSCRIBE_TEST_FIX.md` - 测试文件语法修复文档
+
+#### 🐛 Bug修复
+- ✅ **测试文件语法错误修复**：修复 Jest 测试文件中 TypeScript 类型断言语法问题
+  - 问题：`(tradePushService as any).isSubscribed` 语法不被 Babel 解析器支持
+  - 解决：使用辅助函数 `setPrivateProperty()` 来访问私有属性
+  - 影响：测试文件现在可以正常运行
+
+---
+
+### 📄 今日订单API频率限制和日志写入问题修复 ✅
+
+#### 🎯 修复成果
+- ✅ **统一缓存服务**：创建统一的今日订单缓存服务，避免多个服务重复调用API
+- ✅ **频率限制消除**：修复 `code=429002` API频率限制错误
+- ✅ **并发控制**：实现缓存刷新并发控制，防止多个服务同时刷新
+- ✅ **日志写入修复**：修复批量写入逻辑，添加定期强制刷新机制，确保少量日志也能写入数据库
+- ✅ **日志降噪优化**：优化日志输出策略，详细信息只输出到控制台，不写入数据库
+
+#### 📋 修复内容
+- **新建服务**：`today-orders-cache.service.ts` - 统一今日订单缓存服务
+- **代码修改**：
+  - `strategy-scheduler.service.ts` - 移除内部缓存，使用统一服务；优化日志输出策略
+  - `basic-execution.service.ts` - 使用统一缓存服务替代直接API调用
+  - `log-worker.service.ts` - 添加定期强制刷新机制（每5秒），确保少量日志也能写入
+- **优化效果**：
+  - API调用从多个服务重复调用减少到统一缓存服务调用
+  - 实现60秒缓存TTL和并发控制
+  - 失败时自动使用过期缓存
+  - 少量日志（< 100条）也能在5秒内写入数据库
+  - **数据库写入减少80-90%**：从每次10+条减少到1-2条
+
+#### 📝 新增文档
+- ✅ `docs/fixes/251219-LOG_AND_API_FREQUENCY_FIX.md` - 修复方案文档
+- ✅ `docs/fixes/251219-LOG_AND_API_FREQUENCY_FIX_SUMMARY.md` - 修复总结文档
+- ✅ `docs/fixes/251219-LOG_WRITE_FIX.md` - 日志写入问题修复文档
+- ✅ `docs/fixes/251219-LOG_NOISE_REDUCTION.md` - 日志降噪优化文档
+
+---
+
+### 📄 策略日志聚合与降噪功能实施完成 ✅
+
+#### 🎯 实施成果
+- ✅ **日志聚合机制**：实现策略执行结果的内存聚合，循环结束后统一输出汇总日志
+- ✅ **智能降噪策略**：移除IDLE状态的详细日志，只保留关键信息（信号、错误、操作）
+- ✅ **数据库优化**：优化metadata结构，纯净模式只包含统计计数，大幅减少存储空间
+
+#### 📋 实施内容
+- **日志聚合**：在 `strategy-scheduler.service.ts` 中优化 `logExecutionSummary` 方法
+- **输出优化**：
+  - 纯净模式：每分钟只输出1条汇总日志（从20+条减少到1条）
+  - 有活动时：关键信息实时输出，汇总日志提供统计概览
+- **metadata优化**：
+  - 有活动时：包含完整的signals、errors、actions数组
+  - 纯净模式：只包含统计计数，节省数据库空间
+
+#### 📝 新增文档
+- ✅ `docs/features/251219-LOG_AGGREGATION_PRD.md` - 产品需求文档
+- ✅ `docs/features/251219-LOG_AGGREGATION_IMPLEMENTATION.md` - 实施总结文档
+
+#### 📊 实施效果
+- ✅ 日志条数减少：从每分钟20+条减少到1条（减少95%+）
+- ✅ 关键信息可见性提升：信号、错误日志不再被淹没
+- ✅ 数据库存储优化：纯净模式的metadata < 500字节
+
+---
+
 ### 📄 市场状态矩阵测试完成 ✅
 
 #### 🎯 测试成果

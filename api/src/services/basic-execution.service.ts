@@ -10,6 +10,7 @@ import { detectMarket } from '../utils/order-validation';
 import { logger } from '../utils/logger';
 import { normalizeSide, normalizeStatus } from '../routes/orders';
 import orderPreventionMetrics from './order-prevention-metrics.service';
+import todayOrdersCache from './today-orders-cache.service';
 
 export interface ExecutionResult {
   success: boolean;
@@ -248,8 +249,8 @@ class BasicExecutionService {
       const position = positionsArray.find((p: any) => p.symbol === symbol);
       const actualQuantity = position ? parseFloat(position.quantity?.toString() || '0') : 0;
       
-      // 2. 查询未成交卖出订单
-      const todayOrders = await tradeCtx.todayOrders();
+      // 2. 查询未成交卖出订单（使用统一缓存服务）
+      const todayOrders = await todayOrdersCache.getTodayOrders();
       const pendingStatuses = [
         'NotReported',
         'NewStatus',

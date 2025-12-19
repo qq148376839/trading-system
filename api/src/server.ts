@@ -71,7 +71,7 @@ app.use('/api/health', healthRouter);
 app.use(errorHandler);
 
 // 启动服务器
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`API Server running on port ${PORT}`);
   
   // 启动时检查并自动刷新Token（如果需要）
@@ -169,6 +169,89 @@ app.listen(PORT, '0.0.0.0', () => {
       console.error('日志将仅输出到控制台，不会持久化到数据库');
     }
   }, 1000);
+});
+
+// 优雅关闭处理
+const gracefulShutdown = async (signal: string) => {
+  console.log(`\n收到 ${signal} 信号，开始优雅关闭...`);
+  
+  // 1. 停止接受新请求
+  server.close(() => {
+    console.log('HTTP服务器已关闭');
+  });
+
+  // 2. 取消订阅交易推送
+  try {
+    const tradePushService = (await import('./services/trade-push.service')).default;
+    if (tradePushService.isActive()) {
+      await tradePushService.unsubscribe();
+      console.log('交易推送服务已取消订阅');
+    }
+  } catch (error: any) {
+    console.error('取消订阅交易推送失败:', error.message);
+  }
+
+  // 3. 停止策略调度器
+  try {
+    const strategyScheduler = (await import('./services/strategy-scheduler.service')).default;
+    await strategyScheduler.stop();
+    console.log('策略调度器已停止');
+  } catch (error: any) {
+    console.error('停止策略调度器失败:', error.message);
+  }
+
+  // 4. 停止日志工作线程
+  try {
+    const logWorkerService = (await import('./services/log-worker.service')).default;
+    logWorkerService.stop();
+    console.log('日志工作线程已停止');
+  } catch (error: any) {
+    console.error('停止日志工作线程失败:', error.message);
+  }
+
+  // 5. 关闭数据库连接
+  try {
+    const pool = (await import('./config/database')).default;
+    await pool.end();
+    console.log('数据库连接已关闭');
+  } catch (error: any) {
+    console.error('关闭数据库连接失败:', error.message);
+  }
+
+  console.log('优雅关闭完成');
+  process.exit(0);
+};
+
+// 注册信号处理器
+process.on('SIGTERM', () => {
+  gracefulShutdown('SIGTERM').catch(err => {
+    console.error('优雅关闭失败:', err);
+    process.exit(1);
+  });
+});
+
+process.on('SIGINT', () => {
+  gracefulShutdown('SIGINT').catch(err => {
+    console.error('优雅关闭失败:', err);
+    process.exit(1);
+  });
+});
+
+// 处理未捕获的异常
+process.on('uncaughtException', (error) => {
+  console.error('未捕获的异常:', error);
+  gracefulShutdown('uncaughtException').catch(err => {
+    console.error('优雅关闭失败:', err);
+    process.exit(1);
+  });
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('未处理的Promise拒绝:', reason);
+  gracefulShutdown('unhandledRejection').catch(err => {
+    console.error('优雅关闭失败:', err);
+    process.exit(1);
+  });
 });
 
 export default app;

@@ -23,7 +23,9 @@ class LogWorkerService {
   private isRunning: boolean = false;
   private batchSize: number = 100;
   private batchInterval: number = 1000; // 1秒
+  private forceFlushInterval: number = 5000; // 5秒强制刷新一次（确保少量日志也能写入）
   private intervalId: NodeJS.Timeout | null = null;
+  private forceFlushIntervalId: NodeJS.Timeout | null = null;
   private configCheckInterval: NodeJS.Timeout | null = null;
   private getLogQueueCallback: (() => LogEntry[]) | null = null;
 
@@ -71,8 +73,11 @@ class LogWorkerService {
     // 立即执行一次批量写入
     this.processBatch();
 
-    // 定时执行批量写入
+    // 定时执行批量写入（达到批量大小时写入）
     this.startBatchProcessing();
+
+    // 定期强制刷新（确保少量日志也能写入数据库）
+    this.startForceFlush();
 
     // 定期检查配置更新（每5分钟）
     this.configCheckInterval = setInterval(async () => {
@@ -108,6 +113,29 @@ class LogWorkerService {
   }
 
   /**
+   * 启动强制刷新（定期写入少量日志）
+   */
+  private startForceFlush(): void {
+    if (this.forceFlushIntervalId) {
+      clearInterval(this.forceFlushIntervalId);
+    }
+    this.forceFlushIntervalId = setInterval(() => {
+      // 强制刷新：即使队列大小 < batchSize，也写入数据库
+      this.processBatch(true);
+    }, this.forceFlushInterval);
+  }
+
+  /**
+   * 停止强制刷新
+   */
+  private stopForceFlush(): void {
+    if (this.forceFlushIntervalId) {
+      clearInterval(this.forceFlushIntervalId);
+      this.forceFlushIntervalId = null;
+    }
+  }
+
+  /**
    * 停止日志工作线程
    */
   stop(): void {
@@ -118,6 +146,7 @@ class LogWorkerService {
     this.isRunning = false;
 
     this.stopBatchProcessing();
+    this.stopForceFlush();
 
     if (this.configCheckInterval) {
       clearInterval(this.configCheckInterval);
@@ -161,7 +190,9 @@ class LogWorkerService {
     }
 
     // 取出批量日志（从队列开头取出）
-    const batch = queue.splice(0, this.batchSize);
+    // 强制刷新时，取出所有日志；否则只取批量大小
+    const batchSize = force ? queue.length : Math.min(queue.length, this.batchSize);
+    const batch = queue.splice(0, batchSize);
 
     try {
       await this.insertBatch(batch);

@@ -56,6 +56,10 @@ class LogService {
       const maxSizeStr = await configService.getConfig('log_queue_max_size');
       this.maxQueueSize = maxSizeStr ? parseInt(maxSizeStr, 10) : 50000;
     } catch (error: any) {
+      // 在测试环境中，如果连接池已关闭，静默处理
+      if (process.env.NODE_ENV === 'test' && error.message?.includes('pool after calling end')) {
+        return; // 静默返回，不输出警告
+      }
       // 使用默认值
       console.warn('[LogService] 加载配置失败，使用默认值:', error.message);
     }

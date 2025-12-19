@@ -89,6 +89,10 @@ class ConfigService {
 
       return encrypted ? this.decrypt(config_value) : config_value;
     } catch (error: any) {
+      // 在测试环境中，如果连接池已关闭，静默处理
+      if (process.env.NODE_ENV === 'test' && error.message?.includes('pool after calling end')) {
+        return null; // 静默返回，不输出错误
+      }
       console.error(`获取配置失败 (${key}):`, error.message);
       return null; // 出错时返回null，让调用方使用环境变量fallback
     }

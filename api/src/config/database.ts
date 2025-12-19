@@ -13,12 +13,18 @@ const pool = new Pool({
 
 // 测试数据库连接
 pool.on('connect', () => {
-  console.log('Database connected');
+  // 只在非测试环境输出日志，避免测试完成后输出日志
+  if (process.env.NODE_ENV !== 'test') {
+    console.log('Database connected');
+  }
 });
 
 pool.on('error', (err) => {
   console.error('Unexpected error on idle client', err);
-  process.exit(-1);
+  // 在测试环境中不退出进程
+  if (process.env.NODE_ENV !== 'test') {
+    process.exit(-1);
+  }
 });
 
 export default pool;
