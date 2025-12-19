@@ -19,7 +19,12 @@ import { optionsRouter } from './routes/options';
 import { quantRouter } from './routes/quant';
 import backtestRouter from './routes/backtest';
 import { orderPreventionMetricsRouter } from './routes/order-prevention-metrics';
+import { logsRouter } from './routes/logs';
 import { errorHandler } from './middleware/errorHandler';
+
+// Swagger 文档配置
+import swaggerUi from 'swagger-ui-express';
+import { swaggerSpec } from './config/swagger';
 
 // 加载环境变量（明确指定路径）
 const envPath = path.resolve(__dirname, '../.env');
@@ -42,6 +47,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // 路由
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 app.use('/api/quote', quoteRouter);
 app.use('/api/candlesticks', candlesticksRouter);
 app.use('/api/watchlist', watchlistRouter);
@@ -58,6 +64,7 @@ app.use('/api/options', optionsRouter);
 app.use('/api/quant', quantRouter);
 app.use('/api/quant/backtest', backtestRouter);
 app.use('/api/order-prevention-metrics', orderPreventionMetricsRouter);
+app.use('/api/logs', logsRouter);
 app.use('/api/health', healthRouter);
 
 // 错误处理中间件
@@ -139,6 +146,29 @@ app.listen(PORT, '0.0.0.0', () => {
       console.warn('系统将降级到轮询模式（trackPendingOrders）');
     }
   }, 6000);
+
+  // 启动日志系统
+  setTimeout(async () => {
+    try {
+      const logService = (await import('./services/log.service')).default;
+      const logWorkerService = (await import('./services/log-worker.service')).default;
+      const logCleanupService = (await import('./services/log-cleanup.service')).default;
+      
+      // 设置工作线程的队列获取器
+      logWorkerService.setLogQueueGetter(() => logService.getQueue());
+      
+      // 启动日志工作线程（异步加载配置）
+      await logWorkerService.start();
+      
+      // 初始化日志清理服务（异步加载配置）
+      await logCleanupService.init();
+      
+      console.log('日志系统已启动（非阻塞、结构化、持久化）');
+    } catch (error: any) {
+      console.error('启动日志系统失败:', error.message);
+      console.error('日志将仅输出到控制台，不会持久化到数据库');
+    }
+  }, 1000);
 });
 
 export default app;

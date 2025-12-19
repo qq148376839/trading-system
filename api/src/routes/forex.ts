@@ -80,8 +80,39 @@ function generateQuoteToken(params: Record<string, string>): string {
 }
 
 /**
- * GET /api/forex/products
- * 获取支持的外汇产品列表
+ * @openapi
+ * /forex/products:
+ *   get:
+ *     tags:
+ *       - 市场分析
+ *     summary: 获取外汇产品列表
+ *     description: 获取支持的外汇/数字货币/指数产品列表
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     products:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           code:
+ *                             type: string
+ *                             description: 产品代码 (e.g. BTC)
+ *                           name:
+ *                             type: string
+ *                             description: 产品名称 (e.g. 比特币)
  */
 forexRouter.get('/products', async (_req: Request, res: Response, next: NextFunction) => {
   try {
@@ -104,11 +135,44 @@ forexRouter.get('/products', async (_req: Request, res: Response, next: NextFunc
 });
 
 /**
- * GET /api/forex/quote
- * 获取外汇实时报价
- * 
- * 请求参数：
- * - product: string (必需) 产品代码，例如：USDINDEX, EURINDEX, XAUUSD, SPX, BTC
+ * @openapi
+ * /forex/quote:
+ *   get:
+ *     tags:
+ *       - 市场分析
+ *     summary: 获取外汇实时报价
+ *     description: 获取指定外汇产品的最新报价 (通过富途牛牛接口)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: product
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [USDINDEX, EURINDEX, XAUUSD, SPX, BTC]
+ *         description: 产品代码
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     product:
+ *                       type: string
+ *                     productName:
+ *                       type: string
+ *                     quote:
+ *                       type: object
+ *                       description: 报价详情 (透传富途数据)
  */
 forexRouter.get('/quote', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -183,12 +247,46 @@ forexRouter.get('/quote', rateLimiter, async (req: Request, res: Response, next:
 });
 
 /**
- * GET /api/forex/candlestick
- * 获取外汇K线数据
- * 
- * 请求参数：
- * - product: string (必需) 产品代码，例如：USDINDEX, EURINDEX, XAUUSD, SPX, BTC
- * - type: string (必需) K线类型，支持：minute(分时), 5day(5日), day(日K), week(周K), month(月K), quarter(季K), year(年K)
+ * @openapi
+ * /forex/candlestick:
+ *   get:
+ *     tags:
+ *       - 市场分析
+ *     summary: 获取外汇 K 线
+ *     description: 获取指定外汇产品的 K 线数据
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: product
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 产品代码
+ *       - in: query
+ *         name: type
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [minute, 5day, day, week, month, quarter, year]
+ *         description: K线类型
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     candlestick:
+ *                       type: object
+ *                       description: K线数据列表 (透传富途数据)
  */
 forexRouter.get('/candlestick', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {

@@ -17,9 +17,65 @@ function isOptionSymbol(symbol: string): boolean {
 }
 
 /**
- * GET /api/positions
- * 获取持仓列表
- * 优先从LongPort API获取真实持仓，如果没有则从数据库获取
+ * @openapi
+ * /positions:
+ *   get:
+ *     tags:
+ *       - 账户持仓
+ *     summary: 获取持仓列表
+ *     description: 获取当前账户的所有持仓信息，优先从 API 实时获取，失败则降级查询数据库
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     positions:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           symbol:
+ *                             type: string
+ *                             description: 标的代码
+ *                           symbol_name:
+ *                             type: string
+ *                             description: 标的名称
+ *                           quantity:
+ *                             type: number
+ *                             description: 持仓数量 (负数表示空头)
+ *                           available_quantity:
+ *                             type: number
+ *                             description: 可用数量
+ *                           cost_price:
+ *                             type: number
+ *                             description: 成本均价
+ *                           current_price:
+ *                             type: number
+ *                             description: 当前市价
+ *                           market_value:
+ *                             type: number
+ *                             description: 持仓市值
+ *                           unrealized_pl:
+ *                             type: number
+ *                             description: 未实现盈亏
+ *                           unrealized_pl_ratio:
+ *                             type: number
+ *                             description: 未实现盈亏比例(%)
+ *                     source:
+ *                       type: string
+ *                       enum: [longport_api, database]
+ *                       description: 数据来源
  */
 positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -508,8 +564,41 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
 });
 
 /**
- * GET /api/positions/:symbol
- * 获取单个持仓详情
+ * @openapi
+ * /positions/{symbol}:
+ *   get:
+ *     tags:
+ *       - 账户持仓
+ *     summary: 获取单个持仓详情
+ *     description: 从数据库查询指定标的的持仓详情
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: symbol
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 标的代码
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     position:
+ *                       type: object
+ *                       description: 持仓详情对象，字段同列表接口
+ *       404:
+ *         description: 未找到持仓
  */
 positionsRouter.get('/:symbol', async (req: Request, res: Response, next: NextFunction) => {
   try {

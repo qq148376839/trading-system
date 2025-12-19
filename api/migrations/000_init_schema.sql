@@ -188,6 +188,8 @@ CREATE INDEX IF NOT EXISTS idx_admin_username ON admin_users(username);
 CREATE INDEX IF NOT EXISTS idx_admin_active ON admin_users(is_active);
 
 -- Insert default configuration items
+-- Auto-detection and update: Missing config items will be added, descriptions will be updated
+-- User-set values will NOT be overwritten (only empty/default values are set)
 INSERT INTO system_config (config_key, config_value, encrypted, description) VALUES
     ('longport_app_key', '', true, 'LongPort API App Key'),
     ('longport_app_secret', '', true, 'LongPort API App Secret'),
@@ -200,9 +202,26 @@ INSERT INTO system_config (config_key, config_value, encrypted, description) VAL
     ('futunn_cookies', '', true, 'Futunn API Cookies'),
     ('futunn_search_cookies', '', true, 'Futunn API Cookies for search endpoint (headfoot-search), separate from main API cookies'),
     ('longport_enable_option_quote', 'false', false, 'Enable LongPort API for option quotes (default: false, use Futunn API instead)'),
-    ('server_port', '3001', false, 'API server port')
+    ('server_port', '3001', false, 'API server port'),
+    ('log_retention_days', '-1', false, '日志保留天数（-1表示不清理，默认不清理）'),
+    ('log_auto_cleanup_enabled', 'false', false, '是否启用日志自动清理（true启用，false禁用）'),
+    ('log_cleanup_schedule', '0 2 * * *', false, '日志清理执行时间（Cron表达式，默认每天凌晨2点）'),
+    ('log_queue_size', '10000', false, '日志队列初始大小'),
+    ('log_queue_min_size', '5000', false, '日志队列最小大小（动态调整下限）'),
+    ('log_queue_max_size', '50000', false, '日志队列最大大小（动态调整上限）'),
+    ('log_batch_size', '100', false, '日志批量写入大小（每次写入数据库的日志条数）'),
+    ('log_batch_interval', '1000', false, '日志批量写入间隔（毫秒）')
 ON CONFLICT (config_key) DO UPDATE SET 
+    -- Update description if it changed (always update for clarity)
     description = EXCLUDED.description,
+    -- Update encrypted flag if it changed (e.g., if a config item changed from plain to encrypted)
+    encrypted = EXCLUDED.encrypted,
+    -- Only update config_value if current value is empty or matches old default
+    -- This preserves user-set values while allowing default value updates
+    config_value = CASE 
+        WHEN system_config.config_value = '' OR system_config.config_value IS NULL THEN EXCLUDED.config_value
+        ELSE system_config.config_value  -- Keep existing user-set value
+    END,
     updated_at = CURRENT_TIMESTAMP;
 
 -- ============================================================================
@@ -473,6 +492,103 @@ COMMENT ON COLUMN backtest_results.diagnostic_log IS '回测诊断日志（记�
 DROP TRIGGER IF EXISTS update_backtest_results_updated_at ON backtest_results;
 CREATE TRIGGER update_backtest_results_updated_at BEFORE UPDATE ON backtest_results
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================================
+-- 第七部分：日志系统表（012_add_system_logs_table.sql）
+-- ============================================================================
+
+-- System Logs Table
+-- Purpose: Store structured logs for the trading system
+-- Features: Non-blocking write, structured data, trace ID support
+CREATE TABLE IF NOT EXISTS system_logs (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL,
+    level VARCHAR(10) NOT NULL CHECK (level IN ('INFO', 'WARNING', 'ERROR', 'DEBUG')),
+    module VARCHAR(200) NOT NULL,
+    message TEXT NOT NULL,
+    trace_id UUID,
+    extra_data JSONB,
+    file_path VARCHAR(500),
+    line_no INT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes for system_logs table
+-- BRIN index for timestamp (efficient for time-range queries on large tables)
+CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON system_logs USING BRIN(timestamp);
+
+-- B-tree indexes for common filter columns
+CREATE INDEX IF NOT EXISTS idx_logs_level ON system_logs(level);
+CREATE INDEX IF NOT EXISTS idx_logs_module ON system_logs(module);
+CREATE INDEX IF NOT EXISTS idx_logs_trace_id ON system_logs(trace_id);
+
+-- GIN index for JSONB extra_data (enables efficient JSON queries)
+CREATE INDEX IF NOT EXISTS idx_logs_extra_data ON system_logs USING GIN(extra_data);
+
+-- Composite indexes for common query patterns
+CREATE INDEX IF NOT EXISTS idx_logs_module_time ON system_logs(module, timestamp);
+CREATE INDEX IF NOT EXISTS idx_logs_level_time ON system_logs(level, timestamp);
+
+-- Add comments
+COMMENT ON TABLE system_logs IS 'System logs table for structured logging';
+COMMENT ON COLUMN system_logs.id IS 'Primary key, auto-increment';
+COMMENT ON COLUMN system_logs.timestamp IS 'Log timestamp (with timezone, microsecond precision)';
+COMMENT ON COLUMN system_logs.level IS 'Log level: INFO, WARNING, ERROR, DEBUG';
+COMMENT ON COLUMN system_logs.module IS 'Source module (e.g., Strategy.MA, Execution, DataFeed). Max length: 200 characters';
+COMMENT ON COLUMN system_logs.message IS 'Log message text';
+COMMENT ON COLUMN system_logs.trace_id IS 'Trace ID for linking related logs (UUID)';
+COMMENT ON COLUMN system_logs.extra_data IS 'Structured data (JSONB, e.g., current price, position, order params)';
+COMMENT ON COLUMN system_logs.file_path IS 'Source file path. Max length: 500 characters';
+COMMENT ON COLUMN system_logs.line_no IS 'Source line number';
+COMMENT ON COLUMN system_logs.created_at IS 'Record creation timestamp';
+
+-- Auto-update field lengths if table already exists with old field sizes
+-- This ensures compatibility with existing databases without requiring separate migration scripts
+DO $$
+DECLARE
+    module_type VARCHAR;
+    file_path_type VARCHAR;
+BEGIN
+    -- Check if table exists
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables 
+        WHERE table_name = 'system_logs'
+    ) THEN
+        -- Check current module column type
+        SELECT data_type INTO module_type
+        FROM information_schema.columns
+        WHERE table_name = 'system_logs' AND column_name = 'module';
+        
+        -- Update module column if it's VARCHAR(50) or smaller
+        IF module_type = 'character varying' THEN
+            SELECT character_maximum_length INTO module_type
+            FROM information_schema.columns
+            WHERE table_name = 'system_logs' AND column_name = 'module';
+            
+            IF module_type IS NOT NULL AND module_type::INTEGER < 200 THEN
+                ALTER TABLE system_logs ALTER COLUMN module TYPE VARCHAR(200);
+                RAISE NOTICE 'Updated system_logs.module: VARCHAR(%) -> VARCHAR(200)', module_type;
+            END IF;
+        END IF;
+        
+        -- Check current file_path column type
+        SELECT data_type INTO file_path_type
+        FROM information_schema.columns
+        WHERE table_name = 'system_logs' AND column_name = 'file_path';
+        
+        -- Update file_path column if it's VARCHAR(255) or smaller
+        IF file_path_type = 'character varying' THEN
+            SELECT character_maximum_length INTO file_path_type
+            FROM information_schema.columns
+            WHERE table_name = 'system_logs' AND column_name = 'file_path';
+            
+            IF file_path_type IS NOT NULL AND file_path_type::INTEGER < 500 THEN
+                ALTER TABLE system_logs ALTER COLUMN file_path TYPE VARCHAR(500);
+                RAISE NOTICE 'Updated system_logs.file_path: VARCHAR(%) -> VARCHAR(500)', file_path_type;
+            END IF;
+        END IF;
+    END IF;
+END $$;
 
 -- ============================================================================
 -- 第五部分：初始化数据

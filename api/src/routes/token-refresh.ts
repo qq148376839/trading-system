@@ -11,8 +11,35 @@ import { normalizeError } from '../utils/errors';
 export const tokenRefreshRouter = Router();
 
 /**
- * POST /api/token-refresh/refresh
- * 手动刷新Token
+ * @openapi
+ * /token-refresh/refresh:
+ *   post:
+ *     tags:
+ *       - 认证管理
+ *     summary: 手动刷新 Token
+ *     description: 强制刷新长桥 API 的 Access Token，并更新数据库
+ *     responses:
+ *       200:
+ *         description: 刷新成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     message:
+ *                       type: string
+ *                     expiredAt:
+ *                       type: string
+ *                       description: 新Token过期时间
+ *                     issuedAt:
+ *                       type: string
+ *                       description: 新Token签发时间
  */
 tokenRefreshRouter.post('/refresh', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -32,8 +59,39 @@ tokenRefreshRouter.post('/refresh', async (req: Request, res: Response, next: Ne
 });
 
 /**
- * GET /api/token-refresh/status
- * 检查Token状态
+ * @openapi
+ * /token-refresh/status:
+ *   get:
+ *     tags:
+ *       - 认证管理
+ *     summary: 检查 Token 状态
+ *     description: 查看当前 Token 的有效期、剩余时间及是否需要刷新
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     isValid:
+ *                       type: boolean
+ *                       description: Token是否有效
+ *                     expiredAt:
+ *                       type: string
+ *                       description: 过期时间
+ *                     remainingHours:
+ *                       type: number
+ *                       description: 剩余有效期(小时)
+ *                     needsRefresh:
+ *                       type: boolean
+ *                       description: 建议是否刷新
  */
 tokenRefreshRouter.get('/status', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -50,8 +108,32 @@ tokenRefreshRouter.get('/status', async (req: Request, res: Response, next: Next
 });
 
 /**
- * POST /api/token-refresh/auto-refresh
- * 触发自动刷新检查（如果需要）
+ * @openapi
+ * /token-refresh/auto-refresh:
+ *   post:
+ *     tags:
+ *       - 认证管理
+ *     summary: 触发自动刷新检查
+ *     description: 智能判断 Token 是否即将过期，仅在必要时执行刷新
+ *     responses:
+ *       200:
+ *         description: 检查完成
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     refreshed:
+ *                       type: boolean
+ *                       description: 本次是否执行了刷新操作
+ *                     message:
+ *                       type: string
  */
 tokenRefreshRouter.post('/auto-refresh', async (req: Request, res: Response, next: NextFunction) => {
   try {

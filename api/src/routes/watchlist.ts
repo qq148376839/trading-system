@@ -5,8 +5,44 @@ import { ErrorFactory, normalizeError } from '../utils/errors';
 export const watchlistRouter = Router();
 
 /**
- * GET /api/watchlist
- * 获取关注股票列表
+ * @openapi
+ * /watchlist:
+ *   get:
+ *     tags:
+ *       - 自选股
+ *     summary: 获取自选股列表
+ *     description: 获取用户关注的股票列表
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: enabled
+ *         schema:
+ *           type: boolean
+ *         description: 筛选启用状态
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     watchlist:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           symbol:
+ *                             type: string
+ *                           enabled:
+ *                             type: boolean
  */
 watchlistRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -37,8 +73,32 @@ watchlistRouter.get('/', async (req: Request, res: Response, next: NextFunction)
 });
 
 /**
- * POST /api/watchlist
- * 添加关注股票
+ * @openapi
+ * /watchlist:
+ *   post:
+ *     tags:
+ *       - 自选股
+ *     summary: 添加自选股
+ *     description: 添加一个新的股票到关注列表
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - symbol
+ *             properties:
+ *               symbol:
+ *                 type: string
+ *                 description: 股票代码
+ *     responses:
+ *       201:
+ *         description: 添加成功
+ *       409:
+ *         description: 股票已存在
  */
 watchlistRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -84,8 +144,25 @@ watchlistRouter.post('/', async (req: Request, res: Response, next: NextFunction
 });
 
 /**
- * DELETE /api/watchlist/:symbol
- * 移除关注股票
+ * @openapi
+ * /watchlist/{symbol}:
+ *   delete:
+ *     tags:
+ *       - 自选股
+ *     summary: 移除自选股
+ *     description: 从关注列表中删除股票
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: symbol
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 股票代码
+ *     responses:
+ *       200:
+ *         description: 删除成功
  */
 watchlistRouter.delete('/:symbol', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -113,8 +190,37 @@ watchlistRouter.delete('/:symbol', async (req: Request, res: Response, next: Nex
 });
 
 /**
- * PUT /api/watchlist/:symbol
- * 启用/禁用关注股票
+ * @openapi
+ * /watchlist/{symbol}:
+ *   put:
+ *     tags:
+ *       - 自选股
+ *     summary: 更新自选股状态
+ *     description: 启用或禁用自选股
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: symbol
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 股票代码
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - enabled
+ *             properties:
+ *               enabled:
+ *                 type: boolean
+ *                 description: 是否启用
+ *     responses:
+ *       200:
+ *         description: 更新成功
  */
 watchlistRouter.put('/:symbol', async (req: Request, res: Response, next: NextFunction) => {
   try {

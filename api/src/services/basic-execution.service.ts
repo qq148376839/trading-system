@@ -908,13 +908,23 @@ class BasicExecutionService {
         }
         
         // Try time window matching (fallback for historical orders)
+        // ✅ 修复BUG 3: 放宽时间窗口从5分钟增加到30分钟，提高匹配成功率
         const orderSide = normalizeSide(order.side);
         const orderTime = new Date(order.created_at);
-        const timeWindowStart = new Date(orderTime.getTime() - 5 * 60 * 1000); // 5 minutes before
-        const timeWindowEnd = new Date(orderTime.getTime() + 5 * 60 * 1000); // 5 minutes after
+        const timeWindowStart = new Date(orderTime.getTime() - 30 * 60 * 1000); // 30 minutes before
+        const timeWindowEnd = new Date(orderTime.getTime() + 30 * 60 * 1000); // 30 minutes after
         
-        const signalType = orderSide === 'Buy' ? 'BUY' : 'SELL';
+        // ✅ 修复：正确处理各种side格式（BUY/Buy/buy -> BUY, SELL/Sell/sell -> SELL）
+        const orderSideUpper = orderSide.toUpperCase();
+        const signalType = orderSideUpper === 'BUY' ? 'BUY' : 'SELL';
         
+        // ✅ 修复：添加调试日志
+        logger.debug(
+          `尝试时间窗口匹配: orderId=${orderId}, strategy_id=${order.strategy_id}, ` +
+          `symbol=${order.symbol}, signalType=${signalType}, ` +
+          `timeWindow=${timeWindowStart.toISOString()} 到 ${timeWindowEnd.toISOString()}`
+        );
+
         result = await pool.query(
           `UPDATE strategy_signals 
            SET status = $1 
@@ -947,22 +957,29 @@ class BasicExecutionService {
           ]
         );
         
+        logger.debug(
+          `UPDATE结果: rowCount=${result.rowCount}, rows=${JSON.stringify(result.rows)}`
+        );
+        
         if (result.rowCount !== null && result.rowCount > 0) {
           const signalIds = result.rows.map(r => r.id);
           logger.debug(`订单 ${orderId} 通过时间窗口匹配更新了信号状态: ${signalIds.join(',')}`);
           
           // Optionally, backfill signal_id for future use
           if (signalIds.length === 1) {
-            await pool.query(
+            const backfillResult = await pool.query(
               `UPDATE execution_orders SET signal_id = $1 WHERE order_id = $2`,
               [signalIds[0], orderId]
             );
-            logger.debug(`已回填订单 ${orderId} 的 signal_id=${signalIds[0]}`);
+            logger.debug(
+              `已回填订单 ${orderId} 的 signal_id=${signalIds[0]}, ` +
+              `backfillRowCount=${backfillResult.rowCount}`
+            );
           }
         } else {
           logger.warn(
             `未找到订单 ${orderId} 关联的信号 ` +
-            `(strategy_id=${order.strategy_id}, symbol=${order.symbol}, side=${orderSide})`
+            `(strategy_id=${order.strategy_id}, symbol=${order.symbol}, side=${orderSide}, signalType=${signalType})`
           );
         }
       } else {

@@ -11,8 +11,66 @@ import { ErrorFactory, normalizeError } from '../utils/errors';
 const backtestRouter = express.Router();
 
 /**
- * 创建回测任务（异步）
- * POST /api/quant/backtest
+ * @openapi
+ * /quant/backtest:
+ *   post:
+ *     tags:
+ *       - 量化交易-回测
+ *     summary: 创建回测任务
+ *     description: 提交一个新的策略回测任务 (异步执行)
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - strategyId
+ *               - symbols
+ *               - startDate
+ *               - endDate
+ *             properties:
+ *               strategyId:
+ *                 type: integer
+ *                 description: 策略ID
+ *               symbols:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: 回测标的列表
+ *               startDate:
+ *                 type: string
+ *                 format: date
+ *                 description: 开始日期 (YYYY-MM-DD)
+ *               endDate:
+ *                 type: string
+ *                 format: date
+ *                 description: 结束日期 (YYYY-MM-DD)
+ *               config:
+ *                 type: object
+ *                 description: 覆盖策略配置 (可选)
+ *     responses:
+ *       200:
+ *         description: 提交成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: integer
+ *                       description: 回测任务ID
+ *                     status:
+ *                       type: string
+ *                       example: PENDING
  */
 backtestRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -95,8 +153,49 @@ backtestRouter.post('/', async (req: Request, res: Response, next: NextFunction)
 });
 
 /**
- * 获取回测结果
- * GET /api/quant/backtest/:id
+ * @openapi
+ * /quant/backtest/{id}:
+ *   get:
+ *     tags:
+ *       - 量化交易-回测
+ *     summary: 获取回测结果
+ *     description: 获取指定回测任务的详细结果和性能指标
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: 回测任务ID
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: integer
+ *                     status:
+ *                       type: string
+ *                     totalReturn:
+ *                       type: number
+ *                       description: 总收益率
+ *                     winRate:
+ *                       type: number
+ *                       description: 胜率
+ *                     maxDrawdown:
+ *                       type: number
+ *                       description: 最大回撤
  */
 backtestRouter.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {

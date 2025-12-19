@@ -21,6 +21,8 @@ interface MarketDataCache {
   spx: CandlestickData[];
   usdIndex: CandlestickData[];
   btc: CandlestickData[];
+  vix?: CandlestickData[]; // VIX恐慌指数
+  marketTemperature?: any; // 市场温度
   timestamp: number;
   // 分时数据（可选）
   usdIndexHourly?: CandlestickData[];
@@ -79,6 +81,8 @@ class MarketDataCacheService {
       spx: marketData.spx,
       usdIndex: marketData.usdIndex,
       btc: marketData.btc,
+      vix: marketData.vix || [], // VIX数据
+      marketTemperature: marketData.marketTemperature, // 市场温度
       timestamp: targetDate.getTime(), // 使用目标日期作为时间戳
     };
 
@@ -140,6 +144,8 @@ class MarketDataCacheService {
         spx: marketData.spx,
         usdIndex: marketData.usdIndex,
         btc: marketData.btc,
+        vix: marketData.vix || [],
+        marketTemperature: marketData.marketTemperature,
         timestamp: Date.now(),
       };
 

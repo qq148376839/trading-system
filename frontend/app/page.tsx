@@ -83,6 +83,15 @@ interface TradingRecommendation {
   trend_consistency: string
   analysis_summary: string
   risk_note: string
+  spx_usd_relationship_analysis?: string // SPX与USD关系的详细分析（可选）
+  atr?: number // ATR（平均真实波幅），用于动态止损止盈
+  market_regime?: {
+    market_temperature: number
+    vix: number
+    score: number
+    status: string
+    veto_reason?: string
+  }
 }
 
 interface StockRow extends Quote {
@@ -103,6 +112,14 @@ export default function Home() {
   const [success, setSuccess] = useState<string | null>(null)
   const [expandedRecommendations, setExpandedRecommendations] = useState<Set<string>>(new Set())
   const [refreshingRecommendations, setRefreshingRecommendations] = useState<Set<string>>(new Set())
+  const [marketRegime, setMarketRegime] = useState<{
+    market_temperature: number
+    vix: number
+    score: number
+    status: string
+    veto_reason?: string
+  } | null>(null)
+  const [marketRegimeLoading, setMarketRegimeLoading] = useState(false)
   
   // 辅助函数：获取市场环境的样式
   const getMarketEnvironmentStyle = (env: '良好' | '较差' | '中性' | '中性利好' | '中性利空') => {
@@ -363,6 +380,23 @@ export default function Home() {
     }
   }
 
+  // 获取市场状态矩阵（全局市场环境指标）
+  const fetchMarketRegime = async () => {
+    setMarketRegimeLoading(true)
+    try {
+      const response = await tradingRecommendationApi.getMarketRegime()
+      if (response.success && response.data?.market_regime) {
+        setMarketRegime(response.data.market_regime)
+        console.log('获取市场状态矩阵成功:', response.data.market_regime)
+      }
+    } catch (error: any) {
+      console.error('获取市场状态矩阵失败:', error)
+      // 不影响页面显示，只记录错误
+    } finally {
+      setMarketRegimeLoading(false)
+    }
+  }
+
   // 获取交易推荐
   const fetchRecommendations = async (usSymbols: string[], isRefresh: boolean = false) => {
     if (usSymbols.length === 0) return
@@ -470,6 +504,16 @@ export default function Home() {
       await fetchAccountBalance(true) // 初始加载强制刷新
     }
     loadData()
+  }, [])
+
+  // 页面加载时获取市场状态矩阵
+  useEffect(() => {
+    fetchMarketRegime()
+    // 每5分钟刷新一次市场状态矩阵
+    const interval = setInterval(() => {
+      fetchMarketRegime()
+    }, 5 * 60 * 1000)
+    return () => clearInterval(interval)
   }, [])
 
   // 当持仓或关注列表变化时，重新加载行情
@@ -1121,6 +1165,66 @@ export default function Home() {
       <Card className="mb-6">
         <div className="mb-4">
           <h1 className="text-2xl font-bold text-gray-900 mb-4">持仓与关注股票</h1>
+          
+          {/* 市场状态矩阵（全局市场环境指标） */}
+          {marketRegime && (
+            <Card 
+              size="small" 
+              style={{ 
+                marginBottom: 16, 
+                backgroundColor: '#f0f5ff',
+                border: '1px solid #1890ff'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
+                <div style={{ fontWeight: 600, color: '#1890ff', fontSize: 14 }}>📊 市场状态矩阵</div>
+                <Space size="large" style={{ flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: 12 }}>
+                    <span style={{ color: '#666' }}>市场温度: </span>
+                    <span style={{ 
+                      fontWeight: 600, 
+                      color: marketRegime.market_temperature > 50 ? '#52c41a' : marketRegime.market_temperature < 20 ? '#ff4d4f' : '#faad14' 
+                    }}>
+                      {marketRegime.market_temperature.toFixed(1)}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12 }}>
+                    <span style={{ color: '#666' }}>VIX恐慌指数: </span>
+                    <span style={{ 
+                      fontWeight: 600, 
+                      color: marketRegime.vix > 25 ? '#ff4d4f' : marketRegime.vix < 15 ? '#52c41a' : '#faad14' 
+                    }}>
+                      {marketRegime.vix.toFixed(2)}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12 }}>
+                    <span style={{ color: '#666' }}>环境分: </span>
+                    <span style={{ 
+                      fontWeight: 600, 
+                      color: marketRegime.score > 0 ? '#52c41a' : '#ff4d4f' 
+                    }}>
+                      {marketRegime.score > 0 ? '+' : ''}{marketRegime.score.toFixed(1)}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12 }}>
+                    <span style={{ color: '#666' }}>市场状态: </span>
+                    <span style={{ fontWeight: 600, color: '#1890ff' }}>{marketRegime.status}</span>
+                  </div>
+                  {marketRegime.veto_reason && (
+                    <div style={{ fontSize: 12, padding: '4px 8px', backgroundColor: '#fff1f0', borderRadius: 4 }}>
+                      <span style={{ color: '#ff4d4f' }}>⚠ {marketRegime.veto_reason}</span>
+                    </div>
+                  )}
+                </Space>
+              </div>
+            </Card>
+          )}
+          {marketRegimeLoading && !marketRegime && (
+            <Card size="small" style={{ marginBottom: 16, backgroundColor: '#fafafa' }}>
+              <Spin size="small" /> <span style={{ marginLeft: 8, fontSize: 12 }}>加载市场状态矩阵...</span>
+            </Card>
+          )}
+          
           <Space.Compact style={{ width: '100%', maxWidth: 600 }}>
             <AutoComplete
               value={newSymbol}
@@ -1462,6 +1566,20 @@ export default function Home() {
                               <Card size="small" style={{ backgroundColor: '#fafafa' }}>
                                 <div style={{ fontWeight: 600, marginBottom: 4 }}>分析摘要:</div>
                                 <div style={{ fontSize: 12, lineHeight: 1.6 }}>{rec.analysis_summary}</div>
+                                {rec.spx_usd_relationship_analysis && (
+                                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #e5e7eb' }}>
+                                    <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 12 }}>SPX-USD关系分析:</div>
+                                    <div style={{ fontSize: 12, lineHeight: 1.6, color: '#666' }}>{rec.spx_usd_relationship_analysis}</div>
+                                  </div>
+                                )}
+                                {rec.atr && (
+                                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #e5e7eb' }}>
+                                    <div style={{ fontSize: 12 }}>
+                                      <span style={{ color: '#666' }}>ATR (平均真实波幅): </span>
+                                      <span style={{ fontWeight: 600 }}>{rec.atr.toFixed(4)}</span>
+                                    </div>
+                                  </div>
+                                )}
                               </Card>
                             </div>
                           )}

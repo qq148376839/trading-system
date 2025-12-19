@@ -35,6 +35,13 @@ interface TradingRecommendation {
   risk_note: string;
   spx_usd_relationship_analysis?: string; // SPX与USD关系的详细分析（可选）
   atr?: number; // ATR（平均真实波幅），用于动态止损止盈
+  market_regime?: {
+    market_temperature: number;
+    vix: number;
+    score: number;
+    status: string;
+    veto_reason?: string;
+  };
 }
 
 interface MarketAnalysis {
@@ -69,7 +76,7 @@ class TradingRecommendationService {
     symbol: string,
     targetDate?: Date,
     historicalStockCandlesticks?: any[],
-    preFetchedMarketData?: { spx?: any[]; usdIndex?: any[]; btc?: any[] } // ✅ 新增：预获取的市场数据（用于回测优化）
+    preFetchedMarketData?: { spx?: any[]; usdIndex?: any[]; btc?: any[]; vix?: any[]; marketTemperature?: any } // ✅ 新增：预获取的市场数据（用于回测优化）
   ): Promise<TradingRecommendation> {
     try {
       // 1. 获取市场数据
@@ -81,11 +88,14 @@ class TradingRecommendationService {
         const spxFiltered = marketDataService.filterDataBeforeDate(preFetchedMarketData.spx || [], targetDate, 100);
         const usdIndexFiltered = marketDataService.filterDataBeforeDate(preFetchedMarketData.usdIndex || [], targetDate, 100);
         const btcFiltered = marketDataService.filterDataBeforeDate(preFetchedMarketData.btc || [], targetDate, 100);
+        const vixFiltered = marketDataService.filterDataBeforeDate(preFetchedMarketData.vix || [], targetDate, 100);
         
         marketData = {
           spx: spxFiltered,
           usdIndex: usdIndexFiltered,
           btc: btcFiltered,
+          vix: vixFiltered,
+          marketTemperature: preFetchedMarketData.marketTemperature,
           timestamp: targetDate.getTime(),
         };
       } else if (targetDate) {
@@ -99,7 +109,7 @@ class TradingRecommendationService {
       // ✅ 调试日志：确认使用的是历史数据还是实时数据
       if (targetDate) {
         console.log(`[回测] ${symbol} 使用历史市场数据（目标日期: ${targetDate.toISOString().split('T')[0]}）`);
-        console.log(`[回测] SPX数据条数: ${marketData.spx?.length || 0}, USD Index数据条数: ${marketData.usdIndex?.length || 0}, BTC数据条数: ${marketData.btc?.length || 0}`);
+        console.log(`[回测] SPX: ${marketData.spx?.length || 0}, USD: ${marketData.usdIndex?.length || 0}, BTC: ${marketData.btc?.length || 0}, VIX: ${marketData.vix?.length || 0}`);
       }
 
       // 2. 获取股票K线数据（如果提供了历史数据则使用，否则获取实时数据）
@@ -163,7 +173,23 @@ class TradingRecommendationService {
         finalMarketData.btc
       );
 
-      // 3.5. 计算分时数据情绪（如果可用）
+      // Extract VIX and Market Temperature
+      const vixData = finalMarketData.vix || [];
+      const marketTemperature = finalMarketData.marketTemperature;
+      
+      // 3.5. 提取VIX和市场温度数据
+      let currentVix: number | undefined;
+      let marketTemp: any;
+      
+      if (finalMarketData.vix && finalMarketData.vix.length > 0) {
+        // 取最近一天的VIX收盘价
+        const lastVix = finalMarketData.vix[finalMarketData.vix.length - 1];
+        currentVix = typeof lastVix.close === 'number' ? lastVix.close : parseFloat(String(lastVix.close));
+      }
+      
+      marketTemp = finalMarketData.marketTemperature;
+
+      // 3.6. 计算分时数据情绪（如果可用）
       let intradaySentiment = null;
       if (finalMarketData.btcHourly && finalMarketData.btcHourly.length > 0 && 
           finalMarketData.usdIndexHourly && finalMarketData.usdIndexHourly.length > 0) {
@@ -183,7 +209,7 @@ class TradingRecommendationService {
       // 4. 计算股票分析（使用更新后的价格）
       const stockAnalysis = this.calculateMarketAnalysis(stockCandlesticks, symbol);
 
-      // 5. 综合计算交易推荐（集成分时数据）
+      // 5. 综合计算交易推荐（集成分时数据、VIX和市场温度）
       const recommendation = this.calculateTradingDecision(
         spxAnalysis,
         usdAnalysis,
@@ -191,7 +217,9 @@ class TradingRecommendationService {
         spxBtcCorrelation,
         stockAnalysis,
         stockCandlesticks,
-        intradaySentiment
+        intradaySentiment,
+        currentVix, // VIX恐慌指数
+        marketTemp  // 市场温度
       );
 
       // 6. 如果使用了实时价格，调整推荐以适应当前价格
@@ -237,6 +265,123 @@ class TradingRecommendationService {
     await Promise.all(promises);
 
     return recommendations;
+  }
+
+  /**
+   * 获取市场状态矩阵（全局市场环境指标）
+   * 不依赖具体股票，返回当前市场的整体状态
+   * 如果VIX或市场温度获取失败，抛出错误（不使用默认值）
+   */
+  async getMarketRegime(): Promise<{
+    market_temperature: number;
+    vix: number;
+    score: number;
+    status: string;
+    veto_reason?: string;
+  }> {
+    try {
+      // 获取市场数据（不计算具体股票推荐）
+      const marketData = await marketDataCacheService.getMarketData(100, false);
+
+      // 提取VIX（必须成功，否则抛出错误）
+      if (!marketData.vix || marketData.vix.length === 0) {
+        throw new Error('VIX数据获取失败，无法计算市场状态矩阵');
+      }
+      const lastVix = marketData.vix[marketData.vix.length - 1];
+      const currentVix = typeof lastVix.close === 'number' ? lastVix.close : parseFloat(String(lastVix.close));
+      if (isNaN(currentVix) || currentVix <= 0) {
+        throw new Error(`VIX数据无效: ${currentVix}`);
+      }
+
+      // 提取市场温度（必须成功，否则抛出错误）
+      if (!marketData.marketTemperature) {
+        throw new Error('市场温度数据获取失败，无法计算市场状态矩阵');
+      }
+      let currentTemp: number;
+      if (typeof marketData.marketTemperature === 'number') {
+        currentTemp = marketData.marketTemperature;
+      } else if (marketData.marketTemperature && typeof marketData.marketTemperature === 'object') {
+        if ('value' in marketData.marketTemperature && typeof (marketData.marketTemperature as any).value === 'number') {
+          currentTemp = (marketData.marketTemperature as any).value;
+        } else if ('temperature' in marketData.marketTemperature && typeof (marketData.marketTemperature as any).temperature === 'number') {
+          currentTemp = (marketData.marketTemperature as any).temperature;
+        } else {
+          throw new Error(`市场温度数据结构未知: ${JSON.stringify(marketData.marketTemperature)}`);
+        }
+      } else {
+        throw new Error(`市场温度数据类型错误: ${typeof marketData.marketTemperature}`);
+      }
+      
+      if (isNaN(currentTemp) || currentTemp < 0 || currentTemp > 100) {
+        throw new Error(`市场温度数据无效: ${currentTemp}`);
+      }
+
+      // 计算市场分析（用于计算基础强度）
+      const spxAnalysis = this.calculateMarketAnalysis(marketData.spx, 'SPX');
+      const usdAnalysis = this.calculateMarketAnalysis(marketData.usdIndex, 'USD Index');
+      const btcAnalysis = this.calculateBTCAnalysis(marketData.btc);
+      const spxBtcCorrelation = this.calculateSPXBTCCorrelation(marketData.spx, marketData.btc);
+
+      // 计算基础市场强度
+      const usd_impact_strength = -usdAnalysis.trend_strength * 0.3;
+      let btc_support = 0;
+      if (spxBtcCorrelation.is_resonant) {
+        if (btcAnalysis.is_stable || btcAnalysis.trend === '上升趋势') {
+          btc_support = btcAnalysis.spx_impact_strength;
+        }
+      }
+      const basic_market_strength = spxAnalysis.trend_strength + usd_impact_strength + btc_support;
+
+      // 数据归一化
+      const market_temp_normalized = (currentTemp - 50) * 2;
+      let vix_score = 0;
+      if (currentVix > 15) {
+        vix_score = (15 - currentVix) * 5;
+      } else {
+        vix_score = (15 - currentVix) * 2;
+      }
+      const vix_normalized = Math.max(-100, Math.min(50, vix_score));
+
+      // 环境分计算
+      const env_score = basic_market_strength * 0.4 + market_temp_normalized * 0.4 + vix_normalized * 0.2;
+
+      // 市场状态矩阵判定
+      let market_regime_status = 'Neutral';
+      let veto_reason: string | undefined;
+
+      if (currentTemp > 50) {
+        if (currentVix < 20) {
+          market_regime_status = 'Goldilocks (黄金做多)';
+        } else {
+          market_regime_status = 'Volatile Bull (疯狂博弈)';
+        }
+      } else {
+        if (currentVix > 20) {
+          market_regime_status = 'Fear (恐慌下跌)';
+        } else {
+          market_regime_status = 'Stagnant (阴跌/盘整)';
+        }
+      }
+
+      // 一票否决权
+      if (currentVix > 35) {
+        veto_reason = `VIX恐慌指数过高(${currentVix.toFixed(2)})，强制风控`;
+      } else if (currentTemp < 10) {
+        veto_reason = `市场温度冰点(${currentTemp.toFixed(1)})，缺乏广度支持`;
+      }
+
+      return {
+        market_temperature: parseFloat(currentTemp.toFixed(2)),
+        vix: parseFloat(currentVix.toFixed(2)),
+        score: parseFloat(env_score.toFixed(2)),
+        status: market_regime_status,
+        veto_reason,
+      };
+    } catch (error: any) {
+      console.error('获取市场状态矩阵失败:', error.message);
+      // 不返回默认值，直接抛出错误
+      throw new Error(`市场状态矩阵计算失败: ${error.message}`);
+    }
   }
 
   /**
@@ -293,14 +438,16 @@ class TradingRecommendationService {
   ): Promise<CandlestickData[]> {
     const quoteCtx = await getQuoteContext();
     const longport = require('longport');
-    const { Period, AdjustType } = longport;
+    const { Period, AdjustType, TradeSessions } = longport;
     const { formatLongbridgeCandlestick } = require('../utils/candlestick-formatter');
 
+    // SDK 3.0.18需要TradeSessions参数
     const candlesticks = await quoteCtx.candlesticks(
       symbol,
       Period.Day,
       100, // 获取最近100天
-      AdjustType.NoAdjust
+      AdjustType.NoAdjust,
+      TradeSessions?.All || 100 // 使用All获取所有交易时段的数据
     );
 
     // ✅ 使用统一的数据转换工具函数，修复timestamp转换错误
@@ -547,7 +694,9 @@ class TradingRecommendationService {
       trend_confirmation: boolean;
       btc_hourly_strength: number;
       usd_hourly_strength: number;
-    } | null
+    } | null,
+    vix?: number,
+    marketTemperature?: any
   ): Omit<TradingRecommendation, 'symbol'> {
     // 计算USD Index对股票市场的影响（USD上升利空股市）
     const usd_impact_strength = -usdAnalysis.trend_strength * 0.3;
@@ -572,104 +721,159 @@ class TradingRecommendationService {
       }
     }
 
-    // 综合市场强度（集成分时数据）
-    const comprehensive_market_strength =
+    // 基础综合市场强度（Basic Comprehensive Market Strength）
+    const basic_market_strength =
       spxAnalysis.trend_strength +
       usd_impact_strength +
       btc_support +
       intraday_adjustment;
 
-    // SPX与USD Index关系分析（关键步骤）
-    // 1. 趋势一致性分析
-    let trend_consistency: '一致利好' | '一致利空' | '趋势冲突';
-    if (spxAnalysis.trend === '上升趋势' && usdAnalysis.trend === '下降趋势') {
-      // SPX上升 + USD下降（正面影响）→ "一致利好"
-      trend_consistency = '一致利好';
-    } else if (spxAnalysis.trend === '下降趋势' && usdAnalysis.trend === '上升趋势') {
-      // SPX下降 + USD上升（负面影响）→ "一致利空"
-      trend_consistency = '一致利空';
+    // ===== 新增：市场温度与恐慌指数分析 =====
+    
+    // 1. 验证数据有效性（如果数据缺失，跳过这些指标的计算）
+    let useMarketRegime = false;
+    let market_temp_normalized = 0;
+    let vix_normalized = 0;
+    let currentVixValue: number | null = null;
+    let currentTempValue: number | null = null;
+    
+    // 验证VIX数据
+    if (vix !== undefined && vix !== null && !isNaN(vix) && vix > 0) {
+      currentVixValue = vix;
+      
+      // 验证市场温度数据
+      if (marketTemperature !== undefined && marketTemperature !== null) {
+        // 解析市场温度
+        if (typeof marketTemperature === 'number') {
+          currentTempValue = marketTemperature;
+        } else if (marketTemperature && typeof marketTemperature === 'object') {
+          if ('value' in marketTemperature && typeof (marketTemperature as any).value === 'number') {
+            currentTempValue = (marketTemperature as any).value;
+          } else if ('temperature' in marketTemperature && typeof (marketTemperature as any).temperature === 'number') {
+            currentTempValue = (marketTemperature as any).temperature;
+          }
+        }
+        
+        // 验证温度值有效性
+        if (currentTempValue !== null && !isNaN(currentTempValue) && currentTempValue >= 0 && currentTempValue <= 100) {
+          // 数据有效，可以使用市场状态矩阵
+          useMarketRegime = true;
+          
+          // 数据归一化
+          market_temp_normalized = (currentTempValue - 50) * 2;
+          
+          // VIX反向归一化
+          let vix_score = 0;
+          if (currentVixValue > 15) {
+            vix_score = (15 - currentVixValue) * 5;
+          } else {
+            vix_score = (15 - currentVixValue) * 2;
+          }
+          vix_normalized = Math.max(-100, Math.min(50, vix_score));
+        } else {
+          console.warn('市场温度数据无效，跳过市场状态矩阵计算');
+        }
+      } else {
+        console.warn('市场温度数据缺失，跳过市场状态矩阵计算');
+      }
     } else {
-      // 方向相反 → "趋势冲突"
-      trend_consistency = '趋势冲突';
+      console.warn('VIX数据缺失或无效，跳过市场状态矩阵计算');
     }
 
-    // 2. 强度叠加分析
-    // 综合强度 > 50 → "强烈利好"
-    // 综合强度 < -50 → "强烈利空"
-    // 否则 → "中性偏[利好/利空]"
-    
-    // 3. 市场环境评估
+    // 2. 环境分计算 (Environment Score)
+    // 如果市场状态矩阵数据有效，使用完整公式；否则只使用基础强度
+    let env_score: number;
+    if (useMarketRegime) {
+      // 权重：基础强度 40%, 市场温度 40%, VIX 20%
+      env_score = basic_market_strength * 0.4 + market_temp_normalized * 0.4 + vix_normalized * 0.2;
+    } else {
+      // 数据缺失时，只使用基础强度（不包含温度和VIX）
+      env_score = basic_market_strength;
+      console.warn('市场状态矩阵数据缺失，环境分仅基于基础市场强度计算');
+    }
+
+    // 3. 市场环境评估 (升级版)
     let market_environment: '良好' | '较差' | '中性' | '中性利好' | '中性利空' = '中性';
     
-    // 首先判断强烈的情况
-    if (trend_consistency === '一致利好' && comprehensive_market_strength > 50) {
-      // 趋势一致 + 强烈利好 → "良好"
+    if (env_score > 50) {
       market_environment = '良好';
-    } else if (trend_consistency === '一致利空' && comprehensive_market_strength < -50) {
-      // 趋势一致 + 强烈利空 → "较差"
+    } else if (env_score > 20) {
+      market_environment = '中性利好';
+    } else if (env_score < -50) {
       market_environment = '较差';
-    } else if (comprehensive_market_strength > 50 && btcAnalysis.is_stable) {
-      // BTC企稳 + 强烈利好 → "良好"
-      market_environment = '良好';
-    } else if (comprehensive_market_strength < -50) {
-      // 强烈利空 → "较差"
-      market_environment = '较差';
-    } else if (btcAnalysis.is_stable && comprehensive_market_strength > 0) {
-      // BTC企稳 + 中性偏利好 → "良好"
-      market_environment = '良好';
-    } else if (trend_consistency === '趋势冲突') {
-      // 趋势冲突：根据综合强度判断偏向
-      if (comprehensive_market_strength > 10) {
-        market_environment = '中性利好';
-      } else if (comprehensive_market_strength < -10) {
-        market_environment = '中性利空';
-      } else {
-        // 综合强度在-10到10之间，保持中性
-        market_environment = '中性';
-      }
+    } else if (env_score < -20) {
+      market_environment = '中性利空';
     } else {
-      // 其他情况：根据综合强度判断偏向
-      if (comprehensive_market_strength > 10) {
-        market_environment = '中性利好';
-      } else if (comprehensive_market_strength < -10) {
-        market_environment = '中性利空';
-      } else {
-        // 综合强度在-10到10之间，保持中性
-        market_environment = '中性';
+      market_environment = '中性';
+    }
+
+    // 4. 一票否决权 (Veto Power) - 仅在数据有效时应用
+    let veto_reason = '';
+    
+    if (useMarketRegime) {
+      // 解析当前VIX和温度值（用于一票否决判断）
+      let currentVixValue: number | null = null;
+      let currentTempValue: number | null = null;
+      
+      if (vix !== undefined && vix !== null && !isNaN(vix) && vix > 0) {
+        currentVixValue = vix;
+      }
+      
+      if (marketTemperature !== undefined && marketTemperature !== null) {
+        if (typeof marketTemperature === 'number') {
+          currentTempValue = marketTemperature;
+        } else if (marketTemperature && typeof marketTemperature === 'object') {
+          if ('value' in marketTemperature && typeof (marketTemperature as any).value === 'number') {
+            currentTempValue = (marketTemperature as any).value;
+          } else if ('temperature' in marketTemperature && typeof (marketTemperature as any).temperature === 'number') {
+            currentTempValue = (marketTemperature as any).temperature;
+          }
+        }
+      }
+      
+      // 极度恐慌，强制不做多
+      if (currentVixValue !== null && currentVixValue > 35) {
+        market_environment = '较差';
+        veto_reason = `VIX恐慌指数过高(${currentVixValue.toFixed(2)})，强制风控`;
+      }
+      // 冰点时刻，虽有反弹但不可持续，强制观望
+      else if (currentTempValue !== null && currentTempValue < 10) {
+        if (market_environment !== '较差') {
+          market_environment = '中性';
+          veto_reason = `市场温度冰点(${currentTempValue.toFixed(1)})，缺乏广度支持`;
+        }
       }
     }
+
+    // 趋势一致性分析 (保留用于显示)
+    let trend_consistency: '一致利好' | '一致利空' | '趋势冲突';
+    if (spxAnalysis.trend === '上升趋势' && usdAnalysis.trend === '下降趋势') {
+      trend_consistency = '一致利好';
+    } else if (spxAnalysis.trend === '下降趋势' && usdAnalysis.trend === '上升趋势') {
+      trend_consistency = '一致利空';
+    } else {
+      trend_consistency = '趋势冲突';
+    }
     
-    // 4. BTC共振分析（如果提供）
-    // BTC企稳 → 增强市场环境评估
-    // BTC下跌 → 减弱市场环境评估
-    if (spxBtcCorrelation.is_resonant) {
-      if (btcAnalysis.is_stable) {
-        // BTC企稳：提升市场环境
-        if (market_environment === '中性') {
-          market_environment = '中性利好';
-        } else if (market_environment === '中性利空') {
-          market_environment = '中性';
-        }
-      } else if (btcAnalysis.trend === '下降趋势') {
-        // BTC下跌：降低市场环境
-        if (market_environment === '良好') {
-          market_environment = '中性利好';
-        } else if (market_environment === '中性利好') {
-          market_environment = '中性';
-        } else if (market_environment === '中性') {
-          market_environment = '中性利空';
-        }
+    // 5. 市场状态矩阵判定 (用于 Regim Status) - 仅在数据有效时计算
+    let market_regime_status = 'Neutral';
+    if (useMarketRegime && currentTempValue !== null && currentVixValue !== null) {
+      if (currentTempValue > 50) {
+        if (currentVixValue < 20) market_regime_status = 'Goldilocks (黄金做多)';
+        else market_regime_status = 'Volatile Bull (疯狂博弈)';
+      } else {
+        if (currentVixValue > 20) market_regime_status = 'Fear (恐慌下跌)';
+        else market_regime_status = 'Stagnant (阴跌/盘整)';
       }
+    } else {
+      market_regime_status = 'Data Unavailable (数据缺失)';
     }
 
     // 计算ATR（平均真实波幅）用于动态止损止盈
     const atr = this.calculateATR(stockCandlesticks, 14);
     const atrMultiplier = atr > 0 ? atr / stockAnalysis.current_price : 0.02; // ATR百分比，默认2%
     
-    // 根据波动性调整倍数：波动性越大，止损止盈范围越大
-    // 低波动（ATR < 1.5%）：使用1.5-2倍ATR
-    // 中波动（ATR 1.5-3%）：使用2-2.5倍ATR
-    // 高波动（ATR > 3%）：使用2.5-3倍ATR
+    // 根据波动性调整倍数
     let stopLossMultiplier = 2.0;
     let takeProfitMultiplier = 3.0;
     if (atrMultiplier < 0.015) {
@@ -678,6 +882,16 @@ class TradingRecommendationService {
     } else if (atrMultiplier > 0.03) {
       stopLossMultiplier = 2.5;
       takeProfitMultiplier = 3.5;
+    }
+    
+    // VIX 调整：如果 VIX 较高，进一步放宽止损以避免被洗盘，或者收紧止损以防崩盘？
+    // 策略：VIX高意味着波动率大，ATR已经反映了波动率。
+    // 这里我们额外根据 VIX 调整倍数。
+    // 如果 VIX > 25 (恐慌)，稍微收紧止盈，放宽止损(给波动空间)或者收紧止损(防崩盘)？
+    // PRD建议：疯狂博弈期(VIX高)需收紧止损。
+    if (useMarketRegime && currentVixValue !== null && currentVixValue > 25) {
+      stopLossMultiplier *= 0.8; // 收紧止损
+      takeProfitMultiplier *= 0.8; // 快速止盈
     }
 
     // 决定操作建议
@@ -689,10 +903,8 @@ class TradingRecommendationService {
 
     if ((market_environment === '良好' || market_environment === '中性利好') && (stockAnalysis.trend === '上升趋势' || stockAnalysis.trend === '盘整')) {
       action = 'BUY';
-      // 买入逻辑：在较低价格买入，希望价格上涨
-      // entry_min: 买入价格下限（应该 <= current_price）
-      // entry_max: 买入价格上限（应该 >= current_price，可以稍微高一点）
-      const entryRange = Math.max(atr * 0.5, stockAnalysis.current_price * 0.01); // 入场范围至少是ATR的一半或1%
+      // 买入逻辑
+      const entryRange = Math.max(atr * 0.5, stockAnalysis.current_price * 0.01); 
       entry_min = Math.min(
         stockAnalysis.current_price - entryRange * 0.5,
         Math.max(stockAnalysis.current_price * 0.98, stockAnalysis.low_50 * 1.01)
@@ -701,82 +913,61 @@ class TradingRecommendationService {
         stockAnalysis.current_price + entryRange * 0.5,
         Math.min(stockAnalysis.current_price * 1.02, stockAnalysis.high_50 * 0.99)
       );
-      // 确保 entry_min <= entry_max 且范围合理
       if (entry_min >= entry_max) {
         entry_min = stockAnalysis.current_price * 0.99;
         entry_max = stockAnalysis.current_price * 1.01;
       }
       
-      // 使用ATR动态计算止损（价格跌到更低位置会亏损）
       const avgEntry = (entry_min + entry_max) / 2;
       stop_loss = Math.max(
         avgEntry - atr * stopLossMultiplier,
         Math.min(entry_min * 0.95, stockAnalysis.low_50 * 1.02)
       );
 
-      // 计算交易费用（估算100股）
       const estimatedQuantity = this.estimateTradeQuantity(avgEntry);
       const buyFees = this.calculateTradingFees(avgEntry, estimatedQuantity, false);
       const sellFees = this.calculateTradingFees(avgEntry, estimatedQuantity, true);
-      const totalFees = buyFees + sellFees; // 买入和卖出总费用
-      const feesPerShare = totalFees / estimatedQuantity; // 每股费用
+      const totalFees = buyFees + sellFees;
+      const feesPerShare = totalFees / estimatedQuantity;
 
-      // 确保风险收益比 >= 1.5
-      // 买入的风险 = avgEntry - stop_loss（价格下跌的损失）
-      // 买入的收益 = take_profit - avgEntry（价格上涨的盈利）
       const potential_loss = avgEntry - stop_loss;
       const min_profit = potential_loss * 1.5;
+      const minTakeProfit = avgEntry + min_profit + feesPerShare * 2;
       
-      // 使用ATR动态计算止盈（价格涨到更高位置会盈利）
-      // 止盈必须覆盖：最小盈利 + 交易费用
-      const minTakeProfit = avgEntry + min_profit + feesPerShare * 2; // 额外考虑费用缓冲
-      
-      // 计算止盈价的上限（不能超过50日高点的98%，但要确保至少高于入场价）
       const maxTakeProfit = Math.max(
-        entry_max * 1.08,  // 至少比入场价上限高8%
-        stockAnalysis.high_50 * 0.98,  // 不超过50日高点的98%
-        avgEntry * 1.05  // 至少比入场价高5%（确保有盈利空间）
+        entry_max * 1.08,
+        stockAnalysis.high_50 * 0.98,
+        avgEntry * 1.05
       );
       
       take_profit = Math.max(
-        avgEntry + atr * takeProfitMultiplier + feesPerShare, // ATR止盈 + 费用
+        avgEntry + atr * takeProfitMultiplier + feesPerShare,
         minTakeProfit,
-        entry_max * 1.02  // 至少比入场价上限高2%
+        entry_max * 1.02
       );
       
-      // 确保止盈在合理范围内
       take_profit = Math.min(take_profit, maxTakeProfit);
       
-      // 确保止盈 > entry_max（必须高于入场价上限）
       if (take_profit <= entry_max) {
         take_profit = entry_max * 1.02 + feesPerShare;
       }
       
-      // 验证：确保盈利能覆盖费用
       const netProfit = take_profit - avgEntry - feesPerShare;
       if (netProfit <= 0) {
-        // 如果盈利不足以覆盖费用，调整止盈
         take_profit = avgEntry + feesPerShare * 2 + atr * 1.0;
-        // 再次确保止盈 > entry_max
         if (take_profit <= entry_max) {
           take_profit = entry_max * 1.02 + feesPerShare * 2;
         }
       }
       
-      // 最终验证：确保止盈 > 入场价下限（防止极端情况）
       if (take_profit <= entry_min) {
         console.warn(`止盈价调整警告（BUY）：止盈(${take_profit.toFixed(2)}) <= 入场下限(${entry_min.toFixed(2)})，强制调整`);
         take_profit = entry_min * 1.03 + feesPerShare;
       }
     } else if (market_environment === '较差' || market_environment === '中性利空' || (stockAnalysis.trend === '下降趋势' && market_environment !== '良好' && market_environment !== '中性利好')) {
-      // 只有在市场环境较差/中性利空，或者（下降趋势且市场环境不是良好/中性利好）时才做空
-      // 如果市场环境良好/中性利好但股票下降趋势，可能是回调，不建议做空
       action = 'SELL';
-      // 做空逻辑：在较高价格卖出（做空），希望价格下跌后买回获利
-      // 说明：做空是在当前价格卖出，如果价格下跌，可以更低价格买回，赚取差价
-      // entry_max: 做空价格上限（应该 >= current_price，可以稍微高一点）
-      // entry_min: 做空价格下限（应该 <= current_price）
-      const entryRange = Math.max(atr * 0.5, stockAnalysis.current_price * 0.01); // 入场范围至少是ATR的一半或1%
+      // 做空逻辑
+      const entryRange = Math.max(atr * 0.5, stockAnalysis.current_price * 0.01);
       entry_max = Math.max(
         stockAnalysis.current_price + entryRange * 0.5,
         Math.min(stockAnalysis.current_price * 1.02, stockAnalysis.high_50 * 0.99)
@@ -785,55 +976,44 @@ class TradingRecommendationService {
         stockAnalysis.current_price - entryRange * 0.5,
         Math.max(stockAnalysis.current_price * 0.98, stockAnalysis.low_50 * 1.01)
       );
-      // 确保 entry_min <= entry_max 且范围合理
       if (entry_min >= entry_max) {
         entry_min = stockAnalysis.current_price * 0.99;
         entry_max = stockAnalysis.current_price * 1.01;
       }
       
-      // 使用ATR动态计算止损（价格涨到更高位置会亏损，因为做空后价格上涨会亏钱）
       const avgEntry = (entry_min + entry_max) / 2;
       stop_loss = Math.min(
         avgEntry + atr * stopLossMultiplier,
         Math.max(entry_max * 1.05, stockAnalysis.high_50 * 0.98)
       );
 
-      // 计算交易费用（估算100股）
       const estimatedQuantity = this.estimateTradeQuantity(avgEntry);
-      const sellFees = this.calculateTradingFees(avgEntry, estimatedQuantity, true); // 卖出（做空）
-      const buyBackFees = this.calculateTradingFees(avgEntry, estimatedQuantity, false); // 买回
-      const totalFees = sellFees + buyBackFees; // 做空和买回总费用
-      const feesPerShare = totalFees / estimatedQuantity; // 每股费用
+      const sellFees = this.calculateTradingFees(avgEntry, estimatedQuantity, true);
+      const buyBackFees = this.calculateTradingFees(avgEntry, estimatedQuantity, false);
+      const totalFees = sellFees + buyBackFees;
+      const feesPerShare = totalFees / estimatedQuantity;
 
-      // 确保风险收益比 >= 1.5
-      // 做空的风险 = stop_loss - avgEntry（价格上涨的损失）
-      // 做空的收益 = avgEntry - take_profit（价格下跌的盈利）
       const potential_loss = stop_loss - avgEntry;
       const min_profit = potential_loss * 1.5;
       
-      // 使用ATR动态计算止盈（价格跌到更低位置会盈利，因为做空后价格下跌会赚钱）
-      // 止盈必须覆盖：最小盈利 + 交易费用
-      const minTakeProfit = avgEntry - min_profit - feesPerShare * 2; // 额外考虑费用缓冲
+      const minTakeProfit = avgEntry - min_profit - feesPerShare * 2;
       take_profit = Math.min(
-        avgEntry - atr * takeProfitMultiplier - feesPerShare, // ATR止盈 - 费用
+        avgEntry - atr * takeProfitMultiplier - feesPerShare,
         minTakeProfit,
         Math.max(entry_min * 0.92, stockAnalysis.low_50 * 1.02)
       );
-      // 确保止盈 < entry_min
+      
       if (take_profit >= entry_min) {
         take_profit = entry_min - atr * 1.5 - feesPerShare;
       }
       
-      // 验证：确保盈利能覆盖费用
       const netProfit = avgEntry - take_profit - feesPerShare;
       if (netProfit <= 0) {
-        // 如果盈利不足以覆盖费用，调整止盈
         take_profit = avgEntry - feesPerShare * 2 - atr * 1.0;
       }
     } else {
-      // HOLD逻辑：市场环境中性，建议持有或观望
-      // 入场价应该围绕当前价格，给一个合理的范围
-      const entryRange = Math.max(atr * 0.3, stockAnalysis.current_price * 0.005); // HOLD时范围更小
+      // HOLD逻辑
+      const entryRange = Math.max(atr * 0.3, stockAnalysis.current_price * 0.005);
       entry_min = Math.max(
         stockAnalysis.current_price - entryRange,
         stockAnalysis.current_price * 0.995
@@ -842,25 +1022,22 @@ class TradingRecommendationService {
         stockAnalysis.current_price + entryRange,
         stockAnalysis.current_price * 1.005
       );
-      // 确保 entry_min < entry_max（不能相同）
       if (entry_min >= entry_max) {
         entry_min = stockAnalysis.current_price * 0.998;
         entry_max = stockAnalysis.current_price * 1.002;
       }
       
-      // HOLD时止损止盈基于ATR设置
       const avgEntry = (entry_min + entry_max) / 2;
       stop_loss = Math.max(
         avgEntry - atr * stopLossMultiplier * 0.8,
         stockAnalysis.low_50 * 1.01
       );
       
-      // 计算止盈价，确保至少高于入场价上限
-      const minTakeProfit = entry_max * 1.01; // 至少比入场价上限高1%
+      const minTakeProfit = entry_max * 1.01;
       const atrTakeProfit = avgEntry + atr * takeProfitMultiplier * 0.8;
       const maxTakeProfit = Math.max(
-        stockAnalysis.high_50 * 0.99,  // 不超过50日高点的99%
-        entry_max * 1.05  // 至少比入场价上限高5%
+        stockAnalysis.high_50 * 0.99,
+        entry_max * 1.05
       );
       
       take_profit = Math.max(
@@ -868,16 +1045,13 @@ class TradingRecommendationService {
         minTakeProfit
       );
       
-      // 确保止盈价在合理范围内
       take_profit = Math.min(take_profit, maxTakeProfit);
       
-      // 最终验证：确保止盈 > 入场价上限
       if (take_profit <= entry_max) {
         console.warn(`HOLD止盈价调整：止盈(${take_profit.toFixed(2)}) <= 入场上限(${entry_max.toFixed(2)})，强制调整`);
         take_profit = entry_max * 1.02;
       }
       
-      // 确保止损 < 入场价下限
       if (stop_loss >= entry_min) {
         console.warn(`HOLD止损价调整：止损(${stop_loss.toFixed(2)}) >= 入场下限(${entry_min.toFixed(2)})，强制调整`);
         stop_loss = entry_min * 0.98;
@@ -898,7 +1072,7 @@ class TradingRecommendationService {
       spxAnalysis,
       usdAnalysis,
       trend_consistency,
-      comprehensive_market_strength
+      basic_market_strength
     );
     
     // 生成分析摘要
@@ -908,7 +1082,7 @@ class TradingRecommendationService {
       btcAnalysis,
       stockAnalysis,
       market_environment,
-      comprehensive_market_strength,
+      env_score, // 使用新的环境分
       trend_consistency
     );
 
@@ -918,6 +1092,36 @@ class TradingRecommendationService {
       risk_reward_ratio,
       stockAnalysis
     );
+    
+    // 添加 VIX 和 温度 风险提示（仅在数据有效时）
+    let final_risk_note = risk_note;
+    if (veto_reason) {
+      final_risk_note = `${veto_reason}；${final_risk_note}`;
+    }
+    
+    // 解析当前VIX和温度值（用于风险提示）
+    if (useMarketRegime && vix !== undefined && vix !== null && !isNaN(vix) && vix > 0) {
+      if (vix > 25) {
+        final_risk_note = `恐慌指数偏高(${vix.toFixed(2)})，波动加剧；${final_risk_note}`;
+      }
+    }
+    
+    if (useMarketRegime && marketTemperature !== undefined && marketTemperature !== null) {
+      let currentTempValue: number | null = null;
+      if (typeof marketTemperature === 'number') {
+        currentTempValue = marketTemperature;
+      } else if (marketTemperature && typeof marketTemperature === 'object') {
+        if ('value' in marketTemperature && typeof (marketTemperature as any).value === 'number') {
+          currentTempValue = (marketTemperature as any).value;
+        } else if ('temperature' in marketTemperature && typeof (marketTemperature as any).temperature === 'number') {
+          currentTempValue = (marketTemperature as any).temperature;
+        }
+      }
+      
+      if (currentTempValue !== null && currentTempValue < 20) {
+        final_risk_note = `市场温度低(${currentTempValue.toFixed(1)})，广度不足；${final_risk_note}`;
+      }
+    }
 
     return {
       action,
@@ -929,14 +1133,20 @@ class TradingRecommendationService {
       take_profit: parseFloat(take_profit.toFixed(2)),
       risk_reward_ratio: parseFloat(risk_reward_ratio.toFixed(2)),
       market_environment,
-      comprehensive_market_strength: parseFloat(comprehensive_market_strength.toFixed(2)),
+      comprehensive_market_strength: parseFloat(env_score.toFixed(2)), // 返回环境分
       trend_consistency,
       analysis_summary,
-      risk_note,
-      // 添加SPX与USD关系的详细分析（用于调试和详细展示）
+      risk_note: final_risk_note,
       spx_usd_relationship_analysis: spx_usd_relationship_analysis,
-      // 添加ATR（平均真实波幅）
       atr: parseFloat(atr.toFixed(4)),
+      // 返回市场状态矩阵信息（仅在数据有效时）
+      market_regime: useMarketRegime && currentTempValue !== null && currentVixValue !== null ? {
+        market_temperature: parseFloat(currentTempValue.toFixed(2)),
+        vix: parseFloat(currentVixValue.toFixed(2)),
+        score: parseFloat(env_score.toFixed(2)),
+        status: market_regime_status,
+        veto_reason: veto_reason || undefined
+      } : undefined
     };
   }
 

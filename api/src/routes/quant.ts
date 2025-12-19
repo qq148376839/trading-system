@@ -26,8 +26,41 @@ export const quantRouter = Router();
 // ==================== 资金管理 API ====================
 
 /**
- * GET /api/quant/capital/allocations
- * 获取所有资金分配账户
+ * @openapi
+ * /quant/capital/allocations:
+ *   get:
+ *     tags:
+ *       - 量化交易-资金管理
+ *     summary: 获取资金分配账户
+ *     description: 获取所有资金分配账户及其使用情况
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: integer
+ *                       name:
+ *                         type: string
+ *                       allocationValue:
+ *                         type: number
+ *                         description: 分配值 (金额或百分比)
+ *                       currentUsage:
+ *                         type: number
+ *                         description: 当前已用金额
  */
 quantRouter.get('/capital/allocations', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -57,8 +90,42 @@ quantRouter.get('/capital/allocations', async (req: Request, res: Response, next
 });
 
 /**
- * POST /api/quant/capital/allocations
- * 创建资金分配账户
+ * @openapi
+ * /quant/capital/allocations:
+ *   post:
+ *     tags:
+ *       - 量化交易-资金管理
+ *     summary: 创建资金分配账户
+ *     description: 创建一个新的资金分配账户
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - allocationType
+ *               - allocationValue
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 description: 账户名称
+ *               parentId:
+ *                 type: integer
+ *                 description: 父账户ID (可选)
+ *               allocationType:
+ *                 type: string
+ *                 enum: [FIXED_AMOUNT, PERCENTAGE]
+ *                 description: 分配类型
+ *               allocationValue:
+ *                 type: number
+ *                 description: 分配值
+ *     responses:
+ *       200:
+ *         description: 创建成功
  */
 quantRouter.post('/capital/allocations', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -86,8 +153,38 @@ quantRouter.post('/capital/allocations', async (req: Request, res: Response, nex
 });
 
 /**
- * PUT /api/quant/capital/allocations/:id
- * 更新资金分配账户
+ * @openapi
+ * /quant/capital/allocations/{id}:
+ *   put:
+ *     tags:
+ *       - 量化交易-资金管理
+ *     summary: 更新资金分配账户
+ *     description: 更新指定资金分配账户的信息
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: 账户ID
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               allocationType:
+ *                 type: string
+ *                 enum: [FIXED_AMOUNT, PERCENTAGE]
+ *               allocationValue:
+ *                 type: number
+ *     responses:
+ *       200:
+ *         description: 更新成功
  */
 quantRouter.put('/capital/allocations/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -215,8 +312,25 @@ quantRouter.put('/capital/allocations/:id', async (req: Request, res: Response, 
 });
 
 /**
- * DELETE /api/quant/capital/allocations/:id
- * 删除资金分配账户
+ * @openapi
+ * /quant/capital/allocations/{id}:
+ *   delete:
+ *     tags:
+ *       - 量化交易-资金管理
+ *     summary: 删除资金分配账户
+ *     description: 删除指定的资金分配账户 (需无子账户且未被策略使用)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: 账户ID
+ *     responses:
+ *       200:
+ *         description: 删除成功
  */
 quantRouter.delete('/capital/allocations/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -368,8 +482,36 @@ quantRouter.get('/capital/allocations/:id/usage-detail', async (req: Request, re
 });
 
 /**
- * GET /api/quant/capital/usage
- * 获取资金使用情况
+ * @openapi
+ * /quant/capital/usage:
+ *   get:
+ *     tags:
+ *       - 量化交易-资金管理
+ *     summary: 获取资金使用概览
+ *     description: 获取总资金及各个分配账户的详细使用情况
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     totalCapital:
+ *                       type: number
+ *                       description: 总资金
+ *                     allocations:
+ *                       type: array
+ *                       items:
+ *                         type: object
  */
 quantRouter.get('/capital/usage', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -574,8 +716,40 @@ quantRouter.delete('/stock-selector/blacklist/:symbol', async (req: Request, res
 // ==================== 策略管理 API ====================
 
 /**
- * GET /api/quant/strategies
- * 获取所有策略
+ * @openapi
+ * /quant/strategies:
+ *   get:
+ *     tags:
+ *       - 量化交易-策略管理
+ *     summary: 获取所有策略
+ *     description: 查询系统中的所有量化策略
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: integer
+ *                       name:
+ *                         type: string
+ *                       type:
+ *                         type: string
+ *                       status:
+ *                         type: string
+ *                         enum: [STOPPED, RUNNING, ERROR]
  */
 quantRouter.get('/strategies', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -608,8 +782,45 @@ quantRouter.get('/strategies', async (req: Request, res: Response, next: NextFun
 });
 
 /**
- * POST /api/quant/strategies
- * 创建策略
+ * @openapi
+ * /quant/strategies:
+ *   post:
+ *     tags:
+ *       - 量化交易-策略管理
+ *     summary: 创建策略
+ *     description: 创建一个新的量化策略
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - type
+ *               - symbolPoolConfig
+ *               - config
+ *             properties:
+ *               name:
+ *                 type: string
+ *               type:
+ *                 type: string
+ *               capitalAllocationId:
+ *                 type: integer
+ *               symbolPoolConfig:
+ *                 type: object
+ *                 properties:
+ *                   symbols:
+ *                     type: array
+ *                     items:
+ *                       type: string
+ *               config:
+ *                 type: object
+ *     responses:
+ *       200:
+ *         description: 创建成功
  */
 quantRouter.post('/strategies', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -908,8 +1119,24 @@ quantRouter.delete('/strategies/:id', async (req: Request, res: Response, next: 
 });
 
 /**
- * POST /api/quant/strategies/:id/start
- * 启动策略
+ * @openapi
+ * /quant/strategies/{id}/start:
+ *   post:
+ *     tags:
+ *       - 量化交易-策略管理
+ *     summary: 启动策略
+ *     description: 启动指定的量化策略
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: 启动成功
  */
 quantRouter.post('/strategies/:id/start', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -932,8 +1159,24 @@ quantRouter.post('/strategies/:id/start', async (req: Request, res: Response, ne
 });
 
 /**
- * POST /api/quant/strategies/:id/stop
- * 停止策略
+ * @openapi
+ * /quant/strategies/{id}/stop:
+ *   post:
+ *     tags:
+ *       - 量化交易-策略管理
+ *     summary: 停止策略
+ *     description: 停止运行中的量化策略
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: 停止成功
  */
 quantRouter.post('/strategies/:id/stop', async (req: Request, res: Response, next: NextFunction) => {
   try {

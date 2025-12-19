@@ -13,6 +13,7 @@ import {
   FileTextOutlined,
   EyeOutlined,
   StockOutlined,
+  FileSearchOutlined,
 } from '@ant-design/icons'
 import { usePathname, useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -106,6 +107,11 @@ export default function AppLayout({ children }: AppLayoutProps) {
       type: 'divider' as const,
     },
     {
+      key: '/logs',
+      icon: <FileSearchOutlined />,
+      label: <Link href="/logs">系统日志</Link>,
+    },
+    {
       key: '/config',
       icon: <SettingOutlined />,
       label: <Link href="/config">系统配置</Link>,
@@ -166,6 +172,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
         items.push({ title: isLast ? '行情查询' : <Link href={currentPath}>行情查询</Link> })
       } else if (path === 'watchlist') {
         items.push({ title: isLast ? '关注列表' : <Link href={currentPath}>关注列表</Link> })
+      } else if (path === 'logs') {
+        items.push({ title: isLast ? '系统日志' : <Link href={currentPath}>系统日志</Link> })
       } else if (path === 'config') {
         items.push({ title: isLast ? '系统配置' : <Link href={currentPath}>系统配置</Link> })
       } else if (path === 'options') {

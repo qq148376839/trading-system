@@ -8,6 +8,7 @@ import { logger } from '../utils/logger';
 import strategyScheduler from './strategy-scheduler.service';
 import basicExecutionService from './basic-execution.service';
 import orderPreventionMetrics from './order-prevention-metrics.service';
+import pool from '../config/database';
 
 class TradePushService {
   private isSubscribed: boolean = false;
@@ -58,7 +59,7 @@ class TradePushService {
   /**
    * 处理订单变更事件
    */
-  private handleOrderChanged(err: Error | null, event: any): void {
+  private async handleOrderChanged(err: Error | null, event: any): Promise<void> {
     if (err) {
       logger.error('[交易推送] 订单变更推送错误:', err);
       orderPreventionMetrics.recordTradePush(false);
@@ -94,6 +95,57 @@ class TradePushService {
 
       logger.log(`[交易推送] 收到订单变更: ${symbol}, 订单ID=${orderId}, 状态=${status}, 已成交=${executedQuantity}`);
 
+      // 标准化订单状态
+      const normalizedStatus = this.normalizeStatus(status);
+      const dbStatus = this.mapStatusToDbStatus(normalizedStatus);
+
+      // ✅ 修复BUG 1: 更新数据库订单状态（只在状态发生变化时更新，避免竞态条件）
+      try {
+        const updateResult = await pool.query(
+          `UPDATE execution_orders 
+           SET current_status = $1, updated_at = NOW()
+           WHERE order_id = $2 AND current_status != $1`,
+          [dbStatus, orderId]
+        );
+        
+        if (updateResult.rowCount && updateResult.rowCount > 0) {
+          logger.debug(`[交易推送] 已更新订单状态: ${orderId}, 状态=${dbStatus} (原始状态=${status})`);
+        } else {
+          logger.debug(`[交易推送] 订单状态未变化: ${orderId}, 当前状态=${dbStatus}`);
+        }
+      } catch (dbError: any) {
+        logger.error(`[交易推送] 更新订单状态失败 (${orderId}):`, dbError);
+      }
+
+      // ✅ 修复BUG 2: 更新信号状态（如果订单已完成）
+      const completedStatuses = ['FilledStatus', 'PartialFilledStatus', 'RejectedStatus', 'CanceledStatus'];
+      if (completedStatuses.includes(normalizedStatus)) {
+        try {
+          let signalStatus: 'EXECUTED' | 'REJECTED' | 'IGNORED';
+          if (normalizedStatus === 'FilledStatus' || normalizedStatus === 'PartialFilledStatus') {
+            signalStatus = 'EXECUTED';
+          } else if (normalizedStatus === 'RejectedStatus') {
+            signalStatus = 'REJECTED';
+          } else {
+            signalStatus = 'IGNORED';
+          }
+          
+          await basicExecutionService.updateSignalStatusByOrderId(orderId, signalStatus);
+          logger.debug(`[交易推送] 已更新信号状态: ${orderId}, 状态=${signalStatus}`);
+        } catch (signalError: any) {
+          logger.error(`[交易推送] 更新信号状态失败 (${orderId}):`, signalError);
+        }
+
+        // 订单已完成，立即重新计算可用持仓（异步执行，不阻塞）
+        basicExecutionService.calculateAvailablePosition(symbol)
+          .then(positionInfo => {
+            logger.log(`[交易推送] 订单完成后重新计算可用持仓: ${symbol}, 可用持仓=${positionInfo.availableQuantity}`);
+          })
+          .catch(error => {
+            logger.error(`[交易推送] 重新计算可用持仓失败 (${symbol}):`, error);
+          });
+      }
+
       // 标准化订单方向
       const isSell = side === 'Sell' || side === 2 || side === 'SELL' || side === 'sell';
       const action = isSell ? 'SELL' : 'BUY';
@@ -104,22 +156,6 @@ class TradePushService {
       if (strategyId) {
         logger.debug(`[交易推送] 订单已提交: ${strategyId}:${symbol}:${action}, 订单ID=${orderId}`);
         // 实际的缓存更新在 BasicExecutionService.submitOrder 成功后完成
-      }
-
-      // 订单状态变更时，立即更新可用持仓计算
-      // 如果订单已成交或已拒绝，需要重新计算可用持仓
-      const completedStatuses = ['FilledStatus', 'PartialFilledStatus', 'RejectedStatus', 'CanceledStatus'];
-      const normalizedStatus = this.normalizeStatus(status);
-      
-      if (completedStatuses.includes(normalizedStatus)) {
-        // 订单已完成，立即重新计算可用持仓（异步执行，不阻塞）
-        basicExecutionService.calculateAvailablePosition(symbol)
-          .then(positionInfo => {
-            logger.log(`[交易推送] 订单完成后重新计算可用持仓: ${symbol}, 可用持仓=${positionInfo.availableQuantity}`);
-          })
-          .catch(error => {
-            logger.error(`[交易推送] 重新计算可用持仓失败 (${symbol}):`, error);
-          });
       }
 
       // 订单拒绝时，立即释放资金和持仓占用
@@ -157,6 +193,28 @@ class TradePushService {
     }
     
     return status.toString();
+  }
+
+  /**
+   * 映射订单状态到数据库状态
+   * ✅ 修复BUG 1: 添加状态映射函数
+   */
+  private mapStatusToDbStatus(normalizedStatus: string): string {
+    const statusMap: Record<string, string> = {
+      'FilledStatus': 'FILLED',
+      'PartialFilledStatus': 'FILLED',
+      'NewStatus': 'NEW',
+      'NotReported': 'SUBMITTED',
+      'WaitToNew': 'SUBMITTED',
+      'PendingReplaceStatus': 'SUBMITTED',
+      'WaitToReplace': 'SUBMITTED',
+      'CanceledStatus': 'CANCELLED',
+      'PendingCancelStatus': 'CANCELLED',
+      'WaitToCancel': 'CANCELLED',
+      'RejectedStatus': 'FAILED',
+      'ExpiredStatus': 'CANCELLED',
+    };
+    return statusMap[normalizedStatus] || 'SUBMITTED';
   }
 
   /**

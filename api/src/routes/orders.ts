@@ -603,8 +603,116 @@ function formatTimestampSeconds(timestamp: any): string {
 }
 
 /**
- * GET /api/orders/account-balance
- * 查询账户余额（必须在动态路由之前）
+ * @openapi
+ * components:
+ *   schemas:
+ *     Order:
+ *       type: object
+ *       properties:
+ *         order_id:
+ *           type: string
+ *           description: 订单ID
+ *         symbol:
+ *           type: string
+ *           description: 股票代码 (e.g., 700.HK)
+ *         stock_name:
+ *           type: string
+ *           description: 股票名称
+ *         side:
+ *           type: string
+ *           enum: [Buy, Sell]
+ *           description: 交易方向
+ *         order_type:
+ *           type: string
+ *           description: 订单类型代码
+ *         order_type_text:
+ *           type: string
+ *           description: 订单类型中文说明
+ *         status:
+ *           type: string
+ *           description: 订单状态
+ *         quantity:
+ *           type: string
+ *           description: 委托数量
+ *         executed_quantity:
+ *           type: string
+ *           description: 已成交数量
+ *         price:
+ *           type: string
+ *           description: 委托价格
+ *         executed_price:
+ *           type: string
+ *           description: 成交均价
+ *         submitted_at:
+ *           type: string
+ *           description: 提交时间(秒级时间戳)
+ *         updated_at:
+ *           type: string
+ *           description: 更新时间(秒级时间戳)
+ */
+
+/**
+ * @openapi
+ * /orders/account-balance:
+ *   get:
+ *     tags:
+ *       - 订单管理
+ *     summary: 查询账户余额
+ *     description: 获取当前账户的资金状况，包括现金、购买力等信息
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: currency
+ *         schema:
+ *           type: string
+ *           enum: [HKD, USD, CNY]
+ *         description: 指定币种 (可选)
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     balances:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           currency:
+ *                             type: string
+ *                             description: 币种
+ *                           totalCash:
+ *                             type: string
+ *                             description: 现金总额
+ *                           netAssets:
+ *                             type: string
+ *                             description: 净资产
+ *                           buyPower:
+ *                             type: string
+ *                             description: 购买力
+ *                           cashInfos:
+ *                             type: array
+ *                             items:
+ *                               type: object
+ *                               properties:
+ *                                 currency:
+ *                                   type: string
+ *                                 availableCash:
+ *                                   type: string
+ *                                   description: 可用现金
+ *       429:
+ *         description: 请求频率过高
+ *       500:
+ *         description: 服务器内部错误
  */
 ordersRouter.get('/account-balance', async (req: Request, res: Response) => {
   try {
@@ -932,10 +1040,54 @@ ordersRouter.post('/sync-status', async (req: Request, res: Response) => {
 });
 
 /**
- * GET /api/orders/history
- * 查询历史订单（过去90天）
- * 使用SDK: tradeCtx.historyOrders(options)
- * 参考：https://longportapp.github.io/openapi/nodejs/classes/TradeContext.html#historyorders
+ * @openapi
+ * /orders/history:
+ *   get:
+ *     tags:
+ *       - 订单管理
+ *     summary: 查询历史订单
+ *     description: 查询过去90天内的订单记录
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: symbol
+ *         schema:
+ *           type: string
+ *         description: 股票代码
+ *       - in: query
+ *         name: start_at
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: 开始日期 (YYYY-MM-DD)
+ *       - in: query
+ *         name: end_at
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: 结束日期 (YYYY-MM-DD)
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     orders:
+ *                       type: array
+ *                       items:
+ *                         $ref: '#/components/schemas/Order'
+ *                     hasMore:
+ *                       type: boolean
+ *                       description: 是否还有更多数据
  */
 ordersRouter.get('/history', async (req: Request, res: Response) => {
   try {
@@ -1049,10 +1201,50 @@ ordersRouter.get('/history', async (req: Request, res: Response) => {
 });
 
 /**
- * GET /api/orders/today
- * 查询今日订单（增强版）
- * 使用SDK: tradeCtx.todayOrders(options)
- * 参考：https://longportapp.github.io/openapi/nodejs/classes/TradeContext.html#todayorders
+ * @openapi
+ * /orders/today:
+ *   get:
+ *     tags:
+ *       - 订单管理
+ *     summary: 查询今日订单
+ *     description: 获取当天的所有订单记录
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: symbol
+ *         schema:
+ *           type: string
+ *         description: 股票代码
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *         description: 订单状态过滤 (e.g. "Filled,New")
+ *       - in: query
+ *         name: side
+ *         schema:
+ *           type: string
+ *           enum: [Buy, Sell]
+ *         description: 交易方向
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     orders:
+ *                       type: array
+ *                       items:
+ *                         $ref: '#/components/schemas/Order'
  */
 ordersRouter.get('/today', async (req: Request, res: Response) => {
   try {
@@ -1137,10 +1329,79 @@ ordersRouter.get('/today', async (req: Request, res: Response) => {
 });
 
 /**
- * POST /api/orders/submit
- * 提交交易订单
- * 支持所有 Longbridge OpenAPI 订单类型和参数
- * 参考：https://open.longbridge.com/zh-CN/docs/trade/order/submit
+ * @openapi
+ * /orders/submit:
+ *   post:
+ *     tags:
+ *       - 订单管理
+ *     summary: 提交交易订单
+ *     description: 创建新的买入或卖出委托
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - symbol
+ *               - side
+ *               - order_type
+ *               - submitted_quantity
+ *             properties:
+ *               symbol:
+ *                 type: string
+ *                 description: 股票代码 (e.g. 700.HK)
+ *                 example: "700.HK"
+ *               side:
+ *                 type: string
+ *                 enum: [Buy, Sell]
+ *                 description: 交易方向
+ *                 example: "Buy"
+ *               order_type:
+ *                 type: string
+ *                 enum: [LO, MO, ELO, AO, ALO]
+ *                 description: 订单类型 (LO=限价单, MO=市价单)
+ *                 example: "LO"
+ *               submitted_quantity:
+ *                 type: string
+ *                 description: 委托数量
+ *                 example: "100"
+ *               submitted_price:
+ *                 type: string
+ *                 description: 委托价格 (限价单必填)
+ *                 example: "350.20"
+ *               time_in_force:
+ *                 type: string
+ *                 enum: [Day, GTC, GTD]
+ *                 description: 订单有效期
+ *                 default: Day
+ *               remark:
+ *                 type: string
+ *                 description: 订单备注
+ *     responses:
+ *       201:
+ *         description: 订单提交成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     orderId:
+ *                       type: string
+ *                       description: 系统生成的订单ID
+ *                     status:
+ *                       type: string
+ *                       description: 初始状态
+ *       400:
+ *         description: 参数错误 (如最小交易单位不符)
  */
 ordersRouter.post('/submit', async (req: Request, res: Response) => {
   try {
@@ -1635,10 +1896,40 @@ ordersRouter.put('/:orderId', async (req: Request, res: Response) => {
 });
 
 /**
- * GET /api/orders/:orderId
- * 查询订单详情
- * 使用SDK: tradeCtx.orderDetail(orderId)
- * 参考：https://longportapp.github.io/openapi/nodejs/classes/TradeContext.html#orderdetail
+ * @openapi
+ * /orders/{orderId}:
+ *   get:
+ *     tags:
+ *       - 订单管理
+ *     summary: 查询订单详情
+ *     description: 根据订单ID获取单笔订单的详细信息
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: orderId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 订单ID
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     order:
+ *                       $ref: '#/components/schemas/Order'
+ *       404:
+ *         description: 订单不存在
  */
 ordersRouter.get('/:orderId', async (req: Request, res: Response) => {
   try {
@@ -1694,8 +1985,41 @@ ordersRouter.get('/:orderId', async (req: Request, res: Response) => {
 });
 
 /**
- * DELETE /api/orders/:orderId
- * 取消订单
+ * @openapi
+ * /orders/{orderId}:
+ *   delete:
+ *     tags:
+ *       - 订单管理
+ *     summary: 撤销订单
+ *     description: 取消一笔未完全成交的订单
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: orderId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 订单ID
+ *     responses:
+ *       200:
+ *         description: 撤单指令提交成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     message:
+ *                       type: string
+ *                       example: 订单已取消
+ *       500:
+ *         description: 撤单失败
  */
 ordersRouter.delete('/:orderId', async (req: Request, res: Response) => {
   try {

@@ -5,8 +5,40 @@ import { ErrorCode, ErrorSeverity, ErrorCategory, AppError } from '../utils/erro
 export const healthRouter = Router();
 
 /**
- * GET /api/health
- * 健康检查接口
+ * @openapi
+ * /health:
+ *   get:
+ *     tags:
+ *       - 系统监控
+ *     summary: 系统健康检查
+ *     description: 检查 API 服务运行状态及数据库连接是否正常
+ *     responses:
+ *       200:
+ *         description: 服务正常
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     status:
+ *                       type: string
+ *                       example: healthy
+ *                     timestamp:
+ *                       type: string
+ *                     services:
+ *                       type: object
+ *                       properties:
+ *                         database:
+ *                           type: string
+ *                           example: connected
+ *       503:
+ *         description: 服务异常 (如数据库连接失败)
  */
 healthRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {

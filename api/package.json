@@ -13,7 +13,12 @@
     "test:env": "tsx test-env.ts",
     "test:env-file": "tsx test-env-file.ts",
     "backtest": "tsx scripts/backtest-strategy.ts",
-    "backfill-signals": "tsx scripts/backfill-signal-associations.ts"
+    "backfill-signals": "tsx scripts/backfill-signal-associations.ts",
+    "backfill-signals:dry-run": "tsx scripts/backfill-signal-associations.ts --dry-run",
+    "cleanup-data": "tsx scripts/cleanup-historical-data.ts",
+    "cleanup-data:dry-run": "tsx scripts/cleanup-historical-data.ts --dry-run",
+    "create-signals-for-orders": "tsx scripts/create-signals-for-historical-orders.ts",
+    "create-signals-for-orders:dry-run": "tsx scripts/create-signals-for-historical-orders.ts --dry-run"
   },
   "keywords": [
     "trading",
@@ -31,9 +36,11 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
-    "longport": "^1.0.0",
+    "longport": "latest",
     "node-cron": "^3.0.3",
-    "pg": "^8.11.3"
+    "pg": "^8.11.3",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
@@ -44,6 +51,8 @@
     "@types/node": "^20.10.6",
     "@types/node-cron": "^3.0.11",
     "@types/pg": "^8.10.9",
+    "@types/swagger-jsdoc": "^6.0.4",
+    "@types/swagger-ui-express": "^4.1.8",
     "jest": "^29.7.0",
     "ts-jest": "^29.4.6",
     "tsx": "^4.7.0",

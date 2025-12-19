@@ -78,6 +78,32 @@ tradingRecommendationRouter.get('/', rateLimiter, async (req: Request, res: Resp
 });
 
 /**
+ * GET /api/trading-recommendation/market-regime
+ * 获取市场状态矩阵（全局市场环境指标）
+ * 
+ * 注意：此路由必须在 /:symbol 路由之前定义，避免路径冲突
+ *
+ * 响应：
+ * - market_regime: 市场状态矩阵对象
+ */
+tradingRecommendationRouter.get('/market-regime', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // 获取全局市场状态矩阵（不依赖具体股票）
+    const marketRegime = await tradingRecommendationService.getMarketRegime();
+
+    res.json({
+      success: true,
+      data: {
+        market_regime: marketRegime,
+      },
+    });
+  } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
  * GET /api/trading-recommendation/:symbol
  * 获取单个股票的交易推荐
  *

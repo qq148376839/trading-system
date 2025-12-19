@@ -68,8 +68,48 @@ async function getSecurityList(): Promise<Array<{ symbol: string; name_cn: strin
 }
 
 /**
- * GET /api/quote/security-list
- * 获取美股标的列表（用于自动完成）
+ * @openapi
+ * /quote/security-list:
+ *   get:
+ *     tags:
+ *       - 市场行情
+ *     summary: 获取美股标的列表
+ *     description: 获取支持的美股列表，用于自动补全或搜索 (包含缓存机制)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: query
+ *         schema:
+ *           type: string
+ *         description: 搜索关键字 (股票代码或名称)
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     securities:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           symbol:
+ *                             type: string
+ *                           name_cn:
+ *                             type: string
+ *                           name_en:
+ *                             type: string
+ *                     total:
+ *                       type: number
  */
 quoteRouter.get('/security-list', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -125,18 +165,64 @@ setInterval(() => {
 }, 30 * 60 * 1000); // 每30分钟更新一次
 
 /**
- * GET /api/quote
- * 获取标的实时行情
- * 
- * 严格按照长桥官方文档实现：
- * https://open.longportapp.com/zh-CN/docs/quote/pull/quote
- * 
- * 请求参数：
- * - symbol: string[] (必需) 标的代码列表，使用 ticker.region 格式，例如：700.HK
- * - 限制：每次请求最多500个标的
- * 
- * 响应：
- * - secu_quote: 标的实时行情数据列表
+ * @openapi
+ * /quote:
+ *   get:
+ *     tags:
+ *       - 市场行情
+ *     summary: 获取实时行情
+ *     description: 获取指定股票的最新报价信息，支持批量查询 (最多500个)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: symbol
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 股票代码列表 (逗号分隔)，例如 "700.HK,AAPL.US"
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     secu_quote:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           symbol:
+ *                             type: string
+ *                           last_done:
+ *                             type: string
+ *                             description: 最新成交价
+ *                           prev_close:
+ *                             type: string
+ *                             description: 昨日收盘价
+ *                           open:
+ *                             type: string
+ *                             description: 开盘价
+ *                           high:
+ *                             type: string
+ *                           low:
+ *                             type: string
+ *                           volume:
+ *                             type: string
+ *                             description: 成交量
+ *                           turnover:
+ *                             type: string
+ *                             description: 成交额
+ *       400:
+ *         description: 参数错误
  */
 quoteRouter.get('/', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -279,18 +365,58 @@ quoteRouter.get('/', rateLimiter, async (req: Request, res: Response, next: Next
 });
 
 /**
- * GET /api/quote/option
- * 获取期权实时行情
- *
- * 参考文档：
- * https://open.longbridge.com/zh-CN/docs/quote/pull/option-quote
- *
- * 请求参数：
- * - symbol: string[] (必需) 期权代码列表，格式：TSLA251128P395000.US
- * - 限制：每次请求最多500个
- *
- * 响应：
- * - secu_quote: 期权实时行情数据列表
+ * @openapi
+ * /quote/option:
+ *   get:
+ *     tags:
+ *       - 市场行情
+ *     summary: 获取期权实时行情
+ *     description: 获取期权合约的实时报价，支持 Greeks 数据 (如果权限允许)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: symbol
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 期权代码列表，例如 "TSLA251128P395000.US"
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     secu_quote:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           symbol:
+ *                             type: string
+ *                           last_done:
+ *                             type: string
+ *                           option_extend:
+ *                             type: object
+ *                             description: 期权扩展数据 (Greeks等)
+ *                             properties:
+ *                               implied_volatility:
+ *                                 type: string
+ *                                 description: 隐含波动率
+ *                               strike_price:
+ *                                 type: string
+ *                                 description: 行权价
+ *                               expiry_date:
+ *                                 type: string
+ *                                 description: 到期日
  */
 quoteRouter.get('/option', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -403,6 +529,376 @@ quoteRouter.get('/option', rateLimiter, async (req: Request, res: Response, next
       }
       
       // 处理其他错误（使用normalizeError会自动处理）
+      const appError = normalizeError(error);
+      return next(appError);
+    }
+  } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
+ * @openapi
+ * /quote/market-temperature:
+ *   get:
+ *     tags:
+ *       - 市场行情
+ *     summary: 获取当前市场温度
+ *     description: |
+ *       获取当前市场温度数据，包括温度值、描述、估值、情绪等信息。
+ *       根据LongPort API文档：https://open.longbridge.com/zh-CN/docs/quote/pull/market_temperature
+ *       
+ *       返回数据包括：
+ *       - temperature: 市场温度值（0-100）
+ *       - description: 温度描述
+ *       - valuation: 市场估值
+ *       - sentiment: 市场情绪
+ *       - updated_at: 更新时间戳
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: market
+ *         schema:
+ *           type: string
+ *           enum: [US, HK, SG, CN]
+ *           default: US
+ *         description: 市场代码，支持 US（美股）、HK（港股）、SG（新加坡）、CN（A股）
+ *     responses:
+ *       200:
+ *         description: 获取成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     temperature:
+ *                       type: integer
+ *                       description: 市场温度值（0-100）
+ *                       example: 50
+ *                     description:
+ *                       type: string
+ *                       description: 温度描述
+ *                       example: "温度适宜，保持平稳"
+ *                     valuation:
+ *                       type: integer
+ *                       description: 市场估值
+ *                       example: 23
+ *                     sentiment:
+ *                       type: integer
+ *                       description: 市场情绪
+ *                       example: 78
+ *                     updated_at:
+ *                       type: integer
+ *                       description: 更新时间戳
+ *                       example: 1744616612
+ *       400:
+ *         description: 参数错误
+ *       500:
+ *         description: 服务器错误或SDK方法不存在
+ */
+quoteRouter.get('/market-temperature', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { market = 'US' } = req.query;
+    
+    // 验证market参数
+    const validMarkets = ['US', 'HK', 'SG', 'CN'];
+    if (typeof market !== 'string' || !validMarkets.includes(market)) {
+      return next(ErrorFactory.validationError(`无效的市场代码: ${market}。支持的市场: ${validMarkets.join(', ')}`));
+    }
+    
+    try {
+      const quoteCtx = await getQuoteContext();
+      const longport = require('longport');
+      const { Market } = longport;
+      
+      // 映射市场代码
+      const marketMap: Record<string, any> = {
+        'US': Market.US,
+        'HK': Market.HK,
+        'SG': Market.SG,
+        'CN': Market.CN,
+      };
+      
+      const marketEnum = marketMap[market];
+      if (!marketEnum) {
+        return next(ErrorFactory.validationError(`不支持的市场代码: ${market}`));
+      }
+      
+      // 根据SDK文档，方法确实存在：https://longportapp.github.io/openapi/nodejs/classes/QuoteContext.html#markettemperature
+      // 添加详细日志来诊断问题
+      console.log('[市场温度调试] 开始检测marketTemperature方法...');
+      console.log('[市场温度调试] quoteCtx类型:', typeof quoteCtx);
+      console.log('[市场温度调试] quoteCtx构造函数:', quoteCtx.constructor?.name);
+      
+      // 检查实例上的所有属性（包括不可枚举的）
+      const instanceOwnProps = Object.getOwnPropertyNames(quoteCtx);
+      console.log('[市场温度调试] 实例自有属性数量:', instanceOwnProps.length);
+      console.log('[市场温度调试] 实例自有属性（前20个）:', instanceOwnProps.slice(0, 20));
+      
+      // 检查原型链
+      const prototype = Object.getPrototypeOf(quoteCtx);
+      console.log('[市场温度调试] 原型类型:', typeof prototype);
+      console.log('[市场温度调试] 原型构造函数:', prototype?.constructor?.name);
+      
+      const prototypeProps = Object.getOwnPropertyNames(prototype);
+      console.log('[市场温度调试] 原型属性数量:', prototypeProps.length);
+      console.log('[市场温度调试] 原型属性（前30个）:', prototypeProps.slice(0, 30));
+      
+      // 检查是否有marketTemperature相关的方法
+      const allProps = [...instanceOwnProps, ...prototypeProps];
+      const tempRelated = allProps.filter(name => name.toLowerCase().includes('temperature') || name.toLowerCase().includes('temp'));
+      console.log('[市场温度调试] 包含temperature/temp的属性:', tempRelated);
+      
+      // 检查是否有market相关的方法
+      const marketRelated = allProps.filter(name => name.toLowerCase().includes('market') && typeof quoteCtx[name] === 'function');
+      console.log('[市场温度调试] 包含market的函数方法:', marketRelated);
+      
+      // 尝试多种方式检测和调用方法
+      let tempData: any = null;
+      let methodName: string | null = null;
+      let errorDetails: any = null;
+      
+      // 方法1: 直接检查实例上的方法（可能不在原型链上）
+      console.log('[市场温度调试] 检查 quoteCtx.marketTemperature:', typeof quoteCtx.marketTemperature);
+      if (quoteCtx.marketTemperature && typeof quoteCtx.marketTemperature === 'function') {
+        methodName = 'marketTemperature';
+        console.log('[市场温度调试] 找到方法: quoteCtx.marketTemperature，开始调用...');
+        try {
+          tempData = await quoteCtx.marketTemperature(marketEnum);
+          console.log('[市场温度调试] 调用成功，返回类型:', typeof tempData);
+        } catch (err: any) {
+          errorDetails = err;
+          console.error('[市场温度调试] 调用失败:', err.message);
+        }
+      }
+      // 方法2: 检查原型链上的方法
+      else if (prototype.marketTemperature && typeof prototype.marketTemperature === 'function') {
+        methodName = 'marketTemperature (prototype)';
+        console.log('[市场温度调试] 找到方法: prototype.marketTemperature，开始调用...');
+        try {
+          tempData = await prototype.marketTemperature.call(quoteCtx, marketEnum);
+          console.log('[市场温度调试] 调用成功，返回类型:', typeof tempData);
+        } catch (err: any) {
+          errorDetails = err;
+          console.error('[市场温度调试] 调用失败:', err.message);
+        }
+      }
+      // 方法3: 尝试下划线命名
+      else if (quoteCtx.market_temperature && typeof quoteCtx.market_temperature === 'function') {
+        methodName = 'market_temperature';
+        console.log('[市场温度调试] 找到方法: quoteCtx.market_temperature，开始调用...');
+        try {
+          tempData = await quoteCtx.market_temperature(marketEnum);
+          console.log('[市场温度调试] 调用成功，返回类型:', typeof tempData);
+        } catch (err: any) {
+          errorDetails = err;
+          console.error('[市场温度调试] 调用失败:', err.message);
+        }
+      }
+      // 方法4: 尝试直接调用（即使检测不到，也可能存在）
+      else {
+        console.log('[市场温度调试] 尝试直接调用 quoteCtx.marketTemperature（即使检测不到）...');
+        try {
+          tempData = await quoteCtx.marketTemperature(marketEnum);
+          methodName = 'marketTemperature (direct call)';
+          console.log('[市场温度调试] 直接调用成功！返回类型:', typeof tempData);
+        } catch (err: any) {
+          console.log('[市场温度调试] 直接调用失败:', err.message);
+          
+          // 检查所有包含temperature的方法
+          const instanceProps = instanceOwnProps
+            .filter(name => typeof quoteCtx[name] === 'function' && name.toLowerCase().includes('temperature'));
+          
+          const prototypeMethods = prototypeProps
+            .filter(name => typeof quoteCtx[name] === 'function' && name.toLowerCase().includes('temperature'));
+          
+          const allTempMethods = [...instanceProps, ...prototypeMethods];
+          console.log('[市场温度调试] 包含temperature的方法:', allTempMethods);
+          
+          if (allTempMethods.length > 0) {
+            methodName = allTempMethods[0];
+            console.log('[市场温度调试] 尝试调用方法:', methodName);
+            try {
+              tempData = await quoteCtx[methodName](marketEnum);
+              console.log('[市场温度调试] 调用成功，返回类型:', typeof tempData);
+            } catch (err2: any) {
+              errorDetails = err2;
+              console.error('[市场温度调试] 调用失败:', err2.message);
+            }
+          } else {
+            // 列出所有可用方法用于调试
+            const allInstanceMethods = instanceOwnProps
+              .filter(name => typeof quoteCtx[name] === 'function' && !name.startsWith('_'));
+            const allPrototypeMethods = prototypeProps
+              .filter(name => typeof quoteCtx[name] === 'function' && !name.startsWith('_'));
+            
+            console.error('[市场温度调试] 未找到marketTemperature方法');
+            console.error('[市场温度调试] 实例方法总数:', allInstanceMethods.length);
+            console.error('[市场温度调试] 原型方法总数:', allPrototypeMethods.length);
+            console.error('[市场温度调试] 所有原型方法:', allPrototypeMethods);
+            
+            // 检查SDK版本
+            let sdkVersion = 'unknown';
+            try {
+              const longportPackage = require('longport/package.json');
+              sdkVersion = longportPackage.version;
+              console.error('[市场温度调试] LongPort SDK版本:', sdkVersion);
+            } catch (e) {
+              console.error('[市场温度调试] 无法读取SDK版本');
+            }
+            
+            return res.status(500).json({
+              success: false,
+              error: {
+                code: 'SDK_METHOD_NOT_FOUND',
+                message: `LongPort SDK的marketTemperature方法不存在。当前SDK版本: ${sdkVersion}`,
+                details: {
+                  currentVersion: sdkVersion,
+                  instanceMethods: allInstanceMethods.slice(0, 30),
+                  prototypeMethods: allPrototypeMethods.slice(0, 30),
+                  allPrototypeMethods: allPrototypeMethods, // 返回所有方法用于调试
+                  temperatureRelated: tempRelated,
+                  marketRelated: marketRelated,
+                  suggestion: `当前SDK版本(${sdkVersion})不支持marketTemperature方法。请更新SDK到最新版本: npm install longport@latest`,
+                  updateCommand: 'npm install longport@latest',
+                  sdkDocs: 'https://longportapp.github.io/openapi/nodejs/classes/QuoteContext.html#markettemperature'
+                }
+              }
+            });
+          }
+        }
+      }
+      
+      // 如果调用失败，返回错误信息
+      if (errorDetails) {
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: 'SDK_CALL_ERROR',
+            message: `调用${methodName}方法失败`,
+            details: {
+              method: methodName,
+              error: errorDetails.message,
+              stack: errorDetails.stack
+            }
+          }
+        });
+      }
+      
+      // 解析返回数据
+      // 根据LongPort API文档和SDK文档，返回的是MarketTemperature对象
+      // 需要调用toString()或直接访问属性
+      let result: any = null;
+      
+      if (tempData && typeof tempData === 'object') {
+        // 方式1: 直接访问temperature属性（SDK对象通常有这些属性）
+        if ('temperature' in tempData) {
+          result = {
+            temperature: tempData.temperature,
+            description: tempData.description || null,
+            valuation: tempData.valuation || null,
+            sentiment: tempData.sentiment || null,
+            updated_at: tempData.updated_at || tempData.updatedAt || null,
+          };
+        }
+        // 方式2: 如果返回格式是 { code: 0, data: { temperature: ... } }
+        else if ('data' in tempData && tempData.data) {
+          result = {
+            temperature: tempData.data.temperature,
+            description: tempData.data.description || null,
+            valuation: tempData.data.valuation || null,
+            sentiment: tempData.data.sentiment || null,
+            updated_at: tempData.data.updated_at || null,
+          };
+        }
+        // 方式3: 尝试调用toString()然后解析（SDK对象通常有toString方法）
+        else if (typeof tempData.toString === 'function') {
+          const str = tempData.toString();
+          console.log(`MarketTemperature toString():`, str);
+          
+          // 尝试从字符串中提取各个字段
+          const tempMatch = str.match(/temperature[:\s]+(\d+(?:\.\d+)?)/i);
+          const descMatch = str.match(/description[:\s]+([^\n,]+)/i);
+          const valMatch = str.match(/valuation[:\s]+(\d+)/i);
+          const sentMatch = str.match(/sentiment[:\s]+(\d+)/i);
+          const timeMatch = str.match(/updated_at[:\s]+(\d+)/i);
+          
+          result = {
+            temperature: tempMatch ? parseFloat(tempMatch[1]) : null,
+            description: descMatch ? descMatch[1].trim() : null,
+            valuation: valMatch ? parseInt(valMatch[1], 10) : null,
+            sentiment: sentMatch ? parseInt(sentMatch[1], 10) : null,
+            updated_at: timeMatch ? parseInt(timeMatch[1], 10) : null,
+            _debug_string: str, // 调试信息
+          };
+        }
+        // 方式4: 尝试提取所有可能的字段
+        else {
+          result = {
+            temperature: tempData.temperature || tempData.value || null,
+            description: tempData.description || null,
+            valuation: tempData.valuation || null,
+            sentiment: tempData.sentiment || null,
+            updated_at: tempData.updated_at || tempData.updatedAt || null,
+            _debug_keys: Object.keys(tempData), // 调试信息：显示所有键
+            _debug_raw: tempData // 包含原始数据以便调试
+          };
+        }
+      } else {
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: 'INVALID_RESPONSE',
+            message: '市场温度API返回了无效的数据格式',
+            details: {
+              method: methodName,
+              responseType: typeof tempData,
+              response: tempData,
+              suggestion: 'MarketTemperature对象应该有toString()方法，请检查返回的数据结构'
+            }
+          }
+        });
+      }
+      
+      // 验证temperature字段
+      if (result.temperature === null || result.temperature === undefined) {
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: 'MISSING_TEMPERATURE',
+            message: '返回数据中缺少temperature字段',
+            details: {
+              method: methodName,
+              response: result,
+              rawData: tempData,
+              suggestion: '请检查MarketTemperature对象的结构，可能需要调用toString()方法或访问特定属性'
+            }
+          }
+        });
+      }
+      
+      return res.json({
+        success: true,
+        data: {
+          temperature: result.temperature,
+          description: result.description || null,
+          valuation: result.valuation || null,
+          sentiment: result.sentiment || null,
+          updated_at: result.updated_at || null,
+          method_used: methodName, // 调试信息：显示使用的方法名
+          ...(result._debug_string ? { _debug_string: result._debug_string } : {}), // 调试信息：toString()结果
+          ...(result._debug_keys ? { _debug_keys: result._debug_keys } : {}), // 调试信息：对象键
+        }
+      });
+    } catch (error: any) {
       const appError = normalizeError(error);
       return next(appError);
     }

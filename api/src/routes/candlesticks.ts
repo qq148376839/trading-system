@@ -6,16 +6,68 @@ import { ErrorFactory, normalizeError } from '../utils/errors';
 export const candlesticksRouter = Router();
 
 /**
- * GET /api/candlesticks
- * 获取标的K线数据
- * 
- * 请求参数：
- * - symbol: string (必需) 标的代码，使用 ticker.region 格式，例如：700.HK
- * - period: string (必需) K线周期，支持：1m, 5m, 15m, 30m, 60m, day, week, month, year
- * - count: number (必需) 获取的K线数量
- * 
- * 响应：
- * - candlesticks: K线数据列表
+ * @openapi
+ * /candlesticks:
+ *   get:
+ *     tags:
+ *       - 市场分析
+ *     summary: 获取 K 线数据
+ *     description: 获取指定标的的 K 线数据
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: symbol
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 标的代码 (e.g. 700.HK)
+ *       - in: query
+ *         name: period
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [1m, 5m, 15m, 30m, 60m, day, week, month, year]
+ *         description: K线周期
+ *       - in: query
+ *         name: count
+ *         required: true
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 1000
+ *         description: K线数量
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     candlesticks:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           timestamp:
+ *                             type: string
+ *                           open:
+ *                             type: string
+ *                           high:
+ *                             type: string
+ *                           low:
+ *                             type: string
+ *                           close:
+ *                             type: string
+ *                           volume:
+ *                             type: number
  */
 candlesticksRouter.get('/', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {

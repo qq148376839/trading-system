@@ -5,8 +5,63 @@ import { ErrorFactory, normalizeError } from '../utils/errors';
 export const tradingRulesRouter = Router();
 
 /**
- * GET /api/trading-rules
- * 获取交易规则列表
+ * @openapi
+ * /trading-rules:
+ *   get:
+ *     tags:
+ *       - 交易规则
+ *     summary: 获取交易规则列表
+ *     description: 查询系统配置的自动交易规则或预警规则
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: symbol
+ *         schema:
+ *           type: string
+ *         description: 股票代码过滤
+ *       - in: query
+ *         name: enabled
+ *         schema:
+ *           type: boolean
+ *         description: 是否只查询启用的规则
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     rules:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           id:
+ *                             type: integer
+ *                             description: 规则ID
+ *                           symbol:
+ *                             type: string
+ *                             description: 股票代码
+ *                           rule_name:
+ *                             type: string
+ *                             description: 规则名称
+ *                           rule_type:
+ *                             type: string
+ *                             description: 规则类型
+ *                           enabled:
+ *                             type: boolean
+ *                             description: 是否启用
+ *                           config:
+ *                             type: object
+ *                             description: 规则配置详情
  */
 tradingRulesRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -43,8 +98,41 @@ tradingRulesRouter.get('/', async (req: Request, res: Response, next: NextFuncti
 });
 
 /**
- * GET /api/trading-rules/:id
- * 获取单个交易规则详情
+ * @openapi
+ * /trading-rules/{id}:
+ *   get:
+ *     tags:
+ *       - 交易规则
+ *     summary: 获取单个交易规则
+ *     description: 根据ID获取规则详情
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: 规则ID
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     rule:
+ *                       type: object
+ *                       description: 规则详情对象
+ *       404:
+ *         description: 规则不存在
  */
 tradingRulesRouter.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -72,8 +160,50 @@ tradingRulesRouter.get('/:id', async (req: Request, res: Response, next: NextFun
 });
 
 /**
- * POST /api/trading-rules
- * 创建交易规则
+ * @openapi
+ * /trading-rules:
+ *   post:
+ *     tags:
+ *       - 交易规则
+ *     summary: 创建交易规则
+ *     description: 新增一条自动交易或预警规则
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - symbol
+ *               - rule_name
+ *               - rule_type
+ *             properties:
+ *               symbol:
+ *                 type: string
+ *                 description: 股票代码
+ *               rule_name:
+ *                 type: string
+ *                 description: 规则名称
+ *               rule_type:
+ *                 type: string
+ *                 enum: [price_alert, auto_trade, stop_loss, take_profit, trailing_stop, dca]
+ *                 description: 规则类型
+ *               enabled:
+ *                 type: boolean
+ *                 default: true
+ *                 description: 是否启用
+ *               config:
+ *                 type: object
+ *                 description: 规则的具体参数 (JSON格式)
+ *     responses:
+ *       201:
+ *         description: 创建成功
+ *       400:
+ *         description: 参数错误
+ *       409:
+ *         description: 规则冲突
  */
 tradingRulesRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -135,8 +265,41 @@ tradingRulesRouter.post('/', async (req: Request, res: Response, next: NextFunct
 });
 
 /**
- * PUT /api/trading-rules/:id
- * 更新交易规则
+ * @openapi
+ * /trading-rules/{id}:
+ *   put:
+ *     tags:
+ *       - 交易规则
+ *     summary: 更新交易规则
+ *     description: 修改现有规则的配置或状态
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: 规则ID
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               rule_name:
+ *                 type: string
+ *               rule_type:
+ *                 type: string
+ *               enabled:
+ *                 type: boolean
+ *               config:
+ *                 type: object
+ *     responses:
+ *       200:
+ *         description: 更新成功
+ *       404:
+ *         description: 规则不存在
  */
 tradingRulesRouter.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -198,8 +361,27 @@ tradingRulesRouter.put('/:id', async (req: Request, res: Response, next: NextFun
 });
 
 /**
- * DELETE /api/trading-rules/:id
- * 删除交易规则
+ * @openapi
+ * /trading-rules/{id}:
+ *   delete:
+ *     tags:
+ *       - 交易规则
+ *     summary: 删除交易规则
+ *     description: 永久删除一条规则
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: 规则ID
+ *     responses:
+ *       200:
+ *         description: 删除成功
+ *       404:
+ *         description: 规则不存在
  */
 tradingRulesRouter.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {

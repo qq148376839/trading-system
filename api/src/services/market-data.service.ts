@@ -7,6 +7,7 @@ import axios from 'axios';
 import crypto from 'crypto';
 import { getFutunnHeaders } from '../config/futunn';
 import { moomooProxy, getProxyMode } from '../utils/moomoo-proxy';
+import { getQuoteContext } from '../config/longport';
 
 interface CandlestickData {
   close: number;
@@ -45,6 +46,13 @@ class MarketDataService {
       // BTC的instrumentType和subInstrumentType固定为11和11002
       instrumentType: '11',
       subInstrumentType: '11002',
+    },
+    vix: {
+      stockId: '77768973045671', // VIX指数 (来源: Moomoo)
+      marketId: '2',
+      marketCode: '1201',
+      instrumentType: '6',
+      subInstrumentType: '6001',
     },
   };
 
@@ -392,6 +400,189 @@ class MarketDataService {
   }
 
   /**
+   * 获取VIX恐慌指数日K数据
+   * 使用LongPort API获取.VIX.US的K线数据
+   */
+  async getVIXCandlesticks(count: number = 100): Promise<CandlestickData[]> {
+    try {
+      const quoteCtx = await getQuoteContext();
+      const longport = require('longport');
+      const { Period, AdjustType, TradeSessions } = longport;
+      const { formatLongbridgeCandlestick } = require('../utils/candlestick-formatter');
+
+      // 使用LongPort API获取.VIX.US的K线数据
+      // SDK 3.0.18需要TradeSessions参数
+      const candlesticks = await quoteCtx.candlesticks(
+        '.VIX.US',
+        Period.Day,
+        count,
+        AdjustType.NoAdjust,
+        TradeSessions?.All || 100 // 使用All获取所有交易时段的数据
+      );
+
+      // 转换为标准格式
+      return candlesticks.map((c: any) => formatLongbridgeCandlestick(c));
+    } catch (error: any) {
+      console.error(`获取VIX数据失败:`, error.message);
+      console.error(`错误详情:`, error);
+      // 失败时返回空数组，不使用默认值
+      return [];
+    }
+  }
+
+  /**
+   * 获取市场温度（LongPort SDK）
+   * 返回市场温度值（0-100范围），失败时返回null（不使用默认值）
+   * 
+   * 根据LongPort API文档：https://open.longbridge.com/zh-CN/docs/quote/pull/market_temperature
+   * 和Node.js SDK文档：https://longportapp.github.io/openapi/nodejs/classes/QuoteContext.html#markettemperature
+   * 返回格式：MarketTemperature对象，包含 { temperature, description, valuation, sentiment, updated_at }
+   */
+  async getMarketTemperature(): Promise<number | null> {
+    try {
+      const quoteCtx = await getQuoteContext();
+      const longport = require('longport');
+      const { Market } = longport;
+      
+      // SDK已更新到3.0.18，应该包含marketTemperature方法
+      // 直接调用，如果不存在会抛出错误
+      let tempData: any = null;
+      
+      try {
+        tempData = await quoteCtx.marketTemperature(Market.US);
+        console.log(`[市场温度] 调用成功，返回数据类型:`, typeof tempData);
+      } catch (error: any) {
+        console.error(`[市场温度] 调用失败:`, error.message);
+        console.error(`[市场温度] 错误详情:`, error);
+        
+        // 如果方法不存在，检查SDK版本
+        if (error.message && error.message.includes('is not a function')) {
+          try {
+            const longportPackage = require('longport/package.json');
+            console.error(`[市场温度] 当前SDK版本: ${longportPackage.version}`);
+            console.error(`[市场温度] 请确认SDK版本 >= 3.0.0，当前版本可能不支持marketTemperature方法`);
+          } catch (e) {
+            // 忽略
+          }
+        }
+        return null;
+      }
+      
+      // 根据LongPort API文档和SDK文档，返回的是MarketTemperature对象
+      // 需要调用toString()或直接访问属性
+      let temperature: number | null = null;
+      
+      // 尝试多种方式提取temperature值
+      if (tempData && typeof tempData === 'object') {
+        // 方式1: 直接访问temperature属性（最可能的方式）
+        if ('temperature' in tempData && typeof tempData.temperature === 'number') {
+          temperature = tempData.temperature;
+          console.log(`[市场温度] 从temperature属性获取: ${temperature}`);
+        }
+        // 方式2: 如果返回格式是 { code: 0, data: { temperature: ... } }
+        else if ('data' in tempData && tempData.data && typeof tempData.data.temperature === 'number') {
+          temperature = tempData.data.temperature;
+          console.log(`[市场温度] 从data.temperature获取: ${temperature}`);
+        }
+        // 方式3: 尝试调用toString()然后解析（SDK对象通常有toString方法）
+        else if (typeof tempData.toString === 'function') {
+          const str = tempData.toString();
+          console.log(`[市场温度] MarketTemperature toString():`, str);
+          // 尝试从字符串中提取temperature值
+          const match = str.match(/temperature[:\s]+(\d+(?:\.\d+)?)/i);
+          if (match) {
+            temperature = parseFloat(match[1]);
+            console.log(`[市场温度] 从toString()解析: ${temperature}`);
+          }
+        }
+        // 方式4: 尝试其他可能的字段名
+        else if ('value' in tempData && typeof (tempData as any).value === 'number') {
+          temperature = (tempData as any).value;
+          console.log(`[市场温度] 从value属性获取: ${temperature}`);
+        }
+      } else if (typeof tempData === 'number') {
+        temperature = tempData;
+        console.log(`[市场温度] 直接返回数字: ${temperature}`);
+      }
+      
+      // 如果无法解析，记录详细错误信息
+      if (temperature === null) {
+        console.error(`[市场温度] 数据结构未知，无法解析。`);
+        console.error(`[市场温度] 返回数据类型:`, typeof tempData);
+        console.error(`[市场温度] 返回数据:`, JSON.stringify(tempData, null, 2));
+        if (tempData && typeof tempData.toString === 'function') {
+          console.error(`[市场温度] toString():`, tempData.toString());
+        }
+        // 尝试列出所有属性
+        if (tempData && typeof tempData === 'object') {
+          console.error(`[市场温度] 对象属性:`, Object.keys(tempData));
+          // 尝试列出所有可枚举和不可枚举的属性
+          console.error(`[市场温度] 所有属性:`, Object.getOwnPropertyNames(tempData));
+        }
+        return null;
+      }
+      
+      // 确保温度值在合理范围内（0-100）
+      temperature = Math.max(0, Math.min(100, temperature));
+      
+      console.log(`[市场温度] 获取成功: ${temperature}`);
+      return temperature;
+    } catch (error: any) {
+      console.error(`[市场温度] 获取失败:`, error.message);
+      console.error(`[市场温度] 错误详情:`, error);
+      console.error(`[市场温度] 错误堆栈:`, error.stack);
+      // 失败时返回null，不使用默认值
+      return null;
+    }
+  }
+
+  /**
+   * 获取历史市场温度（用于回测）
+   * @param startDate 开始日期
+   * @param endDate 结束日期
+   */
+  async getHistoricalMarketTemperature(startDate: Date, endDate: Date): Promise<number | null> {
+    try {
+      const quoteCtx = await getQuoteContext();
+      const longport = require('longport');
+      const { Market, NaiveDate } = longport;
+      
+      // 使用LongPort SDK获取历史市场温度
+      // 注意：NaiveDate的构造方式：new NaiveDate(year, month, day)，month从1开始
+      const start = new NaiveDate(startDate.getFullYear(), startDate.getMonth() + 1, startDate.getDate());
+      const end = new NaiveDate(endDate.getFullYear(), endDate.getMonth() + 1, endDate.getDate());
+      
+      const historyData = await quoteCtx.historyMarketTemperature(Market.US, start, end);
+      
+      // 解析历史数据，返回最近一天的温度值
+      // 假设返回格式为数组，取最后一个值
+      if (Array.isArray(historyData) && historyData.length > 0) {
+        const lastItem = historyData[historyData.length - 1];
+        let temperature: number;
+        
+        if (typeof lastItem === 'number') {
+          temperature = lastItem;
+        } else if (lastItem && typeof lastItem === 'object' && 'value' in lastItem) {
+          temperature = (lastItem as any).value;
+        } else if (lastItem && typeof lastItem === 'object' && 'temperature' in lastItem) {
+          temperature = (lastItem as any).temperature;
+        } else {
+          temperature = 50; // 默认中性值
+        }
+        
+        temperature = Math.max(0, Math.min(100, temperature));
+        return temperature;
+      }
+      
+      // 如果没有历史数据，返回null
+      return null;
+    } catch (error: any) {
+      console.warn(`获取历史市场温度失败:`, error.message);
+      return null;
+    }
+  }
+
+  /**
    * 获取小时K数据（用于BTC和USD指数）
    * 注意：富途API的分时数据获取方式可能需要调整，这里使用日K数据模拟
    * 实际使用时需要根据API文档调整type参数
@@ -448,6 +639,7 @@ class MarketDataService {
     );
   }
 
+
   /**
    * 获取历史市场数据（截止到指定日期）
    * @param targetDate 目标日期，获取该日期之前的数据（不包含未来数据）
@@ -471,6 +663,26 @@ class MarketDataService {
         this.getUSDIndexCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)),
         this.getBTCCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)),
       ];
+
+      // VIX恐慌指数（重要但非关键，允许失败）
+      const vixPromise = this.getVIXCandlesticks(requestCount)
+        .then(data => this.filterDataBeforeDate(data, targetDate, count))
+        .catch(err => {
+          console.warn(`获取VIX历史数据失败:`, err.message);
+          return [];
+        });
+
+      // 历史市场温度（重要但非关键，允许失败）
+      // 计算历史温度的开始和结束日期
+      const tempEndDate = targetDate;
+      const tempStartDate = new Date(targetDate);
+      tempStartDate.setDate(tempStartDate.getDate() - count * 2); // 2倍缓冲，确保覆盖
+      
+      const tempPromise = this.getHistoricalMarketTemperature(tempStartDate, tempEndDate)
+        .catch(err => {
+          console.warn(`获取历史市场温度失败:`, err.message);
+          return null;
+        });
 
       // 分时数据：可选，失败时返回空数组
       const optionalPromises: Promise<any[]>[] = [];
@@ -506,11 +718,17 @@ class MarketDataService {
 
       // 获取可选数据（分时数据）
       const optionalResults = includeIntraday ? await Promise.all(optionalPromises) : [];
+      
+      // 获取 VIX 和 市场温度
+      const vixData = await vixPromise;
+      const marketTemp = await tempPromise;
 
       const result: any = {
         spx: criticalResults[0],
         usdIndex: criticalResults[1],
         btc: criticalResults[2],
+        vix: vixData,
+        marketTemperature: marketTemp,
       };
 
       if (includeIntraday) {
@@ -624,6 +842,17 @@ class MarketDataService {
         }),
       ];
 
+      // VIX 和 市场温度（非关键，允许失败）
+      const vixPromise = this.getVIXCandlesticks(count).catch(err => {
+        console.warn(`获取VIX数据失败:`, err.message);
+        return [];
+      });
+      
+      const marketTempPromise = this.getMarketTemperature().catch(err => {
+        console.warn(`获取实时市场温度失败:`, err.message);
+        return null;
+      });
+
       // 分时数据：可选，失败时返回空数组
       const optionalPromises: Promise<any[]>[] = [];
       if (includeIntraday) {
@@ -655,11 +884,16 @@ class MarketDataService {
 
       // 获取可选数据（分时数据）
       const optionalResults = includeIntraday ? await Promise.all(optionalPromises) : [];
+      
+      const vixData = await vixPromise;
+      const marketTemp = await marketTempPromise;
 
       const result: any = {
         spx: criticalResults[0],
         usdIndex: criticalResults[1],
         btc: criticalResults[2],
+        vix: vixData,
+        marketTemperature: marketTemp,
       };
 
       if (includeIntraday) {
@@ -673,6 +907,23 @@ class MarketDataService {
         'USD Index': `${criticalResults[1].length}条`,
         BTC: `${criticalResults[2].length}条`,
       };
+      
+      // 添加VIX和市场温度信息
+      if (vixData && vixData.length > 0) {
+        const lastVix = vixData[vixData.length - 1];
+        const vixValue = typeof lastVix.close === 'number' ? lastVix.close : parseFloat(String(lastVix.close));
+        dataSummary['VIX'] = `${vixValue.toFixed(2)} (${vixData.length}条)`;
+      } else {
+        dataSummary['VIX'] = '未获取';
+      }
+      
+      if (marketTemp !== null && marketTemp !== undefined) {
+        const tempValue = typeof marketTemp === 'number' ? marketTemp : (marketTemp?.value || marketTemp?.temperature || 50);
+        dataSummary['市场温度'] = `${tempValue.toFixed(1)}`;
+      } else {
+        dataSummary['市场温度'] = '未获取';
+      }
+      
       if (includeIntraday) {
         dataSummary['USD Index分时'] = `${optionalResults[0]?.length || 0}条`;
         dataSummary['BTC分时'] = `${optionalResults[1]?.length || 0}条`;

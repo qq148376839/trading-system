@@ -1,6 +1,138 @@
 # 更新日志
 
+## 2025-12-19
+
+### LongPort SDK 升级和修复 ✅ 关键更新 ⭐ 最新
+
+**功能**: 升级LongPort SDK到3.0.18，修复市场温度获取和K线数据获取问题
+
+**实现内容**:
+
+1. **SDK版本升级**
+   - ✅ 升级 `longport` 从 `1.1.7` 到 `3.0.18`
+   - ✅ 更新 `package.json` 依赖配置
+   - ✅ 市场温度功能成功获取（值：70.0）
+
+2. **API调用修复**
+   - ✅ 修复 `candlesticks` 方法调用，添加必需的 `TradeSessions` 参数
+   - ✅ 修复 `getStockCandlesticks` 方法（交易推荐服务）
+   - ✅ 修复 `getVIXCandlesticks` 方法（市场数据服务）
+   - ✅ 修复 `getHistoricalCandlesticks` 方法（回测服务）
+   - ✅ 所有K线数据获取方法统一添加 `TradeSessions.All` 参数
+
+3. **市场温度功能验证**
+   - ✅ 市场温度API成功调用（`quoteCtx.marketTemperature(Market.US)`）
+   - ✅ 成功获取市场温度值（70.0）
+   - ✅ 数据解析正确（从`temperature`属性提取）
+
+4. **测试体系建设**
+   - ✅ 创建市场状态矩阵测试文件（21个测试用例）
+   - ✅ 测试通过率：100%（21/21）
+   - ✅ 覆盖所有主要逻辑路径和边界条件
+
+**技术要点**:
+- SDK 3.0.18需要`TradeSessions`参数作为`candlesticks`方法的第5个参数
+- 市场温度功能在SDK 3.0.18中正常工作
+- 使用`TradeSessions.All`获取所有交易时段的数据
+
+**修改文件**:
+- `api/package.json` - 更新longport依赖到latest（实际升级到3.0.18）
+- `api/src/services/trading-recommendation.service.ts` - 修复`getStockCandlesticks`方法
+- `api/src/services/market-data.service.ts` - 修复`getVIXCandlesticks`方法，简化`getMarketTemperature`方法
+- `api/src/services/backtest.service.ts` - 修复`getHistoricalCandlesticks`方法中的两处`candlesticks`调用
+
+**新增文件**:
+- `api/src/tests/market-regime-matrix.test.ts` - 市场状态矩阵测试文件（527行）
+- `api/src/tests/MARKET_REGIME_MATRIX_TEST.md` - 测试说明文档
+
+**相关文档**:
+- [市场温度实现PRD](docs/features/251218-MARKET_TEMPERATURE_IMPLEMENTATION_PRD.md)
+- [交易推荐逻辑总结](docs/technical/251212-交易推荐逻辑总结.md)
+
+---
+
 ## 2025-12-15
+
+### 量化日志系统实现 ✅ 新功能 ⭐ 最新更新
+
+**功能**: 实现了完整的量化日志系统，支持非阻塞日志写入、结构化日志记录、数据库持久化、日志查询和导出功能
+
+**实现内容**:
+
+1. **非阻塞日志写入机制**
+   - ✅ 创建日志服务（`log.service.ts`）
+   - ✅ 使用内存队列缓冲日志（初始10000条，支持动态调整5000-50000条）
+   - ✅ 后台工作线程批量写入数据库（批量大小：100条，批量间隔：1秒）
+   - ✅ 动态队列大小调整（使用率>80%扩容，<30%缩容）
+   - ✅ 日志写入延迟 < 10ms（P99），不影响交易主循环
+
+2. **结构化日志记录**
+   - ✅ 支持模块、级别、TraceID、JSON数据等字段
+   - ✅ 自动提取文件路径和行号
+   - ✅ TraceID自动生成（UUID v4）和上下文传递（AsyncLocalStorage）
+   - ✅ 日志级别：INFO、WARNING、ERROR、DEBUG
+
+3. **数据库持久化**
+   - ✅ 创建`system_logs`表（PostgreSQL）
+   - ✅ 支持BRIN索引（时间戳）、B-tree索引（级别、模块、TraceID）、GIN索引（JSONB数据）
+   - ✅ 批量插入性能 ≥ 1000条/秒
+   - ✅ 字段长度优化（module: VARCHAR(200), file_path: VARCHAR(500)）
+
+4. **日志模块映射系统**
+   - ✅ 创建模块映射器（`log-module-mapper.ts`）
+   - ✅ 自动将文件路径映射到功能模块（如`Strategy.Scheduler`、`Execution.Basic`等）
+   - ✅ 支持16个模块分类体系（策略、执行、回测、资金管理、选股、市场数据、订单、期权等）
+   - ✅ 优先级匹配规则（精确匹配 → 目录匹配 → 推断匹配）
+
+5. **日志查询和导出功能**
+   - ✅ 创建日志查询API（`GET /api/logs`）
+   - ✅ 支持按模块、时间、级别、TraceID查询
+   - ✅ 创建日志导出API（`GET /api/logs/export`）
+   - ✅ 支持JSON格式导出
+   - ✅ 前端查询页面（支持多维度筛选和分页）
+
+6. **日志清理功能**
+   - ✅ 创建日志清理服务（`log-cleanup.service.ts`）
+   - ✅ 自动清理配置（通过`system_config`表配置）
+   - ✅ 手动清理API（`DELETE /api/logs/cleanup`）
+   - ✅ 默认不清理日志（`log_retention_days = -1`）
+
+7. **代码改造**
+   - ✅ 更新`logger.ts`工具，保持向后兼容
+   - ✅ 创建TraceID上下文管理（`trace-context.ts`）
+   - ✅ 核心服务改造（策略调度器、回测服务、订单执行、账户余额同步）
+   - ✅ 重要服务改造（交易推荐、市场数据、交易日服务、错误处理）
+   - ✅ 路由文件改造（日志API路由）
+
+**技术要点**:
+- 非阻塞设计：内存队列 + 异步批量写入，确保日志写入不影响交易主循环
+- 结构化日志：支持模块、级别、TraceID、JSON数据等字段，便于查询和分析
+- 动态队列调整：根据实际日志量自动调整队列大小，提高系统适应性
+- TraceID追踪：支持UUID v4生成和异步上下文传递，便于链路追踪
+- 模块映射：自动将文件路径映射到功能模块，确保日志分类清晰
+
+**修改文件**:
+- `api/src/services/log.service.ts` - 新建日志服务
+- `api/src/services/log-worker.service.ts` - 新建日志工作线程
+- `api/src/services/log-cleanup.service.ts` - 新建日志清理服务
+- `api/src/utils/log-module-mapper.ts` - 新建模块映射器
+- `api/src/utils/trace-context.ts` - 新建TraceID上下文管理
+- `api/src/utils/logger.ts` - 更新日志工具，保持向后兼容
+- `api/src/routes/logs.ts` - 新建日志API路由
+- `api/migrations/000_init_schema.sql` - 添加`system_logs`表结构
+
+**新增文件**:
+- `api/src/services/log.service.ts` - 日志服务（279行）
+- `api/src/services/log-worker.service.ts` - 日志工作线程（241行）
+- `api/src/services/log-cleanup.service.ts` - 日志清理服务（约200行）
+- `api/src/utils/log-module-mapper.ts` - 模块映射器（390行）
+- `api/src/utils/trace-context.ts` - TraceID上下文管理（约50行）
+- `api/src/routes/logs.ts` - 日志API路由（约300行）
+
+**相关文档**:
+- [量化日志系统PRD](docs/features/251215-QUANT_LOG_SYSTEM_PRD.md) ⭐ 推荐阅读
+- [日志模块映射说明](docs/features/251215-LOG_MODULE_MAPPING.md)
+- [日志系统字段长度修复指南](docs/features/251215-LOG_SYSTEM_FIELD_LENGTH_FIX.md)
 
 ### 回测功能优化 ⭐ 最新更新
 

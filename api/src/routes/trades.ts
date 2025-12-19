@@ -5,8 +5,87 @@ import { normalizeError } from '../utils/errors';
 export const tradesRouter = Router();
 
 /**
- * GET /api/trades
- * 查询交易记录
+ * @openapi
+ * /trades:
+ *   get:
+ *     tags:
+ *       - 交易记录
+ *     summary: 查询交易记录
+ *     description: 查询系统的交易历史记录，支持分页和筛选
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: symbol
+ *         schema:
+ *           type: string
+ *         description: 股票代码
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *         description: 订单状态
+ *       - in: query
+ *         name: start_date
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: 开始日期 (YYYY-MM-DD)
+ *       - in: query
+ *         name: end_date
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: 结束日期 (YYYY-MM-DD)
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 100
+ *         description: 每页数量
+ *       - in: query
+ *         name: offset
+ *         schema:
+ *           type: integer
+ *           default: 0
+ *         description: 偏移量
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     trades:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           symbol:
+ *                             type: string
+ *                           side:
+ *                             type: string
+ *                           quantity:
+ *                             type: number
+ *                           price:
+ *                             type: string
+ *                           status:
+ *                             type: string
+ *                           created_at:
+ *                             type: string
+ *                     total:
+ *                       type: number
+ *                     limit:
+ *                       type: number
+ *                     offset:
+ *                       type: number
  */
 tradesRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {

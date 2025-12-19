@@ -65,7 +65,7 @@ class BacktestService {
     try {
       const quoteCtx = await getQuoteContext();
       const longport = require('longport');
-      const { Period, AdjustType, NaiveDate, NaiveDatetime } = longport;
+      const { Period, AdjustType, NaiveDate, NaiveDatetime, TradeSessions } = longport;
       const { formatLongbridgeCandlestickForBacktest, toDate } = require('../utils/candlestick-formatter');
       
       // ✅ 验证和调整日期范围，排除周末和未来日期
@@ -191,11 +191,13 @@ class BacktestService {
         const daysFromStartToToday = Math.ceil((today.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
         const fallbackCount = Math.min(daysFromStartToToday + 100, 1000);
         
+        // SDK 3.0.18需要TradeSessions参数
         candlesticks = await quoteCtx.candlesticks(
           symbol,
           Period.Day,
           fallbackCount,
-          AdjustType.NoAdjust
+          AdjustType.NoAdjust,
+          TradeSessions?.All || 100 // 使用All获取所有交易时段的数据
         );
         
         logger.log(`✅ 使用candlesticks降级方案获取到 ${candlesticks?.length || 0} 条历史数据 (${symbol})`);
@@ -307,11 +309,13 @@ class BacktestService {
           logger.log(`[补充数据] ${symbol}: 尝试获取额外 ${additionalCount} 条数据`);
           
           await apiRateLimiter.waitIfNeeded();
+          // SDK 3.0.18需要TradeSessions参数
           const additionalCandlesticks = await quoteCtx.candlesticks(
             symbol,
             Period.Day,
             additionalCount,
-            AdjustType.NoAdjust
+            AdjustType.NoAdjust,
+            TradeSessions?.All || 100 // 使用All获取所有交易时段的数据
           );
           
           logger.log(`[补充数据] ${symbol}: API返回 ${additionalCandlesticks?.length || 0} 条额外数据`);

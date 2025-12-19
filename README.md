@@ -443,7 +443,34 @@ const mappedOrder = mapOrderData(orderDetail);
 
 ## 📝 重要更新
 
-### 2025-12-15: 回测功能优化 ⭐ 最新
+### 2025-12-19: LongPort SDK 升级和测试完成 ⭐ 最新
+
+**升级内容**：
+1. ✅ **SDK版本升级**：从1.1.7升级到3.0.18
+2. ✅ **市场温度功能**：成功实现市场温度获取（值：70.0）
+3. ✅ **API调用修复**：修复所有`candlesticks`方法调用，添加必需的`TradeSessions`参数
+4. ✅ **测试体系建设**：创建市场状态矩阵测试文件（21个测试用例，100%通过）
+
+**技术实现**：
+- 升级`longport`依赖到`latest`（实际升级到3.0.18）
+- 修复`getStockCandlesticks`、`getVIXCandlesticks`、`getHistoricalCandlesticks`方法
+- 所有K线数据获取方法统一添加`TradeSessions.All`参数
+- 创建完整的市场状态矩阵测试套件
+
+**测试覆盖**：
+- 市场状态矩阵计算（4种状态）
+- 一票否决权机制（VIX > 35、温度 < 10）
+- 环境分计算（权重验证）
+- 市场环境评估
+- 止损止盈调整
+- 边界条件处理
+
+**相关文档**：
+- 📄 [市场温度实现PRD](docs/features/251218-MARKET_TEMPERATURE_IMPLEMENTATION_PRD.md)
+- 📄 [交易推荐逻辑总结](docs/technical/251212-交易推荐逻辑总结.md)
+- 📄 [市场状态矩阵测试文档](api/src/tests/MARKET_REGIME_MATRIX_TEST.md)
+
+### 2025-12-15: 回测功能优化
 
 **优化内容**：
 1. ✅ **交易日验证功能**：自动排除周末和未来日期，使用Longbridge SDK获取真实交易日数据

@@ -516,6 +516,13 @@ export const tradingRecommendationApi = {
   getRecommendation: (symbol: string) => {
     return api.get(`/trading-recommendation/${symbol}`)
   },
+
+  /**
+   * 获取市场状态矩阵（全局市场环境指标）
+   */
+  getMarketRegime: (): Promise<{ success: boolean; data?: { market_regime: any }; error?: { message: string } }> => {
+    return api.get('/trading-recommendation/market-regime')
+  },
 }
 
 export const optionsApi = {
@@ -788,6 +795,70 @@ export const quantApi = {
     minInvestmentAmount?: number;
   }) => {
     return api.post('/quant/institutions/calculate-allocation', data)
+  },
+}
+
+// 日志查询 API
+export const logsApi = {
+  /**
+   * 查询日志
+   * @param params 查询参数
+   */
+  getLogs: (params?: {
+    module?: string
+    level?: string  // 单个级别或逗号分隔的多个级别，如 'ERROR' 或 'ERROR,WARNING'
+    start_time?: string  // ISO 8601格式
+    end_time?: string    // ISO 8601格式
+    trace_id?: string
+    limit?: number
+    offset?: number
+  }): Promise<{ success: boolean; data?: { logs: any[]; total: number; limit: number; offset: number }; error?: { message: string } }> => {
+    return api.get('/logs', { params })
+  },
+
+  /**
+   * 导出日志
+   * @param params 查询参数（与getLogs相同）
+   */
+  exportLogs: async (params?: {
+    module?: string
+    level?: string
+    start_time?: string
+    end_time?: string
+    trace_id?: string
+  }): Promise<Blob> => {
+    const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
+    const response = await axios.get(`${API_BASE_URL}/api/logs/export`, {
+      params,
+      responseType: 'blob',
+    })
+    return response.data
+  },
+
+  /**
+   * 清理日志
+   * @param beforeDate 删除此日期之前的日志（ISO 8601格式）
+   * @param dryRun 是否仅预览，不实际删除
+   */
+  cleanupLogs: (beforeDate: string, dryRun: boolean = false): Promise<{ success: boolean; data?: { deletedCount: number; dryRun: boolean; beforeDate: string }; error?: { message: string } }> => {
+    return api.delete('/logs/cleanup', { params: { before_date: beforeDate, dry_run: dryRun.toString() } })
+  },
+
+  /**
+   * 获取所有可用的日志模块列表
+   */
+  getModules: (): Promise<{ 
+    success: boolean
+    data?: { 
+      modules: Array<{
+        module: string
+        chineseName: string
+        description: string
+      }>
+    }
+    error?: { message: string }
+  }> => {
+    return api.get('/logs/modules')
   },
 }
 

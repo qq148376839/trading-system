@@ -16,23 +16,21 @@ docs/
 └── archive/        # 历史文档 - 已完成功能的计划和总结
 ```
 
-> 📖 **文档结构说明**: 查看 [DOCUMENTATION_STRUCTURE.md](251208-DOCUMENTATION_STRUCTURE.md) 了解详细的文档分类和管理规范
+> 📖 **文档结构说明**: 查看 [文档结构说明](archive/251208-文档结构说明.md) 了解详细的文档分类和管理规范
 
 ## 📖 用户指南 (guides/)
 
 面向用户的使用指南，帮助您快速上手和使用系统功能。
 
 ### 🚀 快速开始
-- **[Docker 部署完成总结](guides/251214-DOCKER_DEPLOYMENT_SUMMARY.md)** - Docker 部署修复完成总结 ⭐ 最新
-- **[NAS Docker 部署指南](guides/251212-NAS_DOCKER_DEPLOYMENT.md)** - NAS 上 Docker 部署完整指南 ⭐ 新增
-- **[环境变量配置指南](../ENV_SETUP_GUIDE.md)** - 环境变量配置说明（数据库账号密码等）⭐ 新增
-- **[Docker 环境设置指南](guides/251214-DOCKER_SETUP.md)** - Docker 环境配置和部署说明（已更新）
-- **[Docker 故障排查指南](../DOCKER_TROUBLESHOOTING.md)** - Docker 部署常见问题排查 ⭐ 新增
-- **[前端 API URL 配置指南](../FRONTEND_API_URL_SETUP.md)** - 前端 API 连接配置说明 ⭐ 新增
-- **[配置管理设置指南](guides/250127-CONFIG_MANAGEMENT_SETUP.md)** - 系统配置管理和 Token 刷新功能设置
+- **[Docker部署指南](guides/251214-Docker部署指南.md)** - Docker 部署完整指南（修复总结 + 部署流程 + 故障排除）⭐ 最新
+- **[Docker故障排查和优化指南](guides/251216-Docker故障排查和优化指南.md)** - 详细的故障排查和优化说明 ⭐ 推荐
+- **[NAS-Docker部署指南](guides/251212-NAS-Docker部署指南.md)** - NAS 上 Docker 部署完整指南 ⭐ 新增
+- **[环境变量配置指南](guides/251216-环境变量配置指南.md)** - 环境变量配置说明（数据库账号密码等）⭐ 新增
+- **[配置管理功能设置指南](guides/250127-配置管理功能设置指南.md)** - 系统配置管理和 Token 刷新功能设置
 
 ### 💼 功能使用
-- **[交易功能使用说明](guides/251212-TRADING_GUIDE.md)** - 股票交易功能的使用指南
+- **[交易功能使用说明](guides/251212-交易功能使用说明.md)** - 股票交易功能的使用指南
 - **[卖出看跌期权（Sell Put）完全指南](guides/251212-卖出看跌期权（Sell Put）完全指南.md)** - 期权交易策略指南
 
 ## 🔧 技术文档 (technical/)
@@ -43,69 +41,61 @@ docs/
 - 🗺️ **[代码地图](../CODE_MAP.md)** - 项目中每个文件的作用和调用关系（**推荐开发者阅读**）
 
 ### 核心架构
-- **[项目总结](technical/251202-PROJECT_SUMMARY.md)** - 项目核心信息、关键决策和技术栈
-- **[策略逻辑审查](technical/251202-STRATEGY_LOGIC_REVIEW.md)** - 量化交易策略的详细逻辑说明
-- **[策略优化总结](technical/251202-STRATEGY_OPTIMIZATION_SUMMARY.md)** - 所有策略优化的完整总结（最新）⭐
-- **[订单修改逻辑审查](technical/251212-ORDER_MODIFICATION_LOGIC_REVIEW.md)** - 订单修改逻辑修复详情（已修复）
+- **[量化交易系统技术文档](technical/251202-量化交易系统技术文档.md)** - 完整的系统技术文档（项目概述、架构、策略逻辑、优化总结）⭐ 推荐阅读
+- **[订单修改逻辑审阅文档](technical/251212-订单修改逻辑审阅文档.md)** - 订单修改逻辑修复详情（已修复）
 
 ### API 文档
-- **[交易推荐算法](technical/251212-TRADING_RECOMMENDATION_LOGIC.md)** - 交易推荐系统的算法和实现
-- **[期权行情 API](technical/251121-OPTION_QUOTE_API.md)** - 期权行情获取 API 开发文档
+- **[交易推荐逻辑总结](technical/251212-交易推荐逻辑总结.md)** - 交易推荐系统的算法和实现（包含市场状态矩阵）
+- **[期权行情获取API开发文档](technical/251121-期权行情获取API开发文档.md)** - 期权行情获取 API 开发文档
 
 ## 🔧 修复文档 (fixes/)
 
 记录问题修复过程的文档，包括问题分析、修复方案和实施总结。
 
 ### 问题分析
-- **[严重问题分析报告](fixes/251208-PRODUCT_CRITICAL_ISSUES_ANALYSIS.md)** - P0/P1/P2级问题分析 ⭐
-- **[修复实施指南](fixes/251208-FIX_IMPLEMENTATION_GUIDE.md)** - 修复路线图和实施步骤
+- **[长桥股票交易系统 - 严重问题分析报告](archive/251208-长桥股票交易系统 - 严重问题分析报告.md)** - P0/P1/P2级问题分析 ⭐
+- **[修复实施指南](archive/251208-修复实施指南.md)** - 修复路线图和实施步骤
 
 ### 修复总结
-- **[第一阶段修复完成总结](fixes/251208-FIX_COMPLETION_SUMMARY.md)** - P0级问题修复完成总结 ✅
-- **[第二阶段修复进度报告](fixes/251208-PHASE2_PROGRESS.md)** - P1级问题修复进度
-- **[测试体系建设完成总结](fixes/251208-TEST_COMPLETION_SUMMARY.md)** - 单元测试完成总结 ✅
-- **[错误处理统一实施文档](fixes/251209-ERROR_HANDLING_IMPLEMENTATION.md)** - 错误处理系统实施 ✅
-- **[下一步行动计划](fixes/251208-NEXT_STEPS_GUIDE.md)** - 后续工作计划
+- **[第一阶段修复完成总结](archive/251208-第一阶段修复完成总结.md)** - P0级问题修复完成总结 ✅
+- **[第二阶段修复进度报告](archive/251208-第二阶段修复进度报告.md)** - P1级问题修复进度
+- **[测试体系建设完成总结](archive/251208-测试体系建设完成总结.md)** - 单元测试完成总结 ✅
+- **[错误处理统一实施文档](archive/251209-错误处理统一实施文档.md)** - 错误处理系统实施 ✅
+- **[下一步行动计划](archive/251208-下一步行动计划.md)** - 后续工作计划
+- **[交易推送订单关联性BUG修复总结](fixes/251217-交易推送订单关联性BUG修复总结.md)** - 交易推送订单关联性BUG修复 ⭐ 新增
 
 ## 🎯 功能文档 (features/)
 
 记录新功能开发的文档，包括功能设计、实施计划和测试指南。
 
 ### 动态交易策略
-- **[动态交易策略设计](features/251203-DYNAMIC_TRADING_STRATEGY_DESIGN.md)** - 动态持仓管理和市场环境响应机制 ⭐
-- **[动态交易策略实施总结](features/251203-DYNAMIC_TRADING_STRATEGY_IMPLEMENTATION.md)** - 实施完成总结
-- **[动态交易策略测试指南](features/251203-DYNAMIC_TRADING_STRATEGY_TESTING_GUIDE.md)** - 功能测试和问题排查指南 ⭐
+- **[动态交易策略文档](features/251203-动态交易策略文档.md)** - 动态交易策略完整文档（设计 + 实施总结 + 测试指南 + Bug修复）⭐
 
 ### 回测功能 ⭐ 最新更新
-- **[回测功能修订文档索引](features/251215-BACKTEST_REVISION_INDEX.md)** - 回测功能修订文档索引 ⭐ 推荐阅读
-- **[回测功能修订总结](features/251215-REVISION_SUMMARY.md)** - 交易日验证与交易逻辑优化总结 ⭐ 最新
-- **[回测历史数据优化实施总结](features/251214-IMPLEMENTATION_SUMMARY.md)** - 历史数据优化实施总结
-- **[回测功能使用指南](features/250101-BACKTEST_USAGE_GUIDE.md)** - 回测功能使用说明
-- **[回测交易逻辑分析报告](../analyze_backtest_logic_final.md)** - 回测交易逻辑分析报告 ⭐ 最新
+- **[回测功能文档](features/251215-回测功能文档.md)** - 回测功能完整文档（使用指南 + 实施计划 + 修订总结 + 历史数据优化 + 测试问题）⭐ 推荐阅读
 
 ### Bug修复
-- **[策略Bug修复说明](features/251203-STRATEGY_BUG_FIX_20251203.md)** - 高买低卖和重复卖出单问题修复说明
-- **[构建错误修复总结](features/251211-BUILD_ERROR_FIX_SUMMARY.md)** - TypeScript编译错误修复总结 ⭐ 新增
+- **[卖出价格错误修复文档](features/251209-卖出价格错误修复文档.md)** - 卖出价格计算错误修复完整文档 ⭐ 新增
+- **[订单重复提交防护机制文档](features/251212-订单重复提交防护机制文档.md)** - 订单重复提交防护机制完整文档 ⭐ 新增
+- **[Task_queues模块修复文档](features/251216-Task_queues模块修复文档.md)** - 日志模块名称标准化修复文档 ⭐ 新增
+- **[构建错误修复文档](features/251211-构建错误修复文档.md)** - TypeScript编译错误和构建问题修复完整文档 ⭐ 新增
 
 ### 机构选股功能
-- **[机构选股功能PRD](features/251205-INSTITUTION_STOCK_SELECTOR_PRD.md)** - 产品需求文档
-- **[机构选股功能实施总结](features/251208-INSTITUTION_STOCK_SELECTOR_IMPLEMENTATION.md)** - 开发实施总结
-- **[机构选股缓存对比](features/251205-INSTITUTION_STOCK_SELECTOR_CACHE_COMPARISON.md)** - 缓存方案对比
+- **[机构选股功能产品需求文档](features/251205-机构选股功能产品需求文档.md)** - 机构选股功能完整文档（PRD + 缓存方案）⭐
 
 ### UI优化
-- **[策略创建UI优化](features/251208-STRATEGY_CREATION_UI_OPTIMIZATION.md)** - 策略创建页面UI优化总结 ⭐
-- **[策略编辑和详情页面优化](features/251205-STRATEGY_EDIT_DETAIL_OPTIMIZATION_PRD.md)** - 策略编辑和详情页面优化PRD ⭐
+- **[策略编辑和详情页面优化产品需求文档](features/251205-策略编辑和详情页面优化产品需求文档.md)** - 策略编辑和详情页面优化PRD ⭐
 
 ### 量化交易订单管理
-- **[量化交易订单管理重构PRD](features/251211-QUANT_ORDER_MANAGEMENT_REFACTOR_PRD.md)** - 产品需求文档 ⭐
-- **[量化交易订单管理重构实施总结](features/251211-QUANT_ORDER_MANAGEMENT_REFACTOR_IMPLEMENTATION_SUMMARY.md)** - 实施完成总结 ✅ 新增
-- **[信号日志历史数据修复方案](features/251212-SIGNAL_ORDER_HISTORICAL_DATA_FIX.md)** - 历史数据修复方案（可选）
+- **[量化交易订单管理重构文档](features/251211-量化交易订单管理重构文档.md)** - 订单管理重构完整文档（PRD + 实施总结）⭐ 新增
+- **[信号日志历史数据修复方案](features/251212-信号日志历史数据修复方案.md)** - 历史数据修复方案（可选）
 
-### 构建和部署
-- **[构建错误修复总结](features/251211-BUILD_ERROR_FIX_SUMMARY.md)** - TypeScript编译错误修复总结 ⭐ 新增
 
 ### 期权功能
-- **[期权图表功能实施总结](features/251208-OPTION_CHART_IMPLEMENTATION.md)** - 期权图表功能实施总结 ✅ 新增
+- **[期权图表功能文档](features/251208-期权图表功能文档.md)** - 期权图表功能完整文档（实施总结 + API规范 + 前端实现）⭐ 新增
+
+### 日志系统 ⭐ 最新更新
+- **[日志系统优化文档](features/251215-日志系统优化文档.md)** - 日志系统优化完整文档（PRD + 实施总结 + 模块映射 + 字段修复）⭐ 最新
 
 ### 边缘函数文档
 - **[边缘函数README](../edge-functions/README.md)** - 边缘函数使用说明和API列表
@@ -117,92 +107,97 @@ docs/
 
 记录第三方服务集成的文档，包括API配置、认证设置和集成方案。
 
-- **[富途 API CSRF 要求](integration/251212-FUTUNN_API_CSRF_REQUIREMENTS.md)** - 富途 API CSRF Token 配置说明
-- **[富途搜索 Cookies 设置](integration/251212-SEARCH_COOKIES_SETUP.md)** - 富途搜索 API Cookies 配置指南
-- **[Moomoo 边缘函数集成](integration/251212-MOOMOO_EDGE_FUNCTION_INTEGRATION.md)** - Moomoo API 边缘函数集成文档
+- **[富途API接口CSRF-Token需求分析](integration/251212-富途API接口CSRF-Token需求分析.md)** - 富途 API CSRF Token 配置说明
+- **[搜索接口独立Cookies配置说明](integration/251212-搜索接口独立Cookies配置说明.md)** - 富途搜索 API Cookies 配置指南
+- **[Moomoo-API边缘函数集成完成](integration/251212-Moomoo-API边缘函数集成完成.md)** - Moomoo API 边缘函数集成文档
 
 ## 📦 历史文档 (archive/)
 
 已完成功能的计划和总结文档，保留作为历史记录。
 
 ### 量化交易模块
-- **[Phase 1 开发完成总结](archive/251212-QUANT_PHASE1_COMPLETION.md)** - 量化交易 Phase 1 完成情况
-- **[量化交易模块集成总结](archive/251212-QUANT_INTEGRATION_SUMMARY.md)** - 模块集成过程总结
-- **[量化交易模块代码审查](archive/251212-QUANT_CODE_REVIEW.md)** - 代码审查报告
-- **[策略执行优化总结](archive/250128-STRATEGY_EXECUTION_IMPROVEMENTS.md)** - 策略执行功能优化记录
+- **[Phase 1 开发完成总结](archive/251212-Phase 1 开发完成总结.md)** - 量化交易 Phase 1 完成情况
+- **[量化交易模块集成总结](archive/251212-量化交易模块集成总结.md)** - 模块集成过程总结
+- **[量化交易模块代码审查报告](archive/251212-量化交易模块代码审查报告.md)** - 代码审查报告
+- **[策略执行优化总结](archive/250128-策略执行优化总结.md)** - 策略执行功能优化记录
 
 ### 已完成功能计划
-- **[订单管理重构计划](archive/220509-ORDER_MANAGEMENT_REFACTOR_PLAN.md)** - 订单管理功能重构计划（已完成）
-- **[订单提交功能优化](archive/250115-ORDER_SUBMIT_OPTIMIZATION.md)** - 订单提交功能优化方案（已完成）
-- **[交易记录和订单管理 API](archive/231201-TRADE_RECORD_ORDER_MANAGEMENT.md)** - API 文档（已完成）
-- **[期权链功能可行性分析](archive/251212-OPTION_CHAIN_FEASIBILITY_ANALYSIS.md)** - 期权链功能分析（已完成）
-- **[期权链功能优化计划](archive/251212-OPTION_CHAIN_ENHANCEMENT_PLAN.md)** - 期权链功能优化计划（已完成）
+- **[订单管理重构优化方案](archive/220509-订单管理重构优化方案.md)** - 订单管理功能重构计划（已完成）
+- **[委托下单功能优化方案](archive/250115-委托下单功能优化方案.md)** - 订单提交功能优化方案（已完成）
+- **[交易记录与订单管理文档](archive/231201-交易记录与订单管理文档.md)** - API 文档（已完成）
+- **[股票期权功能可行性分析文档](archive/251212-股票期权功能可行性分析文档.md)** - 期权链功能分析（已完成）
+- **[期权链功能优化计划](archive/251212-期权链功能优化计划.md)** - 期权链功能优化计划（已完成）
 
 ## 🔍 快速查找
 
 ### 按角色查找
 
 **👤 用户**
-- 想开始使用系统？→ [Docker 环境设置指南](guides/251214-DOCKER_SETUP.md)
-- 需要配置系统？→ [配置管理设置指南](guides/250127-CONFIG_MANAGEMENT_SETUP.md)
-- 想进行交易？→ [交易功能使用说明](guides/251212-TRADING_GUIDE.md)
+- 想开始使用系统？→ [Docker部署指南](guides/251214-Docker部署指南.md)
+- 需要配置系统？→ [配置管理功能设置指南](guides/250127-配置管理功能设置指南.md)
+- 想进行交易？→ [交易功能使用说明](guides/251212-交易功能使用说明.md)
 - 想了解期权策略？→ [卖出看跌期权完全指南](guides/251212-卖出看跌期权（Sell Put）完全指南.md)
 
 **👨‍💻 开发者**
-- 想了解项目架构？→ [项目总结](technical/251202-PROJECT_SUMMARY.md)
-- 想了解策略优化？→ [策略优化总结](technical/251202-STRATEGY_OPTIMIZATION_SUMMARY.md) ⭐
-- 想了解策略逻辑？→ [策略逻辑审查](technical/251202-STRATEGY_LOGIC_REVIEW.md)
-- 想了解推荐算法？→ [交易推荐算法](technical/251212-TRADING_RECOMMENDATION_LOGIC.md)
-- 想集成期权 API？→ [期权行情 API](technical/251121-OPTION_QUOTE_API.md)
+- 想了解项目架构？→ [项目总结](technical/251202-项目总结.md)
+- 想了解策略优化？→ [量化交易策略优化总结](technical/251202-量化交易策略优化总结.md) ⭐
+- 想了解策略逻辑？→ [策略逻辑审查](technical/251202-策略逻辑审查.md)
+- 想了解推荐算法？→ [交易推荐逻辑总结](technical/251212-交易推荐逻辑总结.md)
+- 想集成期权 API？→ [期权行情获取API开发文档](technical/251121-期权行情获取API开发文档.md)
+- 想了解日志系统？→ [日志系统优化文档](features/251215-日志系统优化文档.md) ⭐ 最新
 
 **🔧 运维**
-- Docker 部署问题？→ [Docker 故障排查指南](../DOCKER_TROUBLESHOOTING.md) ⭐
-- 前端无法连接 API？→ [前端 API URL 配置指南](../FRONTEND_API_URL_SETUP.md) ⭐
-- 配置富途 API？→ [富途 API CSRF 要求](integration/251212-FUTUNN_API_CSRF_REQUIREMENTS.md)
-- 配置搜索 Cookies？→ [富途搜索 Cookies 设置](integration/251212-SEARCH_COOKIES_SETUP.md)
-- 集成边缘函数？→ [Moomoo 边缘函数集成](integration/251212-MOOMOO_EDGE_FUNCTION_INTEGRATION.md)
+- Docker 部署问题？→ [Docker部署指南](guides/251214-Docker部署指南.md) ⭐
+- 环境变量配置？→ [环境变量配置指南](guides/251216-环境变量配置指南.md) ⭐
+- 配置富途 API？→ [富途API接口CSRF-Token需求分析](integration/251212-富途API接口CSRF-Token需求分析.md)
+- 配置搜索 Cookies？→ [搜索接口独立Cookies配置说明](integration/251212-搜索接口独立Cookies配置说明.md)
+- 集成边缘函数？→ [Moomoo-API边缘函数集成完成](integration/251212-Moomoo-API边缘函数集成完成.md)
 
 **🐛 问题修复**
-- 了解系统问题？→ [严重问题分析报告](fixes/251208-PRODUCT_CRITICAL_ISSUES_ANALYSIS.md)
-- 查看修复进度？→ [修复实施指南](fixes/251208-FIX_IMPLEMENTATION_GUIDE.md)
-- 了解修复完成情况？→ [第一阶段修复完成总结](fixes/251208-FIX_COMPLETION_SUMMARY.md)
+- 了解系统问题？→ [长桥股票交易系统 - 严重问题分析报告](archive/251208-长桥股票交易系统 - 严重问题分析报告.md)
+- 查看修复进度？→ [修复实施指南](archive/251208-修复实施指南.md)
+- 了解修复完成情况？→ [第一阶段修复完成总结](archive/251208-第一阶段修复完成总结.md)
 
 ### 按主题查找
 
 **🚀 快速开始**
-- [Docker 环境设置指南](guides/251214-DOCKER_SETUP.md)
-- [配置管理设置指南](guides/250127-CONFIG_MANAGEMENT_SETUP.md)
+- [Docker部署指南](guides/251214-Docker部署指南.md)
+- [配置管理功能设置指南](guides/250127-配置管理功能设置指南.md)
 
 **💼 功能使用**
-- [交易功能使用说明](guides/251212-TRADING_GUIDE.md)
+- [交易功能使用说明](guides/251212-交易功能使用说明.md)
 - [卖出看跌期权完全指南](guides/251212-卖出看跌期权（Sell Put）完全指南.md)
 
 **🏗️ 系统架构**
-- [项目总结](technical/251202-PROJECT_SUMMARY.md)
-- [策略优化总结](technical/251202-STRATEGY_OPTIMIZATION_SUMMARY.md) ⭐
-- [策略逻辑审查](technical/251202-STRATEGY_LOGIC_REVIEW.md)
-- [订单修改逻辑审查](technical/251212-ORDER_MODIFICATION_LOGIC_REVIEW.md)
+- [项目总结](technical/251202-项目总结.md)
+- [量化交易策略优化总结](technical/251202-量化交易策略优化总结.md) ⭐
+- [策略逻辑审查](technical/251202-策略逻辑审查.md)
+- [订单修改逻辑审阅文档](technical/251212-订单修改逻辑审阅文档.md)
 
 **📡 API 文档**
-- [交易推荐算法](technical/251212-TRADING_RECOMMENDATION_LOGIC.md)
-- [期权行情 API](technical/251121-OPTION_QUOTE_API.md)
-- [期权图表 API 分析](features/251212-OPTION_CHART_API_ANALYSIS.md)
+- [交易推荐逻辑总结](technical/251212-交易推荐逻辑总结.md)
+- [期权行情获取API开发文档](technical/251121-期权行情获取API开发文档.md)
+- [期权图表功能 API 缺失分析](features/251212-期权图表功能 API 缺失分析.md)
+- [API数据格式核对清单](features/251214-API数据格式核对清单.md) ⭐ 新增
+
+**📊 日志系统**
+- [日志系统优化文档](features/251215-日志系统优化文档.md) ⭐ 最新
 
 **🔌 集成配置**
-- [富途 API CSRF 要求](integration/251212-FUTUNN_API_CSRF_REQUIREMENTS.md)
-- [富途搜索 Cookies 设置](integration/251212-SEARCH_COOKIES_SETUP.md)
-- [Moomoo 边缘函数集成](integration/251212-MOOMOO_EDGE_FUNCTION_INTEGRATION.md)
+- [富途API接口CSRF-Token需求分析](integration/251212-富途API接口CSRF-Token需求分析.md)
+- [搜索接口独立Cookies配置说明](integration/251212-搜索接口独立Cookies配置说明.md)
+- [Moomoo-API边缘函数集成完成](integration/251212-Moomoo-API边缘函数集成完成.md)
 
 **🐛 问题修复**
-- [严重问题分析报告](fixes/251208-PRODUCT_CRITICAL_ISSUES_ANALYSIS.md)
-- [修复实施指南](fixes/251208-FIX_IMPLEMENTATION_GUIDE.md)
-- [第一阶段修复完成总结](fixes/251208-FIX_COMPLETION_SUMMARY.md)
-- [错误处理统一实施文档](fixes/251209-ERROR_HANDLING_IMPLEMENTATION.md)
+- [长桥股票交易系统 - 严重问题分析报告](archive/251208-长桥股票交易系统 - 严重问题分析报告.md)
+- [修复实施指南](archive/251208-修复实施指南.md)
+- [第一阶段修复完成总结](archive/251208-第一阶段修复完成总结.md)
+- [错误处理统一实施文档](archive/251209-错误处理统一实施文档.md)
 
 **🎯 功能开发**
-- [动态交易策略设计](features/251203-DYNAMIC_TRADING_STRATEGY_DESIGN.md)
-- [回测功能使用指南](features/250101-BACKTEST_USAGE_GUIDE.md)
-- [期权图表功能实施总结](features/251208-OPTION_CHART_IMPLEMENTATION.md) ✅ 新增
+- [动态交易策略文档](features/251203-动态交易策略文档.md)
+- [回测功能文档](features/251215-回测功能文档.md)
+- [期权图表功能文档](features/251208-期权图表功能文档.md) ✅ 新增
 
 ## 📝 文档更新说明
 
@@ -211,7 +206,54 @@ docs/
 - **历史文档**：归档后不再更新，仅作为历史记录
 - **文档命名规范**：所有文档已按最后更新日期重命名为 `YYMMDD-文件名.md` 格式（如 `251212-BACKTEST_LOGIC_FIX_PRD.md`），方便按日期排序查找
 
-## 🆕 最新更新 (2025-12-15)
+## 🆕 最新更新 (2025-12-19)
+
+### ✅ LongPort SDK 升级和测试完成 ⭐ 最新
+- **完成度**: 100% ✅
+- **升级内容**:
+  - SDK从1.1.7升级到3.0.18
+  - 市场温度功能成功实现（获取值：70.0）
+  - 修复所有K线数据获取方法（添加TradeSessions参数）
+- **测试内容**:
+  - 创建市场状态矩阵测试文件（21个测试用例）
+  - 测试通过率：100%（21/21）
+  - 覆盖所有主要逻辑路径和边界条件
+- **相关文档**:
+  - [市场温度实现PRD](features/251218-MARKET_TEMPERATURE_IMPLEMENTATION_PRD.md)
+  - [交易推荐逻辑总结](technical/251212-交易推荐逻辑总结.md)
+
+---
+
+## 🆕 历史更新 (2025-12-16)
+
+### ✅ 文档整合完成
+- **完成度**: 100% ✅
+- **整合内容**:
+  - 整合了21个文档，合并为6个完整文档
+  - 删除重复和冗余文档，提升文档可维护性
+  - 统一文档结构，包含文档索引和快速导航
+- **整合文档**:
+  - [卖出价格错误修复文档](features/251209-卖出价格错误修复文档.md) - 5个文档合并
+  - [订单重复提交防护机制文档](features/251212-订单重复提交防护机制文档.md) - 4个文档合并
+  - [Task_queues模块修复文档](features/251216-Task_queues模块修复文档.md) - 2个文档合并
+  - [日志系统优化文档](features/251215-日志系统优化文档.md) - 5个文档合并 ⭐
+  - [量化交易订单管理重构文档](features/251211-量化交易订单管理重构文档.md) - 3个文档合并
+  - [构建错误修复文档](features/251211-构建错误修复文档.md) - 2个文档合并
+
+## 🆕 历史更新 (2025-12-15)
+
+### ✅ 日志系统开发完成 ⭐ 最新
+- **完成度**: 100% ✅
+- **功能内容**:
+  - 非阻塞日志写入机制（内存队列 + 异步批量写入）
+  - 结构化日志记录（模块、级别、TraceID、JSON数据）
+  - 数据库持久化存储（PostgreSQL）
+  - 日志查询API和前端查询页面
+  - 日志导出功能（JSON格式）
+  - 日志清理功能（自动清理配置 + 手动清理）
+  - 模块映射系统（自动映射文件路径到功能模块）
+- **相关文档**:
+  - [日志系统优化文档](features/251215-日志系统优化文档.md) ⭐ 推荐阅读
 
 ### ✅ 回测功能优化完成
 - **完成度**: 100% ✅
@@ -221,9 +263,7 @@ docs/
   - 日期范围验证（自动验证和调整回测日期范围）
   - 交易逻辑分析（全面检查回测逻辑，发现潜在改进点）
 - **相关文档**:
-  - [回测功能修订文档索引](features/251215-BACKTEST_REVISION_INDEX.md) ⭐ 推荐阅读
-  - [回测功能修订总结](features/251215-REVISION_SUMMARY.md)
-  - [回测交易逻辑分析报告](../analyze_backtest_logic_final.md)
+  - [回测功能文档](features/251215-回测功能文档.md) ⭐ 推荐阅读
 
 ## 🆕 历史更新 (2025-12-14)
 
@@ -237,8 +277,7 @@ docs/
   - 数据完整性检查（自动检查数据量，不足时自动补充）
   - 市场环境模拟（使用日K数据模拟分时市场环境）
 - **相关文档**:
-  - [回测历史数据优化实施总结](features/251214-IMPLEMENTATION_SUMMARY.md)
-  - [回测历史数据优化PRD](features/251214-BACKTEST_HISTORICAL_DATA_OPTIMIZATION_PRD.md)
+  - [回测功能文档](features/251215-回测功能文档.md) ⭐ 推荐阅读
 
 ## 🆕 历史更新 (2025-12-12)
 
@@ -248,7 +287,7 @@ docs/
 - **重命名数量**: 99 个文档已重命名
 - **链接更新**: 所有文档中的链接已更新（50+ 个文档）
 - **目录分布**: guides(6), technical(6), fixes(9), features(38), integration(3), archive(20), 根目录(16)
-- **相关文档**: [文档重命名完成总结](251212-DOCUMENTATION_RENAME_SUMMARY.md) ⭐ 新增
+- **相关文档**: [文档重命名完成总结](archive/251212-文档重命名完成总结.md) ⭐ 新增
 
 ### ✅ Docker 部署修复完成
 - **完成度**: 100% ✅
@@ -260,19 +299,19 @@ docs/
   - PostgreSQL 端口冲突修复（移除外部端口映射）
   - NAS 系统兼容性（移除 CPU CFS 调度器配置）
 - **相关文档**:
-  - [Docker 故障排查指南](../DOCKER_TROUBLESHOOTING.md) ⭐
-  - [前端 API URL 配置指南](../FRONTEND_API_URL_SETUP.md) ⭐
-  - [Docker 构建修复说明](../DOCKER_BUILD_FIX.md)
+  - [Docker部署指南](guides/251214-Docker部署指南.md) ⭐ 推荐阅读
+  - [NAS-Docker部署指南](guides/251212-NAS-Docker部署指南.md) ⭐
+  - [环境变量配置指南](guides/251216-环境变量配置指南.md) ⭐
 
 ## 🆕 历史更新 (2025-12-08)
 
 ### ✅ 期权图表功能实现完成
 - **功能**: 实现了期权详情页面的图表功能，支持分时图、5日图和日K图显示
 - **技术**: 通过边缘函数代理调用Moomoo API，统一使用折线图显示
-- **相关文档**: [期权图表功能实施总结](features/251208-OPTION_CHART_IMPLEMENTATION.md) ✅
+- **相关文档**: [期权图表功能文档](features/251208-期权图表功能文档.md) ✅
 
-### 📄 新增文档
-- **[期权图表功能实施总结](features/251208-OPTION_CHART_IMPLEMENTATION.md)** - 功能实施总结和技术细节 ⭐
+### 📄 相关文档
+- **[期权图表功能文档](features/251208-期权图表功能文档.md)** - 期权图表功能完整文档 ⭐
 
 ## 🆕 历史更新 (2025-12-08)
 
@@ -283,18 +322,18 @@ docs/
   - `integration/` - 集成文档目录
 - **文档迁移**: 已完成所有文档的分类和迁移
 - **文档索引更新**: 更新了README.md以反映新的文档结构
-- **文档管理规范**: 创建了 `251208-DOCUMENTATION_STRUCTURE.md` 说明文档结构和管理规范
+- **文档管理规范**: 创建了 `251208-文档结构说明.md` 说明文档结构和管理规范
 
 ### ✅ 错误处理统一完成
 - **完成度**: 100% ✅
 - **已迁移路由文件**: 15个（80+个路由）
 - **统一错误处理系统**: 30+个错误码，4个错误分类，4个严重程度级别
-- **相关文档**: [错误处理统一实施文档](fixes/251209-ERROR_HANDLING_IMPLEMENTATION.md)
+- **相关文档**: [错误处理统一实施文档](archive/251209-错误处理统一实施文档.md)
 
 ### ✅ 测试体系建设完成
 - **测试通过率**: 100%（29/29）
 - **测试覆盖**: 资金管理、策略执行验证、动态持仓管理
-- **相关文档**: [测试体系建设完成总结](fixes/251208-TEST_COMPLETION_SUMMARY.md)
+- **相关文档**: [测试体系建设完成总结](archive/251208-测试体系建设完成总结.md)
 
 ## 🆕 历史更新 (2025-12-05)
 
@@ -322,16 +361,12 @@ docs/
 - **波动性调整**：根据ATR变化调整止盈/止损
 - **风险保护机制**：盈亏平衡保护、持仓时间保护、波动性保护
 
-### 📄 新增文档
-- **[动态交易策略设计](features/251203-DYNAMIC_TRADING_STRATEGY_DESIGN.md)** - 动态持仓管理和市场环境响应机制设计文档 ⭐
-- **[动态交易策略实施总结](features/251203-DYNAMIC_TRADING_STRATEGY_IMPLEMENTATION.md)** - 实施完成总结
-- **[测试指南](features/251203-DYNAMIC_TRADING_STRATEGY_TESTING_GUIDE.md)** - 功能测试和问题排查指南 ⭐
-- **[回测功能实施计划](features/250101-BACKTEST_FEATURE_PLAN.md)** - 回测功能实施计划（Phase 1 & 2 已完成）✅
-- **[回测功能使用指南](features/250101-BACKTEST_USAGE_GUIDE.md)** - 回测功能使用说明 ⭐ 新
-- **[策略Bug修复说明](features/251203-STRATEGY_BUG_FIX_20251203.md)** - 高买低卖和重复卖出单问题修复说明
+### 📄 相关文档
+- **[动态交易策略文档](features/251203-动态交易策略文档.md)** - 动态交易策略完整文档（设计 + 实施总结 + 测试指南 + Bug修复）⭐
+- **[回测功能文档](features/251215-回测功能文档.md)** - 回测功能完整文档（使用指南 + 实施计划 + 修订总结）⭐
 
 ### 🔄 文档整理
-- 合并重复文档：`STRATEGY_MONITORING_OPTIMIZATION.md` 和 `STRATEGY_MONITORING_DIAGNOSIS.md` 合并到 `STRATEGY_OPTIMIZATION_SUMMARY.md`
+- 合并重复文档：策略监控优化相关文档已合并到 [量化交易策略优化总结](technical/251202-量化交易策略优化总结.md)
 - 更新订单修改逻辑文档：标记为已修复，补充修复详情
 
 ## 🔗 相关链接
@@ -341,4 +376,4 @@ docs/
 
 ---
 
-**最后更新**: 2025-12-15
+**最后更新**: 2025-12-19（LongPort SDK升级、市场状态矩阵测试完成）

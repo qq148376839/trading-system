@@ -2014,18 +2014,26 @@ class StrategyScheduler {
       }
       
       // 5. 验证信号用途（SELL信号用于做空，不是平仓）
+      // 优化：只对HOLDING状态的SELL信号检查止盈/止损信息
+      // IDLE状态的SELL信号是做空信号，不需要止盈/止损信息
       if (intent.action === 'SELL' && instanceResult.rows.length > 0) {
         const instance = instanceResult.rows[0];
-        const context = instance.context ? JSON.parse(instance.context) : {};
+        const currentState = instance.current_state;
         
-        // 如果context中没有止盈/止损信息，可能是错误的信号
-        // 注意：这里只做警告，不阻止执行，因为可能是手动平仓
-        if (!context.stopLoss && !context.takeProfit && !context.currentStopLoss && !context.currentTakeProfit) {
-          logger.warn(
-            `[策略执行验证] SELL信号用于平仓，但未找到止盈/止损信息，可能是信号误用 (${symbol})`
-          );
-          // 不阻止执行，只记录警告
+        // 只有HOLDING状态的SELL信号才是平仓，需要检查止盈/止损信息
+        if (currentState === 'HOLDING') {
+          const context = instance.context ? JSON.parse(instance.context) : {};
+          
+          // 如果context中没有止盈/止损信息，可能是错误的信号
+          // 注意：这里只做警告，不阻止执行，因为可能是手动平仓
+          if (!context.stopLoss && !context.takeProfit && !context.currentStopLoss && !context.currentTakeProfit) {
+            logger.warn(
+              `[策略执行验证] SELL信号用于平仓，但未找到止盈/止损信息，可能是信号误用 (${symbol})`
+            );
+            // 不阻止执行，只记录警告
+          }
         }
+        // IDLE状态的SELL信号是做空信号，不需要止盈/止损信息，不发出警告
       }
       
       return { valid: true };

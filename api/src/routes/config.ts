@@ -58,8 +58,32 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
 }
 
 /**
- * POST /api/config/auth
- * 管理员登录验证（用于前端页面）
+ * @openapi
+ * /config/auth:
+ *   post:
+ *     tags:
+ *       - 系统配置
+ *     summary: 管理员登录
+ *     description: 验证管理员用户名和密码
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - username
+ *               - password
+ *             properties:
+ *               username:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: 登录成功
+ *       401:
+ *         description: 认证失败
  */
 configRouter.post('/auth', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -100,8 +124,42 @@ configRouter.post('/auth', async (req: Request, res: Response, next: NextFunctio
 });
 
 /**
- * GET /api/config
- * 获取所有配置（需要管理员认证）
+ * @openapi
+ * /config:
+ *   get:
+ *     tags:
+ *       - 系统配置
+ *     summary: 获取所有配置
+ *     description: 获取系统全部配置项 (需要管理员权限)
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: 查询成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     configs:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           key:
+ *                             type: string
+ *                           value:
+ *                             type: string
+ *                           encrypted:
+ *                             type: boolean
+ *                           updated_at:
+ *                             type: string
  */
 configRouter.get('/', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -157,8 +215,40 @@ configRouter.get('/:key', requireAdmin, async (req: Request, res: Response, next
 });
 
 /**
- * PUT /api/config/:key
- * 更新配置（需要管理员认证）
+ * @openapi
+ * /config/{key}:
+ *   put:
+ *     tags:
+ *       - 系统配置
+ *     summary: 更新单项配置
+ *     description: 更新指定配置项的值 (需要管理员权限)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: key
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 配置键名
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - value
+ *             properties:
+ *               value:
+ *                 type: string
+ *                 description: 配置值
+ *               encrypted:
+ *                 type: boolean
+ *                 description: 是否加密存储 (可选)
+ *     responses:
+ *       200:
+ *         description: 更新成功
  */
 configRouter.put('/:key', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
