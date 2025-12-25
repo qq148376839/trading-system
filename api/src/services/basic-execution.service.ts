@@ -11,6 +11,7 @@ import { logger } from '../utils/logger';
 import { normalizeSide, normalizeStatus } from '../routes/orders';
 import orderPreventionMetrics from './order-prevention-metrics.service';
 import todayOrdersCache from './today-orders-cache.service';
+import shortValidationService from './short-position-validation.service';
 
 export interface ExecutionResult {
   success: boolean;
@@ -224,6 +225,7 @@ class BasicExecutionService {
     actualQuantity: number;
     pendingQuantity: number;
     availableQuantity: number;
+    positionType?: 'LONG' | 'SHORT' | 'NONE';
   }> {
     try {
       // 1. 获取实际持仓
@@ -249,7 +251,17 @@ class BasicExecutionService {
       const position = positionsArray.find((p: any) => p.symbol === symbol);
       const actualQuantity = position ? parseFloat(position.quantity?.toString() || '0') : 0;
       
-      // 2. 查询未成交卖出订单（使用统一缓存服务）
+      // ⚠️ 修复：判断持仓类型
+      let positionType: 'LONG' | 'SHORT' | 'NONE';
+      if (actualQuantity > 0) {
+        positionType = 'LONG';
+      } else if (actualQuantity < 0) {
+        positionType = 'SHORT';
+      } else {
+        positionType = 'NONE';
+      }
+      
+      // 2. 查询未成交订单（使用统一缓存服务）
       const todayOrders = await todayOrdersCache.getTodayOrders();
       const pendingStatuses = [
         'NotReported',
@@ -263,13 +275,16 @@ class BasicExecutionService {
         'VarietiesNotReported',
       ];
       
-      let pendingQuantity = 0;
+      let pendingSellQuantity = 0;  // 未成交卖出订单（平仓或卖空）
+      let pendingBuyQuantity = 0;   // 未成交买入订单（开仓或平仓）
+      
       for (const order of todayOrders) {
         const orderSymbol = order.symbol || order.stock_name;
         const orderSide = order.side;
         const isSell = orderSide === 'Sell' || orderSide === 2 || orderSide === 'SELL' || orderSide === 'sell';
+        const isBuy = orderSide === 'Buy' || orderSide === 1 || orderSide === 'BUY' || orderSide === 'buy';
         
-        if (orderSymbol === symbol && isSell) {
+        if (orderSymbol === symbol) {
           // 使用 normalizeStatus 标准化订单状态
           const normalizedStatus = normalizeStatus(order.status);
           
@@ -277,37 +292,61 @@ class BasicExecutionService {
             // 计算未成交数量：总数量 - 已成交数量
             const totalQuantity = parseFloat(order.quantity?.toString() || order.submitted_quantity?.toString() || '0');
             const executedQuantity = parseFloat(order.executedQuantity?.toString() || order.executed_quantity?.toString() || '0');
-            const pending = Math.max(0, totalQuantity - executedQuantity);
-            pendingQuantity += pending;
+            const pending = Math.max(0, Math.abs(totalQuantity) - Math.abs(executedQuantity));
+            
+            if (isSell) {
+              pendingSellQuantity += pending;
+            } else if (isBuy) {
+              pendingBuyQuantity += pending;
+            }
           }
         }
       }
       
-      // 3. 计算可用持仓
-      const availableQuantity = Math.max(0, actualQuantity - pendingQuantity);
+      // ⚠️ 修复：计算可用持仓（区分做多和卖空）
+      let availableQuantity: number;
+      let pendingQuantity: number;
       
-      logger.log(`计算可用持仓: ${symbol}, 实际持仓=${actualQuantity}, 未成交订单占用=${pendingQuantity}, 可用持仓=${availableQuantity}`);
+      if (positionType === 'LONG') {
+        // 做多持仓：可用 = 实际持仓 - 未成交卖出订单（平仓）
+        pendingQuantity = pendingSellQuantity;
+        availableQuantity = Math.max(0, actualQuantity - pendingSellQuantity);
+      } else if (positionType === 'SHORT') {
+        // 卖空持仓：可用 = |实际持仓| - 未成交买入订单（平仓）
+        pendingQuantity = pendingBuyQuantity;
+        const absActualQuantity = Math.abs(actualQuantity);
+        availableQuantity = Math.max(0, absActualQuantity - pendingBuyQuantity);
+      } else {
+        // 无持仓：可用 = 0
+        pendingQuantity = 0;
+        availableQuantity = 0;
+      }
+      
+      logger.log(`计算可用持仓: ${symbol}, 实际持仓=${actualQuantity}, 持仓类型=${positionType}, 未成交卖出=${pendingSellQuantity}, 未成交买入=${pendingBuyQuantity}, 可用持仓=${availableQuantity}`);
       
       return {
         actualQuantity,
         pendingQuantity,
-        availableQuantity
+        availableQuantity,
+        positionType
       };
     } catch (error: any) {
       logger.error(`计算可用持仓失败 (${symbol}):`, error);
-      // 保守处理，查询失败时返回0，避免卖空
+      // ⚠️ 修复：查询失败时返回0，但不阻止卖空（由其他验证逻辑处理）
       return {
         actualQuantity: 0,
         pendingQuantity: 0,
-        availableQuantity: 0
+        availableQuantity: 0,
+        positionType: 'NONE'
       };
     }
   }
 
   /**
    * 验证卖出订单持仓
+   * ⚠️ 修复：支持卖空和平仓两种场景
    * @param symbol 标的代码
-   * @param quantity 卖出数量
+   * @param quantity 卖出数量（正数=平仓，负数=卖空）
    * @param strategyId 策略ID
    * @returns 验证结果
    */
@@ -326,30 +365,95 @@ class BasicExecutionService {
       // 计算可用持仓
       const positionInfo = await this.calculateAvailablePosition(symbol);
       
-      // 验证卖出数量
-      if (quantity > positionInfo.availableQuantity) {
+      // ⚠️ 修复：区分卖空和平仓
+      const isShortOrder = quantity < 0;
+      const absQuantity = Math.abs(quantity);
+      
+      if (isShortOrder) {
+        // 卖空订单（负数）：不需要持仓验证（开仓操作）
+        // ⚠️ 完善错误处理：卖空权限和保证金验证在 strategy-scheduler 中已完成
+        // 这里只做基础的数量验证
+        const quantityCheck = shortValidationService.validateQuantity(absQuantity, 'SELL', 0);
+        
+        if (!quantityCheck.valid) {
+          orderPreventionMetrics.recordPositionValidation(false);
+          orderPreventionMetrics.recordOrderRejected('position');
+          
+          return {
+            valid: false,
+            availableQuantity: 0,
+            actualQuantity: positionInfo.actualQuantity,
+            pendingQuantity: positionInfo.pendingQuantity,
+            reason: quantityCheck.error || 'Quantity validation failed',
+          };
+        }
+        
+        logger.log(`[持仓验证] 卖空订单: ${symbol}, 数量=${quantity}（负数），数量验证通过`);
+        
         // 记录监控指标
-        orderPreventionMetrics.recordPositionValidation(false);
-        orderPreventionMetrics.recordOrderRejected('position');
+        orderPreventionMetrics.recordPositionValidation(true);
         
         return {
-          valid: false,
+          valid: true,
+          availableQuantity: 0,  // 卖空订单不占用持仓
+          actualQuantity: positionInfo.actualQuantity,
+          pendingQuantity: positionInfo.pendingQuantity
+        };
+      } else if (positionInfo.positionType === 'SHORT') {
+        // 有卖空持仓，买入平仓
+        // 验证：买入数量不能超过卖空数量
+        const shortQuantity = Math.abs(positionInfo.actualQuantity);
+        
+        if (quantity > shortQuantity) {
+          // 记录监控指标
+          orderPreventionMetrics.recordPositionValidation(false);
+          orderPreventionMetrics.recordOrderRejected('position');
+          
+          return {
+            valid: false,
+            availableQuantity: shortQuantity,
+            actualQuantity: positionInfo.actualQuantity,
+            pendingQuantity: positionInfo.pendingQuantity,
+            reason: `平仓数量(${quantity})不能超过卖空数量(${shortQuantity})`
+          };
+        }
+        
+        // 记录监控指标
+        orderPreventionMetrics.recordPositionValidation(true);
+        
+        return {
+          valid: true,
+          availableQuantity: shortQuantity - positionInfo.pendingQuantity,  // 可用平仓数量
+          actualQuantity: positionInfo.actualQuantity,
+          pendingQuantity: positionInfo.pendingQuantity
+        };
+      } else {
+        // 做多持仓，卖出平仓
+        // 验证卖出数量
+        if (quantity > positionInfo.availableQuantity) {
+          // 记录监控指标
+          orderPreventionMetrics.recordPositionValidation(false);
+          orderPreventionMetrics.recordOrderRejected('position');
+          
+          return {
+            valid: false,
+            availableQuantity: positionInfo.availableQuantity,
+            actualQuantity: positionInfo.actualQuantity,
+            pendingQuantity: positionInfo.pendingQuantity,
+            reason: `可用持仓不足：实际持仓=${positionInfo.actualQuantity}，未成交订单占用=${positionInfo.pendingQuantity}，可用持仓=${positionInfo.availableQuantity}，请求卖出=${quantity}`
+          };
+        }
+        
+        // 记录监控指标
+        orderPreventionMetrics.recordPositionValidation(true);
+        
+        return {
+          valid: true,
           availableQuantity: positionInfo.availableQuantity,
           actualQuantity: positionInfo.actualQuantity,
-          pendingQuantity: positionInfo.pendingQuantity,
-          reason: `可用持仓不足：实际持仓=${positionInfo.actualQuantity}，未成交订单占用=${positionInfo.pendingQuantity}，可用持仓=${positionInfo.availableQuantity}，请求卖出=${quantity}`
+          pendingQuantity: positionInfo.pendingQuantity
         };
       }
-      
-      // 记录监控指标
-      orderPreventionMetrics.recordPositionValidation(true);
-      
-      return {
-        valid: true,
-        availableQuantity: positionInfo.availableQuantity,
-        actualQuantity: positionInfo.actualQuantity,
-        pendingQuantity: positionInfo.pendingQuantity
-      };
     } catch (error: any) {
       logger.error(`验证卖出订单持仓失败 (${symbol}):`, error);
       // 保守处理，验证失败时拒绝卖出
@@ -382,6 +486,10 @@ class BasicExecutionService {
       };
     }
 
+    // ⚠️ 修复：支持负数数量（卖空订单）
+    const isShortOrder = intent.quantity < 0;
+    const absQuantity = Math.abs(intent.quantity);
+
     // 确定卖出价格
     // 优先级：sellPrice > entryPrice
     // sellPrice: 用于平仓场景（推荐）
@@ -412,47 +520,60 @@ class BasicExecutionService {
       logger.warn(`策略 ${strategyId} 标的 ${intent.symbol}: ${priceValidation.warning}`);
     }
 
-    // 持仓验证：验证卖出数量是否超过实际可用持仓
-    const positionValidation = await this.validateSellPosition(
-      intent.symbol,
-      intent.quantity,
-      strategyId
-    );
-    
-    if (!positionValidation.valid) {
-      logger.error(`策略 ${strategyId} 标的 ${intent.symbol}: 持仓验证失败 - ${positionValidation.reason}`);
-      // 如果订单提交失败，更新信号状态为REJECTED
-      const signalId = (intent.metadata as any)?.signalId;
-      if (signalId) {
-        await this.updateSignalStatusBySignalId(signalId, 'REJECTED');
+    // ⚠️ 修复：持仓验证（区分做空和平仓）
+    if (isShortOrder) {
+      // 卖空订单：不需要持仓验证（开仓操作）
+      // TODO: 添加保证金验证
+      logger.log(`策略 ${strategyId} 执行做空意图: ` +
+        `标的=${intent.symbol}, ` +
+        `数量=${intent.quantity}（负数）, ` +
+        `做空价=${sellPrice.toFixed(2)}, ` +
+        `市场价格=${currentPrice?.toFixed(2) || 'N/A'}, ` +
+        `原因=${intent.reason}`);
+    } else {
+      // 平仓订单：需要持仓验证
+      const positionValidation = await this.validateSellPosition(
+        intent.symbol,
+        intent.quantity,
+        strategyId
+      );
+      
+      if (!positionValidation.valid) {
+        logger.error(`策略 ${strategyId} 标的 ${intent.symbol}: 持仓验证失败 - ${positionValidation.reason}`);
+        // 如果订单提交失败，更新信号状态为REJECTED
+        const signalId = (intent.metadata as any)?.signalId;
+        if (signalId) {
+          await this.updateSignalStatusBySignalId(signalId, 'REJECTED');
+        }
+        return {
+          success: false,
+          error: positionValidation.reason || '持仓验证失败',
+        };
       }
-      return {
-        success: false,
-        error: positionValidation.reason || '持仓验证失败',
-      };
-    }
 
-    // 记录价格信息，便于调试和问题追踪
-    logger.log(`策略 ${strategyId} 执行卖出意图: ` +
-      `标的=${intent.symbol}, ` +
-      `数量=${intent.quantity}, ` +
-      `卖出价=${sellPrice.toFixed(2)}, ` +
-      `买入价(entryPrice)=${intent.entryPrice?.toFixed(2) || 'N/A'}, ` +
-      `市场价格=${currentPrice?.toFixed(2) || 'N/A'}, ` +
-      `可用持仓=${positionValidation.availableQuantity}, ` +
-      `原因=${intent.reason}`);
+      // 记录价格信息，便于调试和问题追踪
+      logger.log(`策略 ${strategyId} 执行卖出意图: ` +
+        `标的=${intent.symbol}, ` +
+        `数量=${intent.quantity}, ` +
+        `卖出价=${sellPrice.toFixed(2)}, ` +
+        `买入价(entryPrice)=${intent.entryPrice?.toFixed(2) || 'N/A'}, ` +
+        `市场价格=${currentPrice?.toFixed(2) || 'N/A'}, ` +
+        `可用持仓=${positionValidation.availableQuantity}, ` +
+        `原因=${intent.reason}`);
+    }
 
     // 从intent.metadata中获取signal_id
     const signalId = (intent.metadata as any)?.signalId;
 
     try {
+      // ⚠️ 修复：提交订单时使用原始数量（可能是负数）
       return await this.submitOrder(
         intent.symbol,
         'SELL',
-        intent.quantity,
-        sellPrice, // ✅ 使用正确的卖出价格
+        intent.quantity,  // 保持原始数量（负数表示卖空）
+        sellPrice,
         strategyId,
-        signalId  // 新增参数：信号ID
+        signalId
       );
     } catch (error: any) {
       logger.error(`执行卖出失败 (${intent.symbol}):`, error);
@@ -482,6 +603,10 @@ class BasicExecutionService {
     try {
       const tradeCtx = await getTradeContext();
 
+      // ⚠️ 修复：支持负数数量（卖空订单）
+      const isShortOrder = quantity < 0;
+      const absQuantity = Math.abs(quantity);
+
       // 1. 验证最小交易单位（lot size）
       try {
         const quoteCtx = await getQuoteContext();
@@ -489,14 +614,15 @@ class BasicExecutionService {
         
         if (staticInfoList && staticInfoList.length > 0) {
           const lotSize = staticInfoList[0].lotSize;
-          if (lotSize > 0 && quantity % lotSize !== 0) {
-            const adjustedQuantity = Math.floor(quantity / lotSize) * lotSize;
-            if (adjustedQuantity === 0) {
+          if (lotSize > 0 && absQuantity % lotSize !== 0) {
+            const adjustedAbsQuantity = Math.floor(absQuantity / lotSize) * lotSize;
+            if (adjustedAbsQuantity === 0) {
               return {
                 success: false,
-                error: `数量不符合最小交易单位要求。最小交易单位为 ${lotSize}，当前数量 ${quantity} 太小`,
+                error: `数量不符合最小交易单位要求。最小交易单位为 ${lotSize}，当前数量 ${absQuantity} 太小`,
               };
             }
+            const adjustedQuantity = isShortOrder ? -adjustedAbsQuantity : adjustedAbsQuantity;
             logger.warn(`数量 ${quantity} 不符合最小交易单位 ${lotSize}，调整为 ${adjustedQuantity}`);
             quantity = adjustedQuantity;
           }
@@ -534,7 +660,7 @@ class BasicExecutionService {
         symbol,
         orderType: OrderType.LO, // 限价单
         side: side === 'BUY' ? OrderSide.Buy : OrderSide.Sell,
-        submittedQuantity: quantity,
+        submittedQuantity: new Decimal(quantity.toString()),
         submittedPrice: new Decimal(formattedPrice.toString()),
         timeInForce: TimeInForceType.Day,
       };
@@ -549,6 +675,7 @@ class BasicExecutionService {
         symbol,
         side,
         quantity,
+        isShortOrder: isShortOrder,  // ⚠️ 标记是否为卖空订单
         originalPrice: price,
         formattedPrice: formattedPrice,
         market,

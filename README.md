@@ -212,9 +212,9 @@ trading-system/
 - `GET /api/quant/backtest` - 获取回测任务列表
 
 **相关文档**：
-- 📄 [回测功能修订文档索引](docs/features/251215-BACKTEST_REVISION_INDEX.md) ⭐ 推荐阅读
-- 📄 [回测功能使用指南](docs/features/250101-BACKTEST_USAGE_GUIDE.md)
-- 📄 [回测交易逻辑分析报告](analyze_backtest_logic_final.md)
+- 📄 [回测功能文档](docs/features/251215-回测功能文档.md) ⭐ 推荐阅读（包含修订文档索引和使用指南）
+- 📄 [回测功能使用指南](docs/archive/250101-回测功能使用指南.md)（历史文档）
+- 📄 [回测交易逻辑分析报告](docs/archive/251216-回测交易逻辑分析报告.md)（历史文档）
 
 ## 🚀 快速开始
 
@@ -263,9 +263,9 @@ docker-compose exec api node scripts/create-admin.js admin your_password
 ```
 
 **详细文档**:
-- 📖 [Docker 环境设置指南](docs/guides/DOCKER_SETUP.md) - 完整的 Docker 部署指南
-- 🔧 [Docker 故障排查指南](DOCKER_TROUBLESHOOTING.md) - 常见问题排查
-- 🌐 [前端 API URL 配置指南](FRONTEND_API_URL_SETUP.md) - 前端连接配置
+- 📖 [Docker 部署指南](docs/guides/251214-Docker部署指南.md) - 完整的 Docker 部署指南
+- 🔧 [Docker 故障排查和优化指南](docs/guides/251216-Docker故障排查和优化指南.md) - 常见问题排查
+- 🌐 [前端 API URL 配置指南](docs/guides/251216-前端API-URL配置指南.md) - 前端连接配置
 
 ### 3. 本地开发环境配置
 
@@ -381,8 +381,8 @@ GET /api/orders/:orderId
 
 详细的 API 文档请参考：
 - [API README](api/README.md)
-- [订单管理重构计划](ORDER_MANAGEMENT_REFACTOR_PLAN.md)
-- [交易记录和订单管理文档](TRADE_RECORD_ORDER_MANAGEMENT.md)
+- [订单管理重构优化方案](docs/archive/220509-订单管理重构优化方案.md)（历史文档）
+- [交易记录与订单管理文档](docs/archive/231201-交易记录与订单管理文档.md)（历史文档）
 
 ## 🔧 开发指南
 
@@ -485,8 +485,7 @@ const mappedOrder = mapOrderData(orderDetail);
 - 创建交易逻辑分析工具，全面检查回测逻辑
 
 **相关文档**：
-- 📄 [回测功能修订文档索引](docs/features/251215-BACKTEST_REVISION_INDEX.md) ⭐ 推荐阅读
-- 📄 [回测功能修订总结](docs/features/251215-REVISION_SUMMARY.md)
+- 📄 [回测功能文档](docs/features/251215-回测功能文档.md) ⭐ 推荐阅读（包含修订文档索引和修订总结）
 - 📄 [回测交易逻辑分析报告](analyze_backtest_logic_final.md)
 
 ### 2025-12-14: 回测历史数据优化
@@ -500,8 +499,7 @@ const mappedOrder = mapOrderData(orderDetail);
 6. ✅ **市场环境模拟**：使用日K数据的OHLC模拟分时市场环境
 
 **相关文档**：
-- 📄 [回测历史数据优化实施总结](docs/features/251214-IMPLEMENTATION_SUMMARY.md)
-- 📄 [回测历史数据优化PRD](docs/features/251214-BACKTEST_HISTORICAL_DATA_OPTIMIZATION_PRD.md)
+- 📄 [回测功能文档](docs/features/251215-回测功能文档.md) ⭐ 推荐阅读（包含历史数据优化实施总结和PRD）
 
 ### 2025-01-XX: 期权链功能完整实现
 
@@ -547,7 +545,7 @@ const mappedOrder = mapOrderData(orderDetail);
 - 后端：`api/src/services/basic-execution.service.ts` - 添加价格格式化逻辑
 
 **详细文档**：
-- 📄 [策略执行优化总结](docs/archive/STRATEGY_EXECUTION_IMPROVEMENTS.md) - 完整的优化说明和技术细节
+- 📄 [策略执行优化总结](docs/archive/250128-策略执行优化总结.md) - 完整的优化说明和技术细节
 
 ### 2025-01-XX: 订单管理重构
 
@@ -581,26 +579,26 @@ const mappedOrder = mapOrderData(orderDetail);
 **👉 [查看完整文档索引](docs/README.md)**
 
 #### 使用指南
-- 🏠 [NAS Docker 部署指南](docs/guides/NAS_DOCKER_DEPLOYMENT.md) - NAS 上 Docker 部署完整指南 ⭐ 新增
-- ⚙️ [环境变量配置指南](ENV_SETUP_GUIDE.md) - 环境变量配置说明（数据库账号密码等）⭐ 新增
-- 💼 [交易指南](docs/guides/TRADING_GUIDE.md) - 交易功能使用说明
-- ⚙️ [配置管理设置](docs/guides/CONFIG_MANAGEMENT_SETUP.md) - 配置管理和 Token 刷新功能设置指南
-- 🐳 [Docker 环境设置](docs/guides/DOCKER_SETUP.md) - Docker 环境配置和部署说明
-- 📄 [卖出看跌期权完全指南](docs/guides/卖出看跌期权（Sell Put）完全指南.md) - 期权交易策略指南
+- 🏠 [NAS Docker 部署指南](docs/guides/251212-NAS-Docker部署指南.md) - NAS 上 Docker 部署完整指南 ⭐ 新增
+- ⚙️ [环境变量配置指南](docs/guides/251216-环境变量配置指南.md) - 环境变量配置说明（数据库账号密码等）⭐ 新增
+- 💼 [交易功能使用说明](docs/guides/251212-交易功能使用说明.md) - 交易功能使用说明
+- ⚙️ [配置管理功能设置指南](docs/guides/250127-配置管理功能设置指南.md) - 配置管理和 Token 刷新功能设置指南
+- 🐳 [Docker 部署指南](docs/guides/251214-Docker部署指南.md) - Docker 环境配置和部署说明
+- 📄 [卖出看跌期权完全指南](docs/guides/251212-卖出看跌期权（Sell Put）完全指南.md) - 期权交易策略指南
 
 #### 技术文档
-- 🏗️ [项目总结](docs/technical/PROJECT_SUMMARY.md) - 项目核心信息、关键决策和技术栈
-- 📊 [交易推荐逻辑](docs/technical/TRADING_RECOMMENDATION_LOGIC.md) - 交易推荐算法详细说明
-- 🔧 [期权行情 API](docs/technical/OPTION_QUOTE_API.md) - 期权行情 API 开发文档
-- 🤖 [策略逻辑审查](docs/technical/STRATEGY_LOGIC_REVIEW.md) - 量化交易策略的详细逻辑说明
+- 🏗️ [量化交易系统技术文档](docs/technical/251202-量化交易系统技术文档.md) - 项目核心信息、关键决策和技术栈
+- 📊 [交易推荐逻辑总结](docs/technical/251212-交易推荐逻辑总结.md) - 交易推荐算法详细说明
+- 🔧 [期权行情获取API开发文档](docs/technical/251121-期权行情获取API开发文档.md) - 期权行情 API 开发文档
+- 🤖 [量化交易系统技术文档](docs/technical/251202-量化交易系统技术文档.md) - 量化交易策略的详细逻辑说明
 
 #### 历史文档（已归档）
-- 📋 [订单管理重构计划](docs/archive/ORDER_MANAGEMENT_REFACTOR_PLAN.md) - 订单管理重构详细计划（已完成）
-- 📝 [交易记录和订单管理](docs/archive/TRADE_RECORD_ORDER_MANAGEMENT.md) - 订单管理 API 文档（已完成）
-- 📈 [期权链可行性分析](docs/archive/OPTION_CHAIN_FEASIBILITY_ANALYSIS.md) - 期权链功能可行性分析（已完成）
-- 🚀 [期权链优化计划](docs/archive/OPTION_CHAIN_ENHANCEMENT_PLAN.md) - 期权链功能优化计划（已完成）
-- ⚡ [订单提交优化方案](docs/archive/ORDER_SUBMIT_OPTIMIZATION.md) - 订单提交功能优化方案（已完成）
-- 🤖 [策略执行优化总结](docs/archive/STRATEGY_EXECUTION_IMPROVEMENTS.md) - 策略执行功能优化和问题修复总结
+- 📋 [订单管理重构优化方案](docs/archive/220509-订单管理重构优化方案.md) - 订单管理重构详细计划（已完成）
+- 📝 [交易记录与订单管理文档](docs/archive/231201-交易记录与订单管理文档.md) - 订单管理 API 文档（已完成）
+- 📈 [股票期权功能可行性分析文档](docs/archive/251212-股票期权功能可行性分析文档.md) - 期权链功能可行性分析（已完成）
+- 🚀 [期权链功能优化计划](docs/archive/251212-期权链功能优化计划.md) - 期权链功能优化计划（已完成）
+- ⚡ [委托下单功能优化方案](docs/archive/250115-委托下单功能优化方案.md) - 订单提交功能优化方案（已完成）
+- 🤖 [策略执行优化总结](docs/archive/250128-策略执行优化总结.md) - 策略执行功能优化和问题修复总结
 
 ## 🐛 故障排除
 
@@ -609,17 +607,17 @@ const mappedOrder = mapOrderData(orderDetail);
 1. **前端无法连接 API**
    - 检查 `NEXT_PUBLIC_API_URL` 是否设置为 NAS 的实际 IP
    - 修改后必须重新构建：`docker-compose build --no-cache frontend`
-   - 参考：[前端 API URL 配置指南](FRONTEND_API_URL_SETUP.md)
+   - 参考：[前端 API URL 配置指南](docs/guides/251216-前端API-URL配置指南.md)
 
 2. **API 容器启动失败（unhealthy）**
    - 查看日志：`docker-compose logs api`
    - 检查数据库连接配置（使用服务名 `postgres` 而不是 `localhost`）
-   - 参考：[Docker 故障排查指南](DOCKER_TROUBLESHOOTING.md)
+   - 参考：[Docker 故障排查和优化指南](docs/guides/251216-Docker故障排查和优化指南.md)
 
 3. **构建失败**
    - longport 模块错误：已修复，使用 Debian 基础镜像
    - bcrypt 编译错误：已修复，添加了构建工具
-   - 参考：[Docker 构建修复说明](DOCKER_BUILD_FIX.md)
+   - 参考：[Docker 部署指南](docs/guides/251214-Docker部署指南.md)（包含构建修复说明）
 
 ### 常见问题
 

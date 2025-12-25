@@ -114,24 +114,103 @@ class TradingDaysService {
       logger.log(`[交易日服务] 从Longbridge API获取交易日数据: ${market}, ${this.dateToYYMMDD(startDate)} 至 ${this.dateToYYMMDD(endDate)}`);
 
       // 调用Longbridge API
+      // 参考文档：
+      // - Node.js SDK: https://longportapp.github.io/openapi/nodejs/classes/QuoteContext.html#tradingdays
+      // - API文档: https://open.longbridge.com/zh-CN/docs/quote/pull/trade-day
+      // 返回类型：Promise<MarketTradingDays>
       const response = await quoteCtx.tradingDays(marketEnum, beginNaiveDate, endNaiveDate);
 
       // 解析响应数据
+      // 根据实际日志，Node.js SDK返回的格式为：
+      // { tradingDays: string[], halfTradingDays: string[] }
+      // 日期格式为 ISO 格式：YYYY-MM-DD (如 "2025-12-01")
+      // 需要转换为 YYMMDD 格式 (如 "20251201")
       const tradeDays = new Set<string>();
       const halfTradeDays = new Set<string>();
 
-      // response.tradeDay 是字符串数组，格式为 YYMMDD
-      if (response.tradeDay && Array.isArray(response.tradeDay)) {
-        response.tradeDay.forEach((day: string) => {
-          tradeDays.add(day);
+      // ✅ 访问属性（注意：Node.js SDK使用复数形式 tradingDays）
+      const tradingDaysArray = (response as any).tradingDays || (response as any).tradeDay || (response as any).trade_day;
+      const halfTradingDaysArray = (response as any).halfTradingDays || (response as any).halfTradeDay || (response as any).half_trade_day;
+
+      // 辅助函数：将日期转换为 YYMMDD 格式
+      // 支持多种输入格式：ISO字符串、YYMMDD字符串、Date对象、NaiveDate对象等
+      const isoToYYMMDD = (dateInput: any): string => {
+        // 如果输入是 null 或 undefined，返回空字符串
+        if (dateInput == null) {
+          logger.warn(`[交易日服务] isoToYYMMDD收到null/undefined值: ${dateInput}`);
+          return '';
+        }
+
+        // 如果输入不是字符串，尝试转换
+        if (typeof dateInput !== 'string') {
+          // 如果是Date对象
+          if (dateInput instanceof Date) {
+            const year = dateInput.getFullYear();
+            const month = String(dateInput.getMonth() + 1).padStart(2, '0');
+            const day = String(dateInput.getDate()).padStart(2, '0');
+            return `${year}${month}${day}`;
+          }
+          // 如果是NaiveDate对象（Longbridge SDK）
+          if (dateInput && typeof dateInput === 'object' && 'year' in dateInput && 'month' in dateInput && 'day' in dateInput) {
+            const year = dateInput.year;
+            const month = String(dateInput.month).padStart(2, '0');
+            const day = String(dateInput.day).padStart(2, '0');
+            return `${year}${month}${day}`;
+          }
+          // 尝试转换为字符串
+          dateInput = String(dateInput);
+        }
+
+        // 如果已经是 YYMMDD 格式，直接返回
+        if (/^\d{8}$/.test(dateInput)) {
+          return dateInput;
+        }
+        // 如果是 ISO 格式 (YYYY-MM-DD)，转换为 YYMMDD
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) {
+          return dateInput.replace(/-/g, '');
+        }
+        // 尝试解析其他格式
+        const date = new Date(dateInput);
+        if (!isNaN(date.getTime())) {
+          const year = date.getFullYear();
+          const month = String(date.getMonth() + 1).padStart(2, '0');
+          const day = String(date.getDate()).padStart(2, '0');
+          return `${year}${month}${day}`;
+        }
+        // 无法解析，返回原值（转换为字符串）
+        return String(dateInput);
+      };
+
+      // tradingDays 是字符串数组，可能是 ISO 格式 (YYYY-MM-DD) 或 YYMMDD 格式
+      if (tradingDaysArray && Array.isArray(tradingDaysArray)) {
+        tradingDaysArray.forEach((day: any, index: number) => {
+          try {
+            const yymmdd = isoToYYMMDD(day);
+            if (yymmdd && yymmdd.length === 8) {
+              tradeDays.add(yymmdd);
+            } else {
+              logger.warn(`[交易日服务] 日期转换失败 (索引${index}): ${day} -> ${yymmdd}`);
+            }
+          } catch (error: any) {
+            logger.error(`[交易日服务] 日期转换异常 (索引${index}): ${day}, 类型: ${typeof day}, 错误: ${error.message}`);
+          }
         });
       }
 
-      // response.halfTradeDay 是半日市数组
-      if (response.halfTradeDay && Array.isArray(response.halfTradeDay)) {
-        response.halfTradeDay.forEach((day: string) => {
-          halfTradeDays.add(day);
-          tradeDays.add(day); // 半日市也是交易日
+      // halfTradingDays 是半日市数组
+      if (halfTradingDaysArray && Array.isArray(halfTradingDaysArray)) {
+        halfTradingDaysArray.forEach((day: any, index: number) => {
+          try {
+            const yymmdd = isoToYYMMDD(day);
+            if (yymmdd && yymmdd.length === 8) {
+              halfTradeDays.add(yymmdd);
+              tradeDays.add(yymmdd); // 半日市也是交易日
+            } else {
+              logger.warn(`[交易日服务] 半日市日期转换失败 (索引${index}): ${day} -> ${yymmdd}`);
+            }
+          } catch (error: any) {
+            logger.error(`[交易日服务] 半日市日期转换异常 (索引${index}): ${day}, 类型: ${typeof day}, 错误: ${error.message}`);
+          }
         });
       }
 
@@ -147,22 +226,53 @@ class TradingDaysService {
   /**
    * 获取交易日数据（带缓存）
    * 如果日期范围超过一个月，会自动分批获取
+   * 
+   * ⚠️ 注意：根据Longbridge API限制，仅支持查询最近一年的数据
+   * 如果查询未来日期，会自动限制到当前日期
    */
   async getTradingDays(
     market: 'US' | 'HK' | 'SH' | 'SZ',
     startDate: Date,
     endDate: Date
   ): Promise<Set<string>> {
-    // 检查缓存
-    const cacheKey = this.getCacheKey(market, startDate, endDate);
+    // ✅ 限制查询范围：不能查询未来日期（API仅支持最近一年）
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+    
+    // 如果开始日期是未来日期，返回空集合
+    if (startDate > today) {
+      logger.warn(`[交易日服务] 开始日期是未来日期，返回空集合: ${this.dateToYYMMDD(startDate)}`);
+      return new Set<string>();
+    }
+    
+    // 如果结束日期是未来日期，限制到当前日期
+    // ⚠️ 注意：此日志仅在调试模式下输出，避免在生产环境产生过多日志
+    let actualEndDate = endDate;
+    if (endDate > today) {
+      actualEndDate = new Date(today);
+      // 仅在调试模式下输出日志，避免在生产环境产生过多日志
+      // 这是正常行为（API限制仅支持最近一年数据），不需要每次都记录
+      if (process.env.NODE_ENV === 'development' || process.env.DEBUG_TRADING_DAYS === 'true') {
+        logger.debug(`[交易日服务] 结束日期是未来日期，限制到当前日期: ${this.dateToYYMMDD(endDate)} -> ${this.dateToYYMMDD(actualEndDate)}`);
+      }
+    }
+    
+    // 确保开始日期不晚于结束日期
+    if (startDate > actualEndDate) {
+      logger.warn(`[交易日服务] 开始日期晚于结束日期，返回空集合`);
+      return new Set<string>();
+    }
+
+    // 检查缓存（使用实际日期范围）
+    const cacheKey = this.getCacheKey(market, startDate, actualEndDate);
     const cached = this.cache.get(cacheKey);
     if (cached && this.isCacheValid(cached)) {
-      logger.log(`[交易日服务] 使用缓存数据: ${cacheKey}`);
+      logger.debug(`[交易日服务] 使用缓存数据: ${cacheKey}`);
       return cached.tradeDays;
     }
 
     // 计算日期范围（天）
-    const daysDiff = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+    const daysDiff = Math.ceil((actualEndDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
     
     // 如果日期范围超过一个月（30天），需要分批获取
     if (daysDiff > 30) {
@@ -171,12 +281,12 @@ class TradingDaysService {
       const allTradeDays = new Set<string>();
       let currentStart = new Date(startDate);
       
-      while (currentStart <= endDate) {
+      while (currentStart <= actualEndDate) {
         // 计算当前批次的结束日期（最多30天）
         const currentEnd = new Date(currentStart);
         currentEnd.setDate(currentEnd.getDate() + 30);
-        if (currentEnd > endDate) {
-          currentEnd.setTime(endDate.getTime());
+        if (currentEnd > actualEndDate) {
+          currentEnd.setTime(actualEndDate.getTime());
         }
 
         // 获取当前批次的交易日数据
@@ -195,7 +305,7 @@ class TradingDaysService {
       this.cache.set(cacheKey, {
         market,
         startDate: startDate.toISOString().split('T')[0],
-        endDate: endDate.toISOString().split('T')[0],
+        endDate: actualEndDate.toISOString().split('T')[0],
         tradeDays: allTradeDays,
         halfTradeDays: new Set(),
         expiresAt: Date.now() + this.CACHE_TTL,
@@ -204,13 +314,13 @@ class TradingDaysService {
       return allTradeDays;
     } else {
       // 日期范围在30天内，直接获取
-      const { tradeDays, halfTradeDays } = await this.fetchTradingDaysFromAPI(market, startDate, endDate);
+      const { tradeDays, halfTradeDays } = await this.fetchTradingDaysFromAPI(market, startDate, actualEndDate);
 
       // 缓存结果
       this.cache.set(cacheKey, {
         market,
         startDate: startDate.toISOString().split('T')[0],
-        endDate: endDate.toISOString().split('T')[0],
+        endDate: actualEndDate.toISOString().split('T')[0],
         tradeDays,
         halfTradeDays,
         expiresAt: Date.now() + this.CACHE_TTL,
@@ -257,22 +367,39 @@ class TradingDaysService {
 
   /**
    * 获取指定日期范围内的交易日列表
+   * 
+   * ⚠️ 注意：此方法目前未被实际使用，项目中主要使用 getTradingDays() 方法
+   * 
    * @param startDate 开始日期
    * @param endDate 结束日期
    * @param market 市场类型
-   * @returns 交易日列表
+   * @returns 交易日列表（Date[]格式）
+   * 
+   * 实现说明：
+   * - 通过 getTradingDays() 获取交易日数据（使用Longbridge SDK）
+   * - 将 YYYYMMDD 格式的字符串转换为 Date 对象
+   * - 过滤并排序返回日期列表
    */
   async getTradingDaysList(
     startDate: Date,
     endDate: Date,
     market: 'US' | 'HK' | 'SH' | 'SZ' = 'US'
   ): Promise<Date[]> {
+    // ✅ 使用 getTradingDays() 获取交易日数据（内部调用 Longbridge SDK）
     const tradingDaysSet = await this.getTradingDays(market, startDate, endDate);
     const tradingDays: Date[] = [];
     
+    // 将 YYYYMMDD 格式的字符串转换为 Date 对象
+    // 注意：由于 getTradingDays() 已经根据 startDate 和 endDate 过滤了数据，
+    // 理论上不需要再次过滤，但为了确保日期边界正确（考虑时区问题），保留过滤逻辑
     tradingDaysSet.forEach(dayStr => {
       const day = this.YYMMDDToDate(dayStr);
-      if (day >= startDate && day <= endDate) {
+      // 标准化日期比较（只比较日期部分，忽略时间）
+      const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate());
+      const startDateNormalized = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+      const endDateNormalized = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+      
+      if (dayStart >= startDateNormalized && dayStart <= endDateNormalized) {
         tradingDays.push(day);
       }
     });

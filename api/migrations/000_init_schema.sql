@@ -198,6 +198,7 @@ INSERT INTO system_config (config_key, config_value, encrypted, description) VAL
     ('longport_token_issued_at', '', false, 'Token issued time (ISO8601 format)'),
     ('longport_enable_overnight', 'false', false, 'Enable US stock overnight trading'),
     ('longport_token_auto_refresh', 'true', false, 'Enable automatic token refresh (refresh when less than 10 days remaining)'),
+    ('only_regular_hours', 'true', false, 'Only allow regular trading hours (true=regular hours only, false=include pre-market and after-hours)'),
     ('futunn_csrf_token', '', true, 'Futunn API CSRF Token'),
     ('futunn_cookies', '', true, 'Futunn API Cookies'),
     ('futunn_search_cookies', '', true, 'Futunn API Cookies for search endpoint (headfoot-search), separate from main API cookies'),
@@ -291,7 +292,7 @@ CREATE TABLE IF NOT EXISTS strategy_instances (
     id SERIAL PRIMARY KEY,
     strategy_id INTEGER REFERENCES strategies(id) ON DELETE CASCADE,
     symbol VARCHAR(20) NOT NULL,
-    current_state VARCHAR(50) NOT NULL CHECK (current_state IN ('IDLE', 'OPENING', 'HOLDING', 'CLOSING', 'COOLDOWN')),
+    current_state VARCHAR(50) NOT NULL CHECK (current_state IN ('IDLE', 'OPENING', 'HOLDING', 'CLOSING', 'SHORTING', 'SHORT', 'COVERING', 'COOLDOWN')),
     context JSONB,
     last_updated TIMESTAMP DEFAULT NOW(),
     UNIQUE(strategy_id, symbol)

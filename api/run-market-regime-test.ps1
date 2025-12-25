@@ -10,3 +10,6 @@ Set-Location $scriptPath
 # 运行测试
 npx jest src/tests/market-regime-matrix.test.ts --verbose
 
+
+
+

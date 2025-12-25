@@ -40,7 +40,7 @@ logsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
     // 参数验证
     const limitNum = parseInt(limit as string, 10);
-    const offsetNum = parseInt(offset as string, 10);
+    let offsetNum = parseInt(offset as string, 10);
 
     if (isNaN(limitNum) || limitNum < 1 || limitNum > 1000) {
       return next(ErrorFactory.validationError('limit必须在1-1000之间'));
@@ -134,6 +134,12 @@ logsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const countResult = await pool.query(countQuery, params);
     const total = parseInt(countResult.rows[0].total, 10);
     console.log('[Logs.API] COUNT查询结果:', total);
+    
+    // 保护：如果 offset 超过总数，则重置为 0
+    if (offsetNum >= total) {
+      console.log(`[Logs.API] offset (${offsetNum}) 超过总数 (${total})，重置为 0`);
+      offsetNum = 0;
+    }
     
     // 调试：检查时间范围内的数据分布
     if (start_time || end_time) {

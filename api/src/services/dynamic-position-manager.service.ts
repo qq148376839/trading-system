@@ -99,25 +99,59 @@ class DynamicPositionManager {
   }
 
   /**
-   * 获取当前市场环境
+   * 获取当前市场环境（带重试机制）
+   * 解决并发请求导致失败的问题
    */
   async getCurrentMarketEnvironment(symbol: string): Promise<{
     marketEnv: string;
     marketStrength: number;
   }> {
-    try {
-      const recommendation = await tradingRecommendationService.calculateRecommendation(symbol);
-      return {
-        marketEnv: recommendation.market_environment,
-        marketStrength: recommendation.comprehensive_market_strength,
-      };
-    } catch (error: any) {
-      logger.warn(`获取市场环境失败 (${symbol}):`, error.message);
-      return {
-        marketEnv: '中性',
-        marketStrength: 0,
-      };
+    const maxRetries = 3;
+    const retryDelay = 1000; // 1秒
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const recommendation = await tradingRecommendationService.calculateRecommendation(symbol);
+        return {
+          marketEnv: recommendation.market_environment,
+          marketStrength: recommendation.comprehensive_market_strength,
+        };
+      } catch (error: any) {
+        const isLastAttempt = attempt === maxRetries;
+        const isRetryableError = 
+          error?.message?.includes('数据不足') ||
+          error?.message?.includes('获取失败') ||
+          error?.message?.includes('timeout') ||
+          error?.message?.includes('network') ||
+          error?.code === 'ECONNRESET' ||
+          error?.code === 'ETIMEDOUT';
+        
+        if (isLastAttempt || !isRetryableError) {
+          logger.warn(
+            `获取市场环境失败 (${symbol})${isLastAttempt ? ` (已重试${maxRetries}次)` : ''}:`,
+            error.message
+          );
+          return {
+            marketEnv: '中性',
+            marketStrength: 0,
+          };
+        }
+        
+        // 等待后重试（指数退避）
+        const delay = retryDelay * Math.pow(2, attempt - 1);
+        logger.debug(
+          `获取市场环境失败 (${symbol})，${delay}ms后重试 (${attempt}/${maxRetries}):`,
+          error.message
+        );
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
     }
+    
+    // 理论上不会到达这里，但为了类型安全
+    return {
+      marketEnv: '中性',
+      marketStrength: 0,
+    };
   }
 
   /**
@@ -343,17 +377,31 @@ class DynamicPositionManager {
 
     if (holdingHours > 48) {
       // 持仓超过48小时：强制评估
+      // ✅ 修复：如果价格已经超过止盈价，应该在止盈检查时就卖出，而不是等到48小时
+      // 这里只处理价格接近但未达到止盈价的情况
       if (pnlPercent > 0) {
-        // 盈利状态：考虑止盈
-        if (context.currentTakeProfit && currentPrice >= context.currentTakeProfit * 0.95) {
+        // 盈利状态：如果价格接近止盈价（95%），强制卖出
+        // 注意：如果价格已经超过止盈价，应该在止盈检查时就卖出，这里不应该再触发
+        if (context.currentTakeProfit && currentPrice >= context.currentTakeProfit * 0.95 && currentPrice < context.currentTakeProfit) {
           shouldSell = true;
           exitReason = 'HOLDING_TIME_PROFIT';
+        } else if (context.currentTakeProfit && currentPrice >= context.currentTakeProfit) {
+          // 价格已经超过止盈价，应该在止盈检查时就卖出，这里不应该触发
+          // 但如果确实到了48小时还没卖出，说明止盈检查有问题，这里强制卖出
+          shouldSell = true;
+          exitReason = 'HOLDING_TIME_PROFIT_OVERRIDE';
         }
       } else if (pnlPercent < -3) {
-        // 亏损超过3%：考虑止损
-        if (context.currentStopLoss && currentPrice <= context.currentStopLoss * 1.05) {
+        // 亏损超过3%：如果价格接近止损价（105%），强制卖出
+        // 注意：如果价格已经低于止损价，应该在止损检查时就卖出，这里不应该再触发
+        if (context.currentStopLoss && currentPrice <= context.currentStopLoss * 1.05 && currentPrice > context.currentStopLoss) {
           shouldSell = true;
           exitReason = 'HOLDING_TIME_LOSS';
+        } else if (context.currentStopLoss && currentPrice <= context.currentStopLoss) {
+          // 价格已经低于止损价，应该在止损检查时就卖出，这里不应该触发
+          // 但如果确实到了48小时还没卖出，说明止损检查有问题，这里强制卖出
+          shouldSell = true;
+          exitReason = 'HOLDING_TIME_LOSS_OVERRIDE';
         }
       }
     }
@@ -370,7 +418,7 @@ class DynamicPositionManager {
   }
 
   /**
-   * 根据波动性调整止盈/止损
+   * 根据波动性调整止盈/止损（带重试机制）
    */
   async adjustByVolatility(
     context: PositionContext,
@@ -378,11 +426,15 @@ class DynamicPositionManager {
     currentPrice: number,
     pnlPercent: number
   ): Promise<Partial<AdjustmentResult>> {
-    try {
-      // 获取当前ATR
-      const recommendation = await tradingRecommendationService.calculateRecommendation(symbol);
-      const currentATR = recommendation.atr || 0;
-      const atrPercent = currentATR > 0 ? currentATR / currentPrice : 0;
+    const maxRetries = 3;
+    const retryDelay = 1000; // 1秒
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // 获取当前ATR
+        const recommendation = await tradingRecommendationService.calculateRecommendation(symbol);
+        const currentATR = recommendation.atr || 0;
+        const atrPercent = currentATR > 0 ? currentATR / currentPrice : 0;
 
       // 如果没有原始ATR，使用当前ATR
       if (!context.originalATR) {
@@ -410,21 +462,50 @@ class DynamicPositionManager {
         }
       }
 
-      return {
-        shouldSell: false,
-        context: {
-          ...context,
-          currentStopLoss: newStopLoss,
-          currentTakeProfit: newTakeProfit,
-        },
-      };
-    } catch (error: any) {
-      logger.warn(`波动性调整失败 (${symbol}):`, error.message);
-      return {
-        shouldSell: false,
-        context,
-      };
+        return {
+          shouldSell: false,
+          context: {
+            ...context,
+            currentStopLoss: newStopLoss,
+            currentTakeProfit: newTakeProfit,
+          },
+        };
+      } catch (error: any) {
+        const isLastAttempt = attempt === maxRetries;
+        const isRetryableError = 
+          error?.message?.includes('数据不足') ||
+          error?.message?.includes('获取失败') ||
+          error?.message?.includes('timeout') ||
+          error?.message?.includes('network') ||
+          error?.code === 'ECONNRESET' ||
+          error?.code === 'ETIMEDOUT';
+        
+        if (isLastAttempt || !isRetryableError) {
+          logger.warn(
+            `波动性调整失败 (${symbol})${isLastAttempt ? ` (已重试${maxRetries}次)` : ''}:`,
+            error.message
+          );
+          return {
+            shouldSell: false,
+            context,
+          };
+        }
+        
+        // 等待后重试（指数退避）
+        const delay = retryDelay * Math.pow(2, attempt - 1);
+        logger.debug(
+          `波动性调整失败 (${symbol})，${delay}ms后重试 (${attempt}/${maxRetries}):`,
+          error.message
+        );
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
     }
+    
+    // 理论上不会到达这里，但为了类型安全
+    return {
+      shouldSell: false,
+      context,
+    };
   }
 
   /**

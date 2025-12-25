@@ -402,23 +402,49 @@ class MarketDataService {
   /**
    * 获取VIX恐慌指数日K数据
    * 使用LongPort API获取.VIX.US的K线数据
+   * @param count 获取数量，默认100
+   * @param targetDate 目标日期（可选），如果提供则使用historyCandlesticksByOffset获取历史数据
    */
-  async getVIXCandlesticks(count: number = 100): Promise<CandlestickData[]> {
+  async getVIXCandlesticks(count: number = 100, targetDate?: Date): Promise<CandlestickData[]> {
     try {
       const quoteCtx = await getQuoteContext();
       const longport = require('longport');
-      const { Period, AdjustType, TradeSessions } = longport;
+      const { Period, AdjustType, NaiveDatetime } = longport;
       const { formatLongbridgeCandlestick } = require('../utils/candlestick-formatter');
 
-      // 使用LongPort API获取.VIX.US的K线数据
-      // SDK 3.0.18需要TradeSessions参数
-      const candlesticks = await quoteCtx.candlesticks(
-        '.VIX.US',
-        Period.Day,
-        count,
-        AdjustType.NoAdjust,
-        TradeSessions?.All || 100 // 使用All获取所有交易时段的数据
-      );
+      let candlesticks: any[] = [];
+
+      if (targetDate) {
+        // 使用historyCandlesticksByOffset获取历史数据
+        // 参数：symbol, period, adjustType, forward, datetime, count, tradeSessions(可选)
+        const targetNaiveDatetime = new NaiveDatetime(
+          targetDate.getFullYear(),
+          targetDate.getMonth() + 1,
+          targetDate.getDate(),
+          targetDate.getHours() || 23,
+          targetDate.getMinutes() || 59,
+          targetDate.getSeconds() || 59
+        );
+
+        candlesticks = await quoteCtx.historyCandlesticksByOffset(
+          '.VIX.US',
+          Period.Day,
+          AdjustType.NoAdjust,
+          false, // forward: false表示向历史数据方向查找
+          targetNaiveDatetime,
+          count
+        );
+      } else {
+        // 如果没有提供targetDate，使用candlesticks获取最新数据（向后兼容）
+        const { TradeSessions } = longport;
+        candlesticks = await quoteCtx.candlesticks(
+          '.VIX.US',
+          Period.Day,
+          count,
+          AdjustType.NoAdjust,
+          TradeSessions?.All || 100 // 使用All获取所有交易时段的数据
+        );
+      }
 
       // 转换为标准格式
       return candlesticks.map((c: any) => formatLongbridgeCandlestick(c));
@@ -665,7 +691,8 @@ class MarketDataService {
       ];
 
       // VIX恐慌指数（重要但非关键，允许失败）
-      const vixPromise = this.getVIXCandlesticks(requestCount)
+      // 使用historyCandlesticksByOffset获取历史数据，传入targetDate
+      const vixPromise = this.getVIXCandlesticks(requestCount, targetDate)
         .then(data => this.filterDataBeforeDate(data, targetDate, count))
         .catch(err => {
           console.warn(`获取VIX历史数据失败:`, err.message);

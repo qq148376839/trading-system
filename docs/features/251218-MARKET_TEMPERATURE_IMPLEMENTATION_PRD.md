@@ -101,3 +101,6 @@ const env_score = basic_market_strength * 0.4 + (market_temp_normalized) * 0.4 +
 1. **单元测试**: 模拟 VIX=40 的情况，验证系统是否强制输出 `market_environment = '较差'`。
 2. **回测验证**: 跑通最近一次大跌（如 2024 年某次回调），看新策略是否提前发出了预警信号。
 
+
+
+

@@ -1489,7 +1489,7 @@ ordersRouter.post('/submit', async (req: Request, res: Response) => {
       symbol: normalizedParams.symbol,
       orderType: orderTypeEnum,
       side: sideEnum,
-      submittedQuantity: parseInt(normalizedParams.submitted_quantity),
+      submittedQuantity: new Decimal(normalizedParams.submitted_quantity),
       timeInForce: timeInForceEnum,
     };
 

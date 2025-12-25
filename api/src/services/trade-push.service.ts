@@ -146,15 +146,47 @@ class TradePushService {
           });
       }
 
-      // 标准化订单方向
+      // ⚠️ 修复：标准化订单方向（区分开仓和平仓）
       const isSell = side === 'Sell' || side === 2 || side === 'SELL' || side === 'sell';
+      const isBuy = side === 'Buy' || side === 1 || side === 'BUY' || side === 'buy';
       const action = isSell ? 'SELL' : 'BUY';
+      
+      // ⚠️ 可选：获取当前持仓判断订单类型（开仓/平仓）
+      // 注意：这里不阻塞主流程，只是记录日志
+      let orderType: 'OPEN' | 'CLOSE' | 'UNKNOWN' = 'UNKNOWN';
+      try {
+        const { getTradeContext } = await import('../config/longport');
+        const tradeCtx = await getTradeContext();
+        const positions = await tradeCtx.stockPositions();
+        
+        let positionsArray: any[] = [];
+        if (positions?.positions) {
+          positionsArray = positions.positions;
+        } else if (positions?.channels) {
+          for (const channel of positions.channels) {
+            if (channel.positions) {
+              positionsArray.push(...channel.positions);
+            }
+          }
+        }
+        
+        const position = positionsArray.find((p: any) => p.symbol === symbol);
+        const currentQuantity = position ? parseFloat(position.quantity?.toString() || '0') : 0;
+        
+        if (isSell) {
+          orderType = currentQuantity > 0 ? 'CLOSE' : 'OPEN';  // 有做多持仓=平仓，无持仓=卖空
+        } else if (isBuy) {
+          orderType = currentQuantity < 0 ? 'CLOSE' : 'OPEN';  // 有卖空持仓=平仓，无持仓=做多
+        }
+      } catch (error) {
+        // 忽略错误，不影响主流程
+      }
 
       // 更新订单提交缓存（立即更新，避免重复提交）
       // 注意：markOrderSubmitted 是私有方法，需要通过其他方式更新缓存
       // 这里暂时记录日志，实际的缓存更新在订单提交时完成
       if (strategyId) {
-        logger.debug(`[交易推送] 订单已提交: ${strategyId}:${symbol}:${action}, 订单ID=${orderId}`);
+        logger.debug(`[交易推送] 订单已提交: ${strategyId}:${symbol}:${action}(${orderType}), 订单ID=${orderId}`);
         // 实际的缓存更新在 BasicExecutionService.submitOrder 成功后完成
       }
 

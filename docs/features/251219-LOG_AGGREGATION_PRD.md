@@ -172,3 +172,6 @@ logger.info(logMsg, { metadata: summary }); // 写入一条汇总到数据库
     - 运行 `npm run dev`，观察控制台输出是否变得清爽。
     - 检查数据库 `system_logs` 表，确认每分钟是否只有一条策略级记录。
 
+
+
+

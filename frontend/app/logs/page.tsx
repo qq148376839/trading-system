@@ -113,6 +113,23 @@ export default function LogsPage() {
     ]
   }
 
+  // 前一天美股盘中时间（美东时间 9:30-16:00）
+  const getPreviousUSTradingHours = (): [Dayjs, Dayjs] => {
+    const now = dayjs()
+    const yesterday = now.subtract(1, 'day').format('YYYY-MM-DD')
+    
+    // 美东时间 9:30
+    const start = dayjs.tz(`${yesterday} 09:30:00`, 'America/New_York')
+    // 美东时间 16:00
+    const end = dayjs.tz(`${yesterday} 16:00:00`, 'America/New_York')
+    
+    // 转换为当前时区
+    return [
+      start.tz(dayjs.tz.guess()),
+      end.tz(dayjs.tz.guess()),
+    ]
+  }
+
   // 切换消息展开/收起
   const toggleMessage = (id: number) => {
     const newExpanded = new Set(expandedMessages)
@@ -170,6 +187,11 @@ export default function LogsPage() {
       setLoading(false)
     }
   }, [currentPage, pageSize, filters, loadModules])
+
+  // 当筛选条件改变时，重置到第一页
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [filters.module, filters.level, filters.traceId, filters.dateRange])
 
   // 初始加载
   useEffect(() => {
@@ -442,8 +464,10 @@ export default function LogsPage() {
                   showSearch
                   allowClear
                   filterOption={(input, option) => {
-                    const label = option?.label || ''
-                    return label.toLowerCase().includes(input.toLowerCase())
+                    const label = option?.label
+                    // 确保 label 是字符串类型
+                    const labelStr = typeof label === 'string' ? label : String(label || '')
+                    return labelStr.toLowerCase().includes(input.toLowerCase())
                   }}
                   notFoundContent={moduleList.length === 0 ? '加载中...' : '未找到匹配的模块'}
                 >
@@ -548,6 +572,18 @@ export default function LogsPage() {
                   }}
                 >
                   美股盘中时间
+                </Button>
+                <Button
+                  size="small"
+                  onClick={() => {
+                    const [start, end] = getPreviousUSTradingHours()
+                    setFilters({
+                      ...filters,
+                      dateRange: [start, end],
+                    })
+                  }}
+                >
+                  前一天美股盘中时间
                 </Button>
               </Space>
             </Space>

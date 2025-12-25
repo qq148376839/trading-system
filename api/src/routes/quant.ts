@@ -1619,7 +1619,8 @@ quantRouter.get('/dashboard/stats', async (req: Request, res: Response, next: Ne
             // 处理quantity字段：可能是quantity或availableQuantity
             const quantity = parseInt(pos.quantity?.toString() || pos.availableQuantity?.toString() || '0');
 
-            if (costPrice > 0 && quantity > 0 && symbol) {
+            // ⚠️ 修复：支持负数持仓（卖空持仓）
+            if (costPrice > 0 && quantity !== 0 && symbol) {
               const quote = quoteMap.get(symbol);
               if (quote) {
                 const currentPrice = parseFloat(
@@ -1630,9 +1631,19 @@ quantRouter.get('/dashboard/stats', async (req: Request, res: Response, next: Ne
                 );
 
                 if (currentPrice > 0) {
-                  const positionPnl = (currentPrice - costPrice) * quantity;
+                  // ⚠️ 修复：盈亏计算（区分做多和卖空）
+                  let positionPnl: number;
+                  if (quantity > 0) {
+                    // 做多：价格上涨盈利
+                    positionPnl = (currentPrice - costPrice) * quantity;
+                  } else {
+                    // 卖空：价格下跌盈利
+                    positionPnl = (costPrice - currentPrice) * Math.abs(quantity);
+                  }
+                  
                   holdingPnl += positionPnl;
-                  logger.debug(`[Dashboard统计API] 持仓 ${symbol}: 成本价=${costPrice}, 当前价=${currentPrice}, 数量=${quantity}, 盈亏=${positionPnl.toFixed(2)}`);
+                  const positionType = quantity > 0 ? '做多' : '卖空';
+                  logger.debug(`[Dashboard统计API] 持仓 ${symbol}: 类型=${positionType}, 成本价=${costPrice}, 当前价=${currentPrice}, 数量=${quantity}, 盈亏=${positionPnl.toFixed(2)}`);
                 } else {
                   logger.warn(`[Dashboard统计API] 持仓 ${symbol}: 无法获取当前价格`);
                 }

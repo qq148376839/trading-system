@@ -1,5 +1,46 @@
 # 更新日志
 
+## 2025-12-24
+
+### 策略执行逻辑优化 ✅ 修复 ⭐ 最新
+
+**问题**: IDLE状态下生成的SELL信号被静默忽略，导致日志显示"生成信号 SELL"但"操作 0"
+
+**修复内容**:
+
+1. **问题分析**
+   - 策略在IDLE状态下生成了SELL信号（可能是做空信号）
+   - 代码逻辑只处理IDLE状态下的BUY信号，SELL信号被静默忽略
+   - 日志中没有明确说明为什么SELL信号未执行
+
+2. **修复方案**
+   - ✅ 在`processSymbol`方法中添加IDLE状态下SELL信号的明确处理
+   - ✅ 明确忽略SELL信号并记录调试日志
+   - ✅ 将标的标记为IDLE状态，避免重复处理
+
+3. **代码修改**
+   - ✅ 修改`strategy-scheduler.service.ts`的`processSymbol`方法
+   - ✅ 在信号生成后、验证前添加SELL信号检查
+   - ✅ 记录调试日志说明忽略原因
+
+**技术要点**:
+- IDLE状态下只能执行BUY操作，SELL信号应该被明确忽略
+- 策略生成的SELL信号可能是做空信号（当前系统不支持做空）
+- 日志记录原则：关键操作记录到控制台，调试信息记录到日志系统
+
+**修改文件**:
+- `api/src/services/strategy-scheduler.service.ts` - 添加IDLE状态下SELL信号的明确处理
+
+**新增文档**:
+- `docs/analysis/251224-策略执行诊断报告.md` - 详细的问题分析报告
+- `docs/analysis/251224-策略执行问题分析与修复总结.md` - 完整的修复总结
+
+**相关文档**:
+- [策略执行诊断报告](docs/analysis/251224-策略执行诊断报告.md)
+- [策略执行问题分析与修复总结](docs/analysis/251224-策略执行问题分析与修复总结.md)
+
+---
+
 ## 2025-12-19
 
 ### LongPort SDK 升级和修复 ✅ 关键更新 ⭐ 最新
@@ -130,9 +171,7 @@
 - `api/src/routes/logs.ts` - 日志API路由（约300行）
 
 **相关文档**:
-- [量化日志系统PRD](docs/features/251215-QUANT_LOG_SYSTEM_PRD.md) ⭐ 推荐阅读
-- [日志模块映射说明](docs/features/251215-LOG_MODULE_MAPPING.md)
-- [日志系统字段长度修复指南](docs/features/251215-LOG_SYSTEM_FIELD_LENGTH_FIX.md)
+- [日志系统优化文档](docs/features/251215-日志系统优化文档.md) ⭐ 推荐阅读（包含PRD、模块映射说明和字段长度修复指南）
 
 ### 回测功能优化 ⭐ 最新更新
 
@@ -180,9 +219,8 @@
 - `analyze_backtest_logic_final.md` - 交易逻辑分析报告
 
 **相关文档**:
-- [回测功能修订文档索引](docs/features/251215-BACKTEST_REVISION_INDEX.md) ⭐ 推荐阅读
-- [回测功能修订总结](docs/features/251215-REVISION_SUMMARY.md)
-- [回测交易逻辑分析报告](analyze_backtest_logic_final.md)
+- [回测功能文档](docs/features/251215-回测功能文档.md) ⭐ 推荐阅读（包含修订文档索引和修订总结）
+- [回测交易逻辑分析报告](docs/archive/251216-回测交易逻辑分析报告.md)
 
 ## 2025-12-14
 
@@ -221,8 +259,7 @@
    - ✅ 实现线性插值算法生成分时价格序列
 
 **相关文档**:
-- [回测历史数据优化实施总结](docs/features/251214-IMPLEMENTATION_SUMMARY.md)
-- [回测历史数据优化PRD](docs/features/251214-BACKTEST_HISTORICAL_DATA_OPTIMIZATION_PRD.md)
+- [回测功能文档](docs/features/251215-回测功能文档.md) ⭐ 推荐阅读（包含历史数据优化实施总结和PRD）
 
 ## 2025-12-08
 
@@ -261,8 +298,7 @@
 - `frontend/app/options/[optionCode]/page.tsx` - 实现图表组件
 
 **相关文档**:
-- [期权图表功能实施总结](docs/features/OPTION_CHART_IMPLEMENTATION.md)
-- [期权图表API分析文档](docs/OPTION_CHART_API_ANALYSIS.md)
+- [期权图表功能文档](docs/features/251208-期权图表功能文档.md) ⭐ 推荐阅读（包含实施总结和API分析）
 
 ## 2025-12-05
 

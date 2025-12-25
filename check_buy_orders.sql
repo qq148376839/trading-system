@@ -100,3 +100,6 @@ WHERE strategy_id = 5
 AND close_time IS NULL
 ORDER BY open_time DESC;
 
+
+
+

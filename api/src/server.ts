@@ -20,6 +20,7 @@ import { quantRouter } from './routes/quant';
 import backtestRouter from './routes/backtest';
 import { orderPreventionMetricsRouter } from './routes/order-prevention-metrics';
 import { logsRouter } from './routes/logs';
+import { tradingDaysRouter } from './routes/trading-days';
 import { errorHandler } from './middleware/errorHandler';
 
 // Swagger 文档配置
@@ -65,6 +66,7 @@ app.use('/api/quant', quantRouter);
 app.use('/api/quant/backtest', backtestRouter);
 app.use('/api/order-prevention-metrics', orderPreventionMetricsRouter);
 app.use('/api/logs', logsRouter);
+app.use('/api/trading-days', tradingDaysRouter);
 app.use('/api/health', healthRouter);
 
 // 错误处理中间件

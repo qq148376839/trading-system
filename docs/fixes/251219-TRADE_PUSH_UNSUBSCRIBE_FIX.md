@@ -247,3 +247,6 @@ npm test -- trade-push.service.test.ts
 |------|------|----------|--------|
 | v1.0 | 2025-12-19 | 修复unsubscribe方法，添加优雅关闭处理 | AI Engineer |
 
+
+
+

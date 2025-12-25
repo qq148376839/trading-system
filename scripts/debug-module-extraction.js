@@ -58,3 +58,6 @@ const result = extractModuleName(mockStack);
 console.log('='.repeat(60));
 console.log(`提取的文件路径: ${result}`);
 
+
+
+

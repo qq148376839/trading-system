@@ -5,7 +5,9 @@
 
 import pool from '../config/database';
 import { RecommendationStrategy } from './strategies/recommendation-strategy';
+import { TradingIntent } from './strategies/strategy-base';
 import tradingRecommendationService from './trading-recommendation.service';
+import dynamicPositionManager from './dynamic-position-manager.service';
 import { getQuoteContext } from '../config/longport';
 import { logger } from '../utils/logger';
 
@@ -20,8 +22,11 @@ export interface BacktestTrade {
   pnlPercent: number;
   entryReason: string;
   exitReason: string | null;
-  stopLoss?: number;  // 买入时的止损价
-  takeProfit?: number;  // 买入时的止盈价
+  stopLoss?: number;  // 买入时的止损价（初始值）
+  takeProfit?: number;  // 买入时的止盈价（初始值）
+  currentStopLoss?: number;  // 当前止损价（动态调整后）
+  currentTakeProfit?: number;  // 当前止盈价（动态调整后）
+  entryTime?: string;  // 买入时间（用于计算持仓时间，ISO格式）
 }
 
 export type BacktestStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
@@ -495,7 +500,7 @@ class BacktestService {
     // ✅ 添加诊断日志收集
     const diagnosticLog: {
       dataFetch: Array<{ symbol: string; success: boolean; count: number; error?: string }>;
-      signalGeneration: Array<{ date: string; symbol: string; signal: string | null; error?: string }>;
+      signalGeneration: Array<{ date: string; symbol: string; signal: string | null; error?: string; marketEnvironment?: string; stockTrend?: string; reason?: string }>;
       buyAttempts: Array<{ date: string; symbol: string; success: boolean; reason: string; details?: any }>;
       summary: {
         totalDates: number;
@@ -522,13 +527,29 @@ class BacktestService {
     const trades: BacktestTrade[] = [];
     const dailyEquity: Array<{ date: string; equity: number }> = [];
 
+    // ✅ 计算扩展的开始日期：策略需要至少50条历史数据才能计算推荐
+    // 为了确保回测开始时就有足够的数据，需要提前获取50个交易日的数据
+    // 考虑到非交易日，多获取一些（约75天，确保有足够的交易日数据）
+    const { getMarketFromSymbol } = require('../utils/trading-days');
+    const tradingDaysService = require('../services/trading-days.service').default;
+    const markets = new Set(symbols.map((s: string) => getMarketFromSymbol(s)));
+    
+    // 计算需要往前推多少天（考虑非交易日）
+    // 策略需要至少50条数据，多获取一些以应对非交易日
+    const daysToGoBack = 75; // 约75天，确保有足够的交易日数据（美股一周5个交易日，约15周）
+    const extendedStartDate = new Date(startDate);
+    extendedStartDate.setDate(extendedStartDate.getDate() - daysToGoBack);
+    
+    logger.log(`[回测] 扩展开始日期: ${startDate.toISOString().split('T')[0]} -> ${extendedStartDate.toISOString().split('T')[0]} (提前${daysToGoBack}天，确保有足够的历史数据)`);
+
     // 获取所有标的的历史数据
     const allCandlesticks: Map<string, Array<{ timestamp: Date; open: number; high: number; low: number; close: number; volume: number; turnover?: number }>> = new Map();
     
     // ✅ 在数据获取时记录日志
     for (const symbol of symbols) {
       try {
-        const candlesticks = await this.getHistoricalCandlesticks(symbol, startDate, endDate);
+        // ✅ 使用扩展的开始日期获取数据，确保有足够的历史数据
+        const candlesticks = await this.getHistoricalCandlesticks(symbol, extendedStartDate, endDate);
         diagnosticLog.dataFetch.push({
           symbol,
           success: true,
@@ -537,6 +558,7 @@ class BacktestService {
         
         if (candlesticks.length > 0) {
           allCandlesticks.set(symbol, candlesticks);
+          logger.log(`[回测] ${symbol}: 获取了 ${candlesticks.length} 条历史数据（从 ${extendedStartDate.toISOString().split('T')[0]} 到 ${endDate.toISOString().split('T')[0]}）`);
         } else {
           logger.warn(`回测 ${symbol}: 未获取到任何K线数据`);
         }
@@ -560,13 +582,12 @@ class BacktestService {
     }
 
     // ✅ 获取所有日期（合并所有标的的日期），并过滤掉非交易日和未来日期
-    const { getMarketFromSymbol, isFutureDate } = require('../utils/trading-days');
-    const tradingDaysService = require('../services/trading-days.service').default;
+    const { isFutureDate } = require('../utils/trading-days');
     const today = new Date();
     today.setHours(23, 59, 59, 999);
     
     // ✅ 获取日期范围内所有标的的交易日数据（合并所有市场）
-    const markets = new Set(symbols.map((s: string) => getMarketFromSymbol(s)));
+    // 注意：markets 已在上面定义
     const tradingDaysByMarket = new Map<string, Set<string>>();
     
     // 为每个市场获取交易日数据
@@ -707,19 +728,102 @@ class BacktestService {
         if (positions.has(symbol)) {
           const trade = positions.get(symbol)!;
           
-          // 使用买入时保存的止损止盈，而不是实时计算
-          // 这样可以避免使用当前市场数据导致的历史回测错误
-          const stopLoss = trade.stopLoss;
-          const takeProfit = trade.takeProfit;
+          // ✅ 动态调整止损止盈（如果启用）
+          // 使用当前止损止盈，如果没有则使用初始值
+          let currentStopLoss = trade.currentStopLoss ?? trade.stopLoss;
+          let currentTakeProfit = trade.currentTakeProfit ?? trade.takeProfit;
+          
+          // 如果配置中启用了动态调整，则调用动态调整管理器
+          // 注意：回测中需要模拟市场环境数据
+          if (config?.enableDynamicAdjustment !== false) {
+            try {
+              // 获取当前市场环境（回测中需要从推荐服务获取）
+              // 这里简化实现：如果entryReason中包含市场环境信息，则解析使用
+              const marketEnvMatch = trade.entryReason.match(/市场环境([^；]+)/);
+              const marketEnv = marketEnvMatch ? marketEnvMatch[1].trim() : '中性利好';
+              
+              const strengthMatch = trade.entryReason.match(/综合市场强度\s*(\d+\.?\d*)/);
+              const marketStrength = strengthMatch ? parseFloat(strengthMatch[1]) : 21.0;
+              
+              // 计算持仓时间（小时）
+              const entryTime = trade.entryTime ? new Date(trade.entryTime) : new Date(trade.entryDate);
+              const currentTime = new Date(dateStr);
+              const holdingHours = (currentTime.getTime() - entryTime.getTime()) / (1000 * 60 * 60);
+              
+              // 调用动态调整
+              const adjustmentResult = await dynamicPositionManager.adjustStopLossTakeProfit(
+                {
+                  entryPrice: trade.entryPrice,
+                  entryTime: trade.entryTime || trade.entryDate,
+                  currentStopLoss: currentStopLoss,
+                  currentTakeProfit: currentTakeProfit,
+                } as any,
+                currentPrice,
+                marketEnv,
+                marketStrength,
+                symbol
+              );
+              
+              // 更新止损止盈
+              if (adjustmentResult.context.currentStopLoss !== undefined) {
+                currentStopLoss = adjustmentResult.context.currentStopLoss;
+                trade.currentStopLoss = currentStopLoss;
+              }
+              if (adjustmentResult.context.currentTakeProfit !== undefined) {
+                currentTakeProfit = adjustmentResult.context.currentTakeProfit;
+                trade.currentTakeProfit = currentTakeProfit;
+              }
+              
+              // 如果动态调整建议卖出，则执行卖出
+              if (adjustmentResult.shouldSell) {
+                const sellPrice = currentPrice; // 动态调整卖出使用当前价格
+                this.simulateSell(symbol, dateStr, sellPrice, adjustmentResult.exitReason || 'DYNAMIC_ADJUSTMENT', trade, positions, trades, (amount) => {
+                  currentCapital += amount;
+                }, config);
+                continue; // 已卖出，继续下一个标的
+              }
+            } catch (error: any) {
+              // 动态调整失败，使用原始止损止盈
+              logger.warn(`[回测] ${symbol} ${dateStr}: 动态调整失败，使用原始止损止盈: ${error.message}`);
+            }
+          }
 
-          if (stopLoss && currentPrice <= stopLoss) {
-            this.simulateSell(symbol, dateStr, currentPrice, 'STOP_LOSS', trade, positions, trades, (amount) => {
+          // 检查止损止盈触发
+          // ✅ 修复：优先检查原始止损止盈，确保即使动态调整移除了止损止盈，也能正确触发
+          const originalStopLoss = trade.stopLoss;
+          const originalTakeProfit = trade.takeProfit;
+          
+          // 先检查动态调整后的止损止盈
+          if (currentStopLoss && currentPrice <= currentStopLoss) {
+            // ✅ 修复：使用止损价格作为卖出价格，而不是收盘价
+            // 实际交易中，止损触发时应该以止损价格或更差的价格卖出（限价单）
+            // 这里使用止损价格，更符合实际交易逻辑
+            const sellPrice = currentStopLoss;
+            this.simulateSell(symbol, dateStr, sellPrice, 'STOP_LOSS', trade, positions, trades, (amount) => {
               currentCapital += amount; // amount 是卖出收回的资金（price * quantity）
-            });
-          } else if (takeProfit && currentPrice >= takeProfit) {
-            this.simulateSell(symbol, dateStr, currentPrice, 'TAKE_PROFIT', trade, positions, trades, (amount) => {
+            }, config);
+          } else if (currentTakeProfit && currentPrice >= currentTakeProfit) {
+            // ✅ 修复：使用止盈价格作为卖出价格，而不是收盘价
+            // 实际交易中，止盈触发时应该以止盈价格或更好的价格卖出（限价单）
+            // 这里使用止盈价格，更符合实际交易逻辑
+            const sellPrice = currentTakeProfit;
+            this.simulateSell(symbol, dateStr, sellPrice, 'TAKE_PROFIT', trade, positions, trades, (amount) => {
               currentCapital += amount; // amount 是卖出收回的资金（price * quantity）
-            });
+            }, config);
+          } else if (originalStopLoss && currentPrice <= originalStopLoss) {
+            // ✅ 修复：如果动态调整移除了止损，但价格已经低于原始止损价，仍然触发止损
+            // 这可以防止动态调整错误地移除止损导致大额亏损
+            const sellPrice = originalStopLoss;
+            this.simulateSell(symbol, dateStr, sellPrice, 'STOP_LOSS_ORIGINAL', trade, positions, trades, (amount) => {
+              currentCapital += amount;
+            }, config);
+          } else if (originalTakeProfit && currentPrice >= originalTakeProfit) {
+            // ✅ 修复：如果动态调整移除了止盈，但价格已经超过原始止盈价，仍然触发止盈
+            // 这可以防止动态调整错误地移除止盈导致错过盈利机会
+            const sellPrice = originalTakeProfit;
+            this.simulateSell(symbol, dateStr, sellPrice, 'TAKE_PROFIT_ORIGINAL', trade, positions, trades, (amount) => {
+              currentCapital += amount;
+            }, config);
           }
         }
 
@@ -733,10 +837,19 @@ class BacktestService {
               c.timestamp.toISOString().split('T')[0] <= dateStr
             );
             
-            // ✅ 如果数据不足50条，跳过该日期（无法计算推荐）
+            // ✅ 调试日志：记录数据使用情况（仅在数据不足时输出）
             if (historicalCandles.length < 50) {
-              logger.warn(`[回测] ${symbol} 历史K线数据不足: 只有${historicalCandles.length}条，需要至少50条。跳过日期 ${dateStr}`);
+              const totalDataCount = candlesticks.length;
+              const firstDataDate = candlesticks.length > 0 
+                ? candlesticks[0].timestamp.toISOString().split('T')[0]
+                : 'N/A';
+              logger.warn(`[回测] ${symbol} 历史K线数据不足: 日期 ${dateStr}，可用历史数据 ${historicalCandles.length} 条（总数据量 ${totalDataCount} 条，最早数据日期 ${firstDataDate}），需要至少50条。跳过该日期`);
               continue; // 跳过该日期，继续下一个日期
+            }
+            
+            // ✅ 调试日志：记录数据使用情况（仅在回测开始的前几天输出，帮助验证修复效果）
+            if (historicalCandles.length >= 50 && historicalCandles.length <= 55) {
+              logger.log(`[回测] ${symbol} 日期 ${dateStr}: 使用 ${historicalCandles.length} 条历史数据生成信号`);
             }
             
             // 转换为推荐服务需要的格式（包含timestamp和turnover字段）
@@ -757,21 +870,45 @@ class BacktestService {
               btc: allMarketData.get('BTC') || [],
             };
             
-            const intent = await strategy.generateSignal(
-              symbol, 
-              undefined, // marketData参数暂时不使用
-              currentDate, // 传入当前回测日期
-              historicalStockCandlesticks, // 传入历史K线数据
-              preFetchedMarketData // ✅ 传入预获取的市场数据，避免在循环中多次调用API
+            // ✅ 直接调用推荐服务获取原始结果，以便诊断为什么没有BUY信号
+            const recommendation = await tradingRecommendationService.calculateRecommendation(
+              symbol,
+              currentDate,
+              historicalStockCandlesticks,
+              preFetchedMarketData
             );
             
-            // ✅ 记录信号生成日志
+            // ✅ 记录推荐服务的原始结果（包括HOLD）
             diagnosticLog.summary.totalSignals++;
             diagnosticLog.signalGeneration.push({
               date: dateStr,
               symbol,
-              signal: intent?.action || null,
+              signal: recommendation.action, // 记录原始action（BUY/HOLD/SELL）
+              marketEnvironment: recommendation.market_environment, // 市场环境
+              stockTrend: recommendation.analysis_summary?.includes('上升趋势') ? '上升趋势' : 
+                        recommendation.analysis_summary?.includes('盘整') ? '盘整' : 
+                        recommendation.analysis_summary?.includes('下降趋势') ? '下降趋势' : '未知',
+              reason: recommendation.action === 'HOLD' ? '策略判断为HOLD' : recommendation.analysis_summary,
             });
+            
+            // 如果推荐是HOLD，不生成信号（与recommendation-strategy.ts的逻辑一致）
+            if (recommendation.action === 'HOLD') {
+              continue; // 跳过，不生成买入信号
+            }
+            
+            // 转换为TradingIntent（与recommendation-strategy.ts的逻辑一致）
+            const intent: TradingIntent = {
+              action: recommendation.action,
+              symbol: recommendation.symbol,
+              entryPriceRange: recommendation.entry_price_range,
+              entryPrice: (recommendation.entry_price_range.min + recommendation.entry_price_range.max) / 2,
+              stopLoss: recommendation.stop_loss,
+              takeProfit: recommendation.take_profit,
+              reason: recommendation.analysis_summary,
+              metadata: {
+                marketEnvironment: recommendation.market_environment,
+              },
+            };
             
             if (intent && intent.action === 'BUY') {
               // 基于历史K线数据计算止损止盈（不使用实时推荐服务的止损止盈）
@@ -843,7 +980,8 @@ class BacktestService {
                 (amount) => {
                   // amount 是负数（实际买入成本），所以用 += 来扣除
                   currentCapital += amount;
-                }
+                },
+                config
               );
               
               // ✅ 记录买入结果
@@ -912,7 +1050,7 @@ class BacktestService {
           const lastCandle = candlesticks[candlesticks.length - 1];
           this.simulateSell(symbol, lastDate, lastCandle.close, 'BACKTEST_END', trade, positions, trades, (amount) => {
             currentCapital += amount; // amount 是卖出收回的资金（price * quantity）
-          });
+          }, config);
         }
       }
     }
@@ -979,6 +1117,47 @@ class BacktestService {
   }
 
   /**
+   * 计算交易成本（参考长桥证券美国市场交易费用）
+   * 简化版本，用于回测
+   */
+  private calculateTradingCosts(
+    price: number,
+    quantity: number,
+    isSell: boolean = false
+  ): number {
+    if (quantity <= 0 || price <= 0) return 0;
+
+    const tradeAmount = price * quantity;
+    let totalFees = 0;
+
+    // 1. 佣金（Commission）：0.0049 USD / 股，最低 0.99 USD / 订单
+    const commissionPerShare = 0.0049;
+    const commission = Math.max(commissionPerShare * quantity, 0.99);
+    totalFees += commission;
+
+    // 2. 平台费（Platform Fee）：0.0050 USD / 股，最低 1 USD / 订单（简化，使用固定费率）
+    const platformFeePerShare = 0.0050;
+    const platformFee = Math.max(platformFeePerShare * quantity, 1.0);
+    totalFees += platformFee;
+
+    // 3. 交收费（Clearing Fee）：0.003 美元 × 成交股数，最高 7% × 交易金额
+    const clearingFee = Math.min(0.003 * quantity, tradeAmount * 0.07);
+    totalFees += clearingFee;
+
+    // 4. 交易活动费（Trading Activity Fee）- 仅卖出
+    if (isSell) {
+      const tradingActivityFee = Math.min(Math.max(0.000166 * quantity, 0.01), 8.30);
+      totalFees += tradingActivityFee;
+    }
+
+    // 5. 综合审计跟踪监管费（CAT Fee）：0.000046/股，每笔订单最低 0.01 美元
+    const catFee = Math.max(0.000046 * quantity, 0.01);
+    totalFees += catFee;
+
+    return totalFees;
+  }
+
+  /**
    * 模拟买入
    * 返回结果和失败原因，用于诊断日志
    */
@@ -991,7 +1170,8 @@ class BacktestService {
     positions: Map<string, BacktestTrade>,
     stopLoss: number,
     takeProfit: number,
-    onCapitalChange: (amount: number) => void
+    onCapitalChange: (amount: number) => void,
+    config?: any
   ): { success: boolean; reason?: string; details?: any } {
     if (positions.has(symbol)) {
       return { success: false, reason: '已有持仓' };
@@ -1013,8 +1193,15 @@ class BacktestService {
       };
     }
 
-    // 计算实际买入成本（价格 * 数量）
-    const actualCost = price * quantity;
+    // ✅ 计算交易成本（如果启用）
+    let tradingCost = 0;
+    if (config?.includeTradingCosts !== false) {
+      // 计算交易成本（参考长桥证券美国市场交易费用）
+      tradingCost = this.calculateTradingCosts(price, quantity, false);
+    }
+    
+    // 实际买入成本 = 价格 * 数量 + 交易成本
+    const actualCost = price * quantity + tradingCost;
 
     const trade: BacktestTrade = {
       symbol,
@@ -1029,6 +1216,9 @@ class BacktestService {
       exitReason: null,
       stopLoss,
       takeProfit,
+      currentStopLoss: stopLoss,  // 初始值等于买入时的止损价
+      currentTakeProfit: takeProfit,  // 初始值等于买入时的止盈价
+      entryTime: new Date(date).toISOString(),  // 记录买入时间
     };
 
     positions.set(symbol, trade);
@@ -1056,23 +1246,32 @@ class BacktestService {
     trade: BacktestTrade,
     positions: Map<string, BacktestTrade>,
     trades: BacktestTrade[],
-    onCapitalChange: (amount: number) => void
+    onCapitalChange: (amount: number) => void,
+    config?: any
   ): void {
-    const pnl = (price - trade.entryPrice) * trade.quantity;
+    // ✅ 计算交易成本（如果启用）
+    let tradingCost = 0;
+    if (config?.includeTradingCosts !== false) {
+      // 计算交易成本（参考长桥证券美国市场交易费用）
+      tradingCost = this.calculateTradingCosts(price, trade.quantity, true);
+    }
+    
+    // 计算盈亏（扣除交易成本）
+    const grossPnL = (price - trade.entryPrice) * trade.quantity;
+    const netPnL = grossPnL - tradingCost;  // 扣除卖出时的交易成本
     const pnlPercent = ((price - trade.entryPrice) / trade.entryPrice) * 100;
 
     trade.exitDate = date;
     trade.exitPrice = price;
-    trade.pnl = pnl;
+    trade.pnl = netPnL;  // 使用净盈亏
     trade.pnlPercent = pnlPercent;
     trade.exitReason = reason;
 
-    // 卖出时：收回卖出资金 = 卖出价格 * 数量
-    // 买入时扣除了 entryPrice * quantity，卖出时加上 price * quantity
-    // 盈亏 = (price - entryPrice) * quantity = price * quantity - entryPrice * quantity
-    // 所以卖出后资金 = currentCapital + price * quantity
-    // 其中 currentCapital 已经扣除了 entryPrice * quantity
-    const sellAmount = price * trade.quantity;
+    // 卖出时：收回卖出资金 = 卖出价格 * 数量 - 交易成本
+    // 买入时扣除了 entryPrice * quantity + 买入交易成本
+    // 卖出时加上 price * quantity - 卖出交易成本
+    // 净盈亏 = (price - entryPrice) * quantity - 总交易成本
+    const sellAmount = price * trade.quantity - tradingCost;
     onCapitalChange(sellAmount);
     trades.push({ ...trade });
     positions.delete(symbol);

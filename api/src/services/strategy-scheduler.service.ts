@@ -4,7 +4,7 @@
  */
 
 import pool from '../config/database';
-import { StrategyBase } from './strategies/strategy-base';
+import { StrategyBase, TradingIntent } from './strategies/strategy-base';
 import { RecommendationStrategy } from './strategies/recommendation-strategy';
 import stockSelector from './stock-selector.service';
 import capitalManager from './capital-manager.service';
@@ -16,6 +16,11 @@ import { logger } from '../utils/logger';
 import { getTradeContext } from '../config/longport';
 import orderPreventionMetrics from './order-prevention-metrics.service';
 import todayOrdersCache from './today-orders-cache.service';
+import tradingDaysService from './trading-days.service';
+import tradingSessionService from './trading-session.service';
+import { getMarketFromSymbol } from '../utils/trading-days';
+import shortValidationService from './short-position-validation.service';
+import { INITIAL_MARGIN_RATIO, MARGIN_SAFETY_BUFFER, DEFAULT_SHORT_QUANTITY_LIMIT } from './short-position-validation.service';
 
 // 定义执行汇总接口
 interface ExecutionSummary {
@@ -204,6 +209,54 @@ class StrategyScheduler {
     strategyId: number,
     symbolPoolConfig: any
   ): Promise<void> {
+    // ✅ 交易日检查：非交易日不执行策略监控
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // 1. 获取股票池（用于判断市场类型）
+    const symbols = await stockSelector.getSymbolPool(symbolPoolConfig);
+    
+    if (!symbols || symbols.length === 0) {
+      logger.log(`策略 ${strategyId}: 股票池为空，跳过本次运行`);
+      return;
+    }
+
+    // 2. 交易日和交易时段检查（根据标的池的市场类型）
+    const markets = new Set(symbols.map((s: string) => getMarketFromSymbol(s)));
+    
+    // ✅ 优化：先检查交易时段（更精确），如果不在交易时段，直接返回，不需要检查交易日
+    // 检查至少有一个市场当前在交易时段内
+    let isInTradingSession = false;
+    for (const market of markets) {
+      try {
+        const inSession = await tradingSessionService.isInTradingSession(market);
+        if (inSession) {
+          isInTradingSession = true;
+          break;
+        }
+      } catch (error: any) {
+        // 如果交易时段服务失败，降级到交易日检查
+        logger.debug(`[策略调度器] ${market}市场交易时段检查失败，降级到交易日检查: ${error.message}`);
+        isInTradingSession = false; // 继续检查交易日
+        break;
+      }
+    }
+
+    if (!isInTradingSession) {
+      // 非交易时段，跳过策略执行（减少日志频率：每5分钟记录一次）
+      // ✅ 优化：仅使用tradingSession检查，不再使用tradingDays二次校验
+      // tradingSession已经通过Longbridge API获取当日交易时段，足够精确，无需二次校验
+      // tradingDays无法获取未来数据，会导致不必要的限制
+      const now = Date.now();
+      const lastLogKey = `trading_session_skip_${strategyId}`;
+      const lastLogTime = (this as any)[lastLogKey] || 0;
+      if (now - lastLogTime > 5 * 60 * 1000) { // 5分钟
+        logger.debug(`策略 ${strategyId}: 非交易时段，跳过本次运行`);
+        (this as any)[lastLogKey] = now;
+      }
+      return;
+    }
+
     // 初始化执行汇总
     const summary: ExecutionSummary = {
       strategyId,
@@ -217,19 +270,11 @@ class StrategyScheduler {
       other: []
     };
 
-    // 1. 获取股票池
-    const symbols = await stockSelector.getSymbolPool(symbolPoolConfig);
-    
-    if (!symbols || symbols.length === 0) {
-      logger.log(`策略 ${strategyId}: 股票池为空，跳过本次运行`);
-      return;
-    }
-
     summary.totalTargets = symbols.length;
     // 只有在调试模式下才输出详细的开始日志
     // logger.debug(`策略 ${strategyId}: 开始处理 ${symbols.length} 个标的: ${symbols.join(', ')}`);
 
-    // 2. 分批并行处理多个股票（避免连接池耗尽）
+    // 3. 分批并行处理多个股票（避免连接池耗尽）
     // 每批处理10个标的，避免一次性占用过多数据库连接
     const BATCH_SIZE = 10;
     for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
@@ -243,7 +288,7 @@ class StrategyScheduler {
       }
     }
 
-    // 3. 输出汇总日志
+    // 4. 输出汇总日志
     this.logExecutionSummary(summary);
   }
 
@@ -307,6 +352,57 @@ class StrategyScheduler {
    */
   private async trackPendingOrders(strategyId: number): Promise<void> {
     try {
+      // ✅ 交易日检查：非交易日不执行订单监控
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      // 获取策略的标的池来判断市场类型
+      const strategyResult = await pool.query(
+        `SELECT symbol_pool_config FROM strategies WHERE id = $1`,
+        [strategyId]
+      );
+      
+      if (strategyResult.rows.length > 0) {
+        const symbolPoolConfig = strategyResult.rows[0].symbol_pool_config;
+        const symbols = await stockSelector.getSymbolPool(symbolPoolConfig);
+        
+        if (symbols && symbols.length > 0) {
+          const markets = new Set(symbols.map((s: string) => getMarketFromSymbol(s)));
+          
+          // ✅ 优化：先检查交易时段（更精确），如果不在交易时段，直接返回
+          let isInTradingSession = false;
+          for (const market of markets) {
+            try {
+              const inSession = await tradingSessionService.isInTradingSession(market);
+              if (inSession) {
+                isInTradingSession = true;
+                break;
+              }
+            } catch (error: any) {
+              // 如果交易时段服务失败，降级到交易日检查
+              logger.debug(`[策略调度器] ${market}市场交易时段检查失败，降级到交易日检查: ${error.message}`);
+              isInTradingSession = false; // 继续检查交易日
+              break;
+            }
+          }
+
+          if (!isInTradingSession) {
+            // 非交易时段，跳过订单监控（减少日志频率：每5分钟记录一次）
+            // ✅ 优化：仅使用tradingSession检查，不再使用tradingDays二次校验
+            // tradingSession已经通过Longbridge API获取当日交易时段，足够精确，无需二次校验
+            // tradingDays无法获取未来数据，会导致不必要的限制
+            const now = Date.now();
+            const lastLogKey = `order_monitor_skip_${strategyId}`;
+            const lastLogTime = (this as any)[lastLogKey] || 0;
+            if (now - lastLogTime > 5 * 60 * 1000) { // 5分钟
+              logger.debug(`策略 ${strategyId}: 非交易时段，跳过订单监控`);
+              (this as any)[lastLogKey] = now;
+            }
+            return;
+          }
+        }
+      }
+
       // 1. 获取今日订单（使用统一缓存服务，避免频繁请求导致频率限制）
       const todayOrders = await todayOrdersCache.getTodayOrders(false);
       
@@ -807,11 +903,26 @@ class StrategyScheduler {
           summary.holding.push(symbol);
         }
         return;
-      } else if (currentState === 'CLOSING') {
-        summary.other.push(`${symbol}(CLOSING)`);
-        await this.processClosingPosition(strategyInstance, strategyId, symbol);
+      } else if (currentState === 'SHORT') {
+        // ⚠️ 新增：卖空持仓状态：检查是否需要平仓（止盈/止损）
+        const actionResult = await this.processShortPosition(strategyInstance, strategyId, symbol);
+        if (actionResult.actionTaken) {
+          summary.actions.push(symbol);
+        } else {
+          summary.holding.push(`${symbol}(SHORT)`);
+        }
         return;
-      } else if (currentState === 'OPENING' || currentState === 'COOLDOWN') {
+      } else if (currentState === 'CLOSING' || currentState === 'COVERING') {
+        // ⚠️ 修复：平仓中状态（做多平仓或卖空平仓）
+        summary.other.push(`${symbol}(${currentState})`);
+        if (currentState === 'CLOSING') {
+          await this.processClosingPosition(strategyInstance, strategyId, symbol);
+        } else {
+          await this.processCoveringPosition(strategyInstance, strategyId, symbol);
+        }
+        return;
+      } else if (currentState === 'OPENING' || currentState === 'SHORTING' || currentState === 'COOLDOWN') {
+        // ⚠️ 修复：开仓中状态（做多开仓或卖空开仓）
         summary.other.push(`${symbol}(${currentState})`);
         return;
       } else if (currentState !== 'IDLE') {
@@ -853,6 +964,127 @@ class StrategyScheduler {
       // 使用 console.log 只输出到控制台，避免写入数据库造成日志膨胀
       console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 生成信号 ${intent.action}, 价格=${intent.entryPrice?.toFixed(2) || 'N/A'}, 原因=${intent.reason?.substring(0, 50) || 'N/A'}`);
       summary.signals.push(symbol);
+
+      // ⚠️ 修复：IDLE状态下支持SELL信号（做空操作）
+      if (intent.action === 'SELL' && currentState === 'IDLE') {
+        // IDLE状态 + SELL信号 = 做空（开仓）
+        
+        // 确保数量为负数（卖空订单）
+        if (intent.quantity && intent.quantity > 0) {
+          intent.quantity = -intent.quantity;  // 转换为负数
+        } else if (!intent.quantity && intent.entryPrice) {
+          // 如果没有指定数量，根据可用保证金计算
+          try {
+            const marginInfo = await shortValidationService.calculateShortMargin(
+              symbol,
+              -10,  // Temporary quantity for calculation
+              intent.entryPrice
+            );
+            
+            // Calculate max quantity based on available margin
+            // Required margin per share = price * margin ratio (50%) + safety buffer (10%)
+            const marginPerShare = intent.entryPrice * INITIAL_MARGIN_RATIO * (1 + MARGIN_SAFETY_BUFFER);
+            const maxQuantity = Math.floor(marginInfo.availableMargin / marginPerShare);
+            const estimatedQuantity = Math.max(1, Math.min(maxQuantity, DEFAULT_SHORT_QUANTITY_LIMIT));
+            intent.quantity = -estimatedQuantity;  // 负数表示卖空
+            
+            logger.log(`[策略执行] 策略 ${strategyId} 标的 ${symbol}: 根据保证金计算做空数量=${estimatedQuantity}, 可用保证金=${marginInfo.availableMargin.toFixed(2)}`);
+          } catch (error: any) {
+            logger.warn(`[策略执行] 策略 ${strategyId} 标的 ${symbol}: 保证金计算失败，使用默认数量: ${error.message}`);
+            const estimatedQuantity = 10;  // 临时默认值
+            intent.quantity = -estimatedQuantity;
+          }
+        }
+        
+        // 验证数量（允许负数）
+        if (!intent.quantity || intent.quantity === 0) {
+          logger.warn(`[策略执行] 策略 ${strategyId} 标的 ${symbol}: 做空数量无效`);
+          summary.errors.push(`${symbol}(INVALID_SHORT_QUANTITY)`);
+          return;
+        }
+
+        // ⚠️ 完善错误处理：综合验证卖空操作
+        const shortValidation = await shortValidationService.validateShortOperation(
+          symbol,
+          intent.quantity,
+          intent.entryPrice || 0,
+          strategyId
+        );
+
+        if (!shortValidation.valid) {
+          logger.warn(`[策略执行] 策略 ${strategyId} 标的 ${symbol}: 卖空验证失败 - ${shortValidation.error}`);
+          summary.errors.push(`${symbol}(SHORT_VALIDATION_FAILED:${shortValidation.error})`);
+          
+          // Log validation failure (with error handling)
+          try {
+            await pool.query(
+              `INSERT INTO signal_logs (strategy_id, symbol, signal_type, signal_data, created_at)
+               VALUES ($1, $2, $3, $4, NOW())`,
+              [
+                strategyId,
+                symbol,
+                'SHORT_VALIDATION_FAILED',
+                JSON.stringify({
+                  intent,
+                  validationError: shortValidation.error,
+                  timestamp: new Date().toISOString(),
+                }),
+              ]
+            );
+          } catch (dbError: unknown) {
+            logger.error(`[策略执行] 记录验证失败日志失败:`, dbError);
+            // 不阻塞主流程，只记录错误
+          }
+          return;
+        }
+
+        if (shortValidation.warning) {
+          logger.warn(`[策略执行] 策略 ${strategyId} 标的 ${symbol}: 卖空警告 - ${shortValidation.warning}`);
+        }
+
+        logger.log(`[策略执行] 策略 ${strategyId} 标的 ${symbol}: IDLE状态下执行做空操作，数量=${intent.quantity}, 价格=${intent.entryPrice?.toFixed(2)}`);
+        
+        // 执行做空操作（使用executeSellIntent，但数量为负数）
+        // 注意：executeSellIntent需要支持负数数量
+        const shortIntent: TradingIntent = {
+          ...intent,
+          quantity: intent.quantity,  // 负数
+          entryPrice: intent.entryPrice,  // 做空价格
+        };
+        
+        const executionResult = await basicExecutionService.executeSellIntent(shortIntent, strategyId);
+        
+        if (executionResult.submitted && executionResult.orderId) {
+          // 更新状态为 SHORTING（卖空中）
+          await strategyInstance.updateState(symbol, 'SHORTING', {
+            intent: shortIntent,
+            orderId: executionResult.orderId,
+          });
+          this.markOrderSubmitted(strategyId, symbol, 'SELL', executionResult.orderId);
+          summary.actions.push(`${symbol}(SHORT_SUBMITTED)`);
+        }
+        
+        if (executionResult.success) {
+          // 卖空订单成交后，状态更新为 SHORT
+          const shortContext = {
+            entryPrice: executionResult.avgPrice || intent.entryPrice,
+            quantity: intent.quantity,  // 负数
+            entryTime: new Date().toISOString(),
+            originalStopLoss: intent.stopLoss,
+            originalTakeProfit: intent.takeProfit,
+            currentStopLoss: intent.stopLoss,
+            currentTakeProfit: intent.takeProfit,
+            orderId: executionResult.orderId,
+          };
+          
+          await strategyInstance.updateState(symbol, 'SHORT', shortContext);
+          summary.actions.push(`${symbol}(SHORT_FILLED)`);
+        } else {
+          summary.errors.push(`${symbol}(SHORT_FAILED:${executionResult.error})`);
+        }
+        
+        return;
+      }
 
       // 验证策略执行是否安全（防止高买低卖、重复下单等）
       const validation = await this.validateStrategyExecution(strategyId, symbol, intent);
@@ -898,8 +1130,17 @@ class StrategyScheduler {
           intent.quantity = Math.max(1, maxAffordableQuantity);
         }
 
-        if (!intent.quantity || intent.quantity <= 0) {
+        // ⚠️ 修复：数量验证允许负数（卖空订单数量为负数）
+        // 对于买入操作，数量必须为正数
+        if (!intent.quantity || intent.quantity === 0) {
           summary.errors.push(`${symbol}(INVALID_QUANTITY)`);
+          return;
+        }
+        
+        // 买入操作的数量必须是正数
+        if (intent.quantity < 0) {
+          logger.warn(`[策略执行] 策略 ${strategyId} 标的 ${symbol}: 买入操作数量不能为负数 (${intent.quantity})`);
+          summary.errors.push(`${symbol}(INVALID_QUANTITY_NEGATIVE)`);
           return;
         }
 
@@ -1053,13 +1294,14 @@ class StrategyScheduler {
         return true;
       }
 
-      // 检查实际持仓（使用缓存，避免频繁API调用）
+      // ⚠️ 修复：检查实际持仓（支持负数持仓）
       const allPositions = await this.getCachedPositions();
       
       for (const pos of allPositions) {
         if (pos.symbol === symbol) {
           const quantity = parseInt(pos.quantity?.toString() || '0');
-          if (quantity > 0) {
+          if (quantity !== 0) {
+            // 有持仓（正数=做多，负数=卖空）
             return true;
           }
         }
@@ -1452,6 +1694,242 @@ class StrategyScheduler {
     }
   }
 
+  /**
+   * ⚠️ 新增：处理卖空持仓状态
+   * 检查是否需要平仓（止盈/止损）
+   */
+  private async processShortPosition(
+    strategyInstance: StrategyBase,
+    strategyId: number,
+    symbol: string
+  ): Promise<{ actionTaken: boolean }> {
+    try {
+      // 1. 获取策略实例上下文
+      const instanceResult = await pool.query(
+        `SELECT context FROM strategy_instances 
+         WHERE strategy_id = $1 AND symbol = $2`,
+        [strategyId, symbol]
+      );
+
+      if (instanceResult.rows.length === 0) {
+        logger.warn(`策略 ${strategyId} 标的 ${symbol}: 卖空持仓状态但无上下文，重置为IDLE`);
+        await strategyInstance.updateState(symbol, 'IDLE');
+        return { actionTaken: true };
+      }
+
+      let context: any = {};
+      try {
+        const contextData = instanceResult.rows[0].context;
+        if (!contextData) {
+          logger.warn(`策略 ${strategyId} 标的 ${symbol}: 卖空持仓状态但context为空`);
+          return { actionTaken: false };
+        } else {
+          context = typeof contextData === 'string' 
+            ? JSON.parse(contextData)
+            : contextData;
+        }
+      } catch (e) {
+        logger.error(`策略 ${strategyId} 标的 ${symbol}: 解析上下文失败`, e);
+        return { actionTaken: false };
+      }
+
+      const entryPrice = context.entryPrice;  // 卖空价格
+      let stopLoss = context.stopLoss || context.currentStopLoss;  // 止损（价格上涨）
+      let takeProfit = context.takeProfit || context.currentTakeProfit;  // 止盈（价格下跌）
+      const quantity = context.quantity;  // 负数
+
+      if (!entryPrice || !quantity) {
+        logger.warn(`策略 ${strategyId} 标的 ${symbol}: 卖空持仓状态但缺少入场价或数量`);
+        return { actionTaken: false };
+      }
+
+      // 2. 获取当前价格
+      let currentPrice = 0;
+      try {
+        const { getQuoteContext } = await import('../config/longport');
+        const quoteCtx = await getQuoteContext();
+        const quotes = await quoteCtx.quote([symbol]);
+        if (quotes && quotes.length > 0) {
+          const price = parseFloat(quotes[0].lastDone?.toString() || quotes[0].last_done?.toString() || '0');
+          if (price > 0) currentPrice = price;
+        }
+      } catch (error: any) {
+        // 忽略错误
+      }
+
+      if (currentPrice <= 0) {
+        return { actionTaken: false };
+      }
+
+      // 3. 检查默认止盈/止损设置（卖空：价格上涨=止损，价格下跌=止盈）
+      let defaultStopLoss = stopLoss;
+      let defaultTakeProfit = takeProfit;
+      let needsUpdate = false;
+      
+      if (!defaultStopLoss && entryPrice > 0) {
+        defaultStopLoss = entryPrice * 1.03;  // 止损+3%（价格上涨）
+        needsUpdate = true;
+      }
+      if (!defaultTakeProfit && entryPrice > 0) {
+        defaultTakeProfit = entryPrice * 0.97;  // 止盈-3%（价格下跌）
+        needsUpdate = true;
+      }
+      
+      if (needsUpdate) {
+        const updatedContext = {
+          ...context,
+          stopLoss: defaultStopLoss,
+          takeProfit: defaultTakeProfit,
+          originalStopLoss: context.originalStopLoss || defaultStopLoss,
+          originalTakeProfit: context.originalTakeProfit || defaultTakeProfit,
+          currentStopLoss: context.currentStopLoss || defaultStopLoss,
+          currentTakeProfit: context.currentTakeProfit || defaultTakeProfit,
+        };
+        await strategyInstance.updateState(symbol, 'SHORT', updatedContext);
+        context = updatedContext;
+        stopLoss = defaultStopLoss;
+        takeProfit = defaultTakeProfit;
+      }
+
+      // 4. 检查止盈/止损（卖空：价格上涨触发止损，价格下跌触发止盈）
+      const currentStopLoss = context.currentStopLoss || stopLoss;
+      const currentTakeProfit = context.currentTakeProfit || takeProfit;
+
+      let shouldCover = false;
+      let exitReason = '';
+      let exitPrice = currentPrice;
+      let actionTaken = needsUpdate;
+
+      if (currentStopLoss && currentPrice >= currentStopLoss) {
+        shouldCover = true;
+        exitReason = 'STOP_LOSS';
+        logger.log(`策略 ${strategyId} 标的 ${symbol}: 卖空触发止损 (当前价=${currentPrice.toFixed(2)}, 止损价=${currentStopLoss.toFixed(2)})`);
+      } else if (currentTakeProfit && currentPrice <= currentTakeProfit) {
+        shouldCover = true;
+        exitReason = 'TAKE_PROFIT';
+        logger.log(`策略 ${strategyId} 标的 ${symbol}: 卖空触发止盈 (当前价=${currentPrice.toFixed(2)}, 止盈价=${currentTakeProfit.toFixed(2)})`);
+      }
+
+      // 5. 执行平仓（买入平仓）
+      if (shouldCover) {
+        const absQuantity = Math.abs(quantity);
+        
+        // 验证平仓操作
+        const coverValidation = await shortValidationService.validateCoverOperation(
+          symbol,
+          absQuantity,
+          quantity,
+          strategyId
+        );
+
+        if (!coverValidation.valid) {
+          logger.warn(`策略 ${strategyId} 标的 ${symbol}: 平仓验证失败 - ${coverValidation.error}`);
+          return { actionTaken };
+        }
+
+        await strategyInstance.updateState(symbol, 'COVERING', {
+          ...context,
+          exitReason,
+          exitPrice,
+        });
+
+        const coverIntent = {
+          action: 'BUY' as const,
+          symbol,
+          entryPrice: currentPrice,
+          quantity: absQuantity,  // 正数
+          reason: `自动平仓: ${exitReason}`,
+        };
+
+        logger.log(`策略 ${strategyId} 标的 ${symbol}: 执行平仓 - 原因=${exitReason}`);
+        const executionResult = await basicExecutionService.executeBuyIntent(coverIntent, strategyId);
+
+        if (executionResult.submitted && executionResult.orderId) {
+          this.markOrderSubmitted(strategyId, symbol, 'BUY', executionResult.orderId);
+        }
+
+        if (executionResult.success || executionResult.submitted) {
+          actionTaken = true;
+        } else {
+          await strategyInstance.updateState(symbol, 'SHORT', context);
+          logger.error(`策略 ${strategyId} 标的 ${symbol} 平仓失败: ${executionResult.error}`);
+        }
+      }
+
+      return { actionTaken };
+    } catch (error: any) {
+      logger.error(`策略 ${strategyId} 处理卖空持仓状态失败 (${symbol}):`, error);
+      return { actionTaken: false };
+    }
+  }
+
+  /**
+   * ⚠️ 新增：处理平仓中状态（卖空平仓）
+   */
+  private async processCoveringPosition(
+    strategyInstance: StrategyBase,
+    strategyId: number,
+    symbol: string
+  ): Promise<void> {
+    try {
+      const hasPendingBuyOrder = await this.checkPendingBuyOrder(strategyId, symbol);
+      
+      if (!hasPendingBuyOrder) {
+        const allPositions = await this.getCachedPositions();
+        const position = allPositions.find((pos: any) => {
+          const posSymbol = pos.symbol || pos.stock_name;
+          return posSymbol === symbol;
+        });
+        
+        const currentQuantity = position ? parseInt(position.quantity?.toString() || '0') : 0;
+        
+        if (currentQuantity === 0) {
+          // 平仓完成
+          await strategyInstance.updateState(symbol, 'IDLE');
+          logger.log(`策略 ${strategyId} 标的 ${symbol}: 平仓完成，更新状态为IDLE`);
+        } else if (currentQuantity < 0) {
+          // 仍有卖空持仓
+          await strategyInstance.updateState(symbol, 'SHORT');
+          logger.log(`策略 ${strategyId} 标的 ${symbol}: 仍有卖空持仓，恢复SHORT状态`);
+        } else {
+          // 转为做多持仓（不应该发生，但处理一下）
+          await strategyInstance.updateState(symbol, 'HOLDING');
+          logger.log(`策略 ${strategyId} 标的 ${symbol}: 转为做多持仓，更新状态为HOLDING`);
+        }
+      }
+    } catch (error: any) {
+      logger.error(`策略 ${strategyId} 处理平仓中状态失败 (${symbol}):`, error);
+    }
+  }
+
+  /**
+   * 检查是否有未成交的买入订单
+   */
+  private async checkPendingBuyOrder(strategyId: number, symbol: string, forceRefresh: boolean = false): Promise<boolean> {
+    try {
+      const todayOrders = await todayOrdersCache.getTodayOrders(forceRefresh);
+      const pendingStatuses = [
+        'NotReported', 'NewStatus', 'WaitToNew', 'PartialFilledStatus',
+        'PendingReplaceStatus', 'WaitToReplace', 'ReplacedNotReported',
+        'ProtectedNotReported', 'VarietiesNotReported',
+      ];
+      
+      for (const order of todayOrders) {
+        const orderSymbol = order.symbol || order.stock_name;
+        const orderSide = order.side;
+        const isBuy = orderSide === 'Buy' || orderSide === 1 || orderSide === 'BUY' || orderSide === 'buy';
+        
+        if (orderSymbol === symbol && isBuy) {
+          const status = this.normalizeOrderStatus(order.status);
+          if (pendingStatuses.includes(status)) return true;
+        }
+      }
+      return false;
+    } catch (error: any) {
+      return true;
+    }
+  }
+
   private async syncPositionState(
     strategyInstance: StrategyBase,
     strategyId: number,
@@ -1471,7 +1949,9 @@ class StrategyScheduler {
       if (!actualPosition) return;
 
       const quantity = parseInt(actualPosition.quantity?.toString() || '0');
-      if (quantity <= 0) return;
+      
+      // ⚠️ 修复：支持负数持仓（卖空持仓）
+      if (quantity === 0) return;
 
       let costPrice = parseFloat(actualPosition.costPrice?.toString() || actualPosition.cost_price?.toString() || '0');
       
@@ -1488,12 +1968,38 @@ class StrategyScheduler {
         }
       }
 
-      // ... (中间逻辑保持不变)
+      // ⚠️ 修复：根据持仓数量判断状态类型
+      if (quantity > 0) {
+        // 做多持仓：同步到 HOLDING 状态
+        const updatedContext = {
+          entryPrice: actualPosition?.costPrice || actualPosition?.avgPrice || costPrice,
+          quantity: quantity,
+          entryTime: new Date().toISOString(),
+          originalStopLoss: costPrice * 0.95,  // 默认止损-5%
+          originalTakeProfit: costPrice * 1.10,  // 默认止盈+10%
+          currentStopLoss: costPrice * 0.95,
+          currentTakeProfit: costPrice * 1.10,
+          allocationAmount: quantity * costPrice,
+        };
 
-      // 状态同步：只输出到控制台，不写入数据库（信息已在汇总日志中）
-      console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 状态同步 - 从IDLE更新为HOLDING`);
-      
-      // ... (更新状态逻辑)
+        await strategyInstance.updateState(symbol, 'HOLDING', updatedContext);
+        console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 状态同步 - 从IDLE更新为HOLDING（做多持仓，数量=${quantity}）`);
+      } else if (quantity < 0) {
+        // 卖空持仓：同步到 SHORT 状态
+        const absQuantity = Math.abs(quantity);
+        const updatedContext = {
+          entryPrice: actualPosition?.costPrice || actualPosition?.avgPrice || costPrice,  // 卖空价格
+          quantity: quantity,  // 负数
+          entryTime: new Date().toISOString(),
+          originalStopLoss: costPrice * 1.03,  // 默认止损+3%（价格上涨）
+          originalTakeProfit: costPrice * 0.97,  // 默认止盈-3%（价格下跌）
+          currentStopLoss: costPrice * 1.03,
+          currentTakeProfit: costPrice * 0.97,
+        };
+
+        await strategyInstance.updateState(symbol, 'SHORT', updatedContext);
+        console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 状态同步 - 从IDLE更新为SHORT（卖空持仓，数量=${quantity}）`);
+      }
     } catch (error: any) {
       logger.error(`策略 ${strategyId} 同步持仓状态失败 (${symbol}):`, error);
     }
