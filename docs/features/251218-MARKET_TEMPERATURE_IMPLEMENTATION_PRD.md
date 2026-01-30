@@ -105,3 +105,4 @@ const env_score = basic_market_strength * 0.4 + (market_temp_normalized) * 0.4 +
 
 
 
+

@@ -45,9 +45,37 @@ psql -d trading_db -f migrations/000_init_schema.sql
 - 所有 `INSERT` 使用 `ON CONFLICT DO NOTHING` 或 `ON CONFLICT DO UPDATE`
 - 触发器使用 `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER`
 
+### 010_add_short_positions_states.sql
+
+**卖空状态支持**：为 `strategy_instances` 表添加卖空相关状态（SHORTING, SHORT, COVERING）
+
+```bash
+psql -d trading_db -f migrations/010_add_short_positions_states.sql
+```
+
+### 011_create_validation_failure_logs.sql（新增 - 2026-01-27）
+
+**验证失败日志表**：创建 `validation_failure_logs` 表，用于记录卖空验证失败的情况
+
+```bash
+psql -d trading_db -f migrations/011_create_validation_failure_logs.sql
+```
+
+**背景**：从日志分析发现，系统尝试记录验证失败日志时出现 780 次 "relation does not exist" 错误（错误码 42P01），说明该表缺失。
+
+**影响范围**：
+- 卖空权限检查失败时无法记录
+- 保证金验证失败时无法记录
+- 其他卖空验证失败无法追踪
+
+**迁移说明**：
+- 该表不在 `000_init_schema.sql` 中，需要单独执行
+- 如果是新项目，建议在执行 `000_init_schema.sql` 后再执行此脚本
+- 如果是已有项目，直接执行即可
+
 ### 历史迁移脚本（已归档）
 
-开发过程中的迭代迁移脚本（001-011）已移动到 `archive/` 目录：
+开发过程中的迭代迁移脚本（001-009）已移动到 `archive/` 目录：
 
 **基础迁移脚本（001-007）：**
 - `archive/001_initial_schema.sql` - 基础表结构

@@ -249,12 +249,27 @@ export default function StrategiesPage() {
 }
 
 function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+  const DEFAULT_CONFIGS: Record<string, any> = {
+    RECOMMENDATION_V1: { atrPeriod: 14, atrMultiplier: 2.0, riskRewardRatio: 1.5 },
+    OPTION_INTRADAY_V1: {
+      assetClass: 'OPTION',
+      expirationMode: '0DTE',
+      directionMode: 'FOLLOW_SIGNAL',
+      entryPriceMode: 'ASK',
+      positionSizing: { mode: 'FIXED_CONTRACTS', fixedContracts: 1 },
+      liquidityFilters: { minOpenInterest: 500, maxBidAskSpreadAbs: 0.3, maxBidAskSpreadPct: 25 },
+      greekFilters: { deltaMin: 0.25, deltaMax: 0.6 },
+      tradeWindow: { noNewEntryBeforeCloseMinutes: 60, forceCloseBeforeCloseMinutes: 30 },
+      feeModel: { commissionPerContract: 0.1, minCommissionPerOrder: 0.99, platformFeePerContract: 0.3 },
+    },
+  };
+
   const [formData, setFormData] = useState({
     name: '',
     type: 'RECOMMENDATION_V1',
     capitalAllocationId: null as number | null,
     symbolPoolConfig: { mode: 'STATIC', symbols: [] as string[] },
-    config: { atrPeriod: 14, atrMultiplier: 2.0, riskRewardRatio: 1.5 },
+    config: DEFAULT_CONFIGS.RECOMMENDATION_V1,
   });
   const [allocations, setAllocations] = useState<any[]>([]);
   const [watchlist, setWatchlist] = useState<any[]>([]);
@@ -458,15 +473,46 @@ function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSu
             placeholder="请输入策略名称"
           />
         </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: 'block', marginBottom: 8, fontWeight: 500 }}>策略类型</label>
+          <Select
+            value={formData.type}
+            onChange={(value) => {
+              const nextType = value as string;
+              setStockPoolMode('STATIC');
+              setFormData({
+                ...formData,
+                type: nextType,
+                symbolPoolConfig: { mode: 'STATIC', symbols: [] },
+                config: DEFAULT_CONFIGS[nextType] || {},
+              });
+            }}
+            style={{ width: '100%' }}
+          >
+            <Select.Option value="RECOMMENDATION_V1">推荐策略 V1（股票）</Select.Option>
+            <Select.Option value="OPTION_INTRADAY_V1">期权日内策略 V1（买方）</Select.Option>
+          </Select>
+        </div>
         
         {/* 策略类型说明卡片（放在资金分配账户之前） */}
-        <Alert
-          message="推荐策略 V1"
-          description="基于市场趋势和ATR（平均真实波幅）的智能推荐策略。系统会分析SPX、USD指数、BTC等市场指标，结合ATR计算止损止盈价格，智能生成买卖信号。适合趋势跟踪和风险控制的量化交易场景。"
-          type="info"
-          showIcon
-          style={{ marginBottom: 16 }}
-        />
+        {formData.type === 'RECOMMENDATION_V1' ? (
+          <Alert
+            message="推荐策略 V1"
+            description="基于市场趋势和ATR（平均真实波幅）的智能推荐策略。系统会分析SPX、USD指数、BTC等市场指标，结合ATR计算止损止盈价格，智能生成买卖信号。适合趋势跟踪和风险控制的量化交易场景。"
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+          />
+        ) : (
+          <Alert
+            message="期权日内策略 V1（买方）"
+            description="对股票/指数标的先生成方向信号，再自动选择流动性更好的期权合约开仓；收盘前30分钟强制平仓（不论盈亏），并将期权佣金/平台费计入资金占用与回测。"
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+          />
+        )}
 
         <div style={{ marginBottom: 16 }}>
           <label style={{ display: 'block', marginBottom: 8, fontWeight: 500 }}>资金分配账户</label>
@@ -550,7 +596,11 @@ function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSu
                   setSymbolError(null);
                 }}
                 onPressEnter={handleAddSymbol}
-                placeholder="输入股票代码，例如：AAPL.US"
+                placeholder={
+                  formData.type === 'OPTION_INTRADAY_V1'
+                    ? '输入标的代码（正股/指数），例如：QQQ.US 或 .SPX.US'
+                    : '输入股票代码，例如：AAPL.US'
+                }
                 style={{ flex: 1 }}
               />
               <Button type="primary" onClick={handleAddSymbol}>
@@ -614,88 +664,227 @@ function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSu
         </div>
         
         {/* 策略参数配置 */}
-        <div style={{ marginBottom: 16 }}>
-          <label style={{ display: 'block', marginBottom: 8, fontWeight: 500 }}>
-            策略参数配置
-            <span style={{ fontSize: 12, color: '#999', marginLeft: 8 }}>（用于计算止损止盈价格）</span>
-          </label>
-          <Alert
-            message="参数说明"
-            description={
-              <div>
-                <ul style={{ margin: '8px 0', paddingLeft: 20 }}>
-                  <li><strong>ATR周期</strong>：计算平均真实波幅的周期，默认14天。周期越长，ATR值越平滑但反应越慢。</li>
-                  <li><strong>ATR倍数</strong>：用于计算止损距离的倍数，默认2.0。倍数越大，止损距离越远，风险越小但可能错过更多机会。</li>
-                  <li><strong>风险收益比</strong>：止盈价格与止损价格的比例，默认1.5。比例越大，潜在收益越高，但需要更强的趋势支持。</li>
-                </ul>
-                <p style={{ marginTop: 8 }}>
-                  <strong>计算公式：</strong>止损价 = 入场价 - (ATR × ATR倍数)，止盈价 = 入场价 + (止损距离 × 风险收益比)
-                </p>
+        {formData.type === 'RECOMMENDATION_V1' ? (
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', marginBottom: 8, fontWeight: 500 }}>
+              策略参数配置
+              <span style={{ fontSize: 12, color: '#999', marginLeft: 8 }}>（用于计算止损止盈价格）</span>
+            </label>
+            <Alert
+              message="参数说明"
+              description={
+                <div>
+                  <ul style={{ margin: '8px 0', paddingLeft: 20 }}>
+                    <li><strong>ATR周期</strong>：计算平均真实波幅的周期，默认14天。周期越长，ATR值越平滑但反应越慢。</li>
+                    <li><strong>ATR倍数</strong>：用于计算止损距离的倍数，默认2.0。倍数越大，止损距离越远，风险越小但可能错过更多机会。</li>
+                    <li><strong>风险收益比</strong>：止盈价格与止损价格的比例，默认1.5。比例越大，潜在收益越高，但需要更强的趋势支持。</li>
+                  </ul>
+                  <p style={{ marginTop: 8 }}>
+                    <strong>计算公式：</strong>止损价 = 入场价 - (ATR × ATR倍数)，止盈价 = 入场价 + (止损距离 × 风险收益比)
+                  </p>
+                </div>
+              }
+              type="info"
+              showIcon
+              style={{ marginBottom: 12 }}
+            />
+            <Space style={{ width: '100%' }} size="large">
+              <div style={{ flex: 1 }}>
+                <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>
+                  ATR周期 <span style={{ color: '#999' }}>(1-100)</span>
+                </label>
+                <Input
+                  type="number"
+                  value={formData.config.atrPeriod || 14}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      config: { ...formData.config, atrPeriod: parseInt(e.target.value) || 14 },
+                    })
+                  }
+                  min={1}
+                  max={100}
+                />
+                <p style={{ fontSize: 12, color: '#999', marginTop: 4 }}>推荐值：14-21</p>
               </div>
-            }
-            type="info"
-            showIcon
-            style={{ marginBottom: 12 }}
-          />
-          <Space style={{ width: '100%' }} size="large">
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>
-                ATR周期 <span style={{ color: '#999' }}>(1-100)</span>
-              </label>
-              <Input
-                type="number"
-                value={formData.config.atrPeriod || 14}
-                onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    config: { ...formData.config, atrPeriod: parseInt(e.target.value) || 14 },
-                  })
-                }
-                min={1}
-                max={100}
+              <div style={{ flex: 1 }}>
+                <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>
+                  ATR倍数 <span style={{ color: '#999' }}>(0.1-10)</span>
+                </label>
+                <Input
+                  type="number"
+                  step="0.1"
+                  value={formData.config.atrMultiplier || 2.0}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      config: { ...formData.config, atrMultiplier: parseFloat(e.target.value) || 2.0 },
+                    })
+                  }
+                  min={0.1}
+                  max={10}
+                />
+                <p style={{ fontSize: 12, color: '#999', marginTop: 4 }}>推荐值：1.5-3.0</p>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>
+                  风险收益比 <span style={{ color: '#999' }}>(0.1-10)</span>
+                </label>
+                <Input
+                  type="number"
+                  step="0.1"
+                  value={formData.config.riskRewardRatio || 1.5}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      config: { ...formData.config, riskRewardRatio: parseFloat(e.target.value) || 1.5 },
+                    })
+                  }
+                  min={0.1}
+                  max={10}
+                />
+                <p style={{ fontSize: 12, color: '#999', marginTop: 4 }}>推荐值：1.5-3.0</p>
+              </div>
+            </Space>
+          </div>
+        ) : (
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', marginBottom: 8, fontWeight: 500 }}>
+              期权策略参数
+              <span style={{ fontSize: 12, color: '#999', marginLeft: 8 }}>（强平固定：收盘前30分钟）</span>
+            </label>
+
+            <Space style={{ width: '100%' }} size="large" wrap>
+              <div style={{ width: 240 }}>
+                <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>到期选择</label>
+                <Select
+                  value={formData.config.expirationMode || '0DTE'}
+                  onChange={(v) => setFormData({ ...formData, config: { ...formData.config, expirationMode: v } })}
+                  style={{ width: '100%' }}
+                >
+                  <Select.Option value="0DTE">0DTE优先</Select.Option>
+                  <Select.Option value="NEAREST">最近到期</Select.Option>
+                </Select>
+              </div>
+
+              <div style={{ width: 240 }}>
+                <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>方向</label>
+                <Select
+                  value={formData.config.directionMode || 'FOLLOW_SIGNAL'}
+                  onChange={(v) => setFormData({ ...formData, config: { ...formData.config, directionMode: v } })}
+                  style={{ width: '100%' }}
+                >
+                  <Select.Option value="FOLLOW_SIGNAL">跟随信号（BUY=Call，SELL=Put）</Select.Option>
+                  <Select.Option value="CALL_ONLY">只买Call</Select.Option>
+                  <Select.Option value="PUT_ONLY">只买Put</Select.Option>
+                </Select>
+              </div>
+
+              <div style={{ width: 240 }}>
+                <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>开仓价格</label>
+                <Select
+                  value={formData.config.entryPriceMode || 'ASK'}
+                  onChange={(v) => setFormData({ ...formData, config: { ...formData.config, entryPriceMode: v } })}
+                  style={{ width: '100%' }}
+                >
+                  <Select.Option value="ASK">优先用Ask（更容易成交）</Select.Option>
+                  <Select.Option value="MID">用Mid（更省滑点）</Select.Option>
+                </Select>
+              </div>
+
+              <div style={{ width: 240 }}>
+                <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>禁止开仓窗口（分钟）</label>
+                <Input
+                  type="number"
+                  value={formData.config.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 60}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      config: {
+                        ...formData.config,
+                        tradeWindow: {
+                          ...(formData.config.tradeWindow || {}),
+                          noNewEntryBeforeCloseMinutes: parseInt(e.target.value) || 60,
+                          forceCloseBeforeCloseMinutes: 30,
+                        },
+                      },
+                    })
+                  }
+                  min={0}
+                  max={240}
+                />
+              </div>
+
+              <div style={{ width: 240 }}>
+                <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>开仓张数模式</label>
+                <Select
+                  value={formData.config.positionSizing?.mode || 'FIXED_CONTRACTS'}
+                  onChange={(v) =>
+                    setFormData({
+                      ...formData,
+                      config: {
+                        ...formData.config,
+                        positionSizing: { ...(formData.config.positionSizing || {}), mode: v },
+                      },
+                    })
+                  }
+                  style={{ width: '100%' }}
+                >
+                  <Select.Option value="FIXED_CONTRACTS">固定张数</Select.Option>
+                  <Select.Option value="MAX_PREMIUM">最大权利金（USD）</Select.Option>
+                </Select>
+              </div>
+
+              {formData.config.positionSizing?.mode === 'MAX_PREMIUM' ? (
+                <div style={{ width: 240 }}>
+                  <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>最大权利金（USD）</label>
+                  <Input
+                    type="number"
+                    value={formData.config.positionSizing?.maxPremiumUsd ?? 300}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        config: {
+                          ...formData.config,
+                          positionSizing: { ...(formData.config.positionSizing || {}), maxPremiumUsd: parseFloat(e.target.value) || 0 },
+                        },
+                      })
+                    }
+                    min={0}
+                  />
+                </div>
+              ) : (
+                <div style={{ width: 240 }}>
+                  <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>固定张数</label>
+                  <Input
+                    type="number"
+                    value={formData.config.positionSizing?.fixedContracts ?? 1}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        config: {
+                          ...formData.config,
+                          positionSizing: { ...(formData.config.positionSizing || {}), fixedContracts: parseInt(e.target.value) || 1 },
+                        },
+                      })
+                    }
+                    min={1}
+                    max={20}
+                  />
+                </div>
+              )}
+            </Space>
+
+            <div style={{ marginTop: 12 }}>
+              <Alert
+                message="费用模型（默认）"
+                description="佣金 0.10 USD/张（每单最低0.99） + 平台费 0.30 USD/张。策略会把费用计入资金占用，并在收盘前30分钟强制平仓。"
+                type="info"
+                showIcon
               />
-              <p style={{ fontSize: 12, color: '#999', marginTop: 4 }}>推荐值：14-21</p>
             </div>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>
-                ATR倍数 <span style={{ color: '#999' }}>(0.1-10)</span>
-              </label>
-              <Input
-                type="number"
-                step="0.1"
-                value={formData.config.atrMultiplier || 2.0}
-                onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    config: { ...formData.config, atrMultiplier: parseFloat(e.target.value) || 2.0 },
-                  })
-                }
-                min={0.1}
-                max={10}
-              />
-              <p style={{ fontSize: 12, color: '#999', marginTop: 4 }}>推荐值：1.5-3.0</p>
-            </div>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: 12, marginBottom: 4, fontWeight: 500 }}>
-                风险收益比 <span style={{ color: '#999' }}>(0.1-10)</span>
-              </label>
-              <Input
-                type="number"
-                step="0.1"
-                value={formData.config.riskRewardRatio || 1.5}
-                onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    config: { ...formData.config, riskRewardRatio: parseFloat(e.target.value) || 1.5 },
-                  })
-                }
-                min={0.1}
-                max={10}
-              />
-              <p style={{ fontSize: 12, color: '#999', marginTop: 4 }}>推荐值：1.5-3.0</p>
-            </div>
-          </Space>
-        </div>
+          </div>
+        )}
       </form>
       <div style={{ marginTop: 16, textAlign: 'right', borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
         <Space>

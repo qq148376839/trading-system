@@ -1,8 +1,12 @@
 # API 服务开发环境 Dockerfile
-FROM node:20-alpine
+# 使用 node:20 (基于 Debian/glibc) 而不是 alpine
+# longport 包需要 glibc，不支持 musl libc
+FROM node:20
 
-# 安装 curl 用于健康检查
-RUN apk add --no-cache curl
+# 安装 curl 用于健康检查（Debian 镜像已包含）
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
 WORKDIR /app

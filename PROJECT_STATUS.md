@@ -1,6 +1,6 @@
 # 项目进度总结
 
-**更新时间**: 2025-12-24  
+**更新时间**: 2026-01-27  
 **项目状态**: ✅ **正常运行**
 
 ---
@@ -42,6 +42,49 @@
 - ✅ 期权详情查询
 - ✅ 期权交易（买入/卖出）
 - ✅ 期权持仓计算（考虑合约乘数）
+- ✅ **期权日内策略交易（买方）**：支持 `OPTION_INTRADAY_V1`（合约选择、费用模型、收盘前强平）
+
+---
+
+## 🧪 当前测试准备（新增：期权日内策略）
+
+### 功能点清单（必须覆盖）
+- **策略类型**：`OPTION_INTRADAY_V1`
+- **标的池输入**：支持 ETF/个股（如 `QQQ.US`）与指数（如 `.SPX.US`）
+- **合约选择**（富途/Moomoo）：到期（0DTE/最近）、ATM附近 strike 选择、流动性过滤（OI/价差）、Greek过滤（delta/theta）
+- **交易费用**：按张计费并纳入资金占用（佣金最小0.99 + 平台费每张0.30）
+- **硬约束**：
+  - 收盘前 **30 分钟强制平仓**（不论盈亏）
+  - 收盘前 N 分钟 **禁止开新仓**（默认60，可配置）
+- **订单与状态机**：
+  - 期权策略以 underlying 作为 `strategy_instances.symbol`，真实成交标的记录在 `context.tradedSymbol`
+  - 订单成交后能正确从 `execution_orders.symbol` 反查并更新到对应 underlying 实例
+- **资金释放一致性**：
+  - 卖出成交后优先使用 `context.allocationAmount` 释放资金（避免期权 multiplier 漏乘且确保费用一致）
+
+### 推荐手工验证步骤（最小闭环）
+1. 创建策略 `OPTION_INTRADAY_V1`，标的池加入 `QQQ.US` / `.SPX.US`（任意一个即可）
+2. 启动策略，观察信号日志是否写入 `strategy_signals`（metadata含 optionId/strikeDate/multiplier/estimatedFees）
+3. 观察策略在开仓后 `strategy_instances.context.tradedSymbol` 是否为期权 symbol（如 `TSLA260130C460000.US`）
+4. 将系统时间调整到“收盘前30分钟”窗口（或在日志中等待接近窗口），确认触发 `FORCED_CLOSE_BEFORE_MARKET_CLOSE` 并发起平仓
+5. 确认资金占用释放金额与开仓占用一致（优先看 `allocationAmount` 路径）
+
+---
+
+## ⚠️ 需要标准化/待确认的问题（测试前必须明确）
+
+### 1) 指数期权 stockId 映射
+- **现状**：已内置 `SPX -> 200003`；`NDX/XSP/SPXW/NDXP` 等仍依赖 `headfoot-search` 兜底。
+- **风险**：搜索结果可能不稳定（名称/类型混淆），导致无法获取 strikeDates/chain/detail。
+- **建议标准**：为每个指数确定并固化 `stockId`（来自 Moomoo 实测），写入映射表后再扩大支持范围。
+
+### 2) 期权开仓/平仓定价规则
+- **现状**：开仓限价默认取 `ASK`（可配 `MID`）；强平卖出使用当前价回填并走执行器限价逻辑。
+- **需要确认**：强平是否允许改为“更激进的成交策略”（例如优先市价或贴近 bid）。
+
+### 3) Windows 下测试命令执行方式
+- **现状**：在当前环境中通过自动化执行 `npm test`/`git diff` 会被 PowerShell 包装器解析错误阻断（非测试失败）。
+- **建议标准**：后续测试建议在本地终端手动执行：`cd api && npm test`（或直接在 VSCode/Cursor 终端运行）。
 
 ### 4. 配置管理
 - ✅ Web界面配置管理（数据库存储，支持加密）
@@ -72,6 +115,19 @@
 ---
 
 ## 🔧 最近修复
+
+### 2026-01-27: 策略执行关键错误修复 ⭐ 最新
+
+**修复内容**：
+1. ✅ 卖空验证失败写入 `validation_failure_logs`（迁移已执行）
+2. ✅ 卖空下单数量格式修复：对LongPort提交统一传正数 `submittedQuantity`
+3. ✅ 订单改价参数修复：`replaceOrder.quantity` 使用 `Decimal`，避免 unwrap 报错
+4. ✅ 新增 LongPort 调用限流 + 429002 指数退避重试（关键调用点已接入）
+5. ✅ 持仓/卖空持仓 `context` 为空时自动尝试恢复，无历史则重置为 `IDLE`
+
+**相关文档**：
+- 📄 [错误位置定位及修复指南](错误位置定位及修复指南.md)
+- 📄 [validation_failure_logs 迁移脚本](api/migrations/011_create_validation_failure_logs.sql)
 
 ### 2025-12-24: 策略执行诊断 ⭐ 最新
 

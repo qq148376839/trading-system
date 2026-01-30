@@ -6,6 +6,7 @@
 import pool from '../config/database';
 import { StrategyBase, TradingIntent } from './strategies/strategy-base';
 import { RecommendationStrategy } from './strategies/recommendation-strategy';
+import { OptionIntradayStrategy } from './strategies/option-intraday-strategy';
 import stockSelector from './stock-selector.service';
 import capitalManager from './capital-manager.service';
 import stateManager from './state-manager.service';
@@ -21,6 +22,10 @@ import tradingSessionService from './trading-session.service';
 import { getMarketFromSymbol } from '../utils/trading-days';
 import shortValidationService from './short-position-validation.service';
 import { INITIAL_MARGIN_RATIO, MARGIN_SAFETY_BUFFER, DEFAULT_SHORT_QUANTITY_LIMIT } from './short-position-validation.service';
+import { getMarketCloseWindow } from './market-session.service';
+import { getOptionPrefixesForUnderlying, isLikelyOptionSymbol } from '../utils/options-symbol';
+import { getOptionDetail } from './futunn-option-chain.service';
+import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-limiter';
 
 // 定义执行汇总接口
 interface ExecutionSummary {
@@ -599,78 +604,188 @@ class StrategyScheduler {
                 
                 if (isBuy) {
                   // 买入订单成交：更新状态为HOLDING
-                  const instanceResult = await pool.query(
-                    `SELECT context FROM strategy_instances 
-                     WHERE strategy_id = $1 AND symbol = $2`,
+                  // 期权策略兼容：execution_orders.symbol 可能是期权symbol，但 strategy_instances.symbol 可能是 underlying
+                  let instanceKeySymbol = dbOrder.symbol;
+                  let context: any = {};
+                  
+                  // 尝试从 context 中匹配 tradedSymbol / intent.symbol
+                  const mappingResult = await pool.query(
+                    `SELECT symbol, context FROM strategy_instances
+                     WHERE strategy_id = $1
+                       AND (
+                         context->>'tradedSymbol' = $2
+                         OR context->'intent'->>'symbol' = $2
+                       )
+                     ORDER BY last_updated DESC
+                     LIMIT 1`,
                     [strategyId, dbOrder.symbol]
                   );
                   
-                  let context: any = {};
-                  if (instanceResult.rows.length > 0 && instanceResult.rows[0].context) {
+                  if (mappingResult.rows.length > 0) {
+                    instanceKeySymbol = mappingResult.rows[0].symbol;
+                    const ctx = mappingResult.rows[0].context;
                     try {
-                      context = typeof instanceResult.rows[0].context === 'string' 
-                        ? JSON.parse(instanceResult.rows[0].context)
-                        : instanceResult.rows[0].context;
-                    } catch (e) {
-                      // 忽略JSON解析错误
+                      context = typeof ctx === 'string' ? JSON.parse(ctx) : (ctx || {});
+                    } catch {
+                      context = {};
                     }
-                  }
-                  
-                  await strategyInstance.updateState(dbOrder.symbol, 'HOLDING', {
-                    entryPrice: avgPrice,
-                    quantity: filledQuantity,
-                    stopLoss: context.stopLoss,
-                    takeProfit: context.takeProfit,
-                    orderId: dbOrder.order_id,
-                  });
-                  
-                  logger.log(`策略 ${strategyId} 标的 ${dbOrder.symbol} 买入订单已成交，更新状态为HOLDING，订单ID: ${dbOrder.order_id}`);
-                } else if (isSell) {
-                  // 卖出订单成交：更新状态为IDLE，释放资金
-                  await strategyInstance.updateState(dbOrder.symbol, 'IDLE');
-                  
-                  // 释放资金：使用实际成交金额（卖出价格 * 成交数量）
-                  let releaseAmount = 0;
-                  
-                  if (avgPrice > 0 && filledQuantity > 0) {
-                    releaseAmount = avgPrice * filledQuantity;
-                    logger.log(
-                      `策略 ${strategyId} 标的 ${dbOrder.symbol} 卖出订单已成交，` +
-                      `使用实际成交金额释放资金: ${releaseAmount.toFixed(2)} ` +
-                      `(成交价=${avgPrice.toFixed(2)}, 数量=${filledQuantity})`
-                    );
                   } else {
-                    // 方法2：从context中获取持仓价值（fallback）
                     const instanceResult = await pool.query(
                       `SELECT context FROM strategy_instances 
                        WHERE strategy_id = $1 AND symbol = $2`,
                       [strategyId, dbOrder.symbol]
                     );
-                    
                     if (instanceResult.rows.length > 0 && instanceResult.rows[0].context) {
-                      let context: any = {};
                       try {
                         context = typeof instanceResult.rows[0].context === 'string' 
                           ? JSON.parse(instanceResult.rows[0].context)
                           : instanceResult.rows[0].context;
-                        
-                        if (context.allocationAmount) {
-                          releaseAmount = parseFloat(context.allocationAmount.toString() || '0');
-                        } else if (context.entryPrice && context.quantity) {
-                          releaseAmount = parseFloat(context.entryPrice.toString() || '0') * 
-                                         parseInt(context.quantity.toString() || '0');
-                        }
-                      } catch (e) {
-                        logger.error(`策略 ${strategyId} 标的 ${dbOrder.symbol} 解析context失败:`, e);
+                      } catch {
+                        context = {};
                       }
                     }
+                  }
+                  
+                  // 期权策略：使用 allocationAmountOverride（包含完整成本：premium*multiplier*contracts+fees）
+                  let allocationAmount: number | undefined = undefined;
+                  const isOption = context.optionMeta?.assetClass === 'OPTION' || context.intent?.metadata?.assetClass === 'OPTION';
+
+                  if (isOption) {
+                    // 优先使用 intent 中的 allocationAmountOverride
+                    if (context.intent?.metadata?.allocationAmountOverride) {
+                      allocationAmount = parseFloat(String(context.intent.metadata.allocationAmountOverride));
+                    } else if (context.allocationAmount) {
+                      // 降级使用 context.allocationAmount
+                      allocationAmount = parseFloat(String(context.allocationAmount));
+                    } else {
+                      // 最后降级：计算 premium * multiplier * contracts（缺少手续费）
+                      const multiplier = context.optionMeta?.multiplier || context.intent?.metadata?.multiplier || 100;
+                      allocationAmount = avgPrice * filledQuantity * multiplier;
+                      logger.warn(
+                        `策略 ${strategyId} 期权 ${dbOrder.symbol}: allocationAmountOverride缺失，使用fallback计算=${allocationAmount.toFixed(2)} USD（缺少手续费）`
+                      );
+                    }
+                  }
+
+                  await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
+                    entryPrice: avgPrice,
+                    quantity: filledQuantity,
+                    stopLoss: context.stopLoss,
+                    takeProfit: context.takeProfit,
+                    orderId: dbOrder.order_id,
+                    tradedSymbol: context.tradedSymbol || (dbOrder.symbol !== instanceKeySymbol ? dbOrder.symbol : undefined),
+                    optionMeta: context.optionMeta || (context.intent?.metadata ? context.intent.metadata : undefined),
+                    allocationAmount,
+                  });
+                  
+                  logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol} 买入订单已成交，更新状态为HOLDING，订单ID: ${dbOrder.order_id}`);
+                } else if (isSell) {
+                  // 卖出订单成交：更新状态为IDLE，释放资金
+                  let instanceKeySymbol = dbOrder.symbol;
+                  let context: any = {};
+                  const mappingResult = await pool.query(
+                    `SELECT symbol, context FROM strategy_instances
+                     WHERE strategy_id = $1
+                       AND (
+                         context->>'tradedSymbol' = $2
+                         OR context->'intent'->>'symbol' = $2
+                       )
+                     ORDER BY last_updated DESC
+                     LIMIT 1`,
+                    [strategyId, dbOrder.symbol]
+                  );
+                  if (mappingResult.rows.length > 0) {
+                    instanceKeySymbol = mappingResult.rows[0].symbol;
+                    const ctx = mappingResult.rows[0].context;
+                    try {
+                      context = typeof ctx === 'string' ? JSON.parse(ctx) : (ctx || {});
+                    } catch {
+                      context = {};
+                    }
+                  }
+                  
+                  await strategyInstance.updateState(instanceKeySymbol, 'IDLE');
+                  
+                  // 释放资金：
+                  // - 对股票策略：历史实现使用“成交金额”释放（可能与allocatedAmount不一致，但沿用）
+                  // - 对期权策略：必须优先用 allocationAmount（含 multiplier & fees），否则会少乘 multiplier
+                  let releaseAmount = 0;
+                  
+                  const ctx = context || {};
+                  try {
+                    const isOption = ctx?.optionMeta?.assetClass === 'OPTION';
+
+                    if (isOption) {
+                      // 期权策略：优先使用保存的 allocationAmount（包含完整成本：premium*multiplier*contracts+fees）
+                      if (ctx.allocationAmount) {
+                        releaseAmount = parseFloat(ctx.allocationAmount.toString() || '0');
+                        logger.log(
+                          `策略 ${strategyId} 期权 ${instanceKeySymbol}: 资金释放 ${releaseAmount.toFixed(2)} USD（来自allocationAmount）`
+                        );
+                      } else {
+                        // Fallback: 重新计算（不应该走到这里，记录警告）
+                        const multiplier = parseInt(String(ctx?.optionMeta?.multiplier)) || 100;
+                        logger.warn(
+                          `策略 ${strategyId} 期权 ${instanceKeySymbol}: allocationAmount缺失，使用fallback计算（multiplier=${multiplier}）`
+                        );
+
+                        // 验证 multiplier 来源
+                        if (!ctx?.optionMeta?.multiplier) {
+                          logger.error(
+                            `策略 ${strategyId} 期权 ${instanceKeySymbol}: optionMeta.multiplier缺失，使用默认值100可能不准确！`
+                          );
+                        }
+
+                        if (ctx.entryPrice && ctx.quantity) {
+                          // entryPrice is premium, quantity is contracts
+                          releaseAmount = parseFloat(ctx.entryPrice.toString() || '0') *
+                                         parseInt(ctx.quantity.toString() || '0') *
+                                         multiplier;
+
+                          // 添加手续费估算（如果有元数据）
+                          if (ctx?.optionMeta?.estimatedFees) {
+                            const fees = parseFloat(String(ctx.optionMeta.estimatedFees)) || 0;
+                            releaseAmount += fees;
+                            logger.log(
+                              `策略 ${strategyId} 期权 ${instanceKeySymbol}: 添加手续费 ${fees.toFixed(2)} USD`
+                            );
+                          }
+                        } else if (avgPrice > 0 && filledQuantity > 0) {
+                          // last resort: sell fill amount * multiplier
+                          releaseAmount = avgPrice * filledQuantity * multiplier;
+                          logger.warn(
+                            `策略 ${strategyId} 期权 ${instanceKeySymbol}: 使用成交价计算资金释放（可能不准确）`
+                          );
+                        }
+
+                        logger.log(
+                          `策略 ${strategyId} 期权 ${instanceKeySymbol}: Fallback计算释放资金 ${releaseAmount.toFixed(2)} USD`
+                        );
+                      }
+                    } else {
+                      if (avgPrice > 0 && filledQuantity > 0) {
+                        releaseAmount = avgPrice * filledQuantity;
+                        logger.log(
+                          `策略 ${strategyId} 标的 ${instanceKeySymbol} 卖出订单已成交，` +
+                          `使用实际成交金额释放资金: ${releaseAmount.toFixed(2)} ` +
+                          `(成交价=${avgPrice.toFixed(2)}, 数量=${filledQuantity})`
+                        );
+                      } else if (ctx.allocationAmount) {
+                        releaseAmount = parseFloat(ctx.allocationAmount.toString() || '0');
+                      } else if (ctx.entryPrice && ctx.quantity) {
+                        releaseAmount = parseFloat(ctx.entryPrice.toString() || '0') *
+                                       parseInt(ctx.quantity.toString() || '0');
+                      }
+                    }
+                  } catch (e) {
+                    logger.error(`策略 ${strategyId} 标的 ${instanceKeySymbol} 解析context失败:`, e);
                   }
                   
                   if (releaseAmount > 0) {
                     await capitalManager.releaseAllocation(
                       strategyId,
                       releaseAmount,
-                      dbOrder.symbol
+                      instanceKeySymbol
                     );
                   }
                   
@@ -765,11 +880,17 @@ class StrategyScheduler {
             
             if (orderQuantity <= 0) continue;
             
-            await tradeCtx.replaceOrder({
-              orderId: order.order_id,
-              quantity: orderQuantity,
-              price: new Decimal(formattedPrice.toString()),
-            });
+            await longportRateLimiter.execute(() =>
+              // LongPort SDK typings are `any` in this repo; explicitly pin type to avoid `unknown` inference
+              retryWithBackoff<any>(() =>
+                tradeCtx.replaceOrder({
+                  orderId: order.order_id,
+                  // ⚠️ 修复：LongPort replaceOrder.quantity 需要 Decimal
+                  quantity: new Decimal(orderQuantity.toString()),
+                  price: new Decimal(formattedPrice.toString()),
+                }) as any
+              )
+            );
 
             // 更新数据库
             await pool.query(
@@ -891,6 +1012,8 @@ class StrategyScheduler {
     try {
       // 检查当前状态
       const currentState = await strategyInstance.getCurrentState(symbol);
+      const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy;
+      const strategyConfig: any = (strategyInstance as any)?.config || {};
       
       // 根据状态进行不同处理
       if (currentState === 'HOLDING') {
@@ -931,9 +1054,27 @@ class StrategyScheduler {
       }
 
       // IDLE 状态：处理买入逻辑
+      // 期权策略：收盘前N分钟不再开新仓（默认60分钟，可配置）
+      if (isOptionStrategy) {
+        const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 60), 10) || 60);
+        const window = await getMarketCloseWindow({
+          market: 'US',
+          noNewEntryBeforeCloseMinutes: noNewEntryMins,
+          forceCloseBeforeCloseMinutes: 30,
+        });
+        if (window) {
+          const now = new Date();
+          if (now >= window.noNewEntryTimeUtc) {
+            summary.idle.push(`${symbol}(NO_NEW_ENTRY_WINDOW)`);
+            return;
+          }
+        }
+      }
 
       // 检查是否已有持仓（避免重复买入）
-      const hasPosition = await this.checkExistingPosition(strategyId, symbol);
+      const hasPosition = isOptionStrategy
+        ? await this.checkExistingOptionPositionForUnderlying(strategyId, symbol)
+        : await this.checkExistingPosition(strategyId, symbol);
       if (hasPosition) {
         await this.syncPositionState(strategyInstance, strategyId, symbol);
         summary.actions.push(`${symbol}(SYNC_HOLDING)`);
@@ -941,7 +1082,9 @@ class StrategyScheduler {
       }
 
       // 检查是否有未成交的订单
-      const hasPendingOrder = await this.checkPendingOrder(strategyId, symbol);
+      const hasPendingOrder = isOptionStrategy
+        ? await this.checkPendingOptionOrderForUnderlying(strategyId, symbol)
+        : await this.checkPendingOrder(strategyId, symbol);
       if (hasPendingOrder) {
         summary.idle.push(symbol); // 有未成交订单，视为 IDLE/PENDING，不在此处 log
         return;
@@ -1018,17 +1161,18 @@ class StrategyScheduler {
           // Log validation failure (with error handling)
           try {
             await pool.query(
-              `INSERT INTO signal_logs (strategy_id, symbol, signal_type, signal_data, created_at)
-               VALUES ($1, $2, $3, $4, NOW())`,
+              `INSERT INTO validation_failure_logs (
+                strategy_id,
+                symbol,
+                failure_type,
+                reason,
+                timestamp
+              ) VALUES ($1, $2, $3, $4, NOW())`,
               [
                 strategyId,
                 symbol,
                 'SHORT_VALIDATION_FAILED',
-                JSON.stringify({
-                  intent,
-                  validationError: shortValidation.error,
-                  timestamp: new Date().toISOString(),
-                }),
+                shortValidation.error || 'Unknown validation failure',
               ]
             );
           } catch (dbError: unknown) {
@@ -1147,10 +1291,14 @@ class StrategyScheduler {
         // 准备买入：只输出到控制台，不写入数据库（信息已在汇总日志中）
         console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 准备买入，数量=${intent.quantity}, 价格=${intent.entryPrice?.toFixed(2)}`);
 
-        // 申请资金
+        // 申请资金（期权：使用 premium*multiplier*contracts + fees 的覆盖值）
+        const allocationAmountOverride = (intent.metadata as any)?.allocationAmountOverride;
+        const requestedAmount = typeof allocationAmountOverride === 'number' && allocationAmountOverride > 0
+          ? allocationAmountOverride
+          : intent.quantity * (intent.entryPrice || 0);
         const allocationResult = await capitalManager.requestAllocation({
           strategyId,
-          amount: intent.quantity * (intent.entryPrice || 0),
+          amount: requestedAmount,
           symbol,
         });
 
@@ -1204,6 +1352,9 @@ class StrategyScheduler {
             adjustmentHistory: [],
             orderId: executionResult.orderId,
             allocationAmount: allocationResult.allocatedAmount,
+            // 期权策略：记录实际交易的期权symbol与必要字段（用于持仓监控/强平）
+            tradedSymbol: isOptionStrategy ? intent.symbol : undefined,
+            optionMeta: isOptionStrategy ? (intent.metadata || {}) : undefined,
           };
           
           await strategyInstance.updateState(symbol, 'HOLDING', holdingContext);
@@ -1225,8 +1376,14 @@ class StrategyScheduler {
         }
       }
     } catch (error: any) {
-      logger.error(`策略 ${strategyId} 处理标的 ${symbol} 出错:`, error);
-      summary.errors.push(`${symbol}(EXCEPTION)`);
+      // 增强错误日志：显示完整的错误信息和堆栈
+      const errorMessage = error?.message || String(error);
+      const errorStack = error?.stack || '';
+      logger.error(`策略 ${strategyId} 处理标的 ${symbol} 出错: ${errorMessage}`);
+      if (errorStack) {
+        logger.error(`错误堆栈: ${errorStack}`);
+      }
+      summary.errors.push(`${symbol}(EXCEPTION:${errorMessage.substring(0, 50)})`);
     }
   }
 
@@ -1311,6 +1468,76 @@ class StrategyScheduler {
     } catch (error: any) {
       logger.error(`检查持仓失败 (${symbol}):`, error);
       return false; // 出错时返回false，允许继续执行
+    }
+  }
+
+  /**
+   * 期权策略：检查“某个underlying”是否已有期权持仓（用前缀+期权代码规则匹配）。
+   * 目的：避免用underlying作为key时，漏检真实的期权symbol持仓。
+   */
+  private async checkExistingOptionPositionForUnderlying(strategyId: number, underlyingSymbol: string): Promise<boolean> {
+    try {
+      // 1) 若实例已是HOLDING，直接认为有持仓（上下文里会包含 tradedSymbol）
+      const instanceResult = await pool.query(
+        `SELECT current_state FROM strategy_instances 
+         WHERE strategy_id = $1 AND symbol = $2 AND current_state = 'HOLDING'`,
+        [strategyId, underlyingSymbol]
+      );
+      if (instanceResult.rows.length > 0) return true;
+
+      // 2) 检查真实持仓：寻找符合期权格式且前缀匹配的symbol
+      const allPositions = await this.getCachedPositions();
+      const prefixes = getOptionPrefixesForUnderlying(underlyingSymbol).map((p) => p.toUpperCase());
+
+      for (const pos of allPositions) {
+        const posSymbol = String(pos.symbol || pos.stock_name || '').toUpperCase();
+        const qty = parseInt(pos.quantity?.toString() || '0');
+        if (qty === 0) continue;
+        if (!posSymbol.endsWith('.US')) continue;
+        if (!isLikelyOptionSymbol(posSymbol)) continue;
+        if (prefixes.some((p) => posSymbol.startsWith(p))) {
+          return true;
+        }
+      }
+
+      return false;
+    } catch (error: any) {
+      logger.error(`检查期权持仓失败 (${underlyingSymbol}):`, error);
+      return false;
+    }
+  }
+
+  /**
+   * 期权策略：检查该策略下是否存在“属于某个underlying”的未成交买入订单。
+   * 只检查本策略的 execution_orders，避免被其它策略/手动交易干扰。
+   */
+  private async checkPendingOptionOrderForUnderlying(strategyId: number, underlyingSymbol: string): Promise<boolean> {
+    try {
+      const prefixes = getOptionPrefixesForUnderlying(underlyingSymbol).map((p) => p.toUpperCase());
+
+      const pending = await pool.query(
+        `SELECT symbol, current_status
+         FROM execution_orders
+         WHERE strategy_id = $1
+           AND side IN ('BUY', 'Buy', '1')
+           AND current_status IN ('SUBMITTED', 'NEW', 'PARTIALLY_FILLED')
+           AND created_at >= NOW() - INTERVAL '24 hours'
+         ORDER BY created_at DESC
+         LIMIT 50`,
+        [strategyId]
+      );
+
+      for (const row of pending.rows) {
+        const sym = String(row.symbol || '').toUpperCase();
+        if (!sym.endsWith('.US')) continue;
+        if (!isLikelyOptionSymbol(sym)) continue;
+        if (prefixes.some((p) => sym.startsWith(p))) return true;
+      }
+
+      return false;
+    } catch (error: any) {
+      logger.error(`检查期权未成交订单失败 (${underlyingSymbol}):`, error);
+      return false;
     }
   }
 
@@ -1444,6 +1671,9 @@ class StrategyScheduler {
     symbol: string
   ): Promise<{ actionTaken: boolean }> {
     try {
+      const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy;
+      const strategyConfig: any = (strategyInstance as any)?.config || {};
+
       // 1. 获取策略实例上下文（包含入场价、止损、止盈）
       const instanceResult = await pool.query(
         `SELECT context FROM strategy_instances 
@@ -1461,11 +1691,46 @@ class StrategyScheduler {
       try {
         const contextData = instanceResult.rows[0].context;
         if (!contextData) {
-          // ... (尝试恢复 context 的逻辑保持不变，但减少日志或降级为debug)
-          // 简化为:
-          logger.warn(`策略 ${strategyId} 标的 ${symbol}: 持仓状态但context为空`);
-          // 恢复逻辑省略，为了简洁，这里假设必须有context
-          return { actionTaken: false };
+          // ⚠️ 修复：持仓状态但 context 为空时，尝试从订单历史恢复（减少空context告警）
+          logger.warn(`策略 ${strategyId} 标的 ${symbol}: 持仓状态但context为空，尝试从订单历史恢复`);
+          try {
+            const lastBuy = await pool.query(
+              `SELECT order_id, price, quantity, created_at
+               FROM execution_orders
+               WHERE strategy_id = $1
+                 AND symbol = $2
+                 AND current_status = 'FILLED'
+                 AND side IN ('BUY', 'Buy', '1')
+               ORDER BY created_at DESC
+               LIMIT 1`,
+              [strategyId, symbol]
+            );
+            if (lastBuy.rows.length > 0) {
+              const row = lastBuy.rows[0];
+              const recovered = {
+                entryPrice: parseFloat(row.price?.toString() || '0') || undefined,
+                quantity: Math.abs(parseInt(row.quantity?.toString() || '0', 10) || 0) || undefined,
+                entryTime: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
+                orderId: row.order_id,
+              };
+              if (recovered.entryPrice && recovered.quantity) {
+                await strategyInstance.updateState(symbol, 'HOLDING', recovered);
+                context = recovered;
+                logger.log(`策略 ${strategyId} 标的 ${symbol}: 已从订单历史恢复context (orderId=${row.order_id})`);
+              } else {
+                throw new Error('Recovered context missing entryPrice/quantity');
+              }
+            } else {
+              // 无订单历史，重置状态，避免持续告警
+              await strategyInstance.updateState(symbol, 'IDLE');
+              logger.warn(`策略 ${strategyId} 标的 ${symbol}: 持仓状态但context为空，且无成交订单历史，已重置为IDLE`);
+              return { actionTaken: true };
+            }
+          } catch (recoverError: any) {
+            logger.warn(`策略 ${strategyId} 标的 ${symbol}: 恢复context失败，已重置为IDLE: ${recoverError?.message || recoverError}`);
+            await strategyInstance.updateState(symbol, 'IDLE');
+            return { actionTaken: true };
+          }
         } else {
           context = typeof contextData === 'string' 
             ? JSON.parse(contextData)
@@ -1480,6 +1745,7 @@ class StrategyScheduler {
       let stopLoss = context.stopLoss;
       let takeProfit = context.takeProfit;
       const quantity = context.quantity;
+      const effectiveSymbol: string = context.tradedSymbol || symbol; // options are monitored/traded on the option symbol
 
       if (!entryPrice || !quantity) {
         logger.warn(`策略 ${strategyId} 标的 ${symbol}: 持仓状态但缺少入场价或数量`);
@@ -1490,37 +1756,118 @@ class StrategyScheduler {
 
       // 2. 获取当前价格
       let currentPrice = 0;
-      try {
-        const { getQuoteContext } = await import('../config/longport');
-        const quoteCtx = await getQuoteContext();
-        const quotes = await quoteCtx.quote([symbol]);
-        if (quotes && quotes.length > 0) {
-          const price = parseFloat(quotes[0].lastDone?.toString() || quotes[0].last_done?.toString() || '0');
-          if (price > 0) currentPrice = price;
+      let priceSource = '';
+
+      // 期权策略：优先检查缓存
+      if (isOptionStrategy) {
+        const optionPriceCacheService = (await import('./option-price-cache.service')).default;
+        const cached = optionPriceCacheService.get(effectiveSymbol);
+        if (cached) {
+          currentPrice = cached.price;
+          priceSource = `cache(${cached.source})`;
         }
-      } catch (error: any) {
-        // 忽略错误，减少噪音
       }
 
-      // 如果行情API获取失败，尝试从持仓数据中获取
+      // 第一层：LongPort实时行情API
+      if (currentPrice <= 0) {
+        try {
+          const { getQuoteContext } = await import('../config/longport');
+          const quoteCtx = await getQuoteContext();
+          const quotes = await quoteCtx.quote([effectiveSymbol]);
+          if (quotes && quotes.length > 0) {
+            const price = parseFloat(quotes[0].lastDone?.toString() || quotes[0].last_done?.toString() || '0');
+            if (price > 0) {
+              currentPrice = price;
+              priceSource = 'longport';
+            }
+          }
+        } catch (error: any) {
+          logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: LongPort行情获取失败: ${error.message}`);
+        }
+      }
+
+      // 第二层：持仓缓存数据
       if (currentPrice <= 0) {
         try {
           const allPositions = await this.getCachedPositions();
           const position = allPositions.find((pos: any) => {
             const posSymbol = pos.symbol || pos.stock_name;
-            return posSymbol === symbol;
+            return posSymbol === effectiveSymbol;
           });
           if (position) {
             const price = parseFloat(position.lastPrice?.toString() || position.currentPrice?.toString() || '0');
-            if (price > 0) currentPrice = price;
+            if (price > 0) {
+              currentPrice = price;
+              priceSource = 'position_cache';
+            }
           }
         } catch (error: any) {
-          // 忽略
+          logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: 持仓缓存获取失败: ${error.message}`);
+        }
+      }
+
+      // 第三层：期权策略特有 - 富途期权详情API
+      if (currentPrice <= 0 && isOptionStrategy) {
+        try {
+          const optionMeta = context.optionMeta || {};
+          const optionId = optionMeta.optionId || optionMeta.option_id;
+          const underlyingStockId = optionMeta.underlyingStockId || optionMeta.underlying_stock_id;
+          const marketType = optionMeta.marketType || optionMeta.market_type || 2;
+
+          if (optionId && underlyingStockId) {
+            const detail = await getOptionDetail(String(optionId), String(underlyingStockId), Number(marketType) || 2);
+            if (detail) {
+              const bid = detail.priceBid || 0;
+              const ask = detail.priceAsk || 0;
+              const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (detail.price || 0);
+              currentPrice = mid || bid || detail.price || 0;
+              priceSource = 'futunn';
+
+              // 缓存价格（5分钟TTL）
+              if (currentPrice > 0) {
+                const optionPriceCacheService = (await import('./option-price-cache.service')).default;
+                optionPriceCacheService.set(effectiveSymbol, {
+                  price: currentPrice,
+                  bid,
+                  ask,
+                  mid,
+                  timestamp: Date.now(),
+                  underlyingPrice: detail.underlyingPrice || 0,
+                  source: 'futunn',
+                });
+              }
+            }
+          } else {
+            logger.warn(
+              `策略 ${strategyId} 期权 ${effectiveSymbol}: optionMeta缺少必要字段（optionId或underlyingStockId）`
+            );
+          }
+        } catch (error: any) {
+          logger.error(`策略 ${strategyId} 期权 ${effectiveSymbol}: 富途详情获取失败: ${error.message}`);
         }
       }
 
       if (currentPrice <= 0) {
         return { actionTaken: false };
+      }
+
+      // 期权策略：收盘前30分钟强制平仓（不论盈亏）
+      let forceCloseNow = false;
+      if (isOptionStrategy) {
+        const window = await getMarketCloseWindow({
+          market: 'US',
+          noNewEntryBeforeCloseMinutes: Math.max(
+            0,
+            parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 60), 10) || 60
+          ),
+          forceCloseBeforeCloseMinutes: 30,
+        });
+        if (window) {
+          const now = new Date();
+          if (now >= window.forceCloseTimeUtc) {
+            forceCloseNow = true;
+          }
+        }
       }
 
       // 3. 检查默认止盈/止损设置 (逻辑保持不变，但减少普通日志)
@@ -1574,7 +1921,11 @@ class StrategyScheduler {
       let exitPrice = currentPrice;
       let actionTaken = needsUpdate; // 如果更新了止盈止损，算作有动作
 
-      if (currentStopLoss && currentPrice <= currentStopLoss) {
+      if (forceCloseNow) {
+        shouldSell = true;
+        exitReason = 'FORCED_CLOSE_BEFORE_MARKET_CLOSE';
+        logger.log(`策略 ${strategyId} 标的 ${symbol}: 收盘前强制平仓 (交易标的=${effectiveSymbol}, 当前价=${currentPrice.toFixed(2)})`);
+      } else if (currentStopLoss && currentPrice <= currentStopLoss) {
         shouldSell = true;
         exitReason = 'STOP_LOSS';
         logger.log(`策略 ${strategyId} 标的 ${symbol}: 触发止损 (当前价=${currentPrice.toFixed(2)}, 止损价=${currentStopLoss.toFixed(2)})`);
@@ -1614,7 +1965,7 @@ class StrategyScheduler {
       // 7. 执行卖出
       if (shouldSell) {
         // ... (检查可用持仓逻辑不变)
-        const positionCheck = await this.checkAvailablePosition(strategyId, symbol);
+        const positionCheck = await this.checkAvailablePosition(strategyId, effectiveSymbol);
         if (positionCheck.hasPending) return { actionTaken };
         
         if (positionCheck.availableQuantity !== undefined && quantity > positionCheck.availableQuantity) {
@@ -1624,7 +1975,7 @@ class StrategyScheduler {
 
         const dbCheckResult = await pool.query(
           `SELECT eo.order_id FROM execution_orders eo WHERE strategy_id = $1 AND symbol = $2 AND side IN ('SELL', 'Sell', '2') AND current_status IN ('SUBMITTED', 'NEW', 'PARTIALLY_FILLED') AND eo.created_at >= NOW() - INTERVAL '1 hour'`,
-          [strategyId, symbol]
+          [strategyId, effectiveSymbol]
         );
         
         if (dbCheckResult.rows.length > 0) return { actionTaken };
@@ -1641,14 +1992,19 @@ class StrategyScheduler {
 
         const sellIntent = {
           action: 'SELL' as const,
-          symbol,
+          symbol: effectiveSymbol,
           entryPrice: context.entryPrice || latestPrice,
           sellPrice: latestPrice,
           quantity: quantity,
           reason: `自动卖出: ${exitReason}`,
+          metadata: {
+            ...context.metadata,
+            forceClose: forceCloseNow, // 标记是否为强制平仓（期权盘中最后30分钟）
+            exitReason,
+          },
         };
 
-        logger.log(`策略 ${strategyId} 标的 ${symbol}: 执行卖出 - 原因=${exitReason}`);
+        logger.log(`策略 ${strategyId} 标的 ${symbol}: 执行卖出 - 原因=${exitReason} (交易标的=${effectiveSymbol})`);
         const executionResult = await basicExecutionService.executeSellIntent(sellIntent, strategyId);
 
         if (executionResult.submitted && executionResult.orderId) {
@@ -1677,10 +2033,29 @@ class StrategyScheduler {
     symbol: string
   ): Promise<void> {
     try {
-      const hasPendingSellOrder = await this.checkPendingSellOrder(strategyId, symbol);
+      // 期权策略兼容：平仓订单与真实持仓在 tradedSymbol 上
+      let effectiveSymbol = symbol;
+      try {
+        const instanceResult = await pool.query(
+          `SELECT context FROM strategy_instances WHERE strategy_id = $1 AND symbol = $2`,
+          [strategyId, symbol]
+        );
+        if (instanceResult.rows.length > 0 && instanceResult.rows[0].context) {
+          const ctx = typeof instanceResult.rows[0].context === 'string'
+            ? JSON.parse(instanceResult.rows[0].context)
+            : instanceResult.rows[0].context;
+          if (ctx?.tradedSymbol) {
+            effectiveSymbol = ctx.tradedSymbol;
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      const hasPendingSellOrder = await this.checkPendingSellOrder(strategyId, effectiveSymbol);
       
       if (!hasPendingSellOrder) {
-        const hasPosition = await this.checkExistingPosition(strategyId, symbol);
+        const hasPosition = await this.checkExistingPosition(strategyId, effectiveSymbol);
         if (!hasPosition) {
           await strategyInstance.updateState(symbol, 'IDLE');
           logger.log(`策略 ${strategyId} 标的 ${symbol}: 平仓完成，更新状态为IDLE`);
@@ -1721,8 +2096,47 @@ class StrategyScheduler {
       try {
         const contextData = instanceResult.rows[0].context;
         if (!contextData) {
-          logger.warn(`策略 ${strategyId} 标的 ${symbol}: 卖空持仓状态但context为空`);
-          return { actionTaken: false };
+          // ⚠️ 修复：卖空持仓状态但 context 为空时，尝试从订单历史恢复（减少空context告警）
+          logger.warn(`策略 ${strategyId} 标的 ${symbol}: 卖空持仓状态但context为空，尝试从订单历史恢复`);
+          try {
+            const lastShort = await pool.query(
+              `SELECT order_id, price, quantity, created_at
+               FROM execution_orders
+               WHERE strategy_id = $1
+                 AND symbol = $2
+                 AND current_status = 'FILLED'
+                 AND side IN ('SELL', 'Sell', '2')
+               ORDER BY created_at DESC
+               LIMIT 1`,
+              [strategyId, symbol]
+            );
+            if (lastShort.rows.length > 0) {
+              const row = lastShort.rows[0];
+              const qty = parseInt(row.quantity?.toString() || '0', 10) || 0;
+              const recovered = {
+                entryPrice: parseFloat(row.price?.toString() || '0') || undefined,
+                // 卖空语义：quantity 需要为负数
+                quantity: qty !== 0 ? (qty < 0 ? qty : -Math.abs(qty)) : undefined,
+                entryTime: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
+                orderId: row.order_id,
+              };
+              if (recovered.entryPrice && recovered.quantity) {
+                await strategyInstance.updateState(symbol, 'SHORT', recovered);
+                context = recovered;
+                logger.log(`策略 ${strategyId} 标的 ${symbol}: 已从订单历史恢复卖空context (orderId=${row.order_id})`);
+              } else {
+                throw new Error('Recovered short context missing entryPrice/quantity');
+              }
+            } else {
+              await strategyInstance.updateState(symbol, 'IDLE');
+              logger.warn(`策略 ${strategyId} 标的 ${symbol}: 卖空持仓状态但context为空，且无成交订单历史，已重置为IDLE`);
+              return { actionTaken: true };
+            }
+          } catch (recoverError: any) {
+            logger.warn(`策略 ${strategyId} 标的 ${symbol}: 恢复卖空context失败，已重置为IDLE: ${recoverError?.message || recoverError}`);
+            await strategyInstance.updateState(symbol, 'IDLE');
+            return { actionTaken: true };
+          }
         } else {
           context = typeof contextData === 'string' 
             ? JSON.parse(contextData)
@@ -1941,6 +2355,88 @@ class StrategyScheduler {
       if (currentState !== 'IDLE') return;
 
       const allPositions = await this.getCachedPositions();
+
+      // 期权策略：symbol 是 underlying，真实持仓是期权symbol
+      if (strategyInstance instanceof OptionIntradayStrategy) {
+        const prefixes = getOptionPrefixesForUnderlying(symbol).map((p) => p.toUpperCase());
+        const optionPos = allPositions.find((pos: any) => {
+          const posSymbol = String(pos.symbol || pos.stock_name || '').toUpperCase();
+          const qty = parseInt(pos.quantity?.toString() || '0');
+          return qty !== 0 && posSymbol.endsWith('.US') && isLikelyOptionSymbol(posSymbol) && prefixes.some((p) => posSymbol.startsWith(p));
+        });
+
+        if (!optionPos) return;
+
+        const qty = parseInt(optionPos.quantity?.toString() || '0');
+        if (qty === 0) return;
+
+        const costPrice = parseFloat(optionPos.costPrice?.toString() || optionPos.cost_price?.toString() || optionPos.avgPrice?.toString() || '0');
+        const entryPrice = costPrice > 0 ? costPrice : 0;
+        const tradedSymbol = String(optionPos.symbol || optionPos.stock_name || '');
+
+        // 期权持仓：尝试从历史订单中恢复完整的 allocationAmount
+        // 如果无法恢复，使用 premium * contracts * multiplier（注意：缺少手续费）
+        const multiplier = 100; // 标准美股期权
+        let allocationAmount: number | undefined = undefined;
+
+        if (entryPrice > 0) {
+          // 尝试从近期已成交订单中查找匹配的期权买入订单，获取完整成本
+          try {
+            const todayOrders = await todayOrdersCache.getTodayOrders();
+            const matchedOrder = todayOrders.find((ord: any) => {
+              const orderSymbol = String(ord.symbol || ord.stock_code || '').toUpperCase();
+              const orderSide = ord.side || ord.order_side || '';
+              const isBuy = orderSide === 'Buy' || orderSide === 1 || orderSide === 'BUY' || orderSide === 'buy';
+              return orderSymbol === tradedSymbol.toUpperCase() && isBuy;
+            });
+
+            if (matchedOrder) {
+              // 如果找到匹配订单，尝试从元数据中恢复 allocationAmount
+              const metadata = typeof matchedOrder.metadata === 'string'
+                ? JSON.parse(matchedOrder.metadata)
+                : (matchedOrder.metadata || {});
+              if (metadata.allocationAmountOverride) {
+                allocationAmount = parseFloat(String(metadata.allocationAmountOverride));
+                logger.log(
+                  `策略 ${strategyId} 期权 ${tradedSymbol}: 从历史订单恢复 allocationAmount=${allocationAmount.toFixed(2)} USD`
+                );
+              }
+            }
+          } catch (error: any) {
+            logger.warn(`策略 ${strategyId} 期权 ${tradedSymbol}: 无法从历史订单恢复 allocationAmount: ${error.message}`);
+          }
+
+          // Fallback: 使用 premium * contracts * multiplier（缺少手续费，但总比没有好）
+          if (!allocationAmount) {
+            allocationAmount = qty * entryPrice * multiplier;
+            logger.warn(
+              `策略 ${strategyId} 期权 ${tradedSymbol}: 使用fallback计算 allocationAmount=${allocationAmount.toFixed(2)} USD（缺少手续费）`
+            );
+          }
+        }
+
+        await strategyInstance.updateState(symbol, 'HOLDING', {
+          entryPrice,
+          quantity: qty,
+          entryTime: new Date().toISOString(),
+          tradedSymbol,
+          // 期权默认不设置止盈止损，避免与强平逻辑冲突；仍保留字段兼容
+          originalStopLoss: undefined,
+          originalTakeProfit: undefined,
+          currentStopLoss: undefined,
+          currentTakeProfit: undefined,
+          allocationAmount,
+          // 保存期权元数据（用于后续资金释放）
+          optionMeta: {
+            assetClass: 'OPTION',
+            multiplier,
+            // 注意：手续费信息在状态同步时无法获取，需要在开仓时保存
+          },
+        });
+        console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 状态同步 - 从IDLE更新为HOLDING（期权持仓，交易标的=${tradedSymbol}, 数量=${qty}）`);
+        return;
+      }
+
       const actualPosition = allPositions.find((pos: any) => {
         const posSymbol = pos.symbol || pos.stock_name;
         return posSymbol === symbol;
@@ -2125,6 +2621,8 @@ class StrategyScheduler {
     switch (strategyType) {
       case 'RECOMMENDATION_V1':
         return new RecommendationStrategy(strategyId, config);
+      case 'OPTION_INTRADAY_V1':
+        return new OptionIntradayStrategy(strategyId, config);
       default:
         throw new Error(`未知的策略类型: ${strategyType}`);
     }

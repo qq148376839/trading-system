@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import pool from '../config/database';
 import { getTradeContext, getQuoteContext, Decimal, OrderType, OrderSide, OrderStatus, Market, TimeInForceType, OutsideRTH } from '../config/longport';
 import { validateOrderParams, normalizeOrderParams, detectMarket } from '../utils/order-validation';
+import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-limiter';
+import orderSubmissionService from '../services/order-submission.service';
 
 export const ordersRouter = Router();
 
@@ -1405,142 +1407,18 @@ ordersRouter.get('/today', async (req: Request, res: Response) => {
  */
 ordersRouter.post('/submit', async (req: Request, res: Response) => {
   try {
-    // 规范化参数（支持新旧参数命名）
+    // ✅ 架构改进：使用统一订单提交服务
+    // 确保手动下单和量化下单使用相同的逻辑
+    const submitResult = await orderSubmissionService.submitOrder(req.body);
+
+    if (!submitResult.success) {
+      return res.status(400).json({
+        success: false,
+        error: submitResult.error,
+      });
+    }
+
     const normalizedParams = normalizeOrderParams(req.body);
-
-    // 使用验证函数进行参数验证
-    const validation = validateOrderParams(normalizedParams);
-    if (!validation.valid) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: '参数验证失败',
-          details: validation.errors,
-        },
-      });
-    }
-
-    // 验证最小交易单位（lot size）
-    try {
-      const quoteCtx = await getQuoteContext();
-      const staticInfoList = await quoteCtx.staticInfo([normalizedParams.symbol]);
-      
-      if (staticInfoList && staticInfoList.length > 0) {
-        const lotSize = staticInfoList[0].lotSize;
-        const quantity = parseInt(normalizedParams.submitted_quantity);
-        
-        if (lotSize > 0 && quantity % lotSize !== 0) {
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'INVALID_LOT_SIZE',
-              message: `数量不符合最小交易单位要求。最小交易单位为 ${lotSize}，请输入 ${lotSize} 的倍数。`,
-              details: [`当前数量: ${quantity}`, `最小交易单位: ${lotSize}`, `建议数量: ${Math.ceil(quantity / lotSize) * lotSize}`],
-            },
-          });
-        }
-      }
-    } catch (lotSizeError: any) {
-      console.warn('获取最小交易单位失败，跳过验证:', lotSizeError);
-      // 如果获取lot size失败，不阻止订单提交，只记录警告
-    }
-
-    // 获取TradeContext
-    const tradeCtx = await getTradeContext();
-
-    // 转换订单类型
-    const orderTypeEnum = OrderType[normalizedParams.order_type as keyof typeof OrderType];
-    if (orderTypeEnum === undefined) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_ORDER_TYPE',
-          message: `无效的订单类型: ${normalizedParams.order_type}`,
-        },
-      });
-    }
-
-    // 转换交易方向
-    const sideEnum = OrderSide[normalizedParams.side as keyof typeof OrderSide];
-    if (sideEnum === undefined) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_SIDE',
-          message: `无效的交易方向: ${normalizedParams.side}`,
-        },
-      });
-    }
-
-    // 转换订单有效期
-    let timeInForceEnum = TimeInForceType.Day; // 默认值
-    if (normalizedParams.time_in_force) {
-      const timeInForceMap: Record<string, any> = {
-        'Day': TimeInForceType.Day,
-        'GTC': TimeInForceType.GoodTilCanceled,
-        'GTD': TimeInForceType.GoodTilDate,
-      };
-      timeInForceEnum = timeInForceMap[normalizedParams.time_in_force] || TimeInForceType.Day;
-    }
-
-    // 构建订单选项对象
-    const orderOptions: any = {
-      symbol: normalizedParams.symbol,
-      orderType: orderTypeEnum,
-      side: sideEnum,
-      submittedQuantity: new Decimal(normalizedParams.submitted_quantity),
-      timeInForce: timeInForceEnum,
-    };
-
-    // 添加价格（限价单、触价限价单等需要）
-    if (normalizedParams.submitted_price) {
-      orderOptions.submittedPrice = new Decimal(normalizedParams.submitted_price);
-    }
-
-    // 添加触发价格（条件单需要）
-    if (normalizedParams.trigger_price) {
-      orderOptions.triggerPrice = new Decimal(normalizedParams.trigger_price);
-    }
-
-    // 添加跟踪参数（跟踪止损单需要）
-    if (normalizedParams.trailing_amount) {
-      orderOptions.trailingAmount = new Decimal(normalizedParams.trailing_amount);
-    }
-    if (normalizedParams.trailing_percent) {
-      orderOptions.trailingPercent = new Decimal(normalizedParams.trailing_percent);
-    }
-    if (normalizedParams.limit_offset) {
-      orderOptions.limitOffset = new Decimal(normalizedParams.limit_offset);
-    }
-
-    // 添加过期日期（GTD订单需要）
-    if (normalizedParams.expire_date && timeInForceEnum === TimeInForceType.GoodTilDate) {
-      orderOptions.expireDate = new Date(normalizedParams.expire_date);
-    }
-
-    // 添加盘前盘后选项（美股订单需要）
-    const market = detectMarket(normalizedParams.symbol);
-    if (market === 'US' && normalizedParams.outside_rth) {
-      const outsideRthMap: Record<string, any> = {
-        'RTH_ONLY': OutsideRTH.RTHOnly,
-        'ANY_TIME': OutsideRTH.AnyTime,
-        'OVERNIGHT': OutsideRTH.Overnight,
-      };
-      orderOptions.outsideRth = outsideRthMap[normalizedParams.outside_rth];
-    }
-
-    // 添加备注
-    if (normalizedParams.remark) {
-      orderOptions.remark = normalizedParams.remark;
-    }
-
-    console.log('提交订单参数:', JSON.stringify(orderOptions, null, 2));
-
-    // 提交订单
-    const response = await tradeCtx.submitOrder(orderOptions);
-    
-    console.log('订单提交响应:', JSON.stringify(response, null, 2));
 
     // 保存交易记录到数据库
     const tradeRecord = await pool.query(
@@ -1553,15 +1431,15 @@ ordersRouter.post('/submit', async (req: Request, res: Response) => {
         parseInt(normalizedParams.submitted_quantity),
         normalizedParams.submitted_price || null,
         'PENDING', // 初始状态为待处理
-        response.orderId || null,
+        submitResult.orderId || null,
       ]
     );
 
     res.status(201).json({
       success: true,
       data: {
-        orderId: response.orderId,
-        status: response.status,
+        orderId: submitResult.orderId,
+        status: submitResult.status,
         trade: tradeRecord.rows[0],
       },
     });
@@ -1825,7 +1703,8 @@ ordersRouter.put('/:orderId', async (req: Request, res: Response) => {
           },
         });
       }
-      replaceOptions.quantity = quantityNum;
+      // ⚠️ 修复：LongPort replaceOrder.quantity 需要 Decimal
+      replaceOptions.quantity = new Decimal(quantityNum.toString());
     }
 
     if (price !== undefined) {
@@ -1845,7 +1724,10 @@ ordersRouter.put('/:orderId', async (req: Request, res: Response) => {
     console.log('修改订单参数:', JSON.stringify(replaceOptions, null, 2));
 
     // 调用replaceOrder API
-    await tradeCtx.replaceOrder(replaceOptions);
+    await longportRateLimiter.execute(() =>
+      // LongPort SDK typings are `any` in this repo; explicitly pin type to avoid `unknown` inference
+      retryWithBackoff<any>(() => tradeCtx.replaceOrder(replaceOptions) as any)
+    );
 
     // 更新数据库中的订单记录
     try {

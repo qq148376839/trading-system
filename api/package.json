@@ -12,6 +12,7 @@
     "test:config": "tsx test-config.ts",
     "test:env": "tsx test-env.ts",
     "test:env-file": "tsx test-env-file.ts",
+    "test:option-fixes": "tsx test-option-strategy-fixes.ts",
     "backtest": "tsx scripts/backtest-strategy.ts",
     "backfill-signals": "tsx scripts/backfill-signal-associations.ts",
     "backfill-signals:dry-run": "tsx scripts/backfill-signal-associations.ts --dry-run",
@@ -30,7 +31,7 @@
   "license": "MIT",
   "dependencies": {
     "axios": "^1.13.2",
-    "bcrypt": "^5.1.1",
+    "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",

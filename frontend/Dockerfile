@@ -1,9 +1,6 @@
 # Frontend 服务 Dockerfile
 FROM node:20-alpine AS builder
 
-# 安装 pnpm
-RUN npm install -g pnpm
-
 # 设置工作目录
 WORKDIR /app
 
@@ -13,18 +10,11 @@ ARG NEXT_PUBLIC_API_URL=http://localhost:3001
 # 设置环境变量（Next.js 构建时需要）
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 
-# 复制 package.json 和 lock 文件
-COPY package.json pnpm-lock.yaml* package-lock.json* ./
+# 复制 package.json 和 package-lock.json
+COPY package.json package-lock.json ./
 
-# 安装依赖（优先使用 pnpm，如果没有 pnpm-lock.yaml 则使用 npm）
-RUN if [ -f pnpm-lock.yaml ]; then \
-      pnpm install --frozen-lockfile; \
-    elif [ -f package-lock.json ]; then \
-      npm ci; \
-    else \
-      echo "Warning: No lock file found, using pnpm install"; \
-      pnpm install; \
-    fi
+# 安装依赖
+RUN npm ci
 
 # 复制源代码
 COPY . .
@@ -33,11 +23,7 @@ COPY . .
 RUN mkdir -p public
 
 # 构建 Next.js 应用（此时 NEXT_PUBLIC_API_URL 已可用）
-RUN if [ -f pnpm-lock.yaml ] || [ ! -f package-lock.json ]; then \
-      pnpm run build; \
-    else \
-      npm run build; \
-    fi
+RUN npm run build
 
 # 生产环境镜像
 FROM node:20-alpine AS runner

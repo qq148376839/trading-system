@@ -5,7 +5,13 @@
       "Bash(timeout 8 bash -c 'while ! curl -s http://localhost:3001/health > /dev/null 2>&1; do sleep 1; done && echo \"\"Server is ready\"\"')",
       "Bash(curl:*)",
       "Bash(python -m json.tool:*)",
-      "Bash(timeout 10 bash -c 'while ! curl -s http://localhost:3000 > /dev/null 2>&1; do sleep 1; done && echo \"\"Frontend is ready\"\"')"
+      "Bash(timeout 10 bash -c 'while ! curl -s http://localhost:3000 > /dev/null 2>&1; do sleep 1; done && echo \"\"Frontend is ready\"\"')",
+      "Bash(python scripts/analyze-logs.py:*)",
+      "Bash(python scripts/generate-html-dashboard.py:*)",
+      "Bash(findstr:*)",
+      "Bash(timeout 20 npx ts-node:*)",
+      "Bash(npx ts-node test-option-strategy-e2e.ts)",
+      "Bash(TEST_REAL_SUBMIT=true timeout 120 npx ts-node:*)"
     ],
     "deny": [],
     "ask": []

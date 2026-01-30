@@ -365,7 +365,13 @@ export async function getOptionDetail(
     change: number;
     changeRatio: number;
   };
-  
+
+  // 便捷字段（顶层访问，避免嵌套）
+  underlyingPrice: number;
+  underlyingChange: number;
+  underlyingChangeRatio: string;
+  underlyingPriceDirect: string;
+
   // 其他信息
   marketStatus: number;
   marketStatusText: string;
@@ -376,7 +382,6 @@ export async function getOptionDetail(
     throw new Error('富途牛牛配置未设置');
   }
   
-  const url = 'https://www.moomoo.com/quote-api/quote-v2/get-stock-quote';
   const timestamp = Date.now();
   
   // Token生成使用字符串类型参数
@@ -410,10 +415,19 @@ export async function getOptionDetail(
   };
   
   try {
-    const response = await axios.get(url, { params, headers, timeout: 10000 });
+    // ✅ 改为统一走 moomooProxy（边缘函数会自动计算 quote-token，更适配大陆网络环境）
+    const responseData = await moomooProxy({
+      path: '/quote-api/quote-v2/get-stock-quote',
+      params,
+      cookies: headers['Cookie'],
+      csrfToken: headers['futu-x-csrf-token'],
+      quoteToken,
+      referer: 'https://www.moomoo.com/hans/options/',
+      timeout: 10000,
+    });
     
-    if (response.data?.code === 0 && response.data?.data) {
-      const data = response.data.data;
+    if (responseData?.code === 0 && responseData?.data) {
+      const data = responseData.data;
       const optionData = data.option || {};
       const greekData = optionData.greek || {};
       
@@ -471,7 +485,13 @@ export async function getOptionDetail(
           change: parsePrice(data.underlyingStockInfo?.change || '0'),
           changeRatio: parsePercentage(data.underlyingStockInfo?.changeRatio || '0'),
         },
-        
+
+        // 便捷字段（顶层访问，避免嵌套）
+        underlyingPrice: parsePrice(data.underlyingStockInfo?.price || '0'),
+        underlyingChange: parsePrice(data.underlyingStockInfo?.change || '0'),
+        underlyingChangeRatio: data.underlyingStockInfo?.changeRatio || '0.00%',
+        underlyingPriceDirect: data.underlyingStockInfo?.priceDirect || 'flat',
+
         // 其他信息
         marketStatus: data.market_status || 0,
         marketStatusText: data.market_status_text || '',
@@ -479,7 +499,7 @@ export async function getOptionDetail(
       };
     }
     
-    console.error('获取期权详情失败:', response.data);
+    console.error('获取期权详情失败:', responseData);
     return null;
   } catch (error: any) {
     console.error('获取期权详情失败:', error.message);
@@ -591,7 +611,6 @@ export async function getUnderlyingStockQuote(
     throw new Error('富途牛牛配置未设置');
   }
   
-  const url = 'https://www.moomoo.com/quote-api/quote-v2/get-stock-quote';
   const timestamp = Date.now();
   
   // Token生成使用字符串类型参数
@@ -627,10 +646,19 @@ export async function getUnderlyingStockQuote(
   };
   
   try {
-    const response = await axios.get(url, { params, headers, timeout: 10000 });
+    // ✅ 改为统一走 moomooProxy
+    const responseData = await moomooProxy({
+      path: '/quote-api/quote-v2/get-stock-quote',
+      params,
+      cookies: headers['Cookie'],
+      csrfToken: headers['futu-x-csrf-token'],
+      quoteToken,
+      referer: 'https://www.moomoo.com/hans/stock/TSLA-US/options-chain',
+      timeout: 10000,
+    });
     
-    if (response.data?.code === 0 && response.data?.data) {
-      const data = response.data.data;
+    if (responseData?.code === 0 && responseData?.data) {
+      const data = responseData.data;
       
       return {
         price: parsePrice(data.price || '0'),
@@ -650,7 +678,7 @@ export async function getUnderlyingStockQuote(
       };
     }
     
-    console.error('获取正股行情失败:', response.data);
+    console.error('获取正股行情失败:', responseData);
     return null;
   } catch (error: any) {
     console.error('获取正股行情失败:', error.message);

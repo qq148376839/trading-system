@@ -12,6 +12,10 @@ import { normalizeSide, normalizeStatus } from '../routes/orders';
 import orderPreventionMetrics from './order-prevention-metrics.service';
 import todayOrdersCache from './today-orders-cache.service';
 import shortValidationService from './short-position-validation.service';
+import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-limiter';
+import optionPriceCacheService from './option-price-cache.service';
+import { getOptionDetail } from './futunn-option-chain.service';
+import orderSubmissionService from './order-submission.service';
 
 export interface ExecutionResult {
   success: boolean;
@@ -91,7 +95,7 @@ class BasicExecutionService {
     }
 
     // 价格验证：获取当前市场价格并验证合理性
-    const currentPrice = await this.getCurrentMarketPrice(intent.symbol);
+    const currentPrice = await this.getCurrentMarketPrice(intent.symbol, intent.metadata);
     const priceValidation = this.validateBuyPrice(intent.entryPrice, currentPrice, intent.symbol);
     
     if (!priceValidation.valid) {
@@ -130,7 +134,8 @@ class BasicExecutionService {
         intent.quantity,
         intent.entryPrice, // ✅ 买入时entryPrice就是买入价格
         strategyId,
-        signalId  // 新增参数：信号ID
+        signalId,  // 新增参数：信号ID
+        intent.metadata  // 传递metadata（虽然BUY订单不需要强制平仓，但保持接口一致）
       );
     } catch (error: any) {
       logger.error(`执行买入失败 (${intent.symbol}):`, error);
@@ -195,19 +200,168 @@ class BasicExecutionService {
 
   /**
    * 获取当前市场价格（用于价格验证）
+   * 增强版：
+   * - 期权使用富途API的getOptionDetail()（需要optionId和underlyingStockId）
+   * - 股票使用LongPort API的quote()
+   * - 支持价格缓存和多种价格字段回退
    */
-  private async getCurrentMarketPrice(symbol: string): Promise<number | null> {
+  private async getCurrentMarketPrice(
+    symbol: string,
+    metadata?: any
+  ): Promise<number | null> {
     try {
+      // 检查是否为期权（包含6位数字+C/P+数字的模式）
+      const isOption = /[A-Z]{1,5}\d{6}[CP]\d+/.test(symbol);
+
+      // 如果是期权，先检查缓存
+      if (isOption) {
+        const cached = optionPriceCacheService.get(symbol);
+        if (cached) {
+          logger.debug(`${symbol} 使用缓存价格: ${cached.price.toFixed(4)}`);
+          return cached.price;
+        }
+
+        // 期权：使用富途API获取详情
+        if (metadata && metadata.optionId && metadata.underlyingStockId) {
+          try {
+            logger.debug(`${symbol} 使用富途API获取期权价格: optionId=${metadata.optionId}, underlyingStockId=${metadata.underlyingStockId}`);
+
+            const detail = await getOptionDetail(
+              String(metadata.optionId),
+              String(metadata.underlyingStockId),
+              metadata.marketType || 2
+            );
+
+            if (detail) {
+              let price = detail.price;
+              const bid = detail.priceBid || 0;
+              const ask = detail.priceAsk || 0;
+              let priceSource = 'futunn-lastPrice';
+
+              // 如果最新价格无效，使用中间价
+              if (price <= 0 && bid > 0 && ask > 0) {
+                price = (bid + ask) / 2;
+                priceSource = 'futunn-mid';
+                logger.debug(`${symbol} 使用富途中间价: bid=${bid.toFixed(4)}, ask=${ask.toFixed(4)}, mid=${price.toFixed(4)}`);
+              }
+
+              // 如果仍然无效，使用ask
+              if (price <= 0 && ask > 0) {
+                price = ask;
+                priceSource = 'futunn-ask';
+                logger.debug(`${symbol} 使用富途卖一价: ${price.toFixed(4)}`);
+              }
+
+              // 最后尝试bid
+              if (price <= 0 && bid > 0) {
+                price = bid;
+                priceSource = 'futunn-bid';
+                logger.debug(`${symbol} 使用富途买一价: ${price.toFixed(4)}`);
+              }
+
+              if (price > 0) {
+                // 缓存价格
+                optionPriceCacheService.set(symbol, {
+                  price,
+                  bid: bid || price,
+                  ask: ask || price,
+                  mid: (bid > 0 && ask > 0) ? (bid + ask) / 2 : price,
+                  timestamp: Date.now(),
+                  underlyingPrice: detail.underlyingStock?.price || detail.underlyingPrice || 0,
+                  source: 'futunn',
+                });
+                logger.debug(`${symbol} 富途API获取价格成功: ${price.toFixed(4)} (source: ${priceSource})`);
+                return price;
+              }
+            }
+          } catch (error: any) {
+            logger.warn(`${symbol} 富途API获取期权价格失败:`, error.message);
+          }
+        } else {
+          logger.warn(`${symbol} 是期权但缺少optionId或underlyingStockId，无法使用富途API`);
+        }
+
+        // 回退：尝试使用LongPort API（可能失败）
+        logger.debug(`${symbol} 回退到LongPort API获取期权价格`);
+      }
+
+      // 股票或期权回退：使用LongPort API
       const { getQuoteContext } = await import('../config/longport');
       const quoteCtx = await getQuoteContext();
       const quotes = await quoteCtx.quote([symbol]);
-      
+
       if (quotes && quotes.length > 0) {
         const quote = quotes[0];
-        const price = parseFloat(quote.lastDone?.toString() || quote.last_done?.toString() || '0');
-        if (price > 0) {
-          return price;
+
+        // 尝试多种价格字段，优先级：lastDone > last_done > 中间价 > 卖一价 > 买一价
+        let price = 0;
+        let bid = 0;
+        let ask = 0;
+        let priceSource = '';
+
+        // 解析bid和ask价格
+        if (quote.bidPrice) {
+          bid = parseFloat((quote.bidPrice as any)?.toString() || '0');
         }
+        if (quote.askPrice) {
+          ask = parseFloat((quote.askPrice as any)?.toString() || '0');
+        }
+
+        // 1. 最近成交价（最优先）
+        if (quote.lastDone) {
+          price = parseFloat(quote.lastDone.toString());
+          priceSource = 'lastDone';
+        } else if (quote.last_done) {
+          price = parseFloat(quote.last_done.toString());
+          priceSource = 'last_done';
+        }
+
+        // 2. 如果没有最近成交价，使用中间价（bid-ask中点）
+        if (price <= 0 && ask > 0 && bid > 0) {
+          price = (ask + bid) / 2;
+          priceSource = 'mid';
+          logger.debug(`${symbol} 使用中间价: bid=${bid.toFixed(4)}, ask=${ask.toFixed(4)}, mid=${price.toFixed(4)}`);
+        }
+
+        // 3. 如果没有中间价，使用卖一价（ask）
+        if (price <= 0 && ask > 0) {
+          price = ask;
+          priceSource = 'ask';
+          logger.debug(`${symbol} 使用卖一价: ${price.toFixed(4)}`);
+        }
+
+        // 4. 最后尝试买一价（bid）
+        if (price <= 0 && bid > 0) {
+          price = bid;
+          priceSource = 'bid';
+          logger.debug(`${symbol} 使用买一价: ${price.toFixed(4)}`);
+        }
+
+        if (price > 0) {
+          // 如果是期权，缓存价格信息
+          if (isOption) {
+            optionPriceCacheService.set(symbol, {
+              price,
+              bid: bid || price,
+              ask: ask || price,
+              mid: (bid > 0 && ask > 0) ? (bid + ask) / 2 : price,
+              timestamp: Date.now(),
+              underlyingPrice: 0,
+              source: 'longport',
+            });
+            logger.debug(`${symbol} LongPort获取价格成功并缓存: ${price.toFixed(4)} (source: ${priceSource})`);
+          }
+          return price;
+        } else {
+          logger.warn(`${symbol} 所有价格字段均无效`, {
+            hasLastDone: !!quote.lastDone,
+            hasLast_done: !!quote.last_done,
+            bid,
+            ask
+          });
+        }
+      } else {
+        logger.warn(`${symbol} 未返回报价数据`);
       }
       return null;
     } catch (error: any) {
@@ -504,7 +658,7 @@ class BasicExecutionService {
     }
 
     // 价格验证：获取当前市场价格并验证合理性
-    const currentPrice = await this.getCurrentMarketPrice(intent.symbol);
+    const currentPrice = await this.getCurrentMarketPrice(intent.symbol, intent.metadata);
     const priceValidation = this.validateSellPrice(sellPrice, currentPrice, intent.symbol);
     
     if (!priceValidation.valid) {
@@ -573,7 +727,8 @@ class BasicExecutionService {
         intent.quantity,  // 保持原始数量（负数表示卖空）
         sellPrice,
         strategyId,
-        signalId
+        signalId,
+        intent.metadata  // 传递metadata用于期权强制平仓判断
       );
     } catch (error: any) {
       logger.error(`执行卖出失败 (${intent.symbol}):`, error);
@@ -589,8 +744,12 @@ class BasicExecutionService {
   }
 
   /**
-   * 提交订单（基础实现）
-   * 参照 orders.ts 的实现，添加完善的错误处理和参数验证
+   * 提交订单（重构版本 - 使用统一订单提交服务）
+   *
+   * 架构改进：
+   * - 使用 order-submission.service.ts 统一处理订单提交
+   * - 确保量化下单和手动下单使用相同的逻辑
+   * - 支持期权和股票订单
    */
   private async submitOrder(
     symbol: string,
@@ -598,44 +757,19 @@ class BasicExecutionService {
     quantity: number,
     price: number,
     strategyId: number,
-    signalId?: number
+    signalId?: number,
+    metadata?: any
   ): Promise<ExecutionResult> {
     try {
-      const tradeCtx = await getTradeContext();
-
       // ⚠️ 修复：支持负数数量（卖空订单）
       const isShortOrder = quantity < 0;
-      const absQuantity = Math.abs(quantity);
+      let normalizedQuantity = quantity;
+      let absQuantity = Math.abs(normalizedQuantity);
 
-      // 1. 验证最小交易单位（lot size）
-      try {
-        const quoteCtx = await getQuoteContext();
-        const staticInfoList = await quoteCtx.staticInfo([symbol]);
-        
-        if (staticInfoList && staticInfoList.length > 0) {
-          const lotSize = staticInfoList[0].lotSize;
-          if (lotSize > 0 && absQuantity % lotSize !== 0) {
-            const adjustedAbsQuantity = Math.floor(absQuantity / lotSize) * lotSize;
-            if (adjustedAbsQuantity === 0) {
-              return {
-                success: false,
-                error: `数量不符合最小交易单位要求。最小交易单位为 ${lotSize}，当前数量 ${absQuantity} 太小`,
-              };
-            }
-            const adjustedQuantity = isShortOrder ? -adjustedAbsQuantity : adjustedAbsQuantity;
-            logger.warn(`数量 ${quantity} 不符合最小交易单位 ${lotSize}，调整为 ${adjustedQuantity}`);
-            quantity = adjustedQuantity;
-          }
-        }
-      } catch (lotSizeError: any) {
-        logger.warn('获取最小交易单位失败，跳过验证:', lotSizeError.message);
-        // 如果获取lot size失败，不阻止订单提交，只记录警告
-      }
-
-      // 2. 格式化价格（根据市场确定小数位数）
+      // 格式化价格（根据市场确定小数位数）
       const market = detectMarket(symbol);
       let formattedPrice: number;
-      
+
       if (market === 'US') {
         // 美股：保留2位小数
         formattedPrice = Math.round(price * 100) / 100;
@@ -655,48 +789,114 @@ class BasicExecutionService {
         };
       }
 
-      // 3. 构建订单参数（参照 orders.ts）
-      const orderOptions: any = {
-        symbol,
-        orderType: OrderType.LO, // 限价单
-        side: side === 'BUY' ? OrderSide.Buy : OrderSide.Sell,
-        submittedQuantity: new Decimal(quantity.toString()),
-        submittedPrice: new Decimal(formattedPrice.toString()),
-        timeInForce: TimeInForceType.Day,
-      };
-
-      // 4. 添加盘前盘后选项（美股订单需要）
-      if (market === 'US') {
-        // 美股订单默认允许盘前盘后交易
-        orderOptions.outsideRth = OutsideRTH.AnyTime;
-      }
-
       logger.log(`策略 ${strategyId} 提交订单:`, {
         symbol,
         side,
-        quantity,
-        isShortOrder: isShortOrder,  // ⚠️ 标记是否为卖空订单
+        quantity: normalizedQuantity,
+        isShortOrder: isShortOrder,
         originalPrice: price,
         formattedPrice: formattedPrice,
         market,
       });
 
-      // 4. 提交订单
-      const response = await tradeCtx.submitOrder(orderOptions);
-      
-      if (!response || !response.orderId) {
+      // ✅ 核心改进：使用统一订单提交服务
+      // 确保量化下单和手动下单使用相同的逻辑（支持期权）
+
+      // 判断是否为期权强制平仓（盘中最后30分钟）
+      const isOptionForceClose =
+        metadata?.assetClass === 'OPTION' &&
+        metadata?.forceClose === true;
+
+      // 方案一：市价单 + 限价单Fallback（渐进式策略）
+      let submitResult: any;
+
+      if (isOptionForceClose) {
+        // 步骤1：先尝试市价单（对流动性好的期权能获得更好的价格）
+        logger.log(`策略 ${strategyId} 标的 ${symbol}: 期权强制平仓，先尝试市价单（Market Order）`);
+
+        const marketOrderParams: any = {
+          symbol,
+          side: side === 'BUY' ? 'Buy' : 'Sell',
+          order_type: 'MO',
+          submitted_quantity: absQuantity.toString(),
+          time_in_force: 'Day',
+          outside_rth: market === 'US' ? 'ANY_TIME' : 'RTH_ONLY',
+          remark: `策略${strategyId}自动下单（期权强制平仓-市价单）`,
+        };
+
+        submitResult = await orderSubmissionService.submitOrder(marketOrderParams);
+
+        // 步骤2：如果市价单被拒绝（流动性不足），fallback到极低价限价单
+        if (!submitResult.success) {
+          const errorMsg = submitResult.error?.message || '';
+          const isLiquidityError =
+            errorMsg.includes('603059') ||
+            errorMsg.includes('liquidity') ||
+            errorMsg.includes('counterpart');
+
+          if (isLiquidityError) {
+            logger.warn(
+              `策略 ${strategyId} 标的 ${symbol}: 市价单被拒绝（流动性不足），fallback到极低价限价单`
+            );
+
+            // 使用极低价格的限价单，确保快速成交
+            // 对于深度虚值期权：使用$0.01
+            // 对于其他期权：使用当前价的10%，最低$0.01
+            const fallbackPrice =
+              formattedPrice < 0.1 ? 0.01 : Math.max(0.01, formattedPrice * 0.1);
+
+            logger.log(
+              `策略 ${strategyId} 标的 ${symbol}: 使用极低价限价单 $${fallbackPrice.toFixed(2)}（原价 $${formattedPrice.toFixed(2)}）`
+            );
+
+            const limitOrderParams: any = {
+              symbol,
+              side: side === 'BUY' ? 'Buy' : 'Sell',
+              order_type: 'LO',
+              submitted_quantity: absQuantity.toString(),
+              submitted_price: fallbackPrice.toFixed(2),
+              time_in_force: 'Day',
+              outside_rth: market === 'US' ? 'ANY_TIME' : 'RTH_ONLY',
+              remark: `策略${strategyId}自动下单（期权强制平仓-限价单fallback）`,
+            };
+
+            submitResult = await orderSubmissionService.submitOrder(limitOrderParams);
+          }
+        }
+      } else {
+        // 普通订单：使用限价单
+        const orderParams: any = {
+          symbol,
+          side: side === 'BUY' ? 'Buy' : 'Sell',
+          order_type: 'LO',
+          submitted_quantity: absQuantity.toString(),
+          submitted_price: formattedPrice.toString(),
+          time_in_force: 'Day',
+          outside_rth: market === 'US' ? 'ANY_TIME' : 'RTH_ONLY',
+          remark: `策略${strategyId}自动下单`,
+        };
+
+        submitResult = await orderSubmissionService.submitOrder(orderParams);
+      }
+
+      if (!submitResult.success || !submitResult.orderId) {
+        // 如果订单提交失败，更新信号状态为REJECTED
+        if (signalId) {
+          await this.updateSignalStatusBySignalId(signalId, 'REJECTED');
+        }
         return {
           success: false,
-          error: '订单提交失败：未返回订单ID',
+          error: submitResult.error?.message || '订单提交失败',
         };
       }
 
-      const orderId = response.orderId;
+      const orderId = submitResult.orderId;
       logger.log(`策略 ${strategyId} 订单提交成功，订单ID: ${orderId}`);
 
       // 5. 记录订单到数据库
       try {
-        await this.recordOrder(strategyId, symbol, side, quantity, price, orderId, signalId);
+        // 数据库里保留原始语义数量（卖空为负数），用于后续状态/风控逻辑
+        await this.recordOrder(strategyId, symbol, side, normalizedQuantity, price, orderId, signalId);
       } catch (dbError: any) {
         logger.error(`记录订单到数据库失败 (${orderId}):`, dbError.message);
         // 不阻止后续流程，因为订单已经提交成功

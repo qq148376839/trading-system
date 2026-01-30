@@ -428,97 +428,251 @@ export default function EditStrategyModal({
                     </svg>
                   </div>
                   <div className="flex-1">
-                    <h3 className="text-sm font-semibold text-gray-900 mb-1">推荐策略 V1</h3>
-                    <p className="text-xs text-gray-600 leading-relaxed mb-2">
-                      基于市场趋势和ATR（平均真实波幅）的智能推荐策略。系统会分析SPX、USD指数、BTC等市场指标，
-                      结合ATR计算止损止盈价格，智能生成买卖信号。适合趋势跟踪和风险控制的量化交易场景。                    </p>
-                    <p className="text-xs text-gray-500 italic">
-                      ⚠️ 策略类型创建后不可修改。如需使用其他策略类型，请创建新策略。                    </p>
+                    {formData.type === 'OPTION_INTRADAY_V1' ? (
+                      <>
+                        <h3 className="text-sm font-semibold text-gray-900 mb-1">期权日内策略 V1（买方）</h3>
+                        <p className="text-xs text-gray-600 leading-relaxed mb-2">
+                          对正股/指数标的先生成方向信号，再自动选择流动性更好的期权合约开仓；
+                          收盘前30分钟强制平仓（不论盈亏），并将期权佣金/平台费计入资金占用与回测。
+                        </p>
+                        <p className="text-xs text-gray-500 italic">
+                          ⚠️ 策略类型创建后不可修改。如需使用其他策略类型，请创建新策略。
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <h3 className="text-sm font-semibold text-gray-900 mb-1">推荐策略 V1</h3>
+                        <p className="text-xs text-gray-600 leading-relaxed mb-2">
+                          基于市场趋势和ATR（平均真实波幅）的智能推荐策略。系统会分析SPX、USD指数、BTC等市场指标，
+                          结合ATR计算止损止盈价格，智能生成买卖信号。适合趋势跟踪和风险控制的量化交易场景。
+                        </p>
+                        <p className="text-xs text-gray-500 italic">
+                          ⚠️ 策略类型创建后不可修改。如需使用其他策略类型，请创建新策略。
+                        </p>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
               
               <label className="block text-sm font-medium mb-2">
-                策略参数配置
-                <span className="text-xs text-gray-500 ml-2">（用于计算止损止盈价格）</span>
+                {formData.type === 'OPTION_INTRADAY_V1' ? '期权策略参数' : '策略参数配置'}
+                <span className="text-xs text-gray-500 ml-2">
+                  {formData.type === 'OPTION_INTRADAY_V1' ? '（强平固定：收盘前30分钟）' : '（用于计算止损止盈价格）'}
+                </span>
               </label>
-              <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-3">
-                <p className="text-xs text-blue-800 mb-2">
-                  <strong>💡 参数说明：</strong>
-                </p>
-                <ul className="text-xs text-blue-700 space-y-1 ml-4 list-disc">
-                  <li><strong>ATR周期</strong>：计算平均真实波幅的周期，默认14天。周期越长，ATR值越平滑但反应越慢。</li>
-                  <li><strong>ATR倍数</strong>：用于计算止损距离的倍数，默认2.0。倍数越大，止损距离越远，风险越小但可能错过更多机会。</li>
-                  <li><strong>风险收益比</strong>：止盈价格与止损价格的比例，默认1.5。比例越大，潜在收益越高，但需要更强的趋势支持。</li>
-                </ul>
-                <p className="text-xs text-blue-600 mt-2">
-                  <strong>计算公式：</strong>止损价 = 入场价 - (ATR × ATR倍数)，止盈价 = 入场价 + (止损距离 × 风险收益比)
-                </p>
-              </div>
-              <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-xs text-gray-700 mb-1 font-medium">
-                    ATR周期
-                    <span className="text-gray-500 ml-1">(1-100)</span>
-                  </label>
-                  <input
-                    type="number"
-                    value={formData.config.atrPeriod || 14}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        config: { ...formData.config, atrPeriod: parseInt(e.target.value) || 14 },
-                      })
-                    }
-                    className="border rounded px-3 py-2 w-full"
-                    min="1"
-                    max="100"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">推荐值：14-21</p>
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-700 mb-1 font-medium">
-                    ATR倍数
-                    <span className="text-gray-500 ml-1">(0.1-10)</span>
-                  </label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={formData.config.atrMultiplier || 2.0}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        config: { ...formData.config, atrMultiplier: parseFloat(e.target.value) || 2.0 },
-                      })
-                    }
-                    className="border rounded px-3 py-2 w-full"
-                    min="0.1"
-                    max="10"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">推荐值：1.5-3.0</p>
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-700 mb-1 font-medium">
-                    风险收益比
-                    <span className="text-gray-500 ml-1">(0.1-10)</span>
-                  </label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={formData.config.riskRewardRatio || 1.5}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        config: { ...formData.config, riskRewardRatio: parseFloat(e.target.value) || 1.5 },
-                      })
-                    }
-                    className="border rounded px-3 py-2 w-full"
-                    min="0.1"
-                    max="10"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">推荐值：1.5-3.0</p>
-                </div>
-              </div>
+              {formData.type === 'OPTION_INTRADAY_V1' ? (
+                <>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">到期选择</label>
+                      <select
+                        value={formData.config.expirationMode || '0DTE'}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, expirationMode: e.target.value } })}
+                        className="border rounded px-3 py-2 w-full"
+                      >
+                        <option value="0DTE">0DTE优先</option>
+                        <option value="NEAREST">最近到期</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">方向</label>
+                      <select
+                        value={formData.config.directionMode || 'FOLLOW_SIGNAL'}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, directionMode: e.target.value } })}
+                        className="border rounded px-3 py-2 w-full"
+                      >
+                        <option value="FOLLOW_SIGNAL">跟随信号（BUY=Call，SELL=Put）</option>
+                        <option value="CALL_ONLY">只买Call</option>
+                        <option value="PUT_ONLY">只买Put</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">开仓价格</label>
+                      <select
+                        value={formData.config.entryPriceMode || 'ASK'}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, entryPriceMode: e.target.value } })}
+                        className="border rounded px-3 py-2 w-full"
+                      >
+                        <option value="ASK">优先用Ask</option>
+                        <option value="MID">用Mid</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-4 mt-4">
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">禁止开仓窗口（分钟）</label>
+                      <input
+                        type="number"
+                        value={formData.config.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 60}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            config: {
+                              ...formData.config,
+                              tradeWindow: {
+                                ...(formData.config.tradeWindow || {}),
+                                noNewEntryBeforeCloseMinutes: parseInt(e.target.value) || 60,
+                                forceCloseBeforeCloseMinutes: 30,
+                              },
+                            },
+                          })
+                        }
+                        className="border rounded px-3 py-2 w-full"
+                        min="0"
+                        max="240"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">强平固定：30分钟</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">开仓张数模式</label>
+                      <select
+                        value={formData.config.positionSizing?.mode || 'FIXED_CONTRACTS'}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            config: {
+                              ...formData.config,
+                              positionSizing: { ...(formData.config.positionSizing || {}), mode: e.target.value },
+                            },
+                          })
+                        }
+                        className="border rounded px-3 py-2 w-full"
+                      >
+                        <option value="FIXED_CONTRACTS">固定张数</option>
+                        <option value="MAX_PREMIUM">最大权利金（USD）</option>
+                      </select>
+                    </div>
+                    {formData.config.positionSizing?.mode === 'MAX_PREMIUM' ? (
+                      <div>
+                        <label className="block text-xs text-gray-700 mb-1 font-medium">最大权利金（USD）</label>
+                        <input
+                          type="number"
+                          value={formData.config.positionSizing?.maxPremiumUsd ?? 300}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              config: {
+                                ...formData.config,
+                                positionSizing: { ...(formData.config.positionSizing || {}), maxPremiumUsd: parseFloat(e.target.value) || 0 },
+                              },
+                            })
+                          }
+                          className="border rounded px-3 py-2 w-full"
+                          min="0"
+                        />
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="block text-xs text-gray-700 mb-1 font-medium">固定张数</label>
+                        <input
+                          type="number"
+                          value={formData.config.positionSizing?.fixedContracts ?? 1}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              config: {
+                                ...formData.config,
+                                positionSizing: { ...(formData.config.positionSizing || {}), fixedContracts: parseInt(e.target.value) || 1 },
+                              },
+                            })
+                          }
+                          className="border rounded px-3 py-2 w-full"
+                          min="1"
+                          max="20"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-3 bg-blue-50 border border-blue-200 rounded p-3">
+                    <p className="text-xs text-blue-800">
+                      <strong>费用模型（默认）：</strong> 佣金 0.10 USD/张（每单最低0.99） + 平台费 0.30 USD/张
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-3">
+                    <p className="text-xs text-blue-800 mb-2">
+                      <strong>💡 参数说明：</strong>
+                    </p>
+                    <ul className="text-xs text-blue-700 space-y-1 ml-4 list-disc">
+                      <li><strong>ATR周期</strong>：计算平均真实波幅的周期，默认14天。周期越长，ATR值越平滑但反应越慢。</li>
+                      <li><strong>ATR倍数</strong>：用于计算止损距离的倍数，默认2.0。倍数越大，止损距离越远，风险越小但可能错过更多机会。</li>
+                      <li><strong>风险收益比</strong>：止盈价格与止损价格的比例，默认1.5。比例越大，潜在收益越高，但需要更强的趋势支持。</li>
+                    </ul>
+                    <p className="text-xs text-blue-600 mt-2">
+                      <strong>计算公式：</strong>止损价 = 入场价 - (ATR × ATR倍数)，止盈价 = 入场价 + (止损距离 × 风险收益比)
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">
+                        ATR周期
+                        <span className="text-gray-500 ml-1">(1-100)</span>
+                      </label>
+                      <input
+                        type="number"
+                        value={formData.config.atrPeriod || 14}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            config: { ...formData.config, atrPeriod: parseInt(e.target.value) || 14 },
+                          })
+                        }
+                        className="border rounded px-3 py-2 w-full"
+                        min="1"
+                        max="100"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">推荐值：14-21</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">
+                        ATR倍数
+                        <span className="text-gray-500 ml-1">(0.1-10)</span>
+                      </label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={formData.config.atrMultiplier || 2.0}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            config: { ...formData.config, atrMultiplier: parseFloat(e.target.value) || 2.0 },
+                          })
+                        }
+                        className="border rounded px-3 py-2 w-full"
+                        min="0.1"
+                        max="10"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">推荐值：1.5-3.0</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">
+                        风险收益比
+                        <span className="text-gray-500 ml-1">(0.1-10)</span>
+                      </label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={formData.config.riskRewardRatio || 1.5}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            config: { ...formData.config, riskRewardRatio: parseFloat(e.target.value) || 1.5 },
+                          })
+                        }
+                        className="border rounded px-3 py-2 w-full"
+                        min="0.1"
+                        max="10"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">推荐值：1.5-3.0</p>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </form>
         </div>

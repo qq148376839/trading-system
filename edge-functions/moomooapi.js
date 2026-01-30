@@ -116,7 +116,11 @@ function extractTokenParams(queryParams, apiPath) {
             }
         }
     } else if (apiPath.includes('get-stock-quote')) {
-        // 股票行情：stockId, marketType, marketCode, lotSize, spreadCode, underlyingStockId, instrumentType, subInstrumentType, _
+        // 股票/期权行情：stockId, marketType, marketCode, [lotSize], spreadCode, underlyingStockId, instrumentType, subInstrumentType, _
+        // 注意：
+        // - lotSize 是可选参数（股票有，期权可能没有）
+        // - 只添加实际存在的参数，自动处理可选参数
+        // - 期权示例：stockId=501941252&marketType=2&marketCode=41&spreadCode=81&underlyingStockId=201335&instrumentType=8&subInstrumentType=8002
         const keys = ['stockId', 'marketType', 'marketCode', 'lotSize', 'spreadCode', 'underlyingStockId', 'instrumentType', 'subInstrumentType', '_'];
         for (const key of keys) {
             if (queryParams[key] !== undefined && queryParams[key] !== null && queryParams[key] !== '') {

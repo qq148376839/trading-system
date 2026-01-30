@@ -11,6 +11,7 @@ import { getTradeContext, getQuoteContext, Decimal } from '../config/longport';
 import { logger } from '../utils/logger';
 import stateManager from './state-manager.service';
 import { ErrorFactory } from '../utils/errors';
+import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-limiter';
 
 /**
  * Account balance interface from Longbridge SDK
@@ -68,7 +69,10 @@ class ShortPositionValidationService {
       // For now, we assume permission is granted if account balance API is accessible
       
       const tradeCtx = await getTradeContext();
-      const balances = await tradeCtx.accountBalance();
+      const balances = await longportRateLimiter.execute(() =>
+        // LongPort SDK typings are `any` in this repo; explicitly pin type to avoid `unknown` inference
+        retryWithBackoff<any[]>(() => tradeCtx.accountBalance() as any)
+      );
       
       if (!balances || balances.length === 0) {
         return {
@@ -137,7 +141,9 @@ class ShortPositionValidationService {
     try {
       const absQuantity = Math.abs(quantity);
       const tradeCtx = await getTradeContext();
-      const balances = await tradeCtx.accountBalance();
+      const balances = await longportRateLimiter.execute(() =>
+        retryWithBackoff<any[]>(() => tradeCtx.accountBalance() as any)
+      );
       
       // Find USD balance (or first balance)
       const usdBalance = balances.find((bal: AccountBalance) => bal.currency === 'USD') || balances[0];

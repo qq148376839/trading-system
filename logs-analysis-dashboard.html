@@ -1,0 +1,559 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>日志分析看板 - 2026-01-27</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+
+        .stat-card h3 {
+            font-size: 0.9em;
+            opacity: 0.9;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .stat-card .value {
+            font-size: 2.5em;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .stat-card .label {
+            font-size: 0.85em;
+            opacity: 0.8;
+        }
+
+        .section {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+
+        .section h2 {
+            font-size: 1.8em;
+            margin-bottom: 20px;
+            color: #2d3748;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .section h3 {
+            font-size: 1.3em;
+            margin: 25px 0 15px 0;
+            color: #4a5568;
+        }
+
+        .level-bar {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+            padding: 12px;
+            background: white;
+            border-radius: 8px;
+        }
+
+        .level-icon {
+            font-size: 1.5em;
+            margin-right: 15px;
+            width: 30px;
+            text-align: center;
+        }
+
+        .level-name {
+            min-width: 100px;
+            font-weight: 600;
+            color: #2d3748;
+        }
+
+        .level-progress {
+            flex: 1;
+            height: 24px;
+            background: #e2e8f0;
+            border-radius: 12px;
+            overflow: hidden;
+            margin: 0 15px;
+            position: relative;
+        }
+
+        .level-progress-bar {
+            height: 100%;
+            border-radius: 12px;
+            transition: width 0.3s ease;
+        }
+
+        .level-progress-bar.error { background: linear-gradient(90deg, #f56565, #e53e3e); }
+        .level-progress-bar.warning { background: linear-gradient(90deg, #ed8936, #dd6b20); }
+        .level-progress-bar.info { background: linear-gradient(90deg, #4299e1, #3182ce); }
+        .level-progress-bar.debug { background: linear-gradient(90deg, #9f7aea, #805ad5); }
+
+        .level-count {
+            min-width: 120px;
+            text-align: right;
+            font-weight: 600;
+            color: #4a5568;
+        }
+
+        .issue-card {
+            background: white;
+            border-left: 4px solid #e53e3e;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+
+        .issue-card.warning {
+            border-left-color: #ed8936;
+        }
+
+        .issue-card h4 {
+            color: #2d3748;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+
+        .issue-card .issue-count {
+            color: #718096;
+            font-size: 0.95em;
+            margin-bottom: 10px;
+        }
+
+        .issue-card .issue-description {
+            color: #4a5568;
+            line-height: 1.6;
+        }
+
+        .module-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 15px;
+        }
+
+        .module-item {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .module-rank {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #a0aec0;
+            min-width: 35px;
+        }
+
+        .module-info {
+            flex: 1;
+        }
+
+        .module-name {
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 5px;
+        }
+
+        .module-count {
+            color: #718096;
+            font-size: 0.9em;
+        }
+
+        .recommendations {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 12px;
+            padding: 30px;
+        }
+
+        .recommendations h2 {
+            color: white;
+            margin-bottom: 20px;
+        }
+
+        .recommendation-item {
+            background: rgba(255,255,255,0.1);
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 4px solid rgba(255,255,255,0.5);
+        }
+
+        .recommendation-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .top-errors-list, .top-warnings-list {
+            display: grid;
+            gap: 15px;
+        }
+
+        .error-item, .warning-item {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid #e53e3e;
+        }
+
+        .warning-item {
+            border-left-color: #ed8936;
+        }
+
+        .error-header, .warning-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .error-rank, .warning-rank {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #a0aec0;
+        }
+
+        .error-count-badge, .warning-count-badge {
+            background: #e53e3e;
+            color: white;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: 600;
+        }
+
+        .warning-count-badge {
+            background: #ed8936;
+        }
+
+        .error-message, .warning-message {
+            color: #4a5568;
+            word-break: break-word;
+        }
+
+        .strategy-card {
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+
+        .strategy-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #e2e8f0;
+        }
+
+        .strategy-title {
+            font-size: 1.5em;
+            color: #2d3748;
+            font-weight: bold;
+        }
+
+        .strategy-executions {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9em;
+        }
+
+        .strategy-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .strategy-stat {
+            background: #f7fafc;
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        .strategy-stat-label {
+            color: #718096;
+            font-size: 0.85em;
+            margin-bottom: 5px;
+        }
+
+        .strategy-stat-value {
+            color: #2d3748;
+            font-size: 1.2em;
+            font-weight: 600;
+        }
+
+        .strategy-signals {
+            background: #f7fafc;
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        .signal-tag {
+            display: inline-block;
+            background: white;
+            padding: 5px 12px;
+            border-radius: 6px;
+            margin: 5px 5px 5px 0;
+            font-size: 0.9em;
+            color: #4a5568;
+            border: 1px solid #e2e8f0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 日志分析看板</h1>
+            <p>2026-01-27 系统日志分析报告</p>
+        </div>
+
+        <div class="content">
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h3>总日志数</h3>
+                    <div class="value">1,617</div>
+                    <div class="label">条日志记录</div>
+                </div>
+                <div class="stat-card">
+                    <h3>错误数</h3>
+                    <div class="value">57</div>
+                    <div class="label">3.5% 错误率</div>
+                </div>
+                <div class="stat-card">
+                    <h3>警告数</h3>
+                    <div class="value">0</div>
+                    <div class="label">0.0% 警告率</div>
+                </div>
+                <div class="stat-card">
+                    <h3>信息日志</h3>
+                    <div class="value">468</div>
+                    <div class="label">28.9% 信息日志</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>📊 日志级别分布</h2>
+
+                <div class="level-bar">
+                    <div class="level-icon">🔍</div>
+                    <div class="level-name">DEBUG</div>
+                    <div class="level-progress">
+                        <div class="level-progress-bar debug" style="width: 67.53246753246754%"></div>
+                    </div>
+                    <div class="level-count">1,092 (67.53%)</div>
+                </div>
+
+                <div class="level-bar">
+                    <div class="level-icon">🔵</div>
+                    <div class="level-name">INFO</div>
+                    <div class="level-progress">
+                        <div class="level-progress-bar info" style="width: 28.942486085343226%"></div>
+                    </div>
+                    <div class="level-count">468 (28.94%)</div>
+                </div>
+
+                <div class="level-bar">
+                    <div class="level-icon">🔴</div>
+                    <div class="level-name">ERROR</div>
+                    <div class="level-progress">
+                        <div class="level-progress-bar error" style="width: 3.525046382189239%"></div>
+                    </div>
+                    <div class="level-count">57 (3.53%)</div>
+                </div>
+
+            </div>
+
+            <div class="section">
+                <h2>🚨 关键问题</h2>
+
+            </div>
+
+            <div class="section">
+                <h2>🏗️ 模块活动统计 (Top 10)</h2>
+                <div class="module-list">
+
+                    <div class="module-item">
+                        <div class="module-rank">#1</div>
+                        <div class="module-info">
+                            <div class="module-name">Strategy.Scheduler</div>
+                            <div class="module-count">1,365 次 (84.42%)</div>
+                        </div>
+                    </div>
+
+                    <div class="module-item">
+                        <div class="module-rank">#2</div>
+                        <div class="module-info">
+                            <div class="module-name">Utils.Logger</div>
+                            <div class="module-count">252 次 (15.58%)</div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>📈 策略执行统计</h2>
+
+                <div class="strategy-card">
+                    <div class="strategy-header">
+                        <div class="strategy-title">策略 10</div>
+                        <div class="strategy-executions">执行 390 次</div>
+                    </div>
+
+                    <div class="strategy-stats">
+                        <div class="strategy-stat">
+                            <div class="strategy-stat-label">最后执行</div>
+                            <div class="strategy-stat-value">2026-01-29T14:30:48</div>
+                        </div>
+                        <div class="strategy-stat">
+                            <div class="strategy-stat-label">执行耗时</div>
+                            <div class="strategy-stat-value">163 ms</div>
+                        </div>
+                        <div class="strategy-stat">
+                            <div class="strategy-stat-label">IDLE标的</div>
+                            <div class="strategy-stat-value">1</div>
+                        </div>
+                        <div class="strategy-stat">
+                            <div class="strategy-stat-label">持仓标的</div>
+                            <div class="strategy-stat-value">0</div>
+                        </div>
+                        <div class="strategy-stat">
+                            <div class="strategy-stat-label">错误次数</div>
+                            <div class="strategy-stat-value">39</div>
+                        </div>
+                        <div class="strategy-stat">
+                            <div class="strategy-stat-label">警告次数</div>
+                            <div class="strategy-stat-value">0</div>
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+
+            <div class="section">
+                <h2>🔴 Top 10 错误类型</h2>
+                <div class="top-errors-list">
+
+                    <div class="error-item">
+                        <div class="error-header">
+                            <div class="error-rank">#1</div>
+                            <div class="error-count-badge">39 次</div>
+                        </div>
+                        <div class="error-message">Strategy.Scheduler: 策略 10 处理标的 QQQ.US 出错:</div>
+                    </div>
+
+                    <div class="error-item">
+                        <div class="error-header">
+                            <div class="error-rank">#2</div>
+                            <div class="error-count-badge">18 次</div>
+                        </div>
+                        <div class="error-message">Utils.Logger: [HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败</div>
+                    </div>
+
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>⚠️ Top 10 警告类型</h2>
+                <div class="top-warnings-list">
+
+                </div>
+            </div>
+
+            <div class="recommendations">
+                <h2>💡 优化建议</h2>
+
+                <div class="recommendation-item">
+                    <strong>1.</strong> 修复数据库表缺失问题 - 检查并创建缺失的验证失败日志表
+                </div>
+
+                <div class="recommendation-item">
+                    <strong>2.</strong> 实现API请求速率限制 - 添加请求队列和延迟机制
+                </div>
+
+                <div class="recommendation-item">
+                    <strong>3.</strong> 增加API调用重试逻辑 - 使用指数退避策略
+                </div>
+
+                <div class="recommendation-item">
+                    <strong>4.</strong> 修复Decimal类型转换问题 - 检查订单数量的数据类型处理
+                </div>
+
+                <div class="recommendation-item">
+                    <strong>5.</strong> 优化订单-信号关联逻辑 - 检查时间窗口匹配算法
+                </div>
+
+            </div>
+        </div>
+    </div>
+</body>
+</html>

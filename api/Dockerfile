@@ -3,7 +3,7 @@
 # longport 包不提供 musl 版本的原生模块
 FROM node:20
 
-# 安装运行时依赖、构建工具和 pnpm
+# 安装运行时依赖和构建工具
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     curl \
@@ -11,23 +11,22 @@ RUN apt-get update && \
     make \
     g++ \
     build-essential && \
-    npm install -g pnpm && \
     rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
 WORKDIR /app
 
-# 复制 package.json 和 pnpm-lock.yaml
-COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
+# 复制 package.json 和 package-lock.json
+COPY package.json package-lock.json ./
 
 # 安装所有依赖（包括 devDependencies，用于构建）
-RUN pnpm install --frozen-lockfile
+RUN npm ci
 
 # 复制源代码
 COPY . .
 
 # 构建 TypeScript 代码
-RUN pnpm run build
+RUN npm run build
 
 # 清理构建工具以减小镜像大小
 RUN apt-get purge -y python3 make g++ build-essential && \
@@ -52,5 +51,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD curl -f http://localhost:3001/api/health || exit 1
 
 # 启动服务
-CMD ["pnpm", "start"]
+CMD ["npm", "start"]
 

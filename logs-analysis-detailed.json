@@ -1,0 +1,481 @@
+{
+  "total_logs": 1617,
+  "level_counts": {
+    "INFO": 468,
+    "DEBUG": 1092,
+    "ERROR": 57
+  },
+  "module_counts": {
+    "Strategy.Scheduler": 1365,
+    "Utils.Logger": 252
+  },
+  "errors": {
+    "Strategy.Scheduler: 策略 10 处理标的 QQQ.US 出错:": [
+      {
+        "timestamp": "2026-01-29T19:23:50.288Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T19:14:50.217Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T19:07:50.568Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T19:04:49.690Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T19:03:49.804Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T19:00:49.873Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T18:57:49.323Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T18:36:49.618Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T18:29:49.772Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T18:16:50.494Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T18:09:50.451Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T17:54:49.348Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T17:47:49.354Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T17:46:49.692Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T17:45:49.777Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T17:42:49.812Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T17:29:49.782Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T17:18:49.664Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T17:07:50.508Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T16:54:49.635Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T16:53:49.360Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T16:48:50.575Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T16:43:49.635Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T16:42:49.752Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T16:33:50.030Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T16:26:49.776Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T16:23:49.479Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T16:16:49.868Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T16:13:49.629Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T16:08:49.611Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T16:07:50.504Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T15:56:50.386Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T15:39:50.421Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T15:38:49.702Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T15:33:49.222Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T15:32:50.609Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T14:51:50.327Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T14:42:50.386Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      },
+      {
+        "timestamp": "2026-01-29T14:37:49.985Z",
+        "message": "策略 10 处理标的 QQQ.US 出错:",
+        "extraData": null
+      }
+    ],
+    "Utils.Logger: [HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败": [
+      {
+        "timestamp": "2026-01-29T19:14:13.189Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T19:10:12.968Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T18:39:12.716Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T17:59:12.660Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T17:50:12.912Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T16:55:12.841Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T16:23:12.507Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T16:21:12.496Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T16:19:12.503Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T15:42:13.431Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T15:36:13.075Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T15:21:12.455Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T15:17:22.146Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T14:58:13.095Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T14:49:13.390Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T14:42:12.977Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T14:37:12.687Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-01-29T14:33:12.766Z",
+        "message": "[HIGH] EXTERNAL_API_ERROR: 富途API: 获取期权详情失败",
+        "extraData": {
+          "path": "/api/options/detail",
+          "method": "GET",
+          "details": {
+            "service": "富途API"
+          }
+        }
+      }
+    ]
+  },
+  "warnings": {},
+  "strategy_stats": {
+    "10": {
+      "executions": 390,
+      "errors": [
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:",
+        "策略 10 处理标的 QQQ.US 出错:"
+      ],
+      "warnings": [],
+      "signals": [],
+      "orders": [],
+      "last_execution": {
+        "timestamp": "2026-01-29T14:30:48.184Z",
+        "duration": 163,
+        "counts": {
+          "idle": 1,
+          "other": 0,
+          "holding": 0
+        },
+        "errors": [],
+        "signals": []
+      }
+    }
+  },
+  "order_issues": [],
+  "rate_limit_issues": [],
+  "db_errors": [],
+  "option_issues": {
+    "price_fetch_failures": [],
+    "option_chain_errors": [],
+    "contract_selection_errors": [],
+    "other_option_errors": []
+  }
+}
