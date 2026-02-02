@@ -43,6 +43,8 @@ services:
       LONGPORT_APP_SECRET: ${LONGPORT_APP_SECRET:-your_app_secret}
       LONGPORT_ACCESS_TOKEN: ${LONGPORT_ACCESS_TOKEN:-your_access_token}
       LONGPORT_ENABLE_OVERNIGHT: ${LONGPORT_ENABLE_OVERNIGHT:-false}
+      # 标记跳过长桥初始化（当长桥原生模块不可用时）
+      SKIP_LONGPORT_INIT: "true"
     ports:
       - "3001:3001"
     depends_on:

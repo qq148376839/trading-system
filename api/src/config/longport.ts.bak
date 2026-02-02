@@ -14,52 +14,8 @@ if (result.error) {
 }
 
 // 使用require方式导入，避免TypeScript类型问题
-// 添加错误处理以应对LongPort SDK兼容性问题
-let longport: any = null;
-let Config: any, QuoteContext: any, TradeContext: any, Decimal: any, OrderType: any, OrderSide: any, TimeInForceType: any, OutsideRTH: any, OrderStatus: any, Market: any;
-
-try {
-  longport = require('longport');
-  ({ Config, QuoteContext, TradeContext, Decimal, OrderType, OrderSide, TimeInForceType, OutsideRTH, OrderStatus, Market } = longport);
-  console.log('LongPort SDK 加载成功');
-} catch (error: any) {
-  console.warn('LongPort SDK 加载失败:', error.message);
-  console.warn('系统将以降级模式运行，部分券商接口功能不可用');
-  
-  // 定义模拟类和对象
-  Config = class MockConfig {
-    static fromEnv() { return new MockConfig(); }
-    constructor(options?: any) {}
-  };
-  
-  QuoteContext = {
-    new: async () => ({
-      subscribe: async () => {},
-      unsubscribe: async () => {},
-      dispose: async () => {}
-    })
-  };
-  
-  TradeContext = {
-    new: async () => ({
-      subscribe: async () => {},
-      unsubscribe: async () => {},
-      dispose: async () => {}
-    })
-  };
-  
-  Decimal = class MockDecimal {
-    constructor(value: string | number) { return value.toString(); }
-    static from_str(str: string) { return new MockDecimal(str); }
-  };
-  
-  OrderType = {};
-  OrderSide = {};
-  TimeInForceType = {};
-  OutsideRTH = {};
-  OrderStatus = {};
-  Market = {};
-}
+const longport = require('longport');
+const { Config, QuoteContext, TradeContext, Decimal, OrderType, OrderSide, TimeInForceType, OutsideRTH } = longport;
 
 type QuoteContextType = any;
 type TradeContextType = any;
@@ -461,4 +417,6 @@ export async function getTradeContext(): Promise<TradeContextType> {
 
 // 导出类型和常量供其他模块使用
 // 参考：https://longportapp.github.io/openapi/nodejs/classes/TradeContext.html
+const { OrderStatus, Market } = longport;
+
 export { Decimal, OrderType, OrderSide, OrderStatus, Market, TimeInForceType, OutsideRTH };

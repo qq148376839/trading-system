@@ -7,7 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "dev:proxy": "set HTTP_PROXY=http://127.0.0.1:7890&& set HTTPS_PROXY=http://127.0.0.1:7890&& tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node conditional-longport.js",
+    "start": "node dist/server.js",
     "test": "jest",
     "test:config": "tsx test-config.ts",
     "test:env": "tsx test-env.ts",

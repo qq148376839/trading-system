@@ -1724,6 +1724,11 @@ frontend/app/* (所有页面)
 - ✅ 优化迁移脚本挂载
 - ✅ 创建错误检测脚本
 
+### 系统部署与最新SDK兼容性修复（2026-02-01）
+- ✅ 修改`api/src/config/longport.ts`添加错误处理机制
+- ✅ 保持`api/package.json`中LongPort SDK版本为"latest"
+- ✅ 优化Docker部署流程
+
 ### 数据库迁移脚本清理（2025-12-11）
 - ✅ 合并010和011到`000_init_schema.sql`
 - ✅ 归档历史迁移脚本（001-011）
