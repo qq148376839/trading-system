@@ -1,0 +1,24 @@
+# Cloudflare Tunnel 配置示例
+# 单容器部署只需要一个映射
+
+tunnel: your-tunnel-id-here
+credentials-file: /path/to/your/credentials.json
+
+ingress:
+  # 统一入口 - 前端和后端都通过这个域名访问
+  # 前端: https://lh.riowang.win/
+  # 后端: https://lh.riowang.win/api/*
+  - hostname: lh.riowang.win
+    service: http://localhost:3001
+    originRequest:
+      noTLSVerify: false
+      connectTimeout: 30s
+      # 如果需要 WebSocket 支持，取消下面的注释
+      # httpHostHeader: lh.riowang.win
+
+  # 默认规则（拒绝所有其他请求）
+  - service: http_status:404
+
+# 可选：日志配置
+# loglevel: info
+# logfile: /var/log/cloudflared.log

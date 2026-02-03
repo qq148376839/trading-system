@@ -1,9 +1,10 @@
 import axios from 'axios'
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
+// 生产环境使用相对路径 '/api'，开发环境使用完整 URL
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '/api'
 
 export const api = axios.create({
-  baseURL: `${API_BASE_URL}/api`,
+  baseURL: API_BASE_URL,
   timeout: 30000, // 增加到30秒，因为持仓查询可能需要较长时间（期权行情查询）
   headers: {
     'Content-Type': 'application/json',
@@ -659,8 +660,7 @@ export const backtestApi = {
    * 导出回测结果为JSON文件
    */
   exportBacktest: async (id: number): Promise<Blob> => {
-    const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
-    const response = await axios.get(`${API_BASE_URL}/api/quant/backtest/${id}/export`, {
+    const response = await axios.get(`/api/quant/backtest/${id}/export`, {
       responseType: 'blob',
     });
     return response.data;
@@ -827,8 +827,7 @@ export const logsApi = {
     end_time?: string
     trace_id?: string
   }): Promise<Blob> => {
-    const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
-    const response = await axios.get(`${API_BASE_URL}/api/logs/export`, {
+    const response = await axios.get(`/api/logs/export`, {
       params,
       responseType: 'blob',
     })
