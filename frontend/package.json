@@ -2,6 +2,7 @@
   "name": "trading-frontend",
   "version": "1.0.0",
   "description": "长桥股票交易系统前端应用",
+  "packageManager": "pnpm@10.28.2",
   "private": true,
   "scripts": {
     "dev": "next dev",

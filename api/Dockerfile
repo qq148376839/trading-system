@@ -13,20 +13,23 @@ RUN apt-get update && \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# 启用 corepack 并激活 pnpm（固定版本，避免 latest 漂移）
+RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
+
 # 设置工作目录
 WORKDIR /app
 
-# 复制 package.json 和 package-lock.json
-COPY package.json package-lock.json ./
+# 仅复制依赖清单（用于 Docker layer 缓存）
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml* ./
+
+# 按锁文件安装（包含 devDependencies，用于构建）
+RUN pnpm install --frozen-lockfile
 
 # 复制源代码
 COPY . .
 
-# 安装所有依赖（包括 devDependencies，用于构建）
-RUN npm ci
-
 # 构建 TypeScript 代码
-RUN npm run build
+RUN pnpm run build
 
 # 清理构建工具以减小镜像大小
 RUN apt-get purge -y python3 make g++ build-essential && \

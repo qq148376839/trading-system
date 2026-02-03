@@ -2,6 +2,7 @@
   "name": "trading-api",
   "version": "1.0.0",
   "description": "长桥股票交易系统 API 服务",
+  "packageManager": "pnpm@10.28.2",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",

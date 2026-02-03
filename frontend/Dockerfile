@@ -10,11 +10,14 @@ ARG NEXT_PUBLIC_API_URL=http://localhost:3001
 # 设置环境变量（Next.js 构建时需要）
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 
-# 复制 package.json 和 package-lock.json
-COPY package.json package-lock.json ./
+# 启用 corepack 并激活 pnpm（固定版本，避免 latest 漂移）
+RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
+
+# 复制依赖清单
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml* ./
 
 # 安装依赖
-RUN npm ci
+RUN pnpm install --frozen-lockfile
 
 # 复制源代码
 COPY . .
@@ -23,7 +26,7 @@ COPY . .
 RUN mkdir -p public
 
 # 构建 Next.js 应用（此时 NEXT_PUBLIC_API_URL 已可用）
-RUN npm run build
+RUN pnpm run build
 
 # 生产环境镜像
 FROM node:20-alpine AS runner

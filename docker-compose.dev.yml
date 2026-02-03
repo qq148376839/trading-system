@@ -55,7 +55,7 @@ services:
       - ./api/.env:/app/.env:ro
     networks:
       - trading-network-dev
-    command: npm run dev
+    command: pnpm run dev
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
       interval: 30s
@@ -84,7 +84,7 @@ services:
       - /app/.next
     networks:
       - trading-network-dev
-    command: npm run dev
+    command: pnpm run dev
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/"]
       interval: 30s
