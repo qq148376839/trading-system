@@ -8,14 +8,17 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
+# 启用 corepack 并激活 pnpm（固定版本，避免 latest 漂移）
+RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
+
 # 设置工作目录
 WORKDIR /app
 
-# 复制 package.json 和 package-lock.json（如果存在）
-COPY package*.json ./
+# 复制依赖清单
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml* ./
 
 # 安装所有依赖（包括 devDependencies）
-RUN npm ci
+RUN pnpm install --frozen-lockfile
 
 # 复制 tsconfig.json
 COPY tsconfig.json ./
@@ -28,5 +31,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD curl -f http://localhost:3001/api/health || exit 1
 
 # 开发模式使用 tsx watch，支持热重载
-CMD ["npm", "run", "dev"]
+CMD ["pnpm", "run", "dev"]
 
