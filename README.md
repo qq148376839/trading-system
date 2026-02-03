@@ -324,16 +324,19 @@ psql -U postgres -d trading_db -f migrations/000_init_schema.sql
 ### 5. 安装依赖并启动服务（仅本地开发）
 
 ```bash
+# 启用 pnpm（Node.js 20+ 内置 corepack）
+corepack enable
+
 # 启动 API 服务
 cd api
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 # API 服务将在 http://localhost:3001 启动
 
 # 启动前端服务（新终端）
 cd frontend
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 # 前端应用将在 http://localhost:3000 启动
 ```
 
