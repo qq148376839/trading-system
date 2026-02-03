@@ -601,6 +601,7 @@ const mappedOrder = mapOrderData(orderDetail);
 
 ### 其他更新
 
+- ✅ **期权策略推荐算法优化** (2026-02-03) - 创建期权专用推荐服务，提高信号生成率 ⭐ 最新
 - ✅ 期权行情 Fallback 机制（长桥 → 富途）
 - ✅ Token 自动刷新功能
 - ✅ 配置管理 Web 界面

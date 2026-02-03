@@ -8,6 +8,7 @@ import crypto from 'crypto';
 import { getFutunnHeaders } from '../config/futunn';
 import { moomooProxy, getProxyMode } from '../utils/moomoo-proxy';
 import { getQuoteContext } from '../config/longport';
+import { retryWithBackoff } from '../utils/longport-rate-limiter';
 
 interface CandlestickData {
   close: number;
@@ -853,18 +854,27 @@ class MarketDataService {
    */
   async getAllMarketData(count: number = 100, includeIntraday: boolean = false) {
     try {
-      // 关键市场指标：必须全部成功，否则抛出错误
+      // 关键市场指标：使用重试机制（3次，间隔500ms）
       const criticalPromises = [
-        this.getSPXCandlesticks(count).catch(err => {
-          console.error(`获取SPX数据失败:`, err.message);
+        retryWithBackoff(
+          () => this.getSPXCandlesticks(count),
+          { maxRetries: 3, initialDelayMs: 500 }
+        ).catch(err => {
+          console.error(`获取SPX数据失败（已重试3次）:`, err.message);
           throw new Error(`SPX数据获取失败: ${err.message}`);
         }),
-        this.getUSDIndexCandlesticks(count).catch(err => {
-          console.error(`获取USD Index日K数据失败:`, err.message);
+        retryWithBackoff(
+          () => this.getUSDIndexCandlesticks(count),
+          { maxRetries: 3, initialDelayMs: 500 }
+        ).catch(err => {
+          console.error(`获取USD Index日K数据失败（已重试3次）:`, err.message);
           throw new Error(`USD Index数据获取失败: ${err.message}`);
         }),
-        this.getBTCCandlesticks(count).catch(err => {
-          console.error(`获取BTC数据失败:`, err.message);
+        retryWithBackoff(
+          () => this.getBTCCandlesticks(count),
+          { maxRetries: 3, initialDelayMs: 500 }
+        ).catch(err => {
+          console.error(`获取BTC数据失败（已重试3次）:`, err.message);
           throw new Error(`BTC数据获取失败: ${err.message}`);
         }),
       ];

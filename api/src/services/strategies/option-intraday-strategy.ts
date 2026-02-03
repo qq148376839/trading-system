@@ -11,6 +11,7 @@
  */
 import { StrategyBase, TradingIntent } from './strategy-base';
 import tradingRecommendationService from '../trading-recommendation.service';
+import optionRecommendationService from '../option-recommendation.service';
 import { selectOptionContract } from '../options-contract-selector.service';
 import { estimateOptionOrderTotalCost } from '../options-fee.service';
 
@@ -58,11 +59,29 @@ export class OptionIntradayStrategy extends StrategyBase {
     // symbol here is the underlying (from symbol pool)
     const cfg = this.config as OptionIntradayStrategyConfig;
 
-    // 1) Use existing recommendation on underlying
-    const rec = await tradingRecommendationService.calculateRecommendation(symbol);
-    if (!rec || rec.action === 'HOLD') return null;
+    // 1) 使用期权专用推荐服务（替代股票推荐）
+    const optionRec = await optionRecommendationService.calculateOptionRecommendation(symbol);
 
-    // 2) Decide option direction
+    console.log(`📊 [期权推荐] ${symbol}:`, {
+      direction: optionRec.direction,
+      confidence: optionRec.confidence,
+      marketScore: optionRec.marketScore,
+      intradayScore: optionRec.intradayScore,
+      finalScore: optionRec.finalScore,
+      riskLevel: optionRec.riskLevel,
+      reasoning: optionRec.reasoning
+    });
+
+    // 如果推荐HOLD或风险过高，跳过
+    if (optionRec.direction === 'HOLD') {
+      return null;
+    }
+    if (optionRec.riskLevel === 'EXTREME') {
+      console.warn(`⚠️ [期权策略] ${symbol} 风险等级过高(EXTREME)，跳过交易`);
+      return null;
+    }
+
+    // 2) Decide option direction (可选择强制方向或跟随信号)
     const directionMode: DirectionMode = cfg.directionMode || 'FOLLOW_SIGNAL';
     let direction: 'CALL' | 'PUT';
     if (directionMode === 'CALL_ONLY') {
@@ -70,8 +89,8 @@ export class OptionIntradayStrategy extends StrategyBase {
     } else if (directionMode === 'PUT_ONLY') {
       direction = 'PUT';
     } else {
-      // Follow signal: BUY -> CALL, SELL -> PUT
-      direction = rec.action === 'BUY' ? 'CALL' : 'PUT';
+      // 跟随期权推荐信号
+      direction = optionRec.direction as 'CALL' | 'PUT';
     }
 
     // 3) Select contract (0DTE default)
@@ -131,7 +150,7 @@ export class OptionIntradayStrategy extends StrategyBase {
       symbol: selected.optionSymbol, // IMPORTANT: order is placed on option symbol
       entryPrice: premium,
       quantity: contracts,
-      reason: `期权开仓(${direction}) 基于推荐信号(${rec.action}): ${rec.analysis_summary?.slice(0, 120) || ''}`.trim(),
+      reason: `期权开仓(${direction}) 置信度:${optionRec.confidence}% ${optionRec.reasoning.slice(0, 100) || ''}`.trim(),
       metadata: {
         assetClass: 'OPTION',
         underlyingSymbol: symbol,

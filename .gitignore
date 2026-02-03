@@ -41,3 +41,4 @@ coverage/
 *.temp
 
 
+logs-*.json
