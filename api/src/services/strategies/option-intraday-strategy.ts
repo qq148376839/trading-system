@@ -74,10 +74,11 @@ export class OptionIntradayStrategy extends StrategyBase {
 
     // 如果推荐HOLD或风险过高，跳过
     if (optionRec.direction === 'HOLD') {
+      console.log(`📍 [${symbol}] 推荐方向为HOLD，不生成信号`);
       return null;
     }
     if (optionRec.riskLevel === 'EXTREME') {
-      console.warn(`⚠️ [期权策略] ${symbol} 风险等级过高(EXTREME)，跳过交易`);
+      console.warn(`⚠️ [${symbol}跳过] 风险等级EXTREME，不生成信号`);
       return null;
     }
 
@@ -105,7 +106,7 @@ export class OptionIntradayStrategy extends StrategyBase {
     });
 
     if (!selected) {
-      console.log(`[期权策略] 未找到合适的期权合约: ${symbol} (${direction}, ${expirationMode})`);
+      console.warn(`❌ [${symbol}无合约] 未找到合适的期权合约 (${direction}, ${expirationMode})`);
       return null;
     }
 
@@ -115,7 +116,15 @@ export class OptionIntradayStrategy extends StrategyBase {
       ? (selected.mid || selected.last)
       : (selected.ask || selected.mid || selected.last);
 
-    if (!premium || premium <= 0) return null;
+    // [检查点8] 入场价格有效性
+    console.log(
+      `📍 [${symbol}价格] ${entryPriceMode}=${premium?.toFixed(2) || 'N/A'} | ASK=${selected.ask?.toFixed(2)}, BID=${selected.bid?.toFixed(2)}, MID=${selected.mid?.toFixed(2)}`
+    );
+
+    if (!premium || premium <= 0) {
+      console.warn(`❌ [${symbol}价格无效] ${entryPriceMode}价格=${premium}，无法下单`);
+      return null;
+    }
 
     // 5) Determine contracts (default 1)
     const sizing = cfg.positionSizing || { mode: 'FIXED_CONTRACTS' as const, fixedContracts: 1 };
@@ -178,6 +187,11 @@ export class OptionIntradayStrategy extends StrategyBase {
 
     const signalId = await this.logSignal(intent);
     intent.metadata = { ...(intent.metadata || {}), signalId };
+
+    // [检查点9] 信号生成成功
+    console.log(
+      `✅ [${symbol}信号] ${direction} ${selected.optionSymbol} | 合约=${contracts}, 权利金=$${premium.toFixed(2)}, 预估成本=$${est.totalCost.toFixed(2)} | Delta=${selected.delta?.toFixed(3)}, Theta=${selected.theta?.toFixed(3)}`
+    );
 
     return intent;
   }

@@ -57,15 +57,26 @@ class OptionRecommendationService {
       // 1. 获取市场数据（包含分时数据）
       const marketData = await marketDataCacheService.getMarketData(100, true);
 
+      // [检查点1] 市场数据充足性
+      console.log(
+        `📍 [${underlyingSymbol}数据检查] SPX=${marketData.spx?.length || 0}, USD=${marketData.usdIndex?.length || 0}, BTC=${marketData.btc?.length || 0}, VIX=${marketData.vix ? '✓' : '✗'}, 温度=${marketData.marketTemperature !== undefined ? '✓' : '✗'}`
+      );
+
       // 验证数据充足性
       if (!marketData.spx || marketData.spx.length < 50) {
-        throw new Error('SPX数据不足，无法计算期权推荐');
+        throw new Error(
+          `❌ 市场数据不足: SPX=${marketData.spx?.length || 0} (需要≥50)`
+        );
       }
       if (!marketData.usdIndex || marketData.usdIndex.length < 50) {
-        throw new Error('USD Index数据不足，无法计算期权推荐');
+        throw new Error(
+          `❌ 市场数据不足: USD=${marketData.usdIndex?.length || 0} (需要≥50)`
+        );
       }
       if (!marketData.btc || marketData.btc.length < 50) {
-        throw new Error('BTC数据不足，无法计算期权推荐');
+        throw new Error(
+          `❌ 市场数据不足: BTC=${marketData.btc?.length || 0} (需要≥50)`
+        );
       }
 
       // 2. 计算大盘环境得分 (40%权重)
@@ -94,12 +105,24 @@ class OptionRecommendationService {
         // 从30降低到15，增加交易频率
         direction = 'CALL';
         confidence = Math.min(Math.round((finalScore / 100) * 100), 100);
+        // [检查点2] 方向判定 - CALL
+        console.log(
+          `📍 [${underlyingSymbol}信号] BUY_CALL | 得分=${finalScore.toFixed(1)} (市场${marketScore.toFixed(1)} + 日内${intradayScore.toFixed(1)} + 时间${timeWindowAdjustment.toFixed(1)}) | 置信度=${confidence}%`
+        );
       } else if (finalScore < -15) {
         direction = 'PUT';
         confidence = Math.min(Math.round((Math.abs(finalScore) / 100) * 100), 100);
+        // [检查点2] 方向判定 - PUT
+        console.log(
+          `📍 [${underlyingSymbol}信号] BUY_PUT | 得分=${finalScore.toFixed(1)} (市场${marketScore.toFixed(1)} + 日内${intradayScore.toFixed(1)} + 时间${timeWindowAdjustment.toFixed(1)}) | 置信度=${confidence}%`
+        );
       } else {
         direction = 'HOLD';
         confidence = Math.round(100 - Math.abs(finalScore) * 2);
+        // [检查点2] 方向判定 - HOLD
+        console.log(
+          `📍 [${underlyingSymbol}信号] HOLD | 得分=${finalScore.toFixed(1)} 处于中性区间[-15, 15] | 置信度=${confidence}%`
+        );
       }
 
       // 7. Delta建议（根据得分强度）
@@ -456,16 +479,16 @@ class OptionRecommendationService {
     let riskPoints = 0;
 
     // 1. VIX检查
+    const currentVix = marketData.vix?.[marketData.vix.length - 1]?.close;
     if (marketData.vix && marketData.vix.length > 0) {
-      const currentVix = marketData.vix[marketData.vix.length - 1].close;
       if (currentVix > 35) riskPoints += 3;
       else if (currentVix > 25) riskPoints += 2;
       else if (currentVix > 20) riskPoints += 1;
     }
 
     // 2. 市场温度检查
+    let temp = 0;
     if (marketData.marketTemperature) {
-      let temp = 0;
       if (typeof marketData.marketTemperature === 'number') {
         temp = marketData.marketTemperature;
       } else if (marketData.marketTemperature.value) {
@@ -485,10 +508,17 @@ class OptionRecommendationService {
     const timeAdjustment = this.calculateTimeWindowAdjustment();
     if (timeAdjustment < -30) riskPoints += 2; // 接近收盘
 
-    if (riskPoints >= 5) return 'EXTREME';
-    if (riskPoints >= 3) return 'HIGH';
-    if (riskPoints >= 1) return 'MEDIUM';
-    return 'LOW';
+    const riskLevel =
+      riskPoints >= 5 ? 'EXTREME' :
+      riskPoints >= 3 ? 'HIGH' :
+      riskPoints >= 1 ? 'MEDIUM' : 'LOW';
+
+    // [检查点3] 风险评估
+    console.log(
+      `📍 [风险评估] ${riskLevel} | 积分=${riskPoints} (VIX=${currentVix?.toFixed(1) || 'N/A'}, 温度=${temp?.toFixed(0) || 'N/A'}, 时间调整=${timeAdjustment.toFixed(1)})`
+    );
+
+    return riskLevel;
   }
 
   /**

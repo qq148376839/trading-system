@@ -147,17 +147,24 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
     return expiryDate >= now;
   });
 
+  // [检查点4] 期权日期检查
+  console.log(
+    `📍 [${params.underlyingSymbol}期权日期] 可用日期=${sorted.length}个, 今日=${today.format('YYYY-MM-DD')}`
+  );
+
   // 选择到期日期
   let pickedExpiry;
   if (params.expirationMode === '0DTE') {
     if (todayExpiry) {
       pickedExpiry = todayExpiry;
-      console.log(`[选择0DTE期权] strikeDate=${todayExpiry.strikeDate}, leftDay=${todayExpiry.leftDay}`);
+      console.log(
+        `📍 [${params.underlyingSymbol}选择] 0DTE期权 | 到期=${todayExpiry.strikeDate}, 剩余=${todayExpiry.leftDay}天`
+      );
     } else {
       // 降级到最近的期权
       pickedExpiry = sorted[0];
       console.warn(
-        `[0DTE期权不可用] 降级到最近期权: strikeDate=${sorted[0].strikeDate}, leftDay=${sorted[0].leftDay}`
+        `⚠️ [${params.underlyingSymbol}降级] 0DTE不可用，使用最近期权 | 最近=${sorted[0]?.strikeDate}, 剩余=${sorted[0]?.leftDay}天`
       );
     }
   } else {
@@ -166,7 +173,19 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
 
   const strikeDate = pickedExpiry.strikeDate;
   const chain = await getOptionChain(underlyingStockId, strikeDate);
-  if (!chain || chain.length === 0) return null;
+
+  // [检查点5] 期权链数据
+  const callOrPut = params.direction === 'CALL' ? 'CALL' : 'PUT';
+  if (!chain || chain.length === 0) {
+    console.warn(`❌ [${params.underlyingSymbol}无合约] 期权链为空，无法选择合约`);
+    return null;
+  }
+
+  const strikeMin = Math.min(...chain.map((c) => parseFloat(c.strikePrice)));
+  const strikeMax = Math.max(...chain.map((c) => parseFloat(c.strikePrice)));
+  console.log(
+    `📍 [${params.underlyingSymbol}期权链] ${callOrPut}合约=${chain.length}个 | 行权价范围=[${strikeMin}-${strikeMax}]`
+  );
 
   // Underlying quote for ATM targeting (may fail for some index underlyings)
   let underlyingPrice = 0;
@@ -214,6 +233,9 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
   // For US options, marketType is 2 in Moomoo APIs.
   // (If later you add HK options, make this configurable.)
   const marketType = 2;
+
+  // [检查点6] 筛选前候选数量
+  console.log(`📍 [${params.underlyingSymbol}筛选前] 候选=${candidates.length}个 ATM合约`);
 
   const evaluated: SelectedOptionContract[] = [];
 
@@ -298,6 +320,15 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
     } catch {
       // ignore candidate failures
     }
+  }
+
+  // [检查点6+7] 流动性和Greeks筛选后的结果
+  console.log(
+    `📍 [${params.underlyingSymbol}筛选后] 通过=${evaluated.length}个 | 持仓量≥${liquidity.minOpenInterest || 0}, 价差≤${liquidity.maxBidAskSpreadPct || 'N/A'}%, Delta∈[${greek.deltaMin || 0}, ${greek.deltaMax || 1}]`
+  );
+
+  if (evaluated.length === 0) {
+    console.warn(`❌ [${params.underlyingSymbol}无候选] 所有筛选后无合约剩余`);
   }
 
   if (evaluated.length === 0) {
