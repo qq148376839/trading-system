@@ -29,9 +29,12 @@ importers:
       express-rate-limit:
         specifier: ^7.1.5
         version: 7.5.1(express@4.22.1)
+      http-proxy-middleware:
+        specifier: ^2.0.6
+        version: 2.0.9(@types/express@4.17.25)
       longport:
-        specifier: latest
-        version: 3.0.18
+        specifier: 3.0.21
+        version: 3.0.21
       node-cron:
         specifier: ^3.0.3
         version: 3.0.3
@@ -57,6 +60,9 @@ importers:
       '@types/express':
         specifier: ^4.17.21
         version: 4.17.25
+      '@types/http-proxy-middleware':
+        specifier: ^1.0.0
+        version: 1.0.0(@types/express@4.17.25)
       '@types/jest':
         specifier: ^29.5.11
         version: 29.5.14
@@ -571,6 +577,13 @@ packages:
   '@types/http-errors@2.0.5':
     resolution: {integrity: sha512-r8Tayk8HJnX0FztbZN7oVqGccWgw98T/0neJphO91KkmOzug1KkofZURD4UaD5uH8AqcFLfdPErnBod0u71/qg==}
 
+  '@types/http-proxy-middleware@1.0.0':
+    resolution: {integrity: sha512-/s8lFX6rT43hSPqjjD8KNuu0SkPKY7uIdR6u9DCxVqCRhAvfKxGbVOixJsAT2mdpSnCyrGFAGoB39KFh6tmRxw==}
+    deprecated: This is a stub types definition. http-proxy-middleware provides its own type definitions, so you do not need this installed.
+
+  '@types/http-proxy@1.17.17':
+    resolution: {integrity: sha512-ED6LB+Z1AVylNTu7hdzuBqOgMnvG/ld6wGCG8wFnAzKX5uyW2K3WD52v0gnLCTK/VLpXtKckgWuyScYK6cSPaw==}
+
   '@types/istanbul-lib-coverage@2.0.6':
     resolution: {integrity: sha512-2QF/t/auWm0lsy8XtKVPG19v3sSOQlJe/YHZgfjb/KBBHOGSV+J2q/S671rcq9uTBrLAXmZpqJiaQbMT+zNU1w==}
 
@@ -972,6 +985,9 @@ packages:
     resolution: {integrity: sha512-aIL5Fx7mawVa300al2BnEE4iNvo1qETxLrPI/o05L7z6go7fCw1J6EQmbK4FmJ2AS7kgVF/KEZWufBfdClMcPg==}
     engines: {node: '>= 0.6'}
 
+  eventemitter3@4.0.7:
+    resolution: {integrity: sha512-8guHBZCwKnFhYdHr2ysuRWErTwhoN2X8XELRlrRwpmfeY2jjuUN4taQMsULKUVo1K4DvZl+0pgfyoysHxvmvEw==}
+
   execa@5.1.1:
     resolution: {integrity: sha512-8uSpZZocAZRBAPIEINJj3Lo9HyGitllczc27Eh5YYojjMFMn8yHMDMaUHE2Jqfq05D/wucwI4JGURyXt1vchyg==}
     engines: {node: '>=10'}
@@ -1118,6 +1134,19 @@ packages:
     resolution: {integrity: sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==}
     engines: {node: '>= 0.8'}
 
+  http-proxy-middleware@2.0.9:
+    resolution: {integrity: sha512-c1IyJYLYppU574+YI7R4QyX2ystMtVXZwIdzazUIPIJsHuWNd+mho2j+bKoHftndicGj9yh+xjd+l0yj7VeT1Q==}
+    engines: {node: '>=12.0.0'}
+    peerDependencies:
+      '@types/express': ^4.17.13
+    peerDependenciesMeta:
+      '@types/express':
+        optional: true
+
+  http-proxy@1.18.1:
+    resolution: {integrity: sha512-7mz/721AbnJwIVbnaSv1Cz3Am0ZLT/UBwkC92VlxhXv/k/BBQfM2fXElQNC27BVGr0uwUpplYPQM9LnaBMR5NQ==}
+    engines: {node: '>=8.0.0'}
+
   human-signals@2.1.0:
     resolution: {integrity: sha512-B4FFZ6q/T2jhhksgkbEW3HBvWIfDW85snkQgawt07S7J5QXTk6BkNV+0yAeZrM5QpMAdYlocGoljn0sJ/WQkFw==}
     engines: {node: '>=10.17.0'}
@@ -1153,6 +1182,10 @@ packages:
     resolution: {integrity: sha512-UfoeMA6fIJ8wTYFEUjelnaGI67v6+N7qXJEvQuIGa99l4xsCruSYOVSQ0uPANn4dAzm8lkYPaKLrrijLq7x23w==}
     engines: {node: '>= 0.4'}
 
+  is-extglob@2.1.1:
+    resolution: {integrity: sha512-SbKbANkN603Vi4jEZv49LeVJMn4yGwsbzZworEoyEiutsN3nJYdbO36zfhGJ6QEDpOZIFkDtnq5JRxmvl3jsoQ==}
+    engines: {node: '>=0.10.0'}
+
   is-fullwidth-code-point@3.0.0:
     resolution: {integrity: sha512-zymm5+u+sCsSWyD9qNaejV3DFvhCKclKdizYaJUuHA83RLjb7nSuGnddCHGv0hk+KY7BMAlsWeK4Ueg6EV6XQg==}
     engines: {node: '>=8'}
@@ -1161,9 +1194,17 @@ packages:
     resolution: {integrity: sha512-cTIB4yPYL/Grw0EaSzASzg6bBy9gqCofvWN8okThAYIxKJZC+udlRAmGbM0XLeniEJSs8uEgHPGuHSe1XsOLSQ==}
     engines: {node: '>=6'}
 
+  is-glob@4.0.3:
+    resolution: {integrity: sha512-xelSayHH36ZgE7ZWhli7pW34hNbNl8Ojv5KVmkJD4hBdD3th8Tfk9vYasLM+mXWOZhFkgZfxhLSnrwRr4elSSg==}
+    engines: {node: '>=0.10.0'}
+
   is-number@7.0.0:
     resolution: {integrity: sha512-41Cifkg6e8TylSpdtTpeLVMqvSBEVzTttHvERD741+pnZ8ANv0004MRL43QKPDlK9cGvNp6NZWZUBlbGXYxxng==}
     engines: {node: '>=0.12.0'}
+
+  is-plain-obj@3.0.0:
+    resolution: {integrity: sha512-gwsOE28k+23GP1B6vFl1oVh/WOzmawBrKwo5Ev6wMKzPkaXaCDIQKzLnvsA42DRlbVTWorkgTKIviAKCWkfUwA==}
+    engines: {node: '>=10'}
 
   is-stream@2.0.1:
     resolution: {integrity: sha512-hFoiJiTl63nn+kstHGBtewWSKnQLpyb155KHheA1l39uvtO9nWIop1p3udqPcUd/xbF1VLMO4n7OI6p7RbngDg==}
@@ -1378,47 +1419,26 @@ packages:
   lodash.mergewith@4.6.2:
     resolution: {integrity: sha512-GK3g5RPZWTRSeLSpgP8Xhra+pnjBC56q9FZYe1d5RN3TJ35dbkGy3YqBSMbyCrlbi+CM9Z3Jk5yTL7RCsqboyQ==}
 
-  longport-darwin-arm64@3.0.18:
-    resolution: {integrity: sha512-2cE24/RXwye4Ry4PvOQMoR6kctjB3AgpY2/CNVVM5/Vj2xWBDTeU3enK+fQwF2tuk92zJXA8bkTX2UuIyQcrAQ==}
+  longport-darwin-arm64@3.0.21:
+    resolution: {integrity: sha512-YQGm5MPTIBl2TQVEzUMYvqFh7lpAR+5subvNsr7FrXjmahSrx3ra0OGPJDnoL3JudqTcyJCqG1mED3Iaz23ZSw==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [darwin]
 
-  longport-darwin-x64@3.0.18:
-    resolution: {integrity: sha512-Do4Lmf/Y66RLBsGzIC8Df/iU48xuTJCQOiPKssH3o3eY6HTGiLIOP/mrb9JP8mJkwt/IeVp+J7SkBq4KLqQ7eA==}
+  longport-darwin-x64@3.0.21:
+    resolution: {integrity: sha512-2pRjJKLKFidFx1uzOwkFLBaZ3myHcp86LWUA6Bp3I1IXkYJELFiKfq3uFPskBgyqKtJjBRq0eegwZlpv4GqpPA==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [darwin]
 
-  longport-linux-arm64-gnu@3.0.18:
-    resolution: {integrity: sha512-KboiYDz/6MRnNDKqkGi2MxxVkZVpg/yfCdXWbvBZE2Dlvwsao7XRLrLifaCaYCWPntRJYx912RfmGO7ohUOsGQ==}
-    engines: {node: '>= 10'}
-    cpu: [arm64]
-    os: [linux]
-    libc: [glibc]
-
-  longport-linux-x64-gnu@3.0.18:
-    resolution: {integrity: sha512-U2Nl0JD1dovu7JDXlciIIGNbCvGbsbPkrszRnovWUvFKHSs0zHQiH+UhYHdy4cKDNiXGHPhB2GFdOtb3ZWiuxQ==}
-    engines: {node: '>= 10'}
-    cpu: [x64]
-    os: [linux]
-    libc: [glibc]
-
-  longport-linux-x64-musl@3.0.18:
-    resolution: {integrity: sha512-QdoP4p775qrNlJypZTUILQ6ccPAuq0uH9oIBpfC/+wwqcKANFe8gKgeQyPaGnL/kAnqpxTURvExpUNVMdR4S3Q==}
-    engines: {node: '>= 10'}
-    cpu: [x64]
-    os: [linux]
-    libc: [glibc]
-
-  longport-win32-x64-msvc@3.0.18:
-    resolution: {integrity: sha512-QrBvFjI+mr85UVutanCBsDllOByH+ncKFLcGOjbsWfZgWiBlrwFf+bZJ9vGWHTv5IkZcU2Lt+YLIEfseXOwA2A==}
+  longport-win32-x64-msvc@3.0.21:
+    resolution: {integrity: sha512-xs2JjpW7QP7Xbyr6YLsFHmehfxpNMY9j/O1MP2GKpCRuuT/ax50zw9PAzBW2zql7+gcnxRO9B9utV+RiRiAC2A==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [win32]
 
-  longport@3.0.18:
-    resolution: {integrity: sha512-k0nsK17jzjpxZDEp47KrJIGmyRCLvMRj1bY6jzlDj3cWWxABcuK4bYKezyCKcMfquaPFq9UrYyCMYdAoUeezmA==}
+  longport@3.0.21:
+    resolution: {integrity: sha512-oHeCrTTlVVh1bISz5RRCczrE0t5DbReXFyOHlNscd0Q0dCbaKKM0qLcWKtTGInPBGN4fzKRd5rayr5LLvh9PWA==}
     engines: {node: '>= 10'}
 
   lru-cache@5.1.1:
@@ -1686,6 +1706,9 @@ packages:
   require-directory@2.1.1:
     resolution: {integrity: sha512-fGxEI7+wsG9xrvdjsrlmL22OMTTiHRwAMroiEeMgq8gzoLC/PQr7RsRDSTLUg/bZAZtF+TVIkHc6/4RIKrui+Q==}
     engines: {node: '>=0.10.0'}
+
+  requires-port@1.0.0:
+    resolution: {integrity: sha512-KigOCHcocU3XODJxsu8i/j8T9tzT4adHiecwORRQ0ZZFcp7ahwXuRU1m+yuO90C5ZUyGeGfocHDI14M3L3yDAQ==}
 
   resolve-cwd@3.0.0:
     resolution: {integrity: sha512-OrZaX2Mb+rJCpH/6CpSqt9xFVpN++x01XnN2ie9g6P5/3xelLAkXWVADpdz1IHD/KFfEXyE6V0U01OQ3UO2rEg==}
@@ -2568,6 +2591,17 @@ snapshots:
 
   '@types/http-errors@2.0.5': {}
 
+  '@types/http-proxy-middleware@1.0.0(@types/express@4.17.25)':
+    dependencies:
+      http-proxy-middleware: 2.0.9(@types/express@4.17.25)
+    transitivePeerDependencies:
+      - '@types/express'
+      - debug
+
+  '@types/http-proxy@1.17.17':
+    dependencies:
+      '@types/node': 20.19.26
+
   '@types/istanbul-lib-coverage@2.0.6': {}
 
   '@types/istanbul-lib-report@3.0.3':
@@ -2987,6 +3021,8 @@ snapshots:
 
   etag@1.8.1: {}
 
+  eventemitter3@4.0.7: {}
+
   execa@5.1.1:
     dependencies:
       cross-spawn: 7.0.6
@@ -3188,6 +3224,26 @@ snapshots:
       statuses: 2.0.2
       toidentifier: 1.0.1
 
+  http-proxy-middleware@2.0.9(@types/express@4.17.25):
+    dependencies:
+      '@types/http-proxy': 1.17.17
+      http-proxy: 1.18.1
+      is-glob: 4.0.3
+      is-plain-obj: 3.0.0
+      micromatch: 4.0.8
+    optionalDependencies:
+      '@types/express': 4.17.25
+    transitivePeerDependencies:
+      - debug
+
+  http-proxy@1.18.1:
+    dependencies:
+      eventemitter3: 4.0.7
+      follow-redirects: 1.15.11
+      requires-port: 1.0.0
+    transitivePeerDependencies:
+      - debug
+
   human-signals@2.1.0: {}
 
   iconv-lite@0.4.24:
@@ -3216,11 +3272,19 @@ snapshots:
     dependencies:
       hasown: 2.0.2
 
+  is-extglob@2.1.1: {}
+
   is-fullwidth-code-point@3.0.0: {}
 
   is-generator-fn@2.1.0: {}
 
+  is-glob@4.0.3:
+    dependencies:
+      is-extglob: 2.1.1
+
   is-number@7.0.0: {}
+
+  is-plain-obj@3.0.0: {}
 
   is-stream@2.0.1: {}
 
@@ -3610,32 +3674,20 @@ snapshots:
 
   lodash.mergewith@4.6.2: {}
 
-  longport-darwin-arm64@3.0.18:
+  longport-darwin-arm64@3.0.21:
     optional: true
 
-  longport-darwin-x64@3.0.18:
+  longport-darwin-x64@3.0.21:
     optional: true
 
-  longport-linux-arm64-gnu@3.0.18:
+  longport-win32-x64-msvc@3.0.21:
     optional: true
 
-  longport-linux-x64-gnu@3.0.18:
-    optional: true
-
-  longport-linux-x64-musl@3.0.18:
-    optional: true
-
-  longport-win32-x64-msvc@3.0.18:
-    optional: true
-
-  longport@3.0.18:
+  longport@3.0.21:
     optionalDependencies:
-      longport-darwin-arm64: 3.0.18
-      longport-darwin-x64: 3.0.18
-      longport-linux-arm64-gnu: 3.0.18
-      longport-linux-x64-gnu: 3.0.18
-      longport-linux-x64-musl: 3.0.18
-      longport-win32-x64-msvc: 3.0.18
+      longport-darwin-arm64: 3.0.21
+      longport-darwin-x64: 3.0.21
+      longport-win32-x64-msvc: 3.0.21
 
   lru-cache@5.1.1:
     dependencies:
@@ -3852,6 +3904,8 @@ snapshots:
   react-is@18.3.1: {}
 
   require-directory@2.1.1: {}
+
+  requires-port@1.0.0: {}
 
   resolve-cwd@3.0.0:
     dependencies:

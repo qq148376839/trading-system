@@ -149,7 +149,7 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
 
   // [检查点4] 期权日期检查
   console.log(
-    `📍 [${params.underlyingSymbol}期权日期] 可用日期=${sorted.length}个, 今日=${today.format('YYYY-MM-DD')}`
+    `📍 [${params.underlyingSymbol}期权日期] 可用日期=${sorted.length}个, 今日=${now.toISOString().split('T')[0]}`
   );
 
   // 选择到期日期
@@ -181,8 +181,14 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
     return null;
   }
 
-  const strikeMin = Math.min(...chain.map((c) => parseFloat(c.strikePrice)));
-  const strikeMax = Math.max(...chain.map((c) => parseFloat(c.strikePrice)));
+  const strikeMin = Math.min(...chain.map((c) => {
+    const opt = params.direction === 'CALL' ? c.callOption : c.putOption;
+    return opt ? parseFloat(opt.strikePrice) : Infinity;
+  }).filter(x => x !== Infinity));
+  const strikeMax = Math.max(...chain.map((c) => {
+    const opt = params.direction === 'CALL' ? c.callOption : c.putOption;
+    return opt ? parseFloat(opt.strikePrice) : -Infinity;
+  }).filter(x => x !== -Infinity));
   console.log(
     `📍 [${params.underlyingSymbol}期权链] ${callOrPut}合约=${chain.length}个 | 行权价范围=[${strikeMin}-${strikeMax}]`
   );

@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
+import { createProxyMiddleware } from 'http-proxy-middleware';
 import { quoteRouter } from './routes/quote';
 import { candlesticksRouter } from './routes/candlesticks';
 import { watchlistRouter } from './routes/watchlist';
@@ -40,6 +41,7 @@ if (result.error) {
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3001', 10);
+const FRONTEND_PORT = parseInt(process.env.FRONTEND_PORT || '3000', 10);
 
 // 中间件
 app.use(cors());
@@ -47,7 +49,7 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// 路由
+// API 路由
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 app.use('/api/quote', quoteRouter);
 app.use('/api/candlesticks', candlesticksRouter);
@@ -68,6 +70,15 @@ app.use('/api/order-prevention-metrics', orderPreventionMetricsRouter);
 app.use('/api/logs', logsRouter);
 app.use('/api/trading-days', tradingDaysRouter);
 app.use('/api/health', healthRouter);
+
+// 前端代理 - 将所有非 API 请求代理到前端服务
+// Express 会按顺序匹配路由，/api/* 已经在上面处理，剩余的请求会被代理
+app.use(createProxyMiddleware({
+  target: `http://localhost:${FRONTEND_PORT}`,
+  changeOrigin: true,
+  ws: true, // 支持 WebSocket（用于 Next.js 热更新）
+  logLevel: 'silent', // 静默日志，避免过多输出
+}));
 
 // 错误处理中间件
 app.use(errorHandler);

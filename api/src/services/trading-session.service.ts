@@ -9,9 +9,16 @@ import { logger } from '../utils/logger';
 import { getMarketFromSymbol } from '../utils/trading-days';
 import configService from './config.service';
 
-// 导入Longbridge SDK的Market枚举
-const longport = require('longport');
-const { Market } = longport;
+// 导入Longbridge SDK的Market枚举（延迟加载）
+let longport: any = null;
+let Market: any = null;
+
+try {
+  longport = require('longport');
+  Market = longport.Market;
+} catch (error: any) {
+  console.warn('交易时段服务: LongPort SDK 不可用，交易时段查询功能将被禁用');
+}
 
 /**
  * 交易时段类型枚举
@@ -51,6 +58,12 @@ class TradingSessionService {
    * 获取当日交易时段数据（带缓存）
    */
   async getTradingSessions(): Promise<MarketTradingSession[]> {
+    // 检查SDK是否可用
+    if (!Market) {
+      logger.warn('[交易时段服务] LongPort SDK 不可用，返回空数据');
+      return [];
+    }
+
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
 
     // 检查缓存是否有效

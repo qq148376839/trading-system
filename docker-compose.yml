@@ -56,11 +56,9 @@ services:
       # 标记跳过长桥初始化（当长桥原生模块不可用时）
       SKIP_LONGPORT_INIT: "true"
     ports:
-      # 只暴露后端端口，前端通过后端访问
-      # Cloudflare Tunnel 只需映射 3001 端口
+      # 单端口访问 - 通过后端代理访问前端
+      # 访问 http://your-host:3001 可同时使用前端和 API
       - "3001:3001"
-      # 如果需要直接访问前端（调试用），可以暴露 3000
-      # - "3000:3000"
     depends_on:
       postgres:
         condition: service_healthy

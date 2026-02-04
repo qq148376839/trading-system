@@ -44,8 +44,10 @@
 
 ### 部署
 - **容器化**: Docker + Docker Compose ✅ 已完全修复并测试通过
-- **包管理**: pnpm（统一使用）
-- **基础镜像**: Debian (node:20) - 支持原生模块编译
+- **包管理**: pnpm 10.28.2（统一使用）
+- **基础镜像**: Ubuntu 24.04 - 支持 longport SDK 3.0.21（需要 GLIBC 2.39）
+- **架构**: 单容器部署（前端 + 后端在同一容器）
+- **网络优化**: 阿里云镜像源（apt + npm）
 - **公网访问**: Cloudflare Zero Trust Tunnel
 
 ## 📁 项目结构
@@ -243,7 +245,7 @@ git clone <repository-url>
 cd trading-system
 ```
 
-### 2. Docker 部署（推荐）
+### 2. Docker 部署（推荐）⭐
 
 #### 快速开始
 
@@ -254,31 +256,47 @@ cd trading-system
 
 # 2. 配置环境变量（项目根目录创建 .env 文件）
 cat > .env << EOF
+# 数据库配置
 POSTGRES_USER=trading_user
 POSTGRES_PASSWORD=your_secure_password
 POSTGRES_DB=trading_db
+
+# 长桥 API 配置
 LONGPORT_APP_KEY=your_app_key
 LONGPORT_APP_SECRET=your_app_secret
 LONGPORT_ACCESS_TOKEN=your_access_token
-NEXT_PUBLIC_API_URL=http://192.168.31.18:3001  # 使用你的 NAS IP
 EOF
 
-# 3. 构建并启动服务
+# 3. 构建并启动服务（单容器部署，使用 Ubuntu 24.04）
 docker-compose build
 docker-compose up -d
 
 # 4. 创建管理员账户
-docker-compose exec api node scripts/create-admin.js admin your_password
+docker-compose exec app node api/scripts/create-admin.js admin your_password
 
 # 5. 访问应用
-# 前端: http://192.168.31.18:3000
-# API: http://192.168.31.18:3001
+# 应用: http://192.168.31.18:3001  (使用你的 NAS IP)
+# API: http://192.168.31.18:3001/api/health
 ```
 
+#### 重要说明
+
+**数据库凭证**:
+- 默认用户名: `trading_user`
+- 默认密码: `trading_password`
+- 默认数据库: `trading_db`
+- 可在 `.env` 文件中自定义
+
+**架构特点**:
+- 单容器部署：前端和后端在同一容器
+- 只暴露一个端口：3001
+- Ubuntu 24.04 基础镜像（支持 longport SDK 3.0.21）
+- 中国网络优化：使用阿里云和淘宝镜像源
+
 **详细文档**:
-- 📖 [Docker 部署指南](docs/guides/251214-Docker部署指南.md) - 完整的 Docker 部署指南
+- 📖 [Docker 部署指南](docs/guides/251214-Docker部署指南.md) - 完整的 Docker 部署指南（含最新修复）
 - 🔧 [Docker 故障排查和优化指南](docs/guides/251216-Docker故障排查和优化指南.md) - 常见问题排查
-- 🌐 [前端 API URL 配置指南](docs/guides/251216-前端API-URL配置指南.md) - 前端连接配置
+- 📝 [环境变量配置指南](docs/guides/251216-环境变量配置指南.md) - 数据库和环境变量配置
 
 ### 3. 本地开发环境配置
 
@@ -458,6 +476,32 @@ const mappedOrder = mapOrderData(orderDetail);
 ```
 
 ## 📝 重要更新
+
+### 2026-02-05: Docker 部署重大升级 ⭐ 关键修复
+
+**修复**: 升级 Docker 部署到 Ubuntu 24.04 基础镜像，支持 longport SDK 3.0.21，优化中国网络环境
+
+**核心改进**:
+- 升级到 Ubuntu 24.04（提供 GLIBC 2.39，支持 longport SDK 3.0.21）
+- 手动下载 longport 原生绑定（解决 pnpm 不自动安装平台包问题）
+- 修复 Next.js 网络绑定（添加 `HOSTNAME=0.0.0.0`，允许容器外部访问）
+- 中国网络镜像优化（阿里云 + 淘宝镜像，构建速度提升 3-5 倍）
+- 单容器部署架构（前端+后端，只暴露端口 3001）
+
+**数据库凭证**:
+- 默认用户名：`trading_user`
+- 默认密码：`trading_password`
+- 默认数据库：`trading_db`
+- 可通过项目根目录 `.env` 文件自定义
+
+**管理员账户创建**:
+```bash
+docker-compose exec app node api/scripts/create-admin.js admin your_password
+```
+
+**详细内容**: 参考 [Docker 部署指南](docs/guides/251214-Docker部署指南.md)
+
+---
 
 ### 2026-02-04: 期权策略决策链路日志增强 ⭐ 开发体验优化
 
@@ -753,4 +797,4 @@ MIT License
 
 ---
 
-**最后更新**: 2026-02-01 (系统部署与最新SDK兼容性修复)
+**最后更新**: 2026-02-05 (Docker 部署重大升级)

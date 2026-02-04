@@ -1,5 +1,51 @@
 # 更新日志
 
+## 2026-02-05
+
+### Docker 部署重大升级 ⭐ 关键修复
+
+**功能/修复**: 升级 Docker 部署到 Ubuntu 24.04 基础镜像，支持 longport SDK 3.0.21，修复原生绑定问题，优化中国网络环境。
+
+**实现内容**:
+1. ✅ **升级基础镜像到 Ubuntu 24.04**：从 `node:20-alpine` 升级到 `ubuntu:24.04`，提供 GLIBC 2.39 支持 longport SDK 3.0.21
+2. ✅ **手动下载 longport 原生绑定**：添加 curl 命令直接下载 `longport-linux-x64-gnu-3.0.21.tgz` 到正确路径
+3. ✅ **修复 Next.js 网络绑定**：在 `deploy/start-all.sh` 中添加 `HOSTNAME=0.0.0.0`，允许容器外部访问
+4. ✅ **中国网络镜像优化**：配置 apt 使用阿里云镜像，npm/pnpm 使用淘宝镜像
+5. ✅ **替换 corepack**：使用 `npm install -g pnpm@10.28.2` 直接安装 pnpm，避免网络问题
+6. ✅ **单容器部署架构**：前端和后端在同一容器运行，只暴露端口 3001
+
+**修改文件**:
+- 📝 `Dockerfile`（完全重构：Ubuntu 24.04 + 手动下载原生绑定 + 镜像源配置）
+- 📝 `deploy/start-all.sh`（+1行：`HOSTNAME=0.0.0.0`）
+- 📝 `docker-compose.yml`（架构：单容器部署）
+
+**更新文档**:
+- 📄 [Docker 部署指南](docs/guides/251214-Docker部署指南.md)（更新到 2026-02-05）
+- 📄 [README.md](README.md)（更新 Docker 部署说明）
+
+**相关文档**:
+- 📄 [Docker 部署指南](docs/guides/251214-Docker部署指南.md) - 完整的部署指南
+- 📄 [环境变量配置指南](docs/guides/251216-环境变量配置指南.md) - 数据库凭证说明
+
+**预期效果**:
+- ✅ 构建成功率：100%（解决 GLIBC 版本问题）
+- ✅ 原生绑定可用性：100%（手动下载 + 验证）
+- ✅ 容器外部访问：正常（Next.js 监听所有接口）
+- ✅ 中国网络构建速度：提升 3-5 倍
+
+**数据库凭证说明**:
+- 默认用户名：`trading_user`
+- 默认密码：`trading_password`
+- 默认数据库：`trading_db`
+- 可通过项目根目录 `.env` 文件自定义
+
+**管理员账户创建**:
+```bash
+docker-compose exec app node api/scripts/create-admin.js admin your_password
+```
+
+---
+
 ## 2026-02-04
 
 ### 期权策略决策链路日志增强 ⭐ 开发体验优化

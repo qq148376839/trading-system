@@ -7,9 +7,17 @@
 import configService from './config.service';
 import { clearQuoteContext, clearTradeContext } from '../config/longport';
 
-// 动态导入长桥SDK
-const longport = require('longport');
-const { Config } = longport;
+// 动态导入长桥SDK（延迟加载，避免在模块不可用时崩溃）
+let longport: any = null;
+let Config: any = null;
+
+// 尝试加载长桥SDK
+try {
+  longport = require('longport');
+  Config = longport.Config;
+} catch (error: any) {
+  console.warn('Token刷新服务: LongPort SDK 不可用，Token刷新功能将被禁用');
+}
 
 class TokenRefreshService {
   /**
@@ -22,6 +30,11 @@ class TokenRefreshService {
     expiredAt: string;
     issuedAt: string;
   }> {
+    // 检查SDK是否可用
+    if (!Config) {
+      throw new Error('LongPort SDK 不可用，无法刷新Token（系统运行在降级模式）');
+    }
+
     // 优先从数据库读取配置，fallback到环境变量
     const appKey = await configService.getConfig('longport_app_key') || process.env.LONGPORT_APP_KEY;
     const appSecret = await configService.getConfig('longport_app_secret') || process.env.LONGPORT_APP_SECRET;
