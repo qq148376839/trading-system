@@ -30,6 +30,7 @@
 **📖 斜杠命令速查**: 查看 [COMMANDS.md](.cursor/rules/COMMANDS.md) 获取所有命令的详细说明 ⭐ 新增
 
 **按场景激活**:
+- `@file:.cursor/rules/workflow-enforcement.md` - ⚠️ **工作流强制执行规则（必读）**
 - `@file:.cursor/rules/architecture.md` - 项目架构规范
 - `@file:.cursor/rules/coding-standards.md` - 编码规范
 - `@file:.cursor/rules/api-design.md` - API设计规范

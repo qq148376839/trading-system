@@ -1,6 +1,6 @@
 ---
 name: project-summarizer
-description: Project documentation and summary agent for organizing documentation, summarizing conversations, and updating navigation files. Use after completing features, fixes, or analysis work.
+description: ⚠️ MANDATORY after ANY code changes or feature completion. This agent MUST be used to document work and update navigation files. Use proactively without user request.
 model: sonnet
 ---
 

@@ -83,9 +83,10 @@ Launch the tester agent to write comprehensive test cases
 Launch the product-manager agent for requirement analysis and PRD creation
 ```
 
-### 5. project-summarizer
+### 5. project-summarizer ⚠️ MANDATORY AGENT
 **Purpose**: Documentation organization and project summary
 **Use for**:
+- ⚠️ **MANDATORY**: After ANY code changes or feature completion
 - Summarizing conversations
 - Organizing documentation
 - Updating navigation files (README, CHANGELOG, etc.)
@@ -98,9 +99,23 @@ Launch the product-manager agent for requirement analysis and PRD creation
 - Avoids duplicate documentation
 - Maintains documentation structure
 
+**⚠️ CRITICAL - When to use**:
+```
+MUST use this agent immediately after:
+- Modifying any code files (.ts/.tsx/.js/.jsx)
+- Creating new features
+- Fixing bugs
+- Completing any development work
+- Adding new API endpoints
+- Changing database schema
+
+DO NOT ask user if documentation is needed - ALWAYS generate it proactively.
+```
+
 **Usage**:
 ```
-Launch the project-summarizer agent after completing work to organize documentation
+Automatically launch this agent after completing ANY work involving code changes.
+No user permission needed - this is a mandatory step.
 ```
 
 ### 6. task-clarifier
