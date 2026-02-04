@@ -20,6 +20,8 @@ pnpm-debug.log*
 dist/
 build/
 .next/
+**/.next/
+frontend/.next/
 out/
 *.tsbuildinfo
 
@@ -35,9 +37,12 @@ logs-*.json
 Thumbs.db
 
 # ============================================================================
-# Development files
+# Development files (CRITICAL: .git directory causes slow context transfer)
 # ============================================================================
+.git
 .git/
+**/.git
+**/.git/
 .gitignore
 .env.local
 .env.development

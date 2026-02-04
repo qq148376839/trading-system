@@ -11,7 +11,9 @@
       "Bash(findstr:*)",
       "Bash(timeout 20 npx ts-node:*)",
       "Bash(npx ts-node test-option-strategy-e2e.ts)",
-      "Bash(TEST_REAL_SUBMIT=true timeout 120 npx ts-node:*)"
+      "Bash(TEST_REAL_SUBMIT=true timeout 120 npx ts-node:*)",
+      "Bash(du:*)",
+      "Bash(ls:*)"
     ],
     "deny": [],
     "ask": []

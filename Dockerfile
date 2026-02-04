@@ -84,9 +84,9 @@ COPY --from=api-builder --chown=nodejs:nodejs /app/api/dist ./api/dist
 COPY --from=api-builder --chown=nodejs:nodejs /app/api/package.json ./api/
 COPY --from=api-builder --chown=nodejs:nodejs /app/api/node_modules ./api/node_modules
 
-# 复制启动相关脚本（如果有）
-COPY --from=api-builder --chown=nodejs:nodejs /app/api/conditional-longport.js ./api/ 2>/dev/null || true
-COPY --from=api-builder --chown=nodejs:nodejs /app/api/startup-check.js ./api/ 2>/dev/null || true
+# 复制启动相关脚本
+COPY --from=api-builder --chown=nodejs:nodejs /app/api/conditional-longport.js ./api/
+COPY --from=api-builder --chown=nodejs:nodejs /app/api/startup-check.js ./api/
 
 # ============================================
 # 复制前端构建产物
