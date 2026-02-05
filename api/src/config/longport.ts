@@ -128,22 +128,36 @@ export async function getQuoteContext(): Promise<QuoteContextType> {
     let accessToken: string | null = null;
     let enableOvernight: string | null = null;
 
+    // 记录从数据库读取的值（用于判断配置来源）
+    let dbAppKey: string | null = null;
+    let dbAppSecret: string | null = null;
+    let dbAccessToken: string | null = null;
+
     if (service) {
       try {
-        appKey = await service.getConfig('longport_app_key');
-        appSecret = await service.getConfig('longport_app_secret');
-        accessToken = await service.getConfig('longport_access_token');
+        dbAppKey = await service.getConfig('longport_app_key');
+        dbAppSecret = await service.getConfig('longport_app_secret');
+        dbAccessToken = await service.getConfig('longport_access_token');
         enableOvernight = await service.getConfig('longport_enable_overnight');
+
+        appKey = dbAppKey;
+        appSecret = dbAppSecret;
+        accessToken = dbAccessToken;
       } catch (error: any) {
         console.warn('从数据库读取配置失败，使用环境变量:', error.message);
       }
     }
 
-    // Fallback到环境变量
-    appKey = appKey || process.env.LONGPORT_APP_KEY || null;
-    appSecret = appSecret || process.env.LONGPORT_APP_SECRET || null;
-    accessToken = accessToken || process.env.LONGPORT_ACCESS_TOKEN || null;
-    enableOvernight = enableOvernight || process.env.LONGPORT_ENABLE_OVERNIGHT || 'false';
+    // 只有当数据库返回 null/undefined 时才使用环境变量（不使用 || 运算符，避免空字符串被覆盖）
+    if (appKey == null) appKey = process.env.LONGPORT_APP_KEY || null;
+    if (appSecret == null) appSecret = process.env.LONGPORT_APP_SECRET || null;
+    if (accessToken == null) accessToken = process.env.LONGPORT_ACCESS_TOKEN || null;
+    if (enableOvernight == null) enableOvernight = process.env.LONGPORT_ENABLE_OVERNIGHT || 'false';
+
+    // 记录配置来源
+    const appKeySource = dbAppKey != null ? '数据库' : '环境变量';
+    const appSecretSource = dbAppSecret != null ? '数据库' : '环境变量';
+    const accessTokenSource = dbAccessToken != null ? '数据库' : '环境变量';
 
     if (!appKey || !appSecret || !accessToken) {
       quoteContextInitializing = null;
@@ -151,21 +165,20 @@ export async function getQuoteContext(): Promise<QuoteContextType> {
       throw new Error(
         'LongPort credentials not configured. Please set LONGPORT_APP_KEY, LONGPORT_APP_SECRET, and LONGPORT_ACCESS_TOKEN in database or .env file.\n' +
         `当前.env文件路径: ${envPathForError}\n` +
-        `LONGPORT_APP_KEY: ${appKey ? '已设置' : '未设置'}\n` +
-        `LONGPORT_APP_SECRET: ${appSecret ? '已设置' : '未设置'}\n` +
-        `LONGPORT_ACCESS_TOKEN: ${accessToken ? '已设置' : '未设置'}`
+        `LONGPORT_APP_KEY: ${appKey ? '已设置' : '未设置'} (来源: ${appKeySource})\n` +
+        `LONGPORT_APP_SECRET: ${appSecret ? '已设置' : '未设置'} (来源: ${appSecretSource})\n` +
+        `LONGPORT_ACCESS_TOKEN: ${accessToken ? '已设置' : '未设置'} (来源: ${accessTokenSource})`
       );
     }
 
-    const configSource = service ? '数据库' : '环境变量';
-    console.log(`使用长桥API配置（来源: ${configSource}）:`);
-    console.log(`  APP_KEY: ${appKey.substring(0, 8)}...`);
-    console.log(`  APP_SECRET: ${appSecret.substring(0, 8)}...`);
+    console.log(`使用长桥API配置:`);
+    console.log(`  APP_KEY: ${appKey.substring(0, 8)}... (来源: ${appKeySource})`);
+    console.log(`  APP_SECRET: ${appSecret.substring(0, 8)}... (来源: ${appSecretSource})`);
     // 显示Token后20位而不是前20位
-    const tokenDisplay = accessToken.length > 20 
+    const tokenDisplay = accessToken.length > 20
       ? `...${accessToken.substring(accessToken.length - 20)}`
       : accessToken;
-    console.log(`  ACCESS_TOKEN: ${tokenDisplay}`);
+    console.log(`  ACCESS_TOKEN: ${tokenDisplay} (来源: ${accessTokenSource})`);
     
     // 打印富途配置（从数据库或硬编码）
     let futunnCsrfToken: string | null = null;
@@ -299,27 +312,44 @@ export async function getTradeContext(): Promise<TradeContextType> {
     let accessToken: string | null = null;
     let enableOvernight: string | null = null;
 
+    // 记录从数据库读取的值（用于判断配置来源）
+    let dbAppKey: string | null = null;
+    let dbAppSecret: string | null = null;
+    let dbAccessToken: string | null = null;
+
     if (service) {
       try {
-        appKey = await service.getConfig('longport_app_key');
-        appSecret = await service.getConfig('longport_app_secret');
-        accessToken = await service.getConfig('longport_access_token');
+        dbAppKey = await service.getConfig('longport_app_key');
+        dbAppSecret = await service.getConfig('longport_app_secret');
+        dbAccessToken = await service.getConfig('longport_access_token');
         enableOvernight = await service.getConfig('longport_enable_overnight');
+
+        appKey = dbAppKey;
+        appSecret = dbAppSecret;
+        accessToken = dbAccessToken;
       } catch (error: any) {
         console.warn('从数据库读取配置失败，使用环境变量:', error.message);
       }
     }
 
-    // Fallback到环境变量
-    appKey = appKey || process.env.LONGPORT_APP_KEY || null;
-    appSecret = appSecret || process.env.LONGPORT_APP_SECRET || null;
-    accessToken = accessToken || process.env.LONGPORT_ACCESS_TOKEN || null;
-    enableOvernight = enableOvernight || process.env.LONGPORT_ENABLE_OVERNIGHT || 'false';
+    // 只有当数据库返回 null/undefined 时才使用环境变量（不使用 || 运算符，避免空字符串被覆盖）
+    if (appKey == null) appKey = process.env.LONGPORT_APP_KEY || null;
+    if (appSecret == null) appSecret = process.env.LONGPORT_APP_SECRET || null;
+    if (accessToken == null) accessToken = process.env.LONGPORT_ACCESS_TOKEN || null;
+    if (enableOvernight == null) enableOvernight = process.env.LONGPORT_ENABLE_OVERNIGHT || 'false';
+
+    // 记录配置来源
+    const appKeySource = dbAppKey != null ? '数据库' : '环境变量';
+    const appSecretSource = dbAppSecret != null ? '数据库' : '环境变量';
+    const accessTokenSource = dbAccessToken != null ? '数据库' : '环境变量';
 
     if (!appKey || !appSecret || !accessToken) {
       tradeContextInitializing = null;
       throw new Error(
-        'LongPort credentials not configured. Please set LONGPORT_APP_KEY, LONGPORT_APP_SECRET, and LONGPORT_ACCESS_TOKEN in database or .env file.'
+        'LongPort credentials not configured. Please set LONGPORT_APP_KEY, LONGPORT_APP_SECRET, and LONGPORT_ACCESS_TOKEN in database or .env file.\n' +
+        `LONGPORT_APP_KEY: ${appKey ? '已设置' : '未设置'} (来源: ${appKeySource})\n` +
+        `LONGPORT_APP_SECRET: ${appSecret ? '已设置' : '未设置'} (来源: ${appSecretSource})\n` +
+        `LONGPORT_ACCESS_TOKEN: ${accessToken ? '已设置' : '未设置'} (来源: ${accessTokenSource})`
       );
     }
 
@@ -333,7 +363,7 @@ export async function getTradeContext(): Promise<TradeContextType> {
     } else {
       console.log('未检测到网络代理配置（HTTP_PROXY/HTTPS_PROXY）');
     }
-    
+
     const config = new Config({
       appKey: appKey.trim(),
       appSecret: appSecret.trim(),
@@ -344,13 +374,13 @@ export async function getTradeContext(): Promise<TradeContextType> {
 
     try {
       console.log('Initializing TradeContext...');
-      console.log(`  APP_KEY: ${appKey.substring(0, 8)}...`);
-      console.log(`  APP_SECRET: ${appSecret.substring(0, 8)}...`);
+      console.log(`  APP_KEY: ${appKey.substring(0, 8)}... (来源: ${appKeySource})`);
+      console.log(`  APP_SECRET: ${appSecret.substring(0, 8)}... (来源: ${appSecretSource})`);
       // 显示Token后20位而不是前20位
-      const tokenDisplay = accessToken.length > 20 
+      const tokenDisplay = accessToken.length > 20
         ? `...${accessToken.substring(accessToken.length - 20)}`
         : accessToken;
-      console.log(`  ACCESS_TOKEN: ${tokenDisplay}`);
+      console.log(`  ACCESS_TOKEN: ${tokenDisplay} (来源: ${accessTokenSource})`);
       
       // 添加重试机制，最多重试3次
       let lastError: any = null;
