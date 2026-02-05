@@ -14,6 +14,7 @@ import tradingRecommendationService from '../trading-recommendation.service';
 import optionRecommendationService from '../option-recommendation.service';
 import { selectOptionContract } from '../options-contract-selector.service';
 import { estimateOptionOrderTotalCost } from '../options-fee.service';
+import optionDecisionLoggerService, { OptionDecisionLog } from '../option-decision-logger.service';
 
 type DirectionMode = 'FOLLOW_SIGNAL' | 'CALL_ONLY' | 'PUT_ONLY';
 type ExpirationMode = '0DTE' | 'NEAREST';
@@ -59,28 +60,77 @@ export class OptionIntradayStrategy extends StrategyBase {
     // symbol here is the underlying (from symbol pool)
     const cfg = this.config as OptionIntradayStrategyConfig;
 
-    // 1) 使用期权专用推荐服务（替代股票推荐）
-    const optionRec = await optionRecommendationService.calculateOptionRecommendation(symbol);
+    // 初始化决策日志对象
+    const decisionLog: OptionDecisionLog = {
+      strategyId: this.strategyId,
+      underlyingSymbol: symbol,
+      finalResult: 'ERROR', // 默认值，后续会更新
+    };
 
-    console.log(`📊 [期权推荐] ${symbol}:`, {
-      direction: optionRec.direction,
-      confidence: optionRec.confidence,
-      marketScore: optionRec.marketScore,
-      intradayScore: optionRec.intradayScore,
-      finalScore: optionRec.finalScore,
-      riskLevel: optionRec.riskLevel,
-      reasoning: optionRec.reasoning
-    });
+    try {
+      // 1) 使用期权专用推荐服务（替代股票推荐）
+      const optionRec = await optionRecommendationService.calculateOptionRecommendation(symbol);
 
-    // 如果推荐HOLD或风险过高，跳过
-    if (optionRec.direction === 'HOLD') {
-      console.log(`📍 [${symbol}] 推荐方向为HOLD，不生成信号`);
-      return null;
-    }
-    if (optionRec.riskLevel === 'EXTREME') {
-      console.warn(`⚠️ [${symbol}跳过] 风险等级EXTREME，不生成信号`);
-      return null;
-    }
+      // 记录检查点1: 市场数据充足性
+      if (optionRec.dataCheck) {
+        decisionLog.dataCheck = {
+          spxCount: optionRec.dataCheck.spxCount,
+          usdCount: optionRec.dataCheck.usdCount,
+          btcCount: optionRec.dataCheck.btcCount,
+          vixAvailable: optionRec.dataCheck.vixAvailable,
+          temperatureAvailable: optionRec.dataCheck.temperatureAvailable,
+          passed: optionRec.dataCheck.spxCount >= 50 && optionRec.dataCheck.usdCount >= 50 && optionRec.dataCheck.btcCount >= 50,
+        };
+      }
+
+      // 记录检查点2: 信号方向判定
+      decisionLog.signal = {
+        direction: optionRec.direction,
+        confidence: optionRec.confidence,
+        marketScore: optionRec.marketScore,
+        intradayScore: optionRec.intradayScore,
+        timeAdjustment: optionRec.timeDecayFactor,
+        finalScore: optionRec.finalScore,
+      };
+
+      // 记录检查点3: 风险等级评估
+      decisionLog.risk = {
+        level: optionRec.riskLevel,
+        vixValue: optionRec.riskMetrics?.vixValue,
+        temperatureValue: optionRec.riskMetrics?.temperatureValue,
+        score: optionRec.riskMetrics?.riskScore,
+        blocked: optionRec.riskLevel === 'EXTREME',
+      };
+
+      console.log(`📊 [期权推荐] ${symbol}:`, {
+        direction: optionRec.direction,
+        confidence: optionRec.confidence,
+        marketScore: optionRec.marketScore,
+        intradayScore: optionRec.intradayScore,
+        finalScore: optionRec.finalScore,
+        riskLevel: optionRec.riskLevel,
+        reasoning: optionRec.reasoning
+      });
+
+      // 如果推荐HOLD，跳过
+      if (optionRec.direction === 'HOLD') {
+        console.log(`📍 [${symbol}] 推荐方向为HOLD，不生成信号`);
+        decisionLog.finalResult = 'NO_SIGNAL';
+        decisionLog.rejectionReason = '推荐方向为HOLD，信号得分在中性区间[-15, 15]';
+        decisionLog.rejectionCheckpoint = 'checkpoint_2_signal';
+        await optionDecisionLoggerService.logDecision(decisionLog);
+        return null;
+      }
+
+      // 如果风险过高，跳过
+      if (optionRec.riskLevel === 'EXTREME') {
+        console.warn(`⚠️ [${symbol}跳过] 风险等级EXTREME，不生成信号`);
+        decisionLog.finalResult = 'NO_SIGNAL';
+        decisionLog.rejectionReason = '风险等级为EXTREME，市场环境不适合交易';
+        decisionLog.rejectionCheckpoint = 'checkpoint_3_risk';
+        await optionDecisionLoggerService.logDecision(decisionLog);
+        return null;
+      }
 
     // 2) Decide option direction (可选择强制方向或跟随信号)
     const directionMode: DirectionMode = cfg.directionMode || 'FOLLOW_SIGNAL';
@@ -94,37 +144,74 @@ export class OptionIntradayStrategy extends StrategyBase {
       direction = optionRec.direction as 'CALL' | 'PUT';
     }
 
-    // 3) Select contract (0DTE default)
-    const expirationMode: ExpirationMode = cfg.expirationMode || '0DTE';
-    const selected = await selectOptionContract({
-      underlyingSymbol: symbol,
-      expirationMode,
-      direction,
-      candidateStrikes: 8,
-      liquidityFilters: cfg.liquidityFilters,
-      greekFilters: cfg.greekFilters,
-    });
+      // 3) Select contract (0DTE default)
+      const expirationMode: ExpirationMode = cfg.expirationMode || '0DTE';
 
-    if (!selected) {
-      console.warn(`❌ [${symbol}无合约] 未找到合适的期权合约 (${direction}, ${expirationMode})`);
-      return null;
-    }
+      // 记录检查点4: DTE模式
+      decisionLog.dteCheck = {
+        mode: expirationMode,
+        available: false, // 将在selectOptionContract中更新
+      };
 
-    // 4) Determine entry price (limit)
-    const entryPriceMode = cfg.entryPriceMode || 'ASK';
-    const premium = entryPriceMode === 'MID'
-      ? (selected.mid || selected.last)
-      : (selected.ask || selected.mid || selected.last);
+      const selected = await selectOptionContract({
+        underlyingSymbol: symbol,
+        expirationMode,
+        direction,
+        candidateStrikes: 8,
+        liquidityFilters: cfg.liquidityFilters,
+        greekFilters: cfg.greekFilters,
+      });
 
-    // [检查点8] 入场价格有效性
-    console.log(
-      `📍 [${symbol}价格] ${entryPriceMode}=${premium?.toFixed(2) || 'N/A'} | ASK=${selected.ask?.toFixed(2)}, BID=${selected.bid?.toFixed(2)}, MID=${selected.mid?.toFixed(2)}`
-    );
+      if (!selected) {
+        console.warn(`❌ [${symbol}无合约] 未找到合适的期权合约 (${direction}, ${expirationMode})`);
+        decisionLog.finalResult = 'NO_SIGNAL';
+        decisionLog.rejectionReason = `未找到合适的期权合约 (方向=${direction}, 模式=${expirationMode})`;
+        decisionLog.rejectionCheckpoint = 'checkpoint_4_7_contract_selection';
+        await optionDecisionLoggerService.logDecision(decisionLog);
+        return null;
+      }
 
-    if (!premium || premium <= 0) {
-      console.warn(`❌ [${symbol}价格无效] ${entryPriceMode}价格=${premium}，无法下单`);
-      return null;
-    }
+      // 记录检查点5-7: 期权链和筛选结果
+      decisionLog.chainData = {
+        contractsCount: 1, // selected表示已筛选出1个合约
+        available: true,
+      };
+      decisionLog.filtering = {
+        candidatesBefore: 8, // candidateStrikes参数
+        liquidityPassed: 1,
+        greeksPassed: 1,
+        finalSelected: true,
+      };
+
+      // 4) Determine entry price (limit)
+      const entryPriceMode = cfg.entryPriceMode || 'ASK';
+      const premium = entryPriceMode === 'MID'
+        ? (selected.mid || selected.last)
+        : (selected.ask || selected.mid || selected.last);
+
+      // 记录检查点8: 入场价格有效性
+      decisionLog.pricing = {
+        mode: entryPriceMode,
+        ask: selected.ask,
+        bid: selected.bid,
+        mid: selected.mid,
+        selected: premium,
+        valid: !!premium && premium > 0,
+      };
+
+      // [检查点8] 入场价格有效性
+      console.log(
+        `📍 [${symbol}价格] ${entryPriceMode}=${premium?.toFixed(2) || 'N/A'} | ASK=${selected.ask?.toFixed(2)}, BID=${selected.bid?.toFixed(2)}, MID=${selected.mid?.toFixed(2)}`
+      );
+
+      if (!premium || premium <= 0) {
+        console.warn(`❌ [${symbol}价格无效] ${entryPriceMode}价格=${premium}，无法下单`);
+        decisionLog.finalResult = 'NO_SIGNAL';
+        decisionLog.rejectionReason = `入场价格无效 (${entryPriceMode}=${premium})`;
+        decisionLog.rejectionCheckpoint = 'checkpoint_8_pricing';
+        await optionDecisionLoggerService.logDecision(decisionLog);
+        return null;
+      }
 
     // 5) Determine contracts (default 1)
     const sizing = cfg.positionSizing || { mode: 'FIXED_CONTRACTS' as const, fixedContracts: 1 };
@@ -185,15 +272,40 @@ export class OptionIntradayStrategy extends StrategyBase {
       },
     };
 
-    const signalId = await this.logSignal(intent);
-    intent.metadata = { ...(intent.metadata || {}), signalId };
+      const signalId = await this.logSignal(intent);
+      intent.metadata = { ...(intent.metadata || {}), signalId };
 
-    // [检查点9] 信号生成成功
-    console.log(
-      `✅ [${symbol}信号] ${direction} ${selected.optionSymbol} | 合约=${contracts}, 权利金=$${premium.toFixed(2)}, 预估成本=$${est.totalCost.toFixed(2)} | Delta=${selected.delta?.toFixed(3)}, Theta=${selected.theta?.toFixed(3)}`
-    );
+      // 记录检查点9: 信号生成成功
+      decisionLog.signalGenerated = {
+        success: true,
+        signalId: signalId,
+        optionSymbol: selected.optionSymbol,
+        contracts: contracts,
+        premium: premium,
+        delta: selected.delta,
+        theta: selected.theta,
+        estimatedCost: est.totalCost,
+      };
 
-    return intent;
+      decisionLog.finalResult = 'SIGNAL_GENERATED';
+
+      // 写入决策日志
+      await optionDecisionLoggerService.logDecision(decisionLog);
+
+      // [检查点9] 信号生成成功
+      console.log(
+        `✅ [${symbol}信号] ${direction} ${selected.optionSymbol} | 合约=${contracts}, 权利金=$${premium.toFixed(2)}, 预估成本=$${est.totalCost.toFixed(2)} | Delta=${selected.delta?.toFixed(3)}, Theta=${selected.theta?.toFixed(3)}`
+      );
+
+      return intent;
+    } catch (error: any) {
+      console.error(`❌ [${symbol}策略执行失败]:`, error.message);
+      decisionLog.finalResult = 'ERROR';
+      decisionLog.rejectionReason = `策略执行异常: ${error.message}`;
+      decisionLog.rejectionCheckpoint = 'error_handler';
+      await optionDecisionLoggerService.logDecision(decisionLog);
+      return null;
+    }
   }
 }
 

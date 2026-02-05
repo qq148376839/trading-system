@@ -42,6 +42,20 @@ interface OptionRecommendation {
   };
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'EXTREME';
   timeDecayFactor: number; // 时间价值衰减因子
+  // 检查点1数据
+  dataCheck?: {
+    spxCount: number;
+    usdCount: number;
+    btcCount: number;
+    vixAvailable: boolean;
+    temperatureAvailable: boolean;
+  };
+  // 检查点3数据（用于日志记录）
+  riskMetrics?: {
+    vixValue?: number;
+    temperatureValue?: number;
+    riskScore?: number;
+  };
 }
 
 class OptionRecommendationService {
@@ -136,7 +150,7 @@ class OptionRecommendationService {
       );
 
       // 9. 风险等级评估
-      const riskLevel = this.assessRiskLevel(marketData, finalScore);
+      const { riskLevel, riskMetrics } = this.assessRiskLevel(marketData, finalScore);
 
       // 10. 时间价值衰减因子
       const timeDecayFactor = this.calculateTimeDecayFactor();
@@ -151,6 +165,15 @@ class OptionRecommendationService {
         marketData
       );
 
+      // 12. 构建检查点1数据
+      const dataCheck = {
+        spxCount: marketData.spx?.length || 0,
+        usdCount: marketData.usdIndex?.length || 0,
+        btcCount: marketData.btc?.length || 0,
+        vixAvailable: !!(marketData.vix && marketData.vix.length > 0),
+        temperatureAvailable: marketData.marketTemperature !== undefined,
+      };
+
       return {
         direction,
         confidence,
@@ -162,6 +185,8 @@ class OptionRecommendationService {
         entryWindow,
         riskLevel,
         timeDecayFactor,
+        dataCheck,
+        riskMetrics,
       };
     } catch (error: any) {
       console.error(`计算期权推荐失败 (${underlyingSymbol}):`, error.message);
@@ -475,7 +500,7 @@ class OptionRecommendationService {
   private assessRiskLevel(
     marketData: any,
     finalScore: number
-  ): 'LOW' | 'MEDIUM' | 'HIGH' | 'EXTREME' {
+  ): { riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'EXTREME'; riskMetrics: any } {
     let riskPoints = 0;
 
     // 1. VIX检查
@@ -518,7 +543,13 @@ class OptionRecommendationService {
       `📍 [风险评估] ${riskLevel} | 积分=${riskPoints} (VIX=${currentVix?.toFixed(1) || 'N/A'}, 温度=${temp?.toFixed(0) || 'N/A'}, 时间调整=${timeAdjustment.toFixed(1)})`
     );
 
-    return riskLevel;
+    const riskMetrics = {
+      vixValue: currentVix,
+      temperatureValue: temp,
+      riskScore: riskPoints,
+    };
+
+    return { riskLevel, riskMetrics };
   }
 
   /**
