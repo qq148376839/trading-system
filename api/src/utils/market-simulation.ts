@@ -7,6 +7,8 @@
  * - 确保价格在最高价和最低价范围内
  */
 
+import { logger } from './logger';
+
 export interface DailyCandlestick {
   timestamp: Date;
   open: number;
@@ -36,7 +38,7 @@ export function simulateIntradayPrices(
   
   // 验证数据有效性
   if (high < low || open <= 0 || close <= 0) {
-    console.warn(`[市场模拟] 数据异常，跳过模拟: open=${open}, high=${high}, low=${low}, close=${close}`);
+    logger.warn(`[市场模拟] 数据异常，跳过模拟: open=${open}, high=${high}, low=${low}, close=${close}`);
     return [];
   }
 

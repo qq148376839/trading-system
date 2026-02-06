@@ -1,8 +1,18 @@
 /**
  * 日志工具
  * 为所有日志添加时间戳，并集成新的日志服务（非阻塞、结构化、持久化）
- * 
+ *
  * 向后兼容：保持原有的API接口，自动提取模块信息
+ *
+ * 级别门控：
+ *   debug()  -> 仅控制台，不入库
+ *   info()   -> 控制台 + 入库（走节流）；可通过 { dbWrite: false } 跳过入库
+ *   warn()   -> 控制台 + 入库（走节流）
+ *   error()  -> 控制台 + 入库（不节流）
+ *
+ * 新增方法：
+ *   console() -> 纯控制台输出（任何级别都不入库）
+ *   metric()  -> 向 digest 服务注册指标数据点
  */
 
 import logService from '../services/log.service';
@@ -24,6 +34,26 @@ try {
   console.warn('[Logger] 无法加载 log-module-mapper，将使用备用模块名称提取方案');
 }
 
+// Digest 服务延迟加载（避免循环依赖）
+let logDigestService: any = null;
+function getDigestService() {
+  if (!logDigestService) {
+    try {
+      logDigestService = require('../services/log-digest.service').default;
+    } catch {
+      // digest 服务不可用
+    }
+  }
+  return logDigestService;
+}
+
+/**
+ * 日志选项接口
+ */
+interface LogOptions {
+  dbWrite?: boolean; // 默认: INFO/WARN/ERROR=true, DEBUG=false
+}
+
 function formatTimestamp(): string {
   const now = new Date();
   const year = now.getFullYear();
@@ -33,7 +63,7 @@ function formatTimestamp(): string {
   const minutes = String(now.getMinutes()).padStart(2, '0');
   const seconds = String(now.getSeconds()).padStart(2, '0');
   const milliseconds = String(now.getMilliseconds()).padStart(3, '0');
-  
+
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${milliseconds}`;
 }
 
@@ -42,12 +72,12 @@ function formatMessage(...args: any[]): any[] {
   if (args.length === 0) {
     return [`[${timestamp}]`];
   }
-  
+
   // 如果第一个参数是字符串，在前面添加时间戳
   if (typeof args[0] === 'string') {
     return [`[${timestamp}] ${args[0]}`, ...args.slice(1)];
   }
-  
+
   // 否则在所有参数前添加时间戳
   return [`[${timestamp}]`, ...args];
 }
@@ -59,71 +89,71 @@ function inferModuleFromPathFallback(filePath: string): string {
   // 标准化路径（Windows路径转换为Unix风格）
   const normalizedPath = filePath.replace(/\\/g, '/');
   const pathParts = normalizedPath.split('/');
-  
+
   // 查找 services、routes、utils、config 等目录
   const servicesIndex = pathParts.indexOf('services');
   const routesIndex = pathParts.indexOf('routes');
   const utilsIndex = pathParts.indexOf('utils');
   const configIndex = pathParts.indexOf('config');
-  
+
   if (servicesIndex >= 0 && servicesIndex < pathParts.length - 1) {
     const fileName = pathParts[pathParts.length - 1];
     const moduleName = fileName
       .replace(/\.(ts|js)$/, '')
       .replace(/-/g, '.')
-      .replace(/_/g, '.')  // 新增：将下划线也转换为点号
+      .replace(/_/g, '.')
       .split('.')
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join('.');
     return `Service.${moduleName}`;
   }
-  
+
   if (routesIndex >= 0 && routesIndex < pathParts.length - 1) {
     const fileName = pathParts[pathParts.length - 1];
     const moduleName = fileName
       .replace(/\.(ts|js)$/, '')
       .replace(/-/g, '.')
-      .replace(/_/g, '.')  // 新增：将下划线也转换为点号
+      .replace(/_/g, '.')
       .split('.')
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join('.');
     return `API.${moduleName}`;
   }
-  
+
   if (utilsIndex >= 0 && utilsIndex < pathParts.length - 1) {
     const fileName = pathParts[pathParts.length - 1];
     const moduleName = fileName
       .replace(/\.(ts|js)$/, '')
       .replace(/-/g, '.')
-      .replace(/_/g, '.')  // 新增：将下划线也转换为点号
+      .replace(/_/g, '.')
       .split('.')
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join('.');
     return `Utils.${moduleName}`;
   }
-  
+
   if (configIndex >= 0 && configIndex < pathParts.length - 1) {
     const fileName = pathParts[pathParts.length - 1];
     const moduleName = fileName
       .replace(/\.(ts|js)$/, '')
       .replace(/-/g, '.')
-      .replace(/_/g, '.')  // 新增：将下划线也转换为点号
+      .replace(/_/g, '.')
       .split('.')
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join('.');
     return `Config.${moduleName}`;
   }
-  
+
   // 默认：从文件名提取
   const fileName = pathParts[pathParts.length - 1];
   const moduleName = fileName
     .replace(/\.(ts|js)$/, '')
     .replace(/-/g, '.')
-    .replace(/_/g, '.')  // 新增：将下划线也转换为点号
+    .replace(/_/g, '.')
     .split('.')
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join('.');
-  
+
   return moduleName || 'Unknown';
 }
 
@@ -185,6 +215,33 @@ function extractModuleName(stack?: string): string {
 }
 
 /**
+ * 从参数列表中提取 LogOptions（如果最后一个参数含 dbWrite 属性）
+ * 返回 [普通参数列表, options | undefined]
+ */
+function extractLogOptions(args: any[]): [any[], LogOptions | undefined] {
+  if (args.length < 2) return [args, undefined];
+
+  const last = args[args.length - 1];
+  if (
+    typeof last === 'object' &&
+    last !== null &&
+    !Array.isArray(last) &&
+    'dbWrite' in last
+  ) {
+    // 提取选项，剩余参数不包含该对象
+    const { dbWrite, ...rest } = last;
+    const options: LogOptions = { dbWrite };
+    // 如果对象里还有其他属性，保留为普通参数
+    if (Object.keys(rest).length > 0) {
+      return [[...args.slice(0, -1), rest], options];
+    }
+    return [args.slice(0, -1), options];
+  }
+
+  return [args, undefined];
+}
+
+/**
  * 格式化日志消息和额外数据
  */
 function formatLogData(...args: any[]): { message: string; extraData?: Record<string, any> } {
@@ -219,13 +276,17 @@ export const logger = {
    * 保持向后兼容：自动提取模块信息，同时写入数据库
    */
   log: (...args: any[]) => {
-    const formatted = formatMessage(...args);
+    const [cleanArgs, options] = extractLogOptions(args);
+    const formatted = formatMessage(...cleanArgs);
     console.log(...formatted);
+
+    // 如果明确指定 dbWrite:false，跳过入库
+    if (options?.dbWrite === false) return;
 
     // 提取模块名称
     const stack = new Error().stack;
     const module = extractModuleName(stack);
-    const { message, extraData } = formatLogData(...args);
+    const { message, extraData } = formatLogData(...cleanArgs);
 
     // 写入数据库（非阻塞）
     logService.info(module, message, extraData);
@@ -233,6 +294,7 @@ export const logger = {
 
   /**
    * 记录错误日志（ERROR级别）
+   * 始终入库，不节流
    */
   error: (...args: any[]) => {
     const formatted = formatMessage(...args);
@@ -247,6 +309,7 @@ export const logger = {
 
   /**
    * 记录警告日志（WARNING级别）
+   * 入库，走节流
    */
   warn: (...args: any[]) => {
     const formatted = formatMessage(...args);
@@ -261,31 +324,59 @@ export const logger = {
 
   /**
    * 记录信息日志（INFO级别）
+   * 入库走节流，可通过 { dbWrite: false } 跳过入库
    */
   info: (...args: any[]) => {
-    const formatted = formatMessage(...args);
+    const [cleanArgs, options] = extractLogOptions(args);
+    const formatted = formatMessage(...cleanArgs);
     console.info(...formatted);
+
+    // 如果明确指定 dbWrite:false，跳过入库
+    if (options?.dbWrite === false) return;
 
     const stack = new Error().stack;
     const module = extractModuleName(stack);
-    const { message, extraData } = formatLogData(...args);
+    const { message, extraData } = formatLogData(...cleanArgs);
 
     logService.info(module, message, extraData);
   },
 
   /**
    * 记录调试日志（DEBUG级别）
+   * 仅控制台输出，不入库（除非应急开关 log_debug_to_db=true）
    */
   debug: (...args: any[]) => {
     const formatted = formatMessage(...args);
     console.debug(...formatted);
 
+    // debug 仍然调用 logService.debug()，但 logService 内部会门控
     const stack = new Error().stack;
     const module = extractModuleName(stack);
     const { message, extraData } = formatLogData(...args);
 
     logService.debug(module, message, extraData);
   },
+
+  /**
+   * 纯控制台输出（任何级别都不入库）
+   * 用于明确不需要持久化的输出
+   */
+  console: (...args: any[]) => {
+    const formatted = formatMessage(...args);
+    console.log(...formatted);
+  },
+
+  /**
+   * 向 digest 服务注册指标数据点
+   * 高频操作使用此方法，替代每次写日志
+   * @param name 指标名称，如 'price_fetch'
+   * @param value 数值
+   * @param labels 可选标签，如 { symbol: 'AAPL.US', source: 'longport' }
+   */
+  metric: (name: string, value: number, labels?: Record<string, string>) => {
+    const digest = getDigestService();
+    if (digest) {
+      digest.record(name, value, labels);
+    }
+  },
 };
-
-

@@ -8,6 +8,7 @@ import configService from '../services/config.service';
 import bcrypt from 'bcryptjs';
 import pool from '../config/database';
 import { ErrorFactory, normalizeError } from '../utils/errors';
+import { logger } from '../utils/logger';
 
 export const configRouter = Router();
 
@@ -461,7 +462,7 @@ configRouter.put('/admin/:id', requireAdmin, async (req: Request, res: Response,
       },
     });
   } catch (error: any) {
-    console.error('更新管理员账户失败:', error.message);
+    logger.error('更新管理员账户失败:', error.message);
     
     // 检查是否是用户名重复错误
     if (error.code === '23505') {
@@ -504,7 +505,7 @@ configRouter.post('/admin', requireAdmin, async (req: Request, res: Response, ne
       data: { message: '管理员账户创建成功' },
     });
   } catch (error: any) {
-    console.error('创建管理员账户失败:', error.message);
+    logger.error('创建管理员账户失败:', error.message);
     
     if (error.code === '23505') {
       return next(ErrorFactory.resourceConflict('用户名已存在'));

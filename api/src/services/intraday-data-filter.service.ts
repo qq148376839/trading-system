@@ -3,6 +3,8 @@
  * 过滤异常值、验证数据质量、平滑处理
  */
 
+import { logger } from '../utils/logger';
+
 interface CandlestickData {
   close: number;
   open: number;
@@ -49,7 +51,7 @@ class IntradayDataFilterService {
 
     // 如果数据点太少，不进行过滤
     if (data.length < mergedConfig.minDataPoints) {
-      console.warn(`数据点不足（${data.length} < ${mergedConfig.minDataPoints}），跳过过滤`);
+      logger.warn(`数据点不足（${data.length} < ${mergedConfig.minDataPoints}），跳过过滤`);
       return data;
     }
 
@@ -110,7 +112,7 @@ class IntradayDataFilterService {
           replacement = mean;
         }
 
-        console.warn(
+        logger.warn(
           `检测到异常值（Z-score: ${zScore.toFixed(2)}），价格: ${item.close} -> ${replacement.toFixed(2)}`
         );
 
@@ -179,7 +181,7 @@ class IntradayDataFilterService {
         const percentage = ((anomalyCount / data.length) * 100).toFixed(1);
         const thresholdValue = (avgVolume * threshold).toFixed(2);
         // 添加数据来源说明
-        console.warn(
+        logger.warn(
           `[成交量过滤] 检测到 ${anomalyCount}/${data.length} (${percentage}%) 个数据点成交量异常低（< ${thresholdValue}，平均成交量: ${avgVolume.toFixed(2)}），已使用前一个值修正。数据来源：富途API K线数据`
         );
         
@@ -216,7 +218,7 @@ class IntradayDataFilterService {
 
         if (!isConsecutiveAnomaly) {
           // 单个异常点，可能是数据错误，使用前一个值
-          console.warn(
+          logger.warn(
             `价格变化异常（${(changeRate * 100).toFixed(2)}%），使用前一个值`
           );
 

@@ -14,6 +14,7 @@
 
 import marketDataCacheService from './market-data-cache.service';
 import intradayDataFilterService from './intraday-data-filter.service';
+import { logger } from '../utils/logger';
 
 interface CandlestickData {
   close: number;
@@ -72,8 +73,8 @@ class OptionRecommendationService {
       const marketData = await marketDataCacheService.getMarketData(100, true);
 
       // [检查点1] 市场数据充足性
-      console.log(
-        `📍 [${underlyingSymbol}数据检查] SPX=${marketData.spx?.length || 0}, USD=${marketData.usdIndex?.length || 0}, BTC=${marketData.btc?.length || 0}, VIX=${marketData.vix ? '✓' : '✗'}, 温度=${marketData.marketTemperature !== undefined ? '✓' : '✗'}`
+      logger.debug(
+        `[${underlyingSymbol}数据检查] SPX=${marketData.spx?.length || 0}, USD=${marketData.usdIndex?.length || 0}, BTC=${marketData.btc?.length || 0}, VIX=${marketData.vix ? 'Y' : 'N'}, 温度=${marketData.marketTemperature !== undefined ? 'Y' : 'N'}`
       );
 
       // 验证数据充足性
@@ -120,22 +121,22 @@ class OptionRecommendationService {
         direction = 'CALL';
         confidence = Math.min(Math.round((finalScore / 100) * 100), 100);
         // [检查点2] 方向判定 - CALL
-        console.log(
-          `📍 [${underlyingSymbol}信号] BUY_CALL | 得分=${finalScore.toFixed(1)} (市场${marketScore.toFixed(1)} + 日内${intradayScore.toFixed(1)} + 时间${timeWindowAdjustment.toFixed(1)}) | 置信度=${confidence}%`
+        logger.info(
+          `[${underlyingSymbol}信号] BUY_CALL | 得分=${finalScore.toFixed(1)} (市场${marketScore.toFixed(1)} + 日内${intradayScore.toFixed(1)} + 时间${timeWindowAdjustment.toFixed(1)}) | 置信度=${confidence}%`
         );
       } else if (finalScore < -15) {
         direction = 'PUT';
         confidence = Math.min(Math.round((Math.abs(finalScore) / 100) * 100), 100);
         // [检查点2] 方向判定 - PUT
-        console.log(
-          `📍 [${underlyingSymbol}信号] BUY_PUT | 得分=${finalScore.toFixed(1)} (市场${marketScore.toFixed(1)} + 日内${intradayScore.toFixed(1)} + 时间${timeWindowAdjustment.toFixed(1)}) | 置信度=${confidence}%`
+        logger.info(
+          `[${underlyingSymbol}信号] BUY_PUT | 得分=${finalScore.toFixed(1)} (市场${marketScore.toFixed(1)} + 日内${intradayScore.toFixed(1)} + 时间${timeWindowAdjustment.toFixed(1)}) | 置信度=${confidence}%`
         );
       } else {
         direction = 'HOLD';
         confidence = Math.round(100 - Math.abs(finalScore) * 2);
         // [检查点2] 方向判定 - HOLD
-        console.log(
-          `📍 [${underlyingSymbol}信号] HOLD | 得分=${finalScore.toFixed(1)} 处于中性区间[-15, 15] | 置信度=${confidence}%`
+        logger.debug(
+          `[${underlyingSymbol}信号] HOLD | 得分=${finalScore.toFixed(1)} 处于中性区间[-15, 15] | 置信度=${confidence}%`
         );
       }
 
@@ -189,7 +190,7 @@ class OptionRecommendationService {
         riskMetrics,
       };
     } catch (error: any) {
-      console.error(`计算期权推荐失败 (${underlyingSymbol}):`, error.message);
+      logger.error(`计算期权推荐失败 (${underlyingSymbol}):`, error.message);
       throw error;
     }
   }
@@ -539,8 +540,8 @@ class OptionRecommendationService {
       riskPoints >= 1 ? 'MEDIUM' : 'LOW';
 
     // [检查点3] 风险评估
-    console.log(
-      `📍 [风险评估] ${riskLevel} | 积分=${riskPoints} (VIX=${currentVix?.toFixed(1) || 'N/A'}, 温度=${temp?.toFixed(0) || 'N/A'}, 时间调整=${timeAdjustment.toFixed(1)})`
+    logger.debug(
+      `[风险评估] ${riskLevel} | 积分=${riskPoints} (VIX=${currentVix?.toFixed(1) || 'N/A'}, 温度=${temp?.toFixed(0) || 'N/A'}, 时间调整=${timeAdjustment.toFixed(1)})`
     );
 
     const riskMetrics = {

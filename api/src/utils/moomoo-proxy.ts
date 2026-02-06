@@ -4,6 +4,7 @@
  */
 
 import axios from 'axios';
+import { logger } from './logger';
 
 const EDGE_FUNCTION_URL = process.env.MOOMOO_EDGE_FUNCTION_URL || 'https://cfapi.riowang.win';
 const USE_EDGE_FUNCTION = process.env.USE_MOOMOO_EDGE_FUNCTION !== 'false'; // 默认启用
@@ -55,7 +56,7 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
     try {
       // 调试日志：打印请求参数
       if (process.env.NODE_ENV === 'development') {
-        console.log(`[Moomoo代理] 请求参数:`, {
+        logger.debug(`[Moomoo代理] 请求参数:`, {
           path,
           params: Object.keys(proxyParams),
           hasCookies: !!proxyParams.cookies,
@@ -72,7 +73,7 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
 
       // 调试日志：打印响应结构
       if (process.env.NODE_ENV === 'development') {
-        console.log(`[Moomoo代理] 响应结构:`, {
+        logger.debug(`[Moomoo代理] 响应结构:`, {
           hasData: !!response.data,
           dataType: typeof response.data,
           hasSuccess: response.data?.success !== undefined,
@@ -90,7 +91,7 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
           
           // 调试日志
           if (process.env.NODE_ENV === 'development') {
-            console.log(`[Moomoo代理] Moomoo API响应:`, {
+            logger.debug(`[Moomoo代理] Moomoo API响应:`, {
               hasCode: moomooResponse?.code !== undefined,
               code: moomooResponse?.code,
               message: moomooResponse?.message,
@@ -101,7 +102,7 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
           if (moomooResponse && typeof moomooResponse === 'object' && 'code' in moomooResponse) {
             if (moomooResponse.code !== 0) {
               const errorMsg = moomooResponse.message || `Moomoo API error: code=${moomooResponse.code}`;
-              console.error(`[Moomoo代理] Moomoo API返回错误:`, {
+              logger.error(`[Moomoo代理] Moomoo API返回错误:`, {
                 code: moomooResponse.code,
                 message: errorMsg,
                 path,
@@ -135,11 +136,11 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
     } catch (error: any) {
       // 详细错误日志
       if (error.response) {
-        console.error(`[Moomoo代理] 边缘函数请求失败: ${path}`);
-        console.error(`[Moomoo代理] 状态码: ${error.response.status}`);
-        console.error(`[Moomoo代理] 响应数据: ${JSON.stringify(error.response.data).substring(0, 500)}`);
+        logger.error(`[Moomoo代理] 边缘函数请求失败: ${path}`);
+        logger.error(`[Moomoo代理] 状态码: ${error.response.status}`);
+        logger.error(`[Moomoo代理] 响应数据: ${JSON.stringify(error.response.data).substring(0, 500)}`);
       } else {
-        console.error(`[Moomoo代理] 边缘函数请求失败: ${path} - ${error.message}`);
+        logger.error(`[Moomoo代理] 边缘函数请求失败: ${path} - ${error.message}`);
       }
       throw error;
     }
@@ -178,7 +179,7 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
       return response.data;
     } catch (error: any) {
       // 简化错误日志
-      console.error(`[Moomoo代理] 直接访问失败: ${path} - ${error.message}`);
+      logger.error(`[Moomoo代理] 直接访问失败: ${path} - ${error.message}`);
       throw error;
     }
   }

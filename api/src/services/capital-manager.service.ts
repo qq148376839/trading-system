@@ -94,7 +94,7 @@ class CapitalManager {
         }
       } catch (usdError: any) {
         // 如果按币种查询失败，继续使用通用查询方式
-        console.debug('按USD币种查询失败，使用通用查询:', usdError.message);
+        logger.debug('按USD币种查询失败，使用通用查询:', usdError.message);
       }
       
       // 通用查询方式：获取所有币种余额

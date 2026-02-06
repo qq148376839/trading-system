@@ -7,6 +7,7 @@ import marketDataCacheService from './market-data-cache.service';
 import { getQuoteContext } from '../config/longport';
 import { isPreMarketHours, isAfterHours } from '../utils/trading-hours';
 import intradayDataFilterService from './intraday-data-filter.service';
+import { logger } from '../utils/logger';
 
 interface CandlestickData {
   close: number;
@@ -108,8 +109,8 @@ class TradingRecommendationService {
       
       // ✅ 调试日志：确认使用的是历史数据还是实时数据
       if (targetDate) {
-        console.log(`[回测] ${symbol} 使用历史市场数据（目标日期: ${targetDate.toISOString().split('T')[0]}）`);
-        console.log(`[回测] SPX: ${marketData.spx?.length || 0}, USD: ${marketData.usdIndex?.length || 0}, BTC: ${marketData.btc?.length || 0}, VIX: ${marketData.vix?.length || 0}`);
+        logger.debug(`[回测] ${symbol} 使用历史市场数据（目标日期: ${targetDate.toISOString().split('T')[0]}）`);
+        logger.debug(`[回测] SPX: ${marketData.spx?.length || 0}, USD: ${marketData.usdIndex?.length || 0}, BTC: ${marketData.btc?.length || 0}, VIX: ${marketData.vix?.length || 0}`);
       }
 
       // 2. 获取股票K线数据（如果提供了历史数据则使用，否则获取实时数据）
@@ -139,7 +140,7 @@ class TradingRecommendationService {
           stockCandlesticks[stockCandlesticks.length - 1].close = realtimePrice;
           currentPrice = realtimePrice;
           isRealtimePrice = true;
-          console.log(`${symbol} 使用实时价格: ${realtimePrice.toFixed(2)} (${isPreMarketHours() ? '盘前' : '盘后'})`);
+          logger.debug(`${symbol} 使用实时价格: ${realtimePrice.toFixed(2)} (${isPreMarketHours() ? '盘前' : '盘后'})`);
         }
       }
 
@@ -150,7 +151,7 @@ class TradingRecommendationService {
         if (!marketData.spx || marketData.spx.length < 50 || 
             !marketData.usdIndex || marketData.usdIndex.length < 50 ||
             !marketData.btc || marketData.btc.length < 50) {
-          console.warn('市场数据不足，强制刷新缓存并重新获取...');
+          logger.warn('市场数据不足，强制刷新缓存并重新获取...');
           // 清除缓存，强制重新获取
           marketDataCacheService.clearCache();
           finalMarketData = await marketDataCacheService.getMarketData(100, true);
@@ -239,7 +240,7 @@ class TradingRecommendationService {
         ...recommendation,
       };
     } catch (error: any) {
-      console.error(`计算 ${symbol} 交易推荐失败:`, error.message);
+      logger.error(`计算 ${symbol} 交易推荐失败:`, error.message);
       throw error;
     }
   }
@@ -258,7 +259,7 @@ class TradingRecommendationService {
         const recommendation = await this.calculateRecommendation(symbol);
         recommendations.set(symbol, recommendation);
       } catch (error: any) {
-        console.error(`计算 ${symbol} 推荐失败:`, error.message);
+        logger.error(`计算 ${symbol} 推荐失败:`, error.message);
       }
     });
 
@@ -378,7 +379,7 @@ class TradingRecommendationService {
         veto_reason,
       };
     } catch (error: any) {
-      console.error('获取市场状态矩阵失败:', error.message);
+      logger.error('获取市场状态矩阵失败:', error.message);
       // 不返回默认值，直接抛出错误
       throw new Error(`市场状态矩阵计算失败: ${error.message}`);
     }
@@ -425,7 +426,7 @@ class TradingRecommendationService {
       
       return null;
     } catch (error: any) {
-      console.warn(`获取${symbol}实时价格失败:`, error.message);
+      logger.warn(`获取${symbol}实时价格失败:`, error.message);
       return null;
     }
   }
@@ -771,13 +772,13 @@ class TradingRecommendationService {
           }
           vix_normalized = Math.max(-100, Math.min(50, vix_score));
         } else {
-          console.warn('市场温度数据无效，跳过市场状态矩阵计算');
+          logger.warn('市场温度数据无效，跳过市场状态矩阵计算');
         }
       } else {
-        console.warn('市场温度数据缺失，跳过市场状态矩阵计算');
+        logger.warn('市场温度数据缺失，跳过市场状态矩阵计算');
       }
     } else {
-      console.warn('VIX数据缺失或无效，跳过市场状态矩阵计算');
+      logger.warn('VIX数据缺失或无效，跳过市场状态矩阵计算');
     }
 
     // 2. 环境分计算 (Environment Score)
@@ -789,7 +790,7 @@ class TradingRecommendationService {
     } else {
       // 数据缺失时，只使用基础强度（不包含温度和VIX）
       env_score = basic_market_strength;
-      console.warn('市场状态矩阵数据缺失，环境分仅基于基础市场强度计算');
+      logger.warn('市场状态矩阵数据缺失，环境分仅基于基础市场强度计算');
     }
 
     // 3. 市场环境评估 (升级版)
@@ -961,7 +962,7 @@ class TradingRecommendationService {
       }
       
       if (take_profit <= entry_min) {
-        console.warn(`止盈价调整警告（BUY）：止盈(${take_profit.toFixed(2)}) <= 入场下限(${entry_min.toFixed(2)})，强制调整`);
+        logger.warn(`止盈价调整警告（BUY）：止盈(${take_profit.toFixed(2)}) <= 入场下限(${entry_min.toFixed(2)})，强制调整`);
         take_profit = entry_min * 1.03 + feesPerShare;
       }
     } else if (market_environment === '较差' || market_environment === '中性利空' || (stockAnalysis.trend === '下降趋势' && market_environment !== '良好' && market_environment !== '中性利好')) {
@@ -1048,12 +1049,12 @@ class TradingRecommendationService {
       take_profit = Math.min(take_profit, maxTakeProfit);
       
       if (take_profit <= entry_max) {
-        console.warn(`HOLD止盈价调整：止盈(${take_profit.toFixed(2)}) <= 入场上限(${entry_max.toFixed(2)})，强制调整`);
+        logger.warn(`HOLD止盈价调整：止盈(${take_profit.toFixed(2)}) <= 入场上限(${entry_max.toFixed(2)})，强制调整`);
         take_profit = entry_max * 1.02;
       }
       
       if (stop_loss >= entry_min) {
-        console.warn(`HOLD止损价调整：止损(${stop_loss.toFixed(2)}) >= 入场下限(${entry_min.toFixed(2)})，强制调整`);
+        logger.warn(`HOLD止损价调整：止损(${stop_loss.toFixed(2)}) >= 入场下限(${entry_min.toFixed(2)})，强制调整`);
         stop_loss = entry_min * 0.98;
       }
     }
@@ -1322,19 +1323,19 @@ class TradingRecommendationService {
       
       // 验证数据有效性
       if (potential_loss <= 0) {
-        console.warn(`R/R计算警告（BUY）：潜在损失 <= 0 (entry=${avgEntry.toFixed(2)}, stop_loss=${stop_loss.toFixed(2)}, entry_range=[${entry_min.toFixed(2)}, ${entry_max.toFixed(2)}])`);
+        logger.warn(`R/R计算警告（BUY）：潜在损失 <= 0 (entry=${avgEntry.toFixed(2)}, stop_loss=${stop_loss.toFixed(2)}, entry_range=[${entry_min.toFixed(2)}, ${entry_max.toFixed(2)}])`);
         // 如果止损价 >= 入场价，说明止损设置不合理，返回0
         return 0;
       }
       
       if (potential_profit <= 0) {
-        console.warn(`R/R计算警告（BUY）：潜在收益 <= 0 (entry=${avgEntry.toFixed(2)}, take_profit=${take_profit.toFixed(2)}, entry_range=[${entry_min.toFixed(2)}, ${entry_max.toFixed(2)}])`);
+        logger.warn(`R/R计算警告（BUY）：潜在收益 <= 0 (entry=${avgEntry.toFixed(2)}, take_profit=${take_profit.toFixed(2)}, entry_range=[${entry_min.toFixed(2)}, ${entry_max.toFixed(2)}])`);
         // 如果止盈价 <= 入场价，说明止盈设置不合理，返回0
         // 尝试使用entry_max重新计算
         const altProfit = take_profit - entry_max;
         if (altProfit > 0) {
           const altRatio = altProfit / potential_loss;
-          console.warn(`R/R计算（BUY）：使用entry_max重新计算，R/R=${altRatio.toFixed(2)}`);
+          logger.warn(`R/R计算（BUY）：使用entry_max重新计算，R/R=${altRatio.toFixed(2)}`);
           return altRatio;
         }
         return 0;
@@ -1349,13 +1350,13 @@ class TradingRecommendationService {
       
       // 验证数据有效性
       if (potential_loss <= 0) {
-        console.warn(`R/R计算警告（SELL）：潜在损失 <= 0 (entry=${avgEntry.toFixed(2)}, stop_loss=${stop_loss.toFixed(2)}, entry_range=[${entry_min.toFixed(2)}, ${entry_max.toFixed(2)}])`);
+        logger.warn(`R/R计算警告（SELL）：潜在损失 <= 0 (entry=${avgEntry.toFixed(2)}, stop_loss=${stop_loss.toFixed(2)}, entry_range=[${entry_min.toFixed(2)}, ${entry_max.toFixed(2)}])`);
         // 如果止损价 <= 入场价，说明止损设置不合理，返回0
         return 0;
       }
       
       if (potential_profit <= 0) {
-        console.warn(`R/R计算警告（SELL）：潜在收益 <= 0 (entry=${avgEntry.toFixed(2)}, take_profit=${take_profit.toFixed(2)}, entry_range=[${entry_min.toFixed(2)}, ${entry_max.toFixed(2)}])`);
+        logger.warn(`R/R计算警告（SELL）：潜在收益 <= 0 (entry=${avgEntry.toFixed(2)}, take_profit=${take_profit.toFixed(2)}, entry_range=[${entry_min.toFixed(2)}, ${entry_max.toFixed(2)}])`);
         // 如果止盈价 >= 入场价，说明止盈设置不合理，返回0
         // 尝试使用entry_min重新计算
         const altProfit = entry_min - take_profit;
@@ -1363,7 +1364,7 @@ class TradingRecommendationService {
           const altLoss = stop_loss - entry_min;
           if (altLoss > 0) {
             const altRatio = altProfit / altLoss;
-            console.warn(`R/R计算（SELL）：使用entry_min重新计算，R/R=${altRatio.toFixed(2)}`);
+            logger.warn(`R/R计算（SELL）：使用entry_min重新计算，R/R=${altRatio.toFixed(2)}`);
             return altRatio;
           }
         }
@@ -1381,17 +1382,17 @@ class TradingRecommendationService {
       
       // 验证数据有效性
       if (potential_loss <= 0) {
-        console.warn(`R/R计算警告（HOLD）：潜在损失 <= 0 (entry=${avgEntry.toFixed(2)}, stop_loss=${stop_loss.toFixed(2)}, entry_range=[${entry_min.toFixed(2)}, ${entry_max.toFixed(2)}])`);
+        logger.warn(`R/R计算警告（HOLD）：潜在损失 <= 0 (entry=${avgEntry.toFixed(2)}, stop_loss=${stop_loss.toFixed(2)}, entry_range=[${entry_min.toFixed(2)}, ${entry_max.toFixed(2)}])`);
         return 0;
       }
       
       if (potential_profit <= 0) {
-        console.warn(`R/R计算警告（HOLD）：潜在收益 <= 0 (entry=${avgEntry.toFixed(2)}, take_profit=${take_profit.toFixed(2)}, entry_range=[${entry_min.toFixed(2)}, ${entry_max.toFixed(2)}])`);
+        logger.warn(`R/R计算警告（HOLD）：潜在收益 <= 0 (entry=${avgEntry.toFixed(2)}, take_profit=${take_profit.toFixed(2)}, entry_range=[${entry_min.toFixed(2)}, ${entry_max.toFixed(2)}])`);
         // 尝试使用entry_max重新计算
         const altProfit = take_profit - entry_max;
         if (altProfit > 0) {
           const altRatio = altProfit / potential_loss;
-          console.warn(`R/R计算（HOLD）：使用entry_max重新计算，R/R=${altRatio.toFixed(2)}`);
+          logger.warn(`R/R计算（HOLD）：使用entry_max重新计算，R/R=${altRatio.toFixed(2)}`);
           return altRatio;
         }
         return 0;

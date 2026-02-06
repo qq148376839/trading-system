@@ -660,10 +660,11 @@ export const backtestApi = {
    * 导出回测结果为JSON文件
    */
   exportBacktest: async (id: number): Promise<Blob> => {
-    const response = await axios.get(`/api/quant/backtest/${id}/export`, {
+    // api 实例的响应拦截器已返回 response.data，所以这里直接就是 Blob
+    const data = await api.get(`/quant/backtest/${id}/export`, {
       responseType: 'blob',
     });
-    return response.data;
+    return data as any;
   },
 };
 
@@ -827,11 +828,12 @@ export const logsApi = {
     end_time?: string
     trace_id?: string
   }): Promise<Blob> => {
-    const response = await axios.get(`/api/logs/export`, {
+    // api 实例的响应拦截器已返回 response.data，所以这里直接就是 Blob
+    const data = await api.get(`/logs/export`, {
       params,
       responseType: 'blob',
     })
-    return response.data
+    return data as any
   },
 
   /**

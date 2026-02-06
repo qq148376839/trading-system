@@ -6,6 +6,7 @@
 
 import configService from './config.service';
 import { clearQuoteContext, clearTradeContext } from '../config/longport';
+import { logger } from '../utils/logger';
 
 // 动态导入长桥SDK（延迟加载，避免在模块不可用时崩溃）
 let longport: any = null;
@@ -16,7 +17,7 @@ try {
   longport = require('longport');
   Config = longport.Config;
 } catch (error: any) {
-  console.warn('Token刷新服务: LongPort SDK 不可用，Token刷新功能将被禁用');
+  logger.warn('Token刷新服务: LongPort SDK 不可用，Token刷新功能将被禁用');
 }
 
 class TokenRefreshService {
@@ -70,9 +71,9 @@ class TokenRefreshService {
       clearQuoteContext();
       clearTradeContext();
       
-      console.log('Token刷新成功（使用SDK方法）');
-      console.log(`  新Token后20位: ...${newToken.substring(newToken.length - 20)}`);
-      console.log(`  过期时间: ${expiredAt.toISOString()}`);
+      logger.info('Token刷新成功（使用SDK方法）');
+      logger.info(`  新Token后20位: ...${newToken.substring(newToken.length - 20)}`);
+      logger.info(`  过期时间: ${expiredAt.toISOString()}`);
       
       return {
         token: newToken,
@@ -109,7 +110,7 @@ class TokenRefreshService {
       // 如果10天内过期，返回true
       return daysUntilExpiry <= 10;
     } catch (error: any) {
-      console.error('检查Token状态失败:', error.message);
+      logger.error('检查Token状态失败:', error.message);
       return false;
     }
   }
@@ -151,7 +152,7 @@ class TokenRefreshService {
         shouldRefresh,
       };
     } catch (error: any) {
-      console.error('获取Token状态失败:', error.message);
+      logger.error('获取Token状态失败:', error.message);
       return {
         expiredAt: null,
         issuedAt: null,
@@ -167,14 +168,14 @@ class TokenRefreshService {
   async autoRefreshIfNeeded(): Promise<boolean> {
     try {
       if (await this.shouldRefreshToken()) {
-        console.log('检测到Token即将过期，开始自动刷新...');
+        logger.info('检测到Token即将过期，开始自动刷新...');
         await this.refreshToken();
-        console.log('Token已自动刷新');
+        logger.info('Token已自动刷新');
         return true;
       }
       return false;
     } catch (error: any) {
-      console.error('自动刷新Token失败:', error.message);
+      logger.error('自动刷新Token失败:', error.message);
       return false;
     }
   }

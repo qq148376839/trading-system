@@ -1,5 +1,6 @@
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
+import { infraLogger } from '../utils/infra-logger';
 
 // 简单加载.env文件（与旧版本保持一致）
 dotenv.config();
@@ -15,12 +16,12 @@ const pool = new Pool({
 pool.on('connect', () => {
   // 只在非测试环境输出日志，避免测试完成后输出日志
   if (process.env.NODE_ENV !== 'test') {
-    console.log('Database connected');
+    infraLogger.info('Database connected');
   }
 });
 
 pool.on('error', (err) => {
-  console.error('Unexpected error on idle client', err);
+  infraLogger.error('Unexpected error on idle client', err);
   // 在测试环境中不退出进程
   if (process.env.NODE_ENV !== 'test') {
     process.exit(-1);

@@ -17,7 +17,7 @@ try {
   longport = require('longport');
   Market = longport.Market;
 } catch (error: any) {
-  console.warn('交易时段服务: LongPort SDK 不可用，交易时段查询功能将被禁用');
+  logger.warn('交易时段服务: LongPort SDK 不可用，交易时段查询功能将被禁用');
 }
 
 /**

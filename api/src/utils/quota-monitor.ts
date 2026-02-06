@@ -4,6 +4,7 @@
  */
 
 import pool from '../config/database';
+import { logger } from './logger';
 
 interface QuotaUsage {
   symbol: string;
@@ -29,7 +30,7 @@ class QuotaMonitor {
     try {
       await this.saveToDatabase(symbol);
     } catch (error: any) {
-      console.error(`[配额监控] 保存到数据库失败:`, error.message);
+      logger.error(`[配额监控] 保存到数据库失败:`, error.message);
       // 不影响主流程，只记录错误
     }
   }
@@ -81,7 +82,7 @@ class QuotaMonitor {
 
     // 如果是新月份，重置计数器
     if (currentMonth !== lastMonth || currentYear !== lastYear) {
-      console.log(`[配额监控] 新月份，重置配额计数器 (${lastYear}-${lastMonth + 1} -> ${currentYear}-${currentMonth + 1})`);
+      logger.info(`[配额监控] 新月份，重置配额计数器 (${lastYear}-${lastMonth + 1} -> ${currentYear}-${currentMonth + 1})`);
       this.monthlyQueries.clear();
       this.lastResetDate = now;
     }

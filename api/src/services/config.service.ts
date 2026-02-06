@@ -8,6 +8,7 @@ import pool from '../config/database';
 import crypto from 'crypto';
 import path from 'path';
 import os from 'os';
+import { infraLogger } from '../utils/infra-logger';
 
 // 加密密钥（从环境变量读取，如果没有则使用默认值）
 // 注意：生产环境必须设置CONFIG_ENCRYPTION_KEY环境变量
@@ -18,7 +19,7 @@ const getEncryptionKey = (): string => {
   }
   
   // 如果没有设置环境变量，使用默认值（仅用于开发环境）
-  console.warn('警告: 未设置CONFIG_ENCRYPTION_KEY环境变量，使用默认密钥（不安全，仅用于开发）');
+  infraLogger.warn('未设置CONFIG_ENCRYPTION_KEY环境变量，使用默认密钥（不安全，仅用于开发）');
   return 'default-key-change-in-production-32chars!!';
 };
 
@@ -38,7 +39,7 @@ class ConfigService {
       encrypted += cipher.final('hex');
       return iv.toString('hex') + ':' + encrypted;
     } catch (error: any) {
-      console.error('加密失败:', error.message);
+      infraLogger.error('加密失败:', error.message);
       throw new Error('配置加密失败');
     }
   }
@@ -60,7 +61,7 @@ class ConfigService {
       decrypted += decipher.final('utf8');
       return decrypted;
     } catch (error: any) {
-      console.error('解密失败:', error.message);
+      infraLogger.error('解密失败:', error.message);
       throw new Error('配置解密失败');
     }
   }
@@ -93,7 +94,7 @@ class ConfigService {
       if (process.env.NODE_ENV === 'test' && error.message?.includes('pool after calling end')) {
         return null; // 静默返回，不输出错误
       }
-      console.error(`获取配置失败 (${key}):`, error.message);
+      infraLogger.error(`获取配置失败 (${key}):`, error.message);
       return null; // 出错时返回null，让调用方使用环境变量fallback
     }
   }
@@ -121,7 +122,7 @@ class ConfigService {
         [key, finalValue, encrypted, updatedBy || 'system']
       );
     } catch (error: any) {
-      console.error(`设置配置失败 (${key}):`, error.message);
+      infraLogger.error(`设置配置失败 (${key}):`, error.message);
       throw error;
     }
   }
@@ -154,7 +155,7 @@ class ConfigService {
         updatedBy: row.updated_by || null,
       }));
     } catch (error: any) {
-      console.error('获取所有配置失败:', error.message);
+      infraLogger.error('获取所有配置失败:', error.message);
       throw error;
     }
   }
@@ -166,7 +167,7 @@ class ConfigService {
     try {
       await pool.query('DELETE FROM system_config WHERE config_key = $1', [key]);
     } catch (error: any) {
-      console.error(`删除配置失败 (${key}):`, error.message);
+      infraLogger.error(`删除配置失败 (${key}):`, error.message);
       throw error;
     }
   }

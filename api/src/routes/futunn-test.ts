@@ -7,6 +7,7 @@ import { Router, Request, Response } from 'express';
 import axios from 'axios';
 import crypto from 'crypto';
 import { getFutunnHeaders, getFutunnConfig } from '../config/futunn';
+import { logger } from '../utils/logger';
 
 export const futunnTestRouter = Router();
 
@@ -89,7 +90,7 @@ futunnTestRouter.get('/verify-token', async (_req: Request, res: Response) => {
     
     res.json(result);
   } catch (err: any) {
-    console.error('Token验证失败:', err);
+    logger.error('Token验证失败:', err);
     res.status(500).json({
       success: false,
       error: {
@@ -148,12 +149,12 @@ futunnTestRouter.get('/test-kline', async (req: Request, res: Response) => {
     const headers = getFutunnHeaders('https://www.moomoo.com/currency/USDINDEX-FX');
     headers['quote-token'] = quoteToken;
     
-    console.log('\n========== 富途API测试 - K线数据 ==========');
-    console.log('URL:', url);
-    console.log('请求参数:', JSON.stringify(requestParams, null, 2));
-    console.log('Token参数:', JSON.stringify(tokenParams, null, 2));
-    console.log('生成的Token:', quoteToken);
-    console.log('==========================================\n');
+    logger.debug('\n========== 富途API测试 - K线数据 ==========');
+    logger.debug('URL:', url);
+    logger.debug('请求参数:', JSON.stringify(requestParams, null, 2));
+    logger.debug('Token参数:', JSON.stringify(tokenParams, null, 2));
+    logger.debug('生成的Token:', quoteToken);
+    logger.debug('==========================================\n');
     
     const startTime = Date.now();
     let response;
@@ -195,7 +196,7 @@ futunnTestRouter.get('/test-kline', async (req: Request, res: Response) => {
     
     res.json(result);
   } catch (err: any) {
-    console.error('富途API测试失败:', err);
+    logger.error('富途API测试失败:', err);
     res.status(500).json({
       success: false,
       error: {
@@ -251,12 +252,12 @@ futunnTestRouter.get('/test-quote-minute', async (req: Request, res: Response) =
     const headers = getFutunnHeaders('https://www.moomoo.com/currency/USDINDEX-FX');
     headers['quote-token'] = quoteToken;
     
-    console.log('\n========== 富途API测试 - 分时行情 ==========');
-    console.log('URL:', url);
-    console.log('请求参数:', JSON.stringify(requestParams, null, 2));
-    console.log('Token参数:', JSON.stringify(tokenParams, null, 2));
-    console.log('生成的Token:', quoteToken);
-    console.log('==========================================\n');
+    logger.debug('\n========== 富途API测试 - 分时行情 ==========');
+    logger.debug('URL:', url);
+    logger.debug('请求参数:', JSON.stringify(requestParams, null, 2));
+    logger.debug('Token参数:', JSON.stringify(tokenParams, null, 2));
+    logger.debug('生成的Token:', quoteToken);
+    logger.debug('==========================================\n');
     
     const startTime = Date.now();
     let response;
@@ -298,7 +299,7 @@ futunnTestRouter.get('/test-quote-minute', async (req: Request, res: Response) =
     
     res.json(result);
   } catch (err: any) {
-    console.error('富途API测试失败:', err);
+    logger.error('富途API测试失败:', err);
     res.status(500).json({
       success: false,
       error: {
@@ -358,12 +359,12 @@ futunnTestRouter.get('/test-stock-quote', async (req: Request, res: Response) =>
     const headers = getFutunnHeaders('https://www.moomoo.com/currency/USDINDEX-FX');
     headers['quote-token'] = quoteToken;
     
-    console.log('\n========== 富途API测试 - 股票报价 ==========');
-    console.log('URL:', url);
-    console.log('请求参数:', JSON.stringify(requestParams, null, 2));
-    console.log('Token参数:', JSON.stringify(tokenParams, null, 2));
-    console.log('生成的Token:', quoteToken);
-    console.log('==========================================\n');
+    logger.debug('\n========== 富途API测试 - 股票报价 ==========');
+    logger.debug('URL:', url);
+    logger.debug('请求参数:', JSON.stringify(requestParams, null, 2));
+    logger.debug('Token参数:', JSON.stringify(tokenParams, null, 2));
+    logger.debug('生成的Token:', quoteToken);
+    logger.debug('==========================================\n');
     
     const startTime = Date.now();
     let response;
@@ -405,7 +406,7 @@ futunnTestRouter.get('/test-stock-quote', async (req: Request, res: Response) =>
     
     res.json(result);
   } catch (err: any) {
-    console.error('富途API测试失败:', err);
+    logger.error('富途API测试失败:', err);
     res.status(500).json({
       success: false,
       error: {
@@ -598,7 +599,7 @@ futunnTestRouter.get('/test-all', async (_req: Request, res: Response) => {
     
     res.json(results);
   } catch (err: any) {
-    console.error('富途API批量测试失败:', err);
+    logger.error('富途API批量测试失败:', err);
     res.status(500).json({
       success: false,
       error: {

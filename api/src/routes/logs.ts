@@ -110,19 +110,12 @@ logsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
     // 构建SQL查询
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     
-    // 调试日志：记录查询条件和参数（使用console.log确保输出）
+    // 调试日志：记录查询条件和参数
     if (start_time || end_time) {
-      console.log('[Logs.API] 查询日志 - 时间筛选调试信息:', {
+      logger.debug('[Logs.API] 查询日志 - 时间筛选', {
         start_time: start_time ? new Date(start_time as string).toISOString() : null,
         end_time: end_time ? new Date(end_time as string).toISOString() : null,
         whereClause,
-        conditions: conditions,
-        params: params,
-        paramCount: params.length,
-      });
-      logger.debug('Logs.API', '查询日志 - 时间筛选', {
-        start_time: start_time ? new Date(start_time as string).toISOString() : null,
-        end_time: end_time ? new Date(end_time as string).toISOString() : null,
         conditions: conditions,
         params: params,
       });
@@ -130,50 +123,17 @@ logsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
     
     // 查询总数
     const countQuery = `SELECT COUNT(*) as total FROM system_logs ${whereClause}`;
-    console.log('[Logs.API] 执行COUNT查询:', countQuery, '参数:', params);
+    logger.debug('[Logs.API] 执行COUNT查询:', countQuery, '参数:', params);
     const countResult = await pool.query(countQuery, params);
     const total = parseInt(countResult.rows[0].total, 10);
-    console.log('[Logs.API] COUNT查询结果:', total);
+    logger.debug('[Logs.API] COUNT查询结果:', total);
     
     // 保护：如果 offset 超过总数，则重置为 0
     if (offsetNum >= total) {
-      console.log(`[Logs.API] offset (${offsetNum}) 超过总数 (${total})，重置为 0`);
+      logger.debug(`[Logs.API] offset (${offsetNum}) 超过总数 (${total})，重置为 0`);
       offsetNum = 0;
     }
     
-    // 调试：检查时间范围内的数据分布
-    if (start_time || end_time) {
-      const rangeQuery = `
-        SELECT 
-          MIN(timestamp) as min_time,
-          MAX(timestamp) as max_time,
-          COUNT(*) as count
-        FROM system_logs
-        ${whereClause}
-      `;
-      const rangeResult = await pool.query(rangeQuery, params);
-      console.log('[Logs.API] 时间范围内数据分布:', rangeResult.rows[0]);
-      
-      // 调试：检查数据库中的总数据量（无筛选条件）
-      const totalCountQuery = `SELECT COUNT(*) as total FROM system_logs`;
-      const totalCountResult = await pool.query(totalCountQuery);
-      const totalCount = parseInt(totalCountResult.rows[0].total, 10);
-      console.log('[Logs.API] 数据库总数据量:', totalCount);
-      console.log('[Logs.API] 筛选后数据量:', total, '占比:', ((total / totalCount) * 100).toFixed(2) + '%');
-      
-      // 调试：检查筛选条件外的数据量
-      if (start_time) {
-        const beforeStartQuery = `SELECT COUNT(*) as count FROM system_logs WHERE timestamp < $1::timestamptz`;
-        const beforeStartResult = await pool.query(beforeStartQuery, [new Date(start_time as string).toISOString()]);
-        console.log('[Logs.API] 开始时间之前的数据量:', beforeStartResult.rows[0].count);
-      }
-      if (end_time) {
-        const afterEndQuery = `SELECT COUNT(*) as count FROM system_logs WHERE timestamp > $1::timestamptz`;
-        const afterEndResult = await pool.query(afterEndQuery, [new Date(end_time as string).toISOString()]);
-        console.log('[Logs.API] 结束时间之后的数据量:', afterEndResult.rows[0].count);
-      }
-    }
-
     // 查询日志列表
     const queryParams = [...params]; // 复制参数数组，避免影响countQuery
     const query = `
@@ -195,22 +155,7 @@ logsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
     `;
     
     queryParams.push(limitNum, offsetNum);
-    console.log('[Logs.API] 执行SELECT查询:', query.replace(/\s+/g, ' '), '参数:', queryParams);
     const result = await pool.query(query, queryParams);
-    console.log('[Logs.API] SELECT查询结果数量:', result.rows.length);
-    
-    // 调试：检查返回数据的时间范围
-    if (result.rows.length > 0 && (start_time || end_time)) {
-      const timestamps = result.rows.map(row => row.timestamp);
-      const minTime = timestamps.reduce((min, ts) => ts < min ? ts : min, timestamps[0]);
-      const maxTime = timestamps.reduce((max, ts) => ts > max ? ts : max, timestamps[0]);
-      console.log('[Logs.API] 返回数据时间范围:', {
-        min: minTime,
-        max: maxTime,
-        expectedStart: start_time ? new Date(start_time as string).toISOString() : null,
-        expectedEnd: end_time ? new Date(end_time as string).toISOString() : null,
-      });
-    }
 
     // 格式化返回数据
     const logs = result.rows.map((row) => ({
@@ -236,7 +181,7 @@ logsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
       },
     });
   } catch (error: any) {
-    logger.error('Logs.API', '查询日志失败', { error: error.message });
+    logger.error('[Logs.API] 查询日志失败', { error: error.message });
     next(ErrorFactory.internalError('查询日志失败', error));
   }
 });
@@ -315,22 +260,13 @@ logsRouter.get('/export', async (req: Request, res: Response, next: NextFunction
 
     // 调试日志：记录导出查询条件和参数
     if (start_time || end_time || module || level || trace_id) {
-      console.log('[Logs.API] 导出日志 - 筛选条件:', {
+      logger.debug('[Logs.API] 导出日志 - 筛选条件', {
         start_time: start_time ? new Date(start_time as string).toISOString() : null,
         end_time: end_time ? new Date(end_time as string).toISOString() : null,
         module,
         level,
         trace_id,
         whereClause,
-        conditions: conditions,
-        params: params,
-      });
-      logger.debug('Logs.API', '导出日志 - 筛选条件', {
-        start_time: start_time ? new Date(start_time as string).toISOString() : null,
-        end_time: end_time ? new Date(end_time as string).toISOString() : null,
-        module,
-        level,
-        trace_id,
         conditions: conditions,
         params: params,
       });
@@ -392,7 +328,7 @@ logsRouter.get('/export', async (req: Request, res: Response, next: NextFunction
       },
     });
   } catch (error: any) {
-    logger.error('Logs.API', '导出日志失败', { error: error.message });
+    logger.error('[Logs.API] 导出日志失败', { error: error.message });
     next(ErrorFactory.internalError('导出日志失败', error));
   }
 });
@@ -428,7 +364,7 @@ logsRouter.delete('/cleanup', async (req: Request, res: Response, next: NextFunc
       data: result,
     });
   } catch (error: any) {
-    logger.error('Logs.API', '清理日志失败', { error: error.message });
+    logger.error('[Logs.API] 清理日志失败', { error: error.message });
     next(ErrorFactory.internalError('清理日志失败', error));
   }
 });
@@ -467,7 +403,7 @@ logsRouter.get('/modules', async (req: Request, res: Response, next: NextFunctio
       data: { modules },
     })
   } catch (error: any) {
-    logger.error('Logs.API', '获取模块列表失败', { error: error.message })
+    logger.error('[Logs.API] 获取模块列表失败', { error: error.message })
     next(ErrorFactory.internalError('获取模块列表失败', error))
   }
 })

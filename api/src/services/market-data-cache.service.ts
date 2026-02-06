@@ -6,6 +6,7 @@
 
 import marketDataService from './market-data.service';
 import { getCacheDuration, isTradingHours } from '../utils/trading-hours';
+import { logger } from '../utils/logger';
 
 interface CandlestickData {
   close: number;
@@ -65,7 +66,7 @@ class MarketDataCacheService {
    * @param includeIntraday 是否包含分时数据
    */
   async getHistoricalMarketData(targetDate: Date, count: number = 100, includeIntraday: boolean = false): Promise<MarketDataCache> {
-    console.log(`获取历史市场数据（目标日期: ${targetDate.toISOString().split('T')[0]}，包含分时: ${includeIntraday}）`);
+    logger.debug(`获取历史市场数据（目标日期: ${targetDate.toISOString().split('T')[0]}，包含分时: ${includeIntraday}）`);
     
     const marketData = await marketDataService.getHistoricalMarketData(targetDate, count, includeIntraday);
     
@@ -129,7 +130,7 @@ class MarketDataCacheService {
     this.isFetching = true;
     const duration = Math.floor(cacheDuration / 1000);
     const tradingStatus = isTradingHours() ? '交易时间' : '非交易时间';
-    console.log(`获取新的市场数据（${tradingStatus}，缓存时长: ${duration}秒，包含分时: ${includeIntraday}）`);
+    logger.info(`获取新的市场数据（${tradingStatus}，缓存时长: ${duration}秒，包含分时: ${includeIntraday}）`);
     
     this.fetchPromise = marketDataService.getAllMarketData(count, includeIntraday).then((marketData) => {
       // 再次验证数据完整性（双重检查）
@@ -200,7 +201,7 @@ class MarketDataCacheService {
    * 清除缓存（强制刷新）
    */
   clearCache() {
-    console.log('清除市场数据缓存');
+    logger.info('清除市场数据缓存');
     this.cache = null;
     this.isFetching = false;
     this.fetchPromise = null;

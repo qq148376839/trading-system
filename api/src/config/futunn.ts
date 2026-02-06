@@ -1,9 +1,11 @@
 /**
  * 富途牛牛/Moomoo API配置
- * 
+ *
  * 使用Moomoo游客cookies，无需环境变量配置
  * 域名统一使用 www.moomoo.com
  */
+
+import { logger } from '../utils/logger';
 
 // Moomoo游客的CSRF token和cookies（硬编码）
 const MOOMOO_GUEST_CONFIG = {
@@ -28,14 +30,14 @@ export function getFutunnConfig(): FutunnConfig {
  */
 export function setFutunnConfig(_config: FutunnConfig) {
   // 保留接口，但实际使用硬编码的游客配置
-  console.warn('setFutunnConfig: 当前使用硬编码的Moomoo游客配置，设置操作将被忽略');
+  logger.warn('setFutunnConfig: 当前使用硬编码的Moomoo游客配置，设置操作将被忽略');
 }
 
 /**
  * 初始化富途牛牛配置（已废弃，保留用于兼容性）
  */
 export function initFutunnConfig(): FutunnConfig {
-  console.log('✅ Moomoo游客配置已加载（无需环境变量）');
+  logger.info('Moomoo游客配置已加载（无需环境变量）', { dbWrite: false });
   return MOOMOO_GUEST_CONFIG;
 }
 
@@ -102,11 +104,11 @@ export async function getFutunnSearchHeaders(referer: string = 'https://www.moom
     if (dbSearchCookies && dbSearchCookies.trim() !== '') {
       searchCookies = dbSearchCookies;
       configSource = '数据库（搜索专用）';
-      console.log(`[富途搜索配置] 使用数据库中的搜索专用cookies（长度: ${searchCookies.length}）`);
+      logger.debug(`[富途搜索配置] 使用数据库中的搜索专用cookies（长度: ${searchCookies.length}）`);
     }
   } catch (error: any) {
     // 如果无法从数据库获取，继续使用默认配置
-    console.warn(`[富途搜索配置] 无法从数据库获取搜索专用cookies: ${error.message}`);
+    logger.warn(`[富途搜索配置] 无法从数据库获取搜索专用cookies: ${error.message}`);
   }
 
   // 如果数据库中没有搜索专用cookies，尝试使用主cookies配置
@@ -118,7 +120,7 @@ export async function getFutunnSearchHeaders(referer: string = 'https://www.moom
       if (dbCookies && dbCookies.trim() !== '') {
         searchCookies = dbCookies;
         configSource = '数据库（主配置）';
-        console.log(`[富途搜索配置] 使用数据库中的主cookies配置（长度: ${searchCookies.length}）`);
+        logger.debug(`[富途搜索配置] 使用数据库中的主cookies配置（长度: ${searchCookies.length}）`);
       }
     } catch (error: any) {
       // 忽略错误，继续使用硬编码配置
@@ -162,8 +164,8 @@ export async function getFutunnSearchHeaders(referer: string = 'https://www.moom
   baseHeaders['Cookie'] = searchCookies;
   baseHeaders['futu-x-csrf-token'] = csrfToken;
   
-  console.log(`[富途搜索配置] 配置来源: ${configSource}`);
-  console.log(`[富途搜索配置] CSRF Token: ${csrfToken.substring(0, 12)}...`);
+  logger.debug(`[富途搜索配置] 配置来源: ${configSource}`);
+  logger.debug(`[富途搜索配置] CSRF Token: ${csrfToken.substring(0, 12)}...`);
 
   return baseHeaders;
 }

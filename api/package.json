@@ -38,7 +38,7 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
-    "http-proxy-middleware": "^2.0.6",
+    "http-proxy-middleware": "^2.0.9",
     "longport": "3.0.21",
     "node-cron": "^3.0.3",
     "pg": "^8.11.3",

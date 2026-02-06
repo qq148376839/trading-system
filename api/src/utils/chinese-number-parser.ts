@@ -1,12 +1,14 @@
 /**
  * 中文数字解析工具
  * 用于将moomoo API返回的中文格式数字转换为数字
- * 
+ *
  * 示例：
  * - "15.29亿" -> 1529000000
  * - "+51.22万" -> 512200
  * - "-23.37万" -> -233700
  */
+
+import { logger } from './logger';
 
 /**
  * 解析中文格式的数字
@@ -35,7 +37,7 @@ export function parseChineseNumber(str: string): number {
       return parseFloat(trimmed) || 0;
     }
     
-    console.warn(`[中文数字解析] 无法解析格式: ${str}`);
+    logger.warn(`[中文数字解析] 无法解析格式: ${str}`);
     return 0;
   }
 
@@ -44,7 +46,7 @@ export function parseChineseNumber(str: string): number {
   const unit = match[3];
 
   if (isNaN(num)) {
-    console.warn(`[中文数字解析] 数字部分无效: ${str}`);
+    logger.warn(`[中文数字解析] 数字部分无效: ${str}`);
     return 0;
   }
 
@@ -64,7 +66,7 @@ export function parseChineseNumber(str: string): number {
   
   // 调试日志（可选，生产环境可关闭）
   if (process.env.NODE_ENV === 'development') {
-    console.log(`[中文数字解析] ${str} -> ${result}`);
+    logger.debug(`[中文数字解析] ${str} -> ${result}`);
   }
 
   return result;

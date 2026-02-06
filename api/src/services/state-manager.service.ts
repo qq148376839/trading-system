@@ -4,6 +4,7 @@
  */
 
 import pool from '../config/database';
+import { logger } from '../utils/logger';
 
 export interface StrategyInstanceState {
   state: string;
@@ -68,13 +69,14 @@ class StateManager {
       WHERE s.status = 'RUNNING'
     `);
 
-    console.log(`恢复 ${strategiesResult.rows.length} 个策略实例状态`);
+    logger.info(`恢复 ${strategiesResult.rows.length} 个策略实例状态`, { dbWrite: false });
 
     for (const row of strategiesResult.rows) {
       if (row.symbol && row.current_state) {
-        console.log(
+        logger.info(
           `恢复策略 ${row.name} (ID: ${row.strategy_id}) 的实例 ` +
-          `${row.symbol}: 状态 ${row.current_state}`
+          `${row.symbol}: 状态 ${row.current_state}`,
+          { dbWrite: false }
         );
       }
     }

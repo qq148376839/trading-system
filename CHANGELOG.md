@@ -2,6 +2,69 @@
 
 ## 2026-02-06
 
+### 日志系统降噪 — 减少不必要的DB写入
+
+**功能/修复**: 分析215条日志，发现约175条（81.4%）为心跳/空跑/启停等不必要的DB写入。通过`{dbWrite:false}`标记，将这些日志保留在控制台但跳过入库，进一步减少80-90%的DB写入。
+
+**实现内容**:
+1. ✅ **策略调度器降噪（7处）**：启停消息、空跑日志、无活动执行汇总、订单心跳
+2. ✅ **余额同步降噪（3处）**：同步心跳、启停消息
+3. ✅ **状态管理器降噪（2处）**：启动状态恢复消息
+4. ✅ **交易推送降噪（2处）**：订阅/取消确认
+5. ✅ **配置/路由降噪（2处）**：Moomoo配置加载、缓存刷新
+6. ✅ **logs.ts调试清理（4处）**：删除5个诊断SQL查询、合并重复debug块、删除调试残留
+
+**修改文件**:
+- 📝 `api/src/services/strategy-scheduler.service.ts`（7处dbWrite:false）
+- 📝 `api/src/services/account-balance-sync.service.ts`（3处dbWrite:false）
+- 📝 `api/src/services/state-manager.service.ts`（2处dbWrite:false）
+- 📝 `api/src/services/trade-push.service.ts`（2处dbWrite:false）
+- 📝 `api/src/config/futunn.ts`（1处dbWrite:false）
+- 📝 `api/src/routes/quote.ts`（1处dbWrite:false）
+- 📝 `api/src/routes/logs.ts`（删除诊断SQL、合并重复debug）
+
+**预期效果**:
+- 心跳/空跑DB写入：从~860-1460条/小时降至0（仅控制台）
+- 所有ERROR/WARN/业务事件日志不受影响，继续入库
+- 279个测试全部通过
+
+---
+
+### 日志系统全面重构 ⭐ 核心架构
+
+**功能/修复**: 全面重构日志系统，实现级别门控、节流机制、摘要聚合，DB写入量减少95-98%，同时确保ERROR/WARN日志100%入库。
+
+**实现内容**:
+1. ✅ **级别门控**：DEBUG仅控制台、ERROR必入库不节流、WARN入库走节流、INFO可选跳过
+2. ✅ **节流机制**：新增throttleMap/generateThrottleKey/shouldEnqueue，30秒窗口去重
+3. ✅ **摘要聚合服务**：新增log-digest.service.ts，每5分钟聚合高频指标
+4. ✅ **基础设施Logger**：新增infra-logger.ts，解决底层模块循环依赖
+5. ✅ **console全量迁移**：约38个文件、约398处console.*迁移到logger.*
+6. ✅ **新增配置项**：5个数据库配置项控制节流/摘要/DEBUG入库行为
+7. ✅ **33个单元测试**：覆盖级别门控、节流、摘要、向后兼容、infraLogger
+
+**新增文件**:
+- 📝 `api/src/utils/infra-logger.ts`（基础设施轻量Logger）
+- 📝 `api/src/services/log-digest.service.ts`（摘要聚合服务）
+- 📝 `api/migrations/013_add_log_throttle_digest_config.sql`（配置项迁移）
+
+**修改核心文件**:
+- 📝 `api/src/utils/logger.ts`（级别门控、{dbWrite:false}、console()/metric()方法）
+- 📝 `api/src/services/log.service.ts`（节流机制、DEBUG门控）
+- 📝 `api/src/utils/log-module-mapper.ts`（Log.Digest映射）
+- 📝 `api/src/server.ts`（digest服务初始化和关闭）
+
+**相关文档**:
+- 📄 [日志系统重构](docs/features/260206-日志系统重构.md)
+- 📄 [日志系统优化文档（v1.0）](docs/features/251215-日志系统优化文档.md)
+
+**预期效果**:
+- DB写入/min（盘中）：从25,000-50,000降至500-1,000（减少95-98%）
+- ERROR/WARN日志完整性：100%入库
+- 33个单元测试全部通过
+
+---
+
 ### 期权策略风控优化 ⭐ 关键优化
 
 **功能/修复**: 优化期权止盈止损执行方式，增强订单追踪能力，提升期权策略风控可靠性。

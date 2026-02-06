@@ -5,7 +5,7 @@
  */
 
 import pool from '../config/database';
-import { logger } from '../utils/logger';
+import { infraLogger } from '../utils/infra-logger';
 import configService from './config.service';
 
 interface CleanupResult {
@@ -32,15 +32,9 @@ class LogCleanupService {
     // 如果启用自动清理，启动定时任务
     if (this.autoCleanupEnabled && this.retentionDays > 0) {
       this.startAutoCleanup();
-      logger.info('LogCleanup', '自动清理服务已启动', {
-        retentionDays: this.retentionDays,
-        schedule: this.cleanupSchedule,
-      });
+      infraLogger.info(`[LogCleanup] 自动清理服务已启动`, { retentionDays: this.retentionDays, schedule: this.cleanupSchedule });
     } else {
-      logger.info('LogCleanup', '自动清理服务未启用', {
-        retentionDays: this.retentionDays,
-        autoCleanupEnabled: this.autoCleanupEnabled,
-      });
+      infraLogger.info(`[LogCleanup] 自动清理服务未启用`, { retentionDays: this.retentionDays, autoCleanupEnabled: this.autoCleanupEnabled });
     }
 
     // 定期检查配置更新（每5分钟）
@@ -73,9 +67,7 @@ class LogCleanupService {
       const schedule = await configService.getConfig('log_cleanup_schedule');
       this.cleanupSchedule = schedule || '0 2 * * *';
     } catch (error: any) {
-      logger.error('LogCleanup', '加载配置失败，使用默认值', {
-        error: error.message,
-      });
+      infraLogger.error(`[LogCleanup] 加载配置失败，使用默认值: ${error.message}`);
       // 使用默认值
       this.retentionDays = -1;
       this.autoCleanupEnabled = false;
@@ -101,21 +93,13 @@ class LogCleanupService {
             const beforeDate = new Date();
             beforeDate.setDate(beforeDate.getDate() - this.retentionDays);
 
-            logger.info('LogCleanup', '执行自动清理', {
-              beforeDate: beforeDate.toISOString(),
-              retentionDays: this.retentionDays,
-            });
+            infraLogger.info(`[LogCleanup] 执行自动清理`, { beforeDate: beforeDate.toISOString(), retentionDays: this.retentionDays });
 
             const result = await this.cleanup(beforeDate, false);
 
-            logger.info('LogCleanup', '自动清理完成', {
-              deletedCount: result.deletedCount,
-              beforeDate: result.beforeDate.toISOString(),
-            });
+            infraLogger.info(`[LogCleanup] 自动清理完成, 删除 ${result.deletedCount} 条, beforeDate=${result.beforeDate.toISOString()}`);
           } catch (error: any) {
-            logger.error('LogCleanup', '自动清理失败', {
-              error: error.message,
-            });
+            infraLogger.error(`[LogCleanup] 自动清理失败: ${error.message}`);
           }
         },
         {
@@ -123,9 +107,7 @@ class LogCleanupService {
         }
       );
     } catch (error: any) {
-      logger.warn('LogCleanup', '无法启动自动清理定时任务（node-cron未安装）', {
-        error: error.message,
-      });
+      infraLogger.warn(`[LogCleanup] 无法启动自动清理定时任务（node-cron未安装）: ${error.message}`);
     }
   }
 
@@ -136,7 +118,7 @@ class LogCleanupService {
     if (this.cronJob) {
       this.cronJob.stop();
       this.cronJob = null;
-      logger.info('LogCleanup', '自动清理服务已停止');
+      infraLogger.info('[LogCleanup] 自动清理服务已停止');
     }
 
     if (this.configCheckInterval) {
@@ -178,10 +160,7 @@ class LogCleanupService {
       `;
       const deleteResult = await pool.query(deleteQuery, [beforeDate.toISOString()]);
 
-      logger.info('LogCleanup', '日志清理完成', {
-        deletedCount: deleteResult.rowCount || 0,
-        beforeDate: beforeDate.toISOString(),
-      });
+      infraLogger.info(`[LogCleanup] 日志清理完成, 删除 ${deleteResult.rowCount || 0} 条, beforeDate=${beforeDate.toISOString()}`);
 
       return {
         deletedCount: deleteResult.rowCount || 0,
@@ -190,10 +169,7 @@ class LogCleanupService {
         executedAt: new Date(),
       };
     } catch (error: any) {
-      logger.error('LogCleanup', '清理日志失败', {
-        error: error.message,
-        beforeDate: beforeDate.toISOString(),
-      });
+      infraLogger.error(`[LogCleanup] 清理日志失败: ${error.message}, beforeDate=${beforeDate.toISOString()}`);
       throw error;
     }
   }

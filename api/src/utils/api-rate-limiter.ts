@@ -3,6 +3,8 @@
  * Longbridge API限制：每30秒内最多请求60次历史K线接口
  */
 
+import { logger } from './logger';
+
 class APIRateLimiter {
   private requests: number[] = [];  // 记录请求时间戳（毫秒）
   private readonly maxRequests = 60;  // 最大请求数
@@ -24,7 +26,7 @@ class APIRateLimiter {
       const waitTime = this.timeWindow - (now - oldestRequest) + 100;  // 多等100ms确保安全
       
       if (waitTime > 0) {
-        console.log(`[API频次限制] 等待 ${Math.ceil(waitTime / 1000)} 秒后继续...`);
+        logger.info(`[API频次限制] 等待 ${Math.ceil(waitTime / 1000)} 秒后继续...`);
         await new Promise(resolve => setTimeout(resolve, waitTime));
         
         // 等待后再次清理

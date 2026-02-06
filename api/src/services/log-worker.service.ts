@@ -5,8 +5,9 @@
  */
 
 import pool from '../config/database';
-import { logger } from '../utils/logger';
+import { infraLogger } from '../utils/infra-logger';
 import configService from './config.service';
+import { infraLogger } from '../utils/infra-logger';
 
 interface LogEntry {
   timestamp: Date;
@@ -41,7 +42,7 @@ class LogWorkerService {
       this.batchInterval = intervalStr ? parseInt(intervalStr, 10) : 1000;
     } catch (error: any) {
       // 使用默认值
-      console.warn('[LogWorker] 加载配置失败，使用默认值:', error.message);
+      infraLogger.warn('[LogWorker] 加载配置失败，使用默认值:', error.message);
     }
   }
 
@@ -57,7 +58,7 @@ class LogWorkerService {
    */
   async start(): Promise<void> {
     if (this.isRunning) {
-      logger.warn('LogWorker', '日志工作线程已在运行');
+      infraLogger.warn('[LogWorker] 日志工作线程已在运行');
       return;
     }
 
@@ -65,7 +66,7 @@ class LogWorkerService {
     await this.loadConfig();
 
     this.isRunning = true;
-    logger.info('LogWorker', '日志工作线程已启动', {
+    infraLogger.info(`[LogWorker] 日志工作线程已启动`, {
       batchSize: this.batchSize,
       batchInterval: this.batchInterval,
     });
@@ -156,7 +157,7 @@ class LogWorkerService {
     // 处理剩余的日志
     this.processBatch(true);
 
-    logger.info('LogWorker', '日志工作线程已停止');
+    infraLogger.info('[LogWorker] 日志工作线程已停止');
   }
 
   /**
@@ -197,10 +198,7 @@ class LogWorkerService {
     try {
       await this.insertBatch(batch);
     } catch (error: any) {
-      logger.error('LogWorker', '批量写入日志失败', {
-        error: error.message,
-        batchSize: batch.length,
-      });
+      infraLogger.error(`[LogWorker] 批量写入日志失败: ${error.message}, batchSize=${batch.length}`);
       // 写入失败时，将日志重新放回队列开头（避免丢失）
       queue.unshift(...batch);
     }

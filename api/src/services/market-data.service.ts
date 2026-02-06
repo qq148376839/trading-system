@@ -9,6 +9,7 @@ import { getFutunnHeaders } from '../config/futunn';
 import { moomooProxy, getProxyMode } from '../utils/moomoo-proxy';
 import { getQuoteContext } from '../config/longport';
 import { retryWithBackoff } from '../utils/longport-rate-limiter';
+import { logger } from '../utils/logger';
 
 interface CandlestickData {
   close: number;
@@ -179,7 +180,7 @@ class MarketDataService {
 
       // 检查响应数据
       if (!responseData) {
-        console.error(`[富途API错误] stockId=${stockId}, type=${type}: 响应数据为空`);
+        logger.error(`[富途API错误] stockId=${stockId}, type=${type}: 响应数据为空`);
         return [];
       }
 
@@ -191,7 +192,7 @@ class MarketDataService {
         } else if (responseData.data && Array.isArray(responseData.data.list)) {
           dataArray = responseData.data.list;
         } else {
-          console.warn(`富途API数据结构未知 (stockId=${stockId}, type=${type}):`, {
+          logger.warn(`富途API数据结构未知 (stockId=${stockId}, type=${type}):`, {
             dataKeys: Object.keys(responseData.data || {}),
           });
           return [];
@@ -209,14 +210,14 @@ class MarketDataService {
         
         // 记录实际获取的数据量（用于调试）
         if (isIntraday && dataArray.length > count) {
-          console.log(`分时数据截断: API返回${dataArray.length}条，使用最后${count}条`);
+          logger.debug(`分时数据截断: API返回${dataArray.length}条，使用最后${count}条`);
         }
         
         return this.parseCandlestickData(slicedData);
       } else {
         // 只在错误时输出日志
         const errorMsg = responseData?.message || '未知错误';
-        console.error(`[富途API错误] stockId=${stockId}, type=${type}: ${errorMsg}`);
+        logger.error(`[富途API错误] stockId=${stockId}, type=${type}: ${errorMsg}`);
         return [];
       }
     } catch (error: any) {
@@ -224,7 +225,7 @@ class MarketDataService {
         ? `网关超时 (504)` 
         : error.message || '未知错误';
       // 简化错误日志
-      console.error(`[富途API] stockId=${stockId}, type=${type}: ${errorMsg}`);
+      logger.error(`[富途API] stockId=${stockId}, type=${type}: ${errorMsg}`);
       return [];
     }
   }
@@ -450,8 +451,8 @@ class MarketDataService {
       // 转换为标准格式
       return candlesticks.map((c: any) => formatLongbridgeCandlestick(c));
     } catch (error: any) {
-      console.error(`获取VIX数据失败:`, error.message);
-      console.error(`错误详情:`, error);
+      logger.error(`获取VIX数据失败:`, error.message);
+      logger.error(`错误详情:`, error);
       // 失败时返回空数组，不使用默认值
       return [];
     }
@@ -477,17 +478,17 @@ class MarketDataService {
       
       try {
         tempData = await quoteCtx.marketTemperature(Market.US);
-        console.log(`[市场温度] 调用成功，返回数据类型:`, typeof tempData);
+        logger.debug(`[市场温度] 调用成功，返回数据类型:`, typeof tempData);
       } catch (error: any) {
-        console.error(`[市场温度] 调用失败:`, error.message);
-        console.error(`[市场温度] 错误详情:`, error);
+        logger.error(`[市场温度] 调用失败:`, error.message);
+        logger.error(`[市场温度] 错误详情:`, error);
         
         // 如果方法不存在，检查SDK版本
         if (error.message && error.message.includes('is not a function')) {
           try {
             const longportPackage = require('longport/package.json');
-            console.error(`[市场温度] 当前SDK版本: ${longportPackage.version}`);
-            console.error(`[市场温度] 请确认SDK版本 >= 3.0.0，当前版本可能不支持marketTemperature方法`);
+            logger.error(`[市场温度] 当前SDK版本: ${longportPackage.version}`);
+            logger.error(`[市场温度] 请确认SDK版本 >= 3.0.0，当前版本可能不支持marketTemperature方法`);
           } catch (e) {
             // 忽略
           }
@@ -504,47 +505,47 @@ class MarketDataService {
         // 方式1: 直接访问temperature属性（最可能的方式）
         if ('temperature' in tempData && typeof tempData.temperature === 'number') {
           temperature = tempData.temperature;
-          console.log(`[市场温度] 从temperature属性获取: ${temperature}`);
+          logger.debug(`[市场温度] 从temperature属性获取: ${temperature}`);
         }
         // 方式2: 如果返回格式是 { code: 0, data: { temperature: ... } }
         else if ('data' in tempData && tempData.data && typeof tempData.data.temperature === 'number') {
           temperature = tempData.data.temperature;
-          console.log(`[市场温度] 从data.temperature获取: ${temperature}`);
+          logger.debug(`[市场温度] 从data.temperature获取: ${temperature}`);
         }
         // 方式3: 尝试调用toString()然后解析（SDK对象通常有toString方法）
         else if (typeof tempData.toString === 'function') {
           const str = tempData.toString();
-          console.log(`[市场温度] MarketTemperature toString():`, str);
+          logger.debug(`[市场温度] MarketTemperature toString():`, str);
           // 尝试从字符串中提取temperature值
           const match = str.match(/temperature[:\s]+(\d+(?:\.\d+)?)/i);
           if (match) {
             temperature = parseFloat(match[1]);
-            console.log(`[市场温度] 从toString()解析: ${temperature}`);
+            logger.debug(`[市场温度] 从toString()解析: ${temperature}`);
           }
         }
         // 方式4: 尝试其他可能的字段名
         else if ('value' in tempData && typeof (tempData as any).value === 'number') {
           temperature = (tempData as any).value;
-          console.log(`[市场温度] 从value属性获取: ${temperature}`);
+          logger.debug(`[市场温度] 从value属性获取: ${temperature}`);
         }
       } else if (typeof tempData === 'number') {
         temperature = tempData;
-        console.log(`[市场温度] 直接返回数字: ${temperature}`);
+        logger.debug(`[市场温度] 直接返回数字: ${temperature}`);
       }
       
       // 如果无法解析，记录详细错误信息
       if (temperature === null) {
-        console.error(`[市场温度] 数据结构未知，无法解析。`);
-        console.error(`[市场温度] 返回数据类型:`, typeof tempData);
-        console.error(`[市场温度] 返回数据:`, JSON.stringify(tempData, null, 2));
+        logger.error(`[市场温度] 数据结构未知，无法解析。`);
+        logger.error(`[市场温度] 返回数据类型:`, typeof tempData);
+        logger.error(`[市场温度] 返回数据:`, JSON.stringify(tempData, null, 2));
         if (tempData && typeof tempData.toString === 'function') {
-          console.error(`[市场温度] toString():`, tempData.toString());
+          logger.error(`[市场温度] toString():`, tempData.toString());
         }
         // 尝试列出所有属性
         if (tempData && typeof tempData === 'object') {
-          console.error(`[市场温度] 对象属性:`, Object.keys(tempData));
+          logger.error(`[市场温度] 对象属性:`, Object.keys(tempData));
           // 尝试列出所有可枚举和不可枚举的属性
-          console.error(`[市场温度] 所有属性:`, Object.getOwnPropertyNames(tempData));
+          logger.error(`[市场温度] 所有属性:`, Object.getOwnPropertyNames(tempData));
         }
         return null;
       }
@@ -552,12 +553,12 @@ class MarketDataService {
       // 确保温度值在合理范围内（0-100）
       temperature = Math.max(0, Math.min(100, temperature));
       
-      console.log(`[市场温度] 获取成功: ${temperature}`);
+      logger.info(`[市场温度] 获取成功: ${temperature}`);
       return temperature;
     } catch (error: any) {
-      console.error(`[市场温度] 获取失败:`, error.message);
-      console.error(`[市场温度] 错误详情:`, error);
-      console.error(`[市场温度] 错误堆栈:`, error.stack);
+      logger.error(`[市场温度] 获取失败:`, error.message);
+      logger.error(`[市场温度] 错误详情:`, error);
+      logger.error(`[市场温度] 错误堆栈:`, error.stack);
       // 失败时返回null，不使用默认值
       return null;
     }
@@ -604,7 +605,7 @@ class MarketDataService {
       // 如果没有历史数据，返回null
       return null;
     } catch (error: any) {
-      console.warn(`获取历史市场温度失败:`, error.message);
+      logger.warn(`获取历史市场温度失败:`, error.message);
       return null;
     }
   }
@@ -696,7 +697,7 @@ class MarketDataService {
       const vixPromise = this.getVIXCandlesticks(requestCount, targetDate)
         .then(data => this.filterDataBeforeDate(data, targetDate, count))
         .catch(err => {
-          console.warn(`获取VIX历史数据失败:`, err.message);
+          logger.warn(`获取VIX历史数据失败:`, err.message);
           return [];
         });
 
@@ -708,7 +709,7 @@ class MarketDataService {
       
       const tempPromise = this.getHistoricalMarketTemperature(tempStartDate, tempEndDate)
         .catch(err => {
-          console.warn(`获取历史市场温度失败:`, err.message);
+          logger.warn(`获取历史市场温度失败:`, err.message);
           return null;
         });
 
@@ -717,11 +718,11 @@ class MarketDataService {
       if (includeIntraday) {
         optionalPromises.push(
           this.getUSDIndexHourlyCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)).catch(err => {
-            console.warn(`获取USD Index分时历史数据失败（非关键）:`, err.message);
+            logger.warn(`获取USD Index分时历史数据失败（非关键）:`, err.message);
             return [];
           }),
           this.getBTCHourlyCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)).catch(err => {
-            console.warn(`获取BTC分时历史数据失败（非关键）:`, err.message);
+            logger.warn(`获取BTC分时历史数据失败（非关键）:`, err.message);
             return [];
           })
         );
@@ -729,7 +730,7 @@ class MarketDataService {
 
       // 先获取关键数据，如果失败会抛出错误
       const criticalResults = await Promise.all(criticalPromises.map(p => p.catch(err => {
-        console.error(`获取历史市场数据失败:`, err.message);
+        logger.error(`获取历史市场数据失败:`, err.message);
         throw new Error(`历史市场数据获取失败: ${err.message}`);
       })));
 
@@ -775,11 +776,11 @@ class MarketDataService {
         dataSummary['USD Index分时'] = `${optionalResults[0]?.length || 0}条`;
         dataSummary['BTC分时'] = `${optionalResults[1]?.length || 0}条`;
       }
-      console.log(`历史市场数据获取完成:`, dataSummary);
+      logger.info(`历史市场数据获取完成:`, dataSummary);
 
       return result;
     } catch (error: any) {
-      console.error('批量获取历史市场数据失败:', error.message);
+      logger.error('批量获取历史市场数据失败:', error.message);
       throw new Error(`历史市场数据获取失败，无法提供交易建议: ${error.message}`);
     }
   }
@@ -798,7 +799,7 @@ class MarketDataService {
     const targetTimestampMs = targetDateEnd.getTime(); // 毫秒级时间戳
     
     // ✅ 调试日志：查看过滤前后的数据量
-    console.log(`[历史数据过滤] 目标日期: ${targetDate.toISOString().split('T')[0]}, 目标时间戳(ms): ${targetTimestampMs}, 原始数据量: ${data.length}`);
+    logger.debug(`[历史数据过滤] 目标日期: ${targetDate.toISOString().split('T')[0]}, 目标时间戳(ms): ${targetTimestampMs}, 原始数据量: ${data.length}`);
     
     // 过滤出目标日期及之前的数据
     // 注意：CandlestickData.timestamp 可能是秒级或毫秒级，需要统一处理
@@ -814,7 +815,7 @@ class MarketDataService {
     });
     
     // ✅ 调试日志：查看过滤后的数据量
-    console.log(`[历史数据过滤] 过滤后数据量: ${filtered.length}, 需要返回: ${maxCount}条`);
+    logger.debug(`[历史数据过滤] 过滤后数据量: ${filtered.length}, 需要返回: ${maxCount}条`);
     
     if (filtered.length === 0 && data.length > 0) {
       // ✅ 调试：如果过滤后没有数据，显示第一条和最后一条数据的时间戳
@@ -826,11 +827,11 @@ class MarketDataService {
       const lastTimestampMs = typeof lastItem.timestamp === 'number'
         ? (lastItem.timestamp < 1e10 ? lastItem.timestamp * 1000 : lastItem.timestamp)
         : new Date(lastItem.timestamp).getTime();
-      console.log(`[历史数据过滤] 警告：过滤后无数据！`);
-      console.log(`   目标时间戳(ms): ${targetTimestampMs} (${new Date(targetTimestampMs).toISOString()})`);
-      console.log(`   第一条数据时间戳(ms): ${firstTimestampMs} (${new Date(firstTimestampMs).toISOString()}), 原始值: ${firstItem.timestamp}`);
-      console.log(`   最后一条数据时间戳(ms): ${lastTimestampMs} (${new Date(lastTimestampMs).toISOString()}), 原始值: ${lastItem.timestamp}`);
-      console.log(`   比较结果: ${firstTimestampMs <= targetTimestampMs ? '第一条<=目标' : '第一条>目标'}, ${lastTimestampMs <= targetTimestampMs ? '最后一条<=目标' : '最后一条>目标'}`);
+      logger.debug(`[历史数据过滤] 警告：过滤后无数据！`);
+      logger.debug(`   目标时间戳(ms): ${targetTimestampMs} (${new Date(targetTimestampMs).toISOString()})`);
+      logger.debug(`   第一条数据时间戳(ms): ${firstTimestampMs} (${new Date(firstTimestampMs).toISOString()}), 原始值: ${firstItem.timestamp}`);
+      logger.debug(`   最后一条数据时间戳(ms): ${lastTimestampMs} (${new Date(lastTimestampMs).toISOString()}), 原始值: ${lastItem.timestamp}`);
+      logger.debug(`   比较结果: ${firstTimestampMs <= targetTimestampMs ? '第一条<=目标' : '第一条>目标'}, ${lastTimestampMs <= targetTimestampMs ? '最后一条<=目标' : '最后一条>目标'}`);
     }
 
     // 按时间戳排序（从旧到新）
@@ -860,33 +861,33 @@ class MarketDataService {
           () => this.getSPXCandlesticks(count),
           { maxRetries: 3, initialDelayMs: 500 }
         ).catch(err => {
-          console.error(`获取SPX数据失败（已重试3次）:`, err.message);
+          logger.error(`获取SPX数据失败（已重试3次）:`, err.message);
           throw new Error(`SPX数据获取失败: ${err.message}`);
         }),
         retryWithBackoff(
           () => this.getUSDIndexCandlesticks(count),
           { maxRetries: 3, initialDelayMs: 500 }
         ).catch(err => {
-          console.error(`获取USD Index日K数据失败（已重试3次）:`, err.message);
+          logger.error(`获取USD Index日K数据失败（已重试3次）:`, err.message);
           throw new Error(`USD Index数据获取失败: ${err.message}`);
         }),
         retryWithBackoff(
           () => this.getBTCCandlesticks(count),
           { maxRetries: 3, initialDelayMs: 500 }
         ).catch(err => {
-          console.error(`获取BTC数据失败（已重试3次）:`, err.message);
+          logger.error(`获取BTC数据失败（已重试3次）:`, err.message);
           throw new Error(`BTC数据获取失败: ${err.message}`);
         }),
       ];
 
       // VIX 和 市场温度（非关键，允许失败）
       const vixPromise = this.getVIXCandlesticks(count).catch(err => {
-        console.warn(`获取VIX数据失败:`, err.message);
+        logger.warn(`获取VIX数据失败:`, err.message);
         return [];
       });
       
       const marketTempPromise = this.getMarketTemperature().catch(err => {
-        console.warn(`获取实时市场温度失败:`, err.message);
+        logger.warn(`获取实时市场温度失败:`, err.message);
         return null;
       });
 
@@ -895,11 +896,11 @@ class MarketDataService {
       if (includeIntraday) {
         optionalPromises.push(
           this.getUSDIndexHourlyCandlesticks(count).catch(err => {
-            console.warn(`获取USD Index分时数据失败（非关键）:`, err.message);
+            logger.warn(`获取USD Index分时数据失败（非关键）:`, err.message);
             return [];
           }),
           this.getBTCHourlyCandlesticks(count).catch(err => {
-            console.warn(`获取BTC分时数据失败（非关键）:`, err.message);
+            logger.warn(`获取BTC分时数据失败（非关键）:`, err.message);
             return [];
           })
         );
@@ -965,11 +966,11 @@ class MarketDataService {
         dataSummary['USD Index分时'] = `${optionalResults[0]?.length || 0}条`;
         dataSummary['BTC分时'] = `${optionalResults[1]?.length || 0}条`;
       }
-      console.log(`市场数据获取完成:`, dataSummary);
+      logger.info(`市场数据获取完成:`, dataSummary);
 
       return result;
     } catch (error: any) {
-      console.error('批量获取市场数据失败:', error.message);
+      logger.error('批量获取市场数据失败:', error.message);
       // 关键市场指标获取失败，抛出错误，不返回空数据
       throw new Error(`市场数据获取失败，无法提供交易建议: ${error.message}`);
     }
@@ -983,19 +984,19 @@ class MarketDataService {
 export async function testBTCRequest() {
   const service = new MarketDataService();
   
-  console.log('\n========== BTC请求测试 ==========');
-  console.log('BTC配置:', service['config'].btc);
+  logger.info('\n========== BTC请求测试 ==========');
+  logger.info('BTC配置:', service['config'].btc);
   
   try {
     const result = await service.getBTCCandlesticks(10);
-    console.log('✅ BTC请求成功，返回数据条数:', result.length);
+    logger.info('BTC请求成功，返回数据条数:', result.length);
     if (result.length > 0) {
-      console.log('第一条数据:', JSON.stringify(result[0], null, 2));
+      logger.debug('第一条数据:', JSON.stringify(result[0], null, 2));
     }
     return result;
   } catch (error: any) {
-    console.error('❌ BTC请求失败:', error.message);
-    console.error('错误详情:', error);
+    logger.error('BTC请求失败:', error.message);
+    logger.error('错误详情:', error);
     throw error;
   }
 }

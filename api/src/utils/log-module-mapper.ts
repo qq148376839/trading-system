@@ -194,6 +194,12 @@ const MODULE_MAPPINGS: ModuleMapping[] = [
     chineseName: '日志清理',
     description: '日志清理：自动和手动清理日志',
   },
+  {
+    pattern: /log-digest\.service\.ts$/,
+    module: 'Log.Digest',
+    chineseName: '日志摘要',
+    description: '日志摘要：高频指标定期聚合写入',
+  },
 
   // ==================== 配置相关 ====================
   {

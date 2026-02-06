@@ -46,7 +46,7 @@ class TradePushService {
       if (tradeCtx.subscribe) {
         await tradeCtx.subscribe([TopicType.Private]);
         this.isSubscribed = true;
-        logger.log('[交易推送] 已订阅交易推送 (TopicType.Private)');
+        logger.log('[交易推送] 已订阅交易推送 (TopicType.Private)', { dbWrite: false });
       } else {
         logger.warn('[交易推送] TradeContext 不支持 subscribe 方法，可能SDK版本不匹配');
       }
@@ -290,7 +290,7 @@ class TradePushService {
       }
       
       this.isSubscribed = false;
-      logger.log('[交易推送] 已取消订阅交易推送');
+      logger.log('[交易推送] 已取消订阅交易推送', { dbWrite: false });
     } catch (error: any) {
       logger.error('[交易推送] 取消订阅失败:', error);
       // 即使失败，也设置 isSubscribed 为 false（避免状态不一致）

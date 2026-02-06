@@ -14,6 +14,7 @@
 
 import pool from '../config/database';
 import { isTradingHours, isPreMarketHours } from '../utils/trading-hours';
+import { logger } from '../utils/logger';
 
 export interface OptionDecisionLog {
   strategyId: number;
@@ -115,7 +116,7 @@ class OptionDecisionLoggerService {
 
     if (!shouldWriteToDb) {
       // 非交易时间只输出到console
-      console.log(`[非交易时间] 跳过数据库写入: ${log.underlyingSymbol} -> ${log.finalResult}`);
+      logger.debug(`[非交易时间] 跳过数据库写入: ${log.underlyingSymbol} -> ${log.finalResult}`);
       return null;
     }
 
@@ -252,11 +253,11 @@ class OptionDecisionLoggerService {
       const result = await pool.query(query, values);
       const logId = result.rows[0].id;
 
-      console.log(`✅ [决策日志已写入] ID=${logId} | ${log.underlyingSymbol} -> ${log.finalResult}`);
+      logger.info(`[决策日志已写入] ID=${logId} | ${log.underlyingSymbol} -> ${log.finalResult}`);
 
       return logId;
     } catch (error: any) {
-      console.error(`❌ [决策日志写入失败] ${log.underlyingSymbol}:`, error.message);
+      logger.error(`[决策日志写入失败] ${log.underlyingSymbol}:`, error.message);
       return null;
     }
   }
@@ -286,7 +287,7 @@ class OptionDecisionLoggerService {
       const result = await pool.query(query, params);
       return result.rows;
     } catch (error: any) {
-      console.error('查询决策日志失败:', error.message);
+      logger.error('查询决策日志失败:', error.message);
       return [];
     }
   }
@@ -313,7 +314,7 @@ class OptionDecisionLoggerService {
       const result = await pool.query(query);
       return result.rows;
     } catch (error: any) {
-      console.error('统计未生成信号原因失败:', error.message);
+      logger.error('统计未生成信号原因失败:', error.message);
       return [];
     }
   }

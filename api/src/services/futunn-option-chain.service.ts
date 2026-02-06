@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { getFutunnConfig, getFutunnHeaders, getFutunnSearchHeaders } from '../config/futunn';
 import { moomooProxy } from '../utils/moomoo-proxy';
+import { logger } from '../utils/logger';
 
 /**
  * 富途牛牛期权链服务
@@ -154,12 +155,12 @@ export async function getOptionStrikeDates(stockId: string): Promise<{
       };
     }
 
-    console.error('获取期权到期日期列表失败:', responseData);
+    logger.error('获取期权到期日期列表失败:', responseData);
     return null;
   } catch (error: any) {
-    console.error('获取期权到期日期列表失败:', error.message);
+    logger.error('获取期权到期日期列表失败:', error.message);
     if (error.response) {
-      console.error('API响应状态:', error.response.status, error.response.data);
+      logger.error('API响应状态:', error.response.status, error.response.data);
     }
     return null;
   }
@@ -258,7 +259,7 @@ export async function getOptionChain(
 
       // 如果expiration=1没有数据，且当前判断为未过期，尝试使用expiration=0
       if (expiration === 1 && chainData.length === 0) {
-        console.log(`expiration=1未获取到数据，尝试使用expiration=0获取strikeDate=${strikeDate}的期权链`);
+        logger.debug(`expiration=1未获取到数据，尝试使用expiration=0获取strikeDate=${strikeDate}的期权链`);
 
         // 重新生成token和参数，使用expiration=0
         const paramsForTokenExpired = {
@@ -289,7 +290,7 @@ export async function getOptionChain(
         if (responseData?.code === 0) {
           const expiredChainData = responseData.data || [];
           if (expiredChainData.length > 0) {
-            console.log(`使用expiration=0成功获取到${expiredChainData.length}条期权链数据`);
+            logger.info(`使用expiration=0成功获取到${expiredChainData.length}条期权链数据`);
             return expiredChainData;
           }
         }
@@ -299,12 +300,12 @@ export async function getOptionChain(
       return [];
     }
 
-    console.error('获取期权链失败:', responseData);
+    logger.error('获取期权链失败:', responseData);
     return null;
   } catch (error: any) {
-    console.error('获取期权链失败:', error.message);
+    logger.error('获取期权链失败:', error.message);
     if (error.response) {
-      console.error('API响应状态:', error.response.status, error.response.data);
+      logger.error('API响应状态:', error.response.status, error.response.data);
     }
     return null;
   }
@@ -510,12 +511,12 @@ export async function getOptionDetail(
       };
     }
     
-    console.error('获取期权详情失败:', responseData);
+    logger.error('获取期权详情失败:', responseData);
     return null;
   } catch (error: any) {
-    console.error('获取期权详情失败:', error.message);
+    logger.error('获取期权详情失败:', error.message);
     if (error.response) {
-      console.error('API响应状态:', error.response.status, error.response.data);
+      logger.error('API响应状态:', error.response.status, error.response.data);
     }
     return null;
   }
@@ -570,12 +571,12 @@ async function searchStock(keyword: string): Promise<{
       }
     }
     
-    console.warn(`未找到正股: ${keyword}`);
+    logger.warn(`未找到正股: ${keyword}`);
     return null;
   } catch (error: any) {
-    console.error('搜索正股失败:', error.message);
+    logger.error('搜索正股失败:', error.message);
     if (error.response) {
-      console.error('API响应状态:', error.response.status, error.response.data);
+      logger.error('API响应状态:', error.response.status, error.response.data);
     }
     return null;
   }
@@ -689,12 +690,12 @@ export async function getUnderlyingStockQuote(
       };
     }
     
-    console.error('获取正股行情失败:', responseData);
+    logger.error('获取正股行情失败:', responseData);
     return null;
   } catch (error: any) {
-    console.error('获取正股行情失败:', error.message);
+    logger.error('获取正股行情失败:', error.message);
     if (error.response) {
-      console.error('API响应状态:', error.response.status, error.response.data);
+      logger.error('API响应状态:', error.response.status, error.response.data);
     }
     return null;
   }
@@ -781,12 +782,12 @@ export async function getOptionKline(
       }));
     }
     
-    console.error('获取期权K线数据失败:', responseData);
+    logger.error('获取期权K线数据失败:', responseData);
     return [];
   } catch (error: any) {
-    console.error('获取期权K线数据失败:', error.message);
+    logger.error('获取期权K线数据失败:', error.message);
     if (error.response) {
-      console.error('API响应状态:', error.response.status, error.response.data);
+      logger.error('API响应状态:', error.response.status, error.response.data);
     }
     return [];
   }
@@ -863,12 +864,12 @@ export async function getOptionMinute(
       }));
     }
     
-    console.error('获取期权分时数据失败:', responseData);
+    logger.error('获取期权分时数据失败:', responseData);
     return [];
   } catch (error: any) {
-    console.error('获取期权分时数据失败:', error.message);
+    logger.error('获取期权分时数据失败:', error.message);
     if (error.response) {
-      console.error('API响应状态:', error.response.status, error.response.data);
+      logger.error('API响应状态:', error.response.status, error.response.data);
     }
     return [];
   }

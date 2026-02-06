@@ -5,6 +5,7 @@
 
 import { StrategyBase, TradingIntent } from './strategy-base';
 import tradingRecommendationService from '../trading-recommendation.service';
+import { logger } from '../../utils/logger';
 
 export class RecommendationStrategy extends StrategyBase {
   constructor(strategyId: number, config: Record<string, any> = {}) {
@@ -70,7 +71,7 @@ export class RecommendationStrategy extends StrategyBase {
 
       return intent;
     } catch (error: any) {
-      console.error(`策略 ${this.strategyId} 生成信号失败 (${symbol}):`, error);
+      logger.error(`策略 ${this.strategyId} 生成信号失败 (${symbol}):`, error);
       
       // 记录错误但不抛出异常，返回 null 表示不生成信号
       return null;

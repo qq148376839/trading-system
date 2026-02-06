@@ -16,6 +16,8 @@
  * - TTL从5分钟缩短到10秒，提供更实时的价格数据
  */
 
+import { logger } from '../utils/logger';
+
 export interface OptionPriceCacheEntry {
   price: number;
   bid: number;
@@ -126,7 +128,7 @@ class OptionPriceCacheService {
       toDelete.forEach((symbol) => this.cache.delete(symbol));
 
       if (toDelete.length > 0) {
-        console.log(`[OptionPriceCache] 清理了 ${toDelete.length} 个过期缓存`);
+        logger.debug(`[OptionPriceCache] 清理了 ${toDelete.length} 个过期缓存`);
       }
     }, 10 * 60 * 1000); // 每10分钟
   }

@@ -4,6 +4,8 @@
  * 实现调用队列、频率限制、错误重试机制
  */
 
+import { logger } from '../utils/logger';
+
 interface CallStats {
   total: number;
   success: number;
@@ -65,13 +67,13 @@ class ApiRateLimiterService {
             // 如果是限流错误（429），增加等待时间
             if (error?.response?.status === 429 || error?.status === 429) {
               const waitTime = this.config.retryDelay * Math.pow(2, retries);
-              console.warn(`API限流，等待 ${waitTime}ms 后重试 (${retries + 1}/${this.config.maxRetries})`);
+              logger.warn(`API限流，等待 ${waitTime}ms 后重试 (${retries + 1}/${this.config.maxRetries})`);
               await new Promise(resolve => setTimeout(resolve, waitTime));
               retries++;
             } else if (retries < this.config.maxRetries) {
               // 其他错误，短暂等待后重试
               const waitTime = this.config.retryDelay * (retries + 1);
-              console.warn(`API调用失败，${waitTime}ms 后重试 (${retries + 1}/${this.config.maxRetries}):`, error.message);
+              logger.warn(`API调用失败，${waitTime}ms 后重试 (${retries + 1}/${this.config.maxRetries}):`, error.message);
               await new Promise(resolve => setTimeout(resolve, waitTime));
               retries++;
             } else {
@@ -112,7 +114,7 @@ class ApiRateLimiterService {
       const waitTime = (oldestCall + 60 * 60 * 1000) - Date.now();
       
       if (waitTime > 0) {
-        console.warn(`达到每小时调用限制，等待 ${Math.ceil(waitTime / 1000)}秒`);
+        logger.warn(`达到每小时调用限制，等待 ${Math.ceil(waitTime / 1000)}秒`);
         await new Promise(resolve => setTimeout(resolve, waitTime));
       }
     }
@@ -131,7 +133,7 @@ class ApiRateLimiterService {
         task()
           .catch((error) => {
             // 错误已在execute中处理，这里只记录
-            console.error('API调用队列任务失败:', error.message);
+            logger.error('API调用队列任务失败:', error.message);
           })
           .finally(() => {
             this.running--;

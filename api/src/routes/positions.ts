@@ -3,6 +3,7 @@ import pool from '../config/database';
 import { getTradeContext, getQuoteContext } from '../config/longport';
 import { getFutunnOptionQuotes } from '../services/futunn-option-quote.service';
 import { ErrorFactory, normalizeError } from '../utils/errors';
+import { logger } from '../utils/logger';
 
 export const positionsRouter = Router();
 
@@ -88,7 +89,7 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
       const allPositions: any[] = [];
       
       // 打印返回的数据结构以便调试
-      console.log('stockPositions返回数据结构:', JSON.stringify(stockPositions, null, 2));
+      logger.debug('stockPositions返回数据结构:', JSON.stringify(stockPositions, null, 2));
       
       if (stockPositions && typeof stockPositions === 'object') {
         // 处理返回的数据结构
@@ -114,7 +115,7 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
         }
       }
       
-      console.log('提取到的持仓数量:', allPositions.length);
+      logger.debug('提取到的持仓数量:', allPositions.length);
       
       // 将LongPort持仓数据转换为标准格式
       // 注意：实际返回的数据可能没有lastPrice、marketValue等字段，需要后续通过行情API获取
@@ -151,7 +152,7 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
         };
       }).filter((p: any) => p.quantity !== 0); // 返回所有非零持仓（包括负数/空头）
       
-      console.log('转换后的持仓数量:', positions.length);
+      logger.debug('转换后的持仓数量:', positions.length);
       
       // 分离期权和普通股票
       const stockSymbols: string[] = [];
@@ -187,13 +188,13 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
             });
           });
         } catch (error: any) {
-          console.error('获取普通股票行情失败:', error);
+          logger.error('获取普通股票行情失败:', error);
         }
       }
       
       // 获取期权行情
       if (optionSymbols.length > 0) {
-        console.log(`[期权行情] 准备获取 ${optionSymbols.length} 个期权行情:`, optionSymbols);
+        logger.debug(`[期权行情] 准备获取 ${optionSymbols.length} 个期权行情:`, optionSymbols);
         let longportSuccess = false;
         let missingOptions: string[] = [];
         
@@ -205,17 +206,17 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
           enableLongportOptionQuote = configValue === 'true';
         } catch (error: any) {
           // 如果读取配置失败，使用默认值 false
-          console.warn('[期权行情] 无法读取配置 longport_enable_option_quote，使用默认值 false（使用富途API）');
+          logger.warn('[期权行情] 无法读取配置 longport_enable_option_quote，使用默认值 false（使用富途API）');
         }
         
         if (!enableLongportOptionQuote) {
-          console.log('[期权行情] 长桥期权查询已禁用（配置: longport_enable_option_quote=false），直接使用富途牛牛API');
+          logger.debug('[期权行情] 长桥期权查询已禁用（配置: longport_enable_option_quote=false），直接使用富途牛牛API');
           missingOptions = optionSymbols; // 所有期权都从富途牛牛获取
         } else {
           // 首先尝试使用长桥API获取期权行情
           try {
             const optionQuotes = await quoteCtx.optionQuote(optionSymbols);
-            console.log(`[期权行情] 长桥API成功获取 ${optionQuotes.length} 个期权行情`);
+            logger.debug(`[期权行情] 长桥API成功获取 ${optionQuotes.length} 个期权行情`);
             longportSuccess = true;
             
             optionQuotes.forEach(q => {
@@ -244,7 +245,7 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
               });
               
               // 调试日志：每个期权的行情数据
-              console.log(`[期权行情] ${q.symbol}:`, {
+              logger.debug(`[期权行情] ${q.symbol}:`, {
                 lastDone: q.lastDone,
                 contractMultiplier: q.optionExtend?.contractMultiplier || 'N/A',
                 hasOptionExtend: !!q.optionExtend,
@@ -254,10 +255,10 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
             // 检查是否有期权未获取到行情
             missingOptions = optionSymbols.filter(sym => !quotesMap.has(sym));
             if (missingOptions.length > 0) {
-              console.warn(`[期权行情] 以下 ${missingOptions.length} 个期权未从长桥API获取到行情:`, missingOptions);
+              logger.warn(`[期权行情] 以下 ${missingOptions.length} 个期权未从长桥API获取到行情:`, missingOptions);
             }
           } catch (error: any) {
-            console.error('获取期权行情失败（长桥API）:', error);
+            logger.error('获取期权行情失败（长桥API）:', error);
             // 如果是权限错误，尝试使用富途牛牛API作为备用
             const isPermissionError = error.message && (
               error.message.includes('301604') || 
@@ -265,11 +266,11 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
             );
             
             if (isPermissionError) {
-              console.warn('期权行情权限不足（301604），尝试使用富途牛牛API作为备用方案...');
+              logger.warn('期权行情权限不足（301604），尝试使用富途牛牛API作为备用方案...');
               missingOptions = optionSymbols; // 所有期权都需要从富途牛牛获取
             } else {
               // 其他错误，记录但不影响其他持仓
-              console.error('长桥API获取期权行情失败（非权限错误）:', error.message);
+              logger.error('长桥API获取期权行情失败（非权限错误）:', error.message);
               missingOptions = optionSymbols.filter(sym => !quotesMap.has(sym));
             }
           }
@@ -279,19 +280,19 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
         // 使用 Promise.race 确保不会阻塞太久
         if (missingOptions.length > 0) {
           try {
-            console.log(`[期权行情] 尝试使用富途牛牛API获取 ${missingOptions.length} 个期权行情...`);
+            logger.debug(`[期权行情] 尝试使用富途牛牛API获取 ${missingOptions.length} 个期权行情...`);
             // 设置超时，避免阻塞整个请求
             const futunnQuotesPromise = getFutunnOptionQuotes(missingOptions);
             const timeoutPromise = new Promise<any[]>((resolve) => {
               setTimeout(() => {
-                console.warn(`[期权行情] 富途牛牛API查询超时（5秒），跳过`);
+                logger.warn(`[期权行情] 富途牛牛API查询超时（5秒），跳过`);
                 resolve([]);
               }, 5000);
             });
             const futunnQuotes = await Promise.race([futunnQuotesPromise, timeoutPromise]);
             
             if (futunnQuotes.length > 0) {
-              console.log(`✅ [期权行情] 富途牛牛API成功获取 ${futunnQuotes.length} 个期权行情`);
+              logger.info(`[期权行情] 富途牛牛API成功获取 ${futunnQuotes.length} 个期权行情`);
               
               futunnQuotes.forEach(q => {
                 // 富途牛牛API返回的数据格式与长桥API兼容，但没有option_extend字段
@@ -312,7 +313,7 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
                   },
                 });
                 
-                console.log(`[期权行情] 富途牛牛 ${q.symbol}:`, {
+                logger.debug(`[期权行情] 富途牛牛 ${q.symbol}:`, {
                   lastDone: q.last_done,
                   contractMultiplier: 100,
                   source: '富途牛牛API',
@@ -322,13 +323,13 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
               // 检查是否还有未获取到行情的期权
               const stillMissing = missingOptions.filter(sym => !quotesMap.has(sym));
               if (stillMissing.length > 0) {
-                console.warn(`[期权行情] 以下 ${stillMissing.length} 个期权无法从任何API获取行情:`, stillMissing);
+                logger.warn(`[期权行情] 以下 ${stillMissing.length} 个期权无法从任何API获取行情:`, stillMissing);
               }
             } else {
-              console.warn(`[期权行情] 富途牛牛API未能获取到任何期权行情`);
+              logger.warn(`[期权行情] 富途牛牛API未能获取到任何期权行情`);
             }
           } catch (futunnError: any) {
-            console.error('富途牛牛API获取期权行情失败:', futunnError.message);
+            logger.error('富途牛牛API获取期权行情失败:', futunnError.message);
             // 不影响主流程，继续使用已有的数据
           }
         }
@@ -375,7 +376,7 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
           
           // 调试日志：期权持仓计算
           if (isOption) {
-            console.log(`[期权持仓计算] ${pos.symbol}:`, {
+            logger.debug(`[期权持仓计算] ${pos.symbol}:`, {
               quantity,
               costPrice,
               currentPrice,
@@ -409,7 +410,7 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
               if (underlyingQuote && underlyingQuote.last_done) {
                 // 使用标的股票价格作为参考（但这不是准确的期权价格）
                 const underlyingPrice = parseFloat(underlyingQuote.last_done.toString());
-                console.warn(`[期权持仓] ${pos.symbol}: 无法获取期权行情，使用标的股票价格 ${underlyingSymbol} = ${underlyingPrice} 作为参考`);
+                logger.warn(`[期权持仓] ${pos.symbol}: 无法获取期权行情，使用标的股票价格 ${underlyingSymbol} = ${underlyingPrice} 作为参考`);
               }
             }
             
@@ -431,7 +432,7 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
               ? (unrealizedPl / (Math.abs(quantity) * costPrice * contractMultiplier)) * 100
               : 0;
             
-            console.warn(`[期权持仓] ${pos.symbol}: 无法获取期权行情数据，使用默认合约乘数100重新计算`, {
+            logger.warn(`[期权持仓] ${pos.symbol}: 无法获取期权行情数据，使用默认合约乘数100重新计算`, {
               quantity,
               costPrice,
               currentPrice,
@@ -499,7 +500,7 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
             ]
           );
         } catch (dbError) {
-          console.error(`同步持仓 ${pos.symbol} 到数据库失败:`, dbError);
+          logger.error(`同步持仓 ${pos.symbol} 到数据库失败:`, dbError);
         }
       }
       
@@ -516,16 +517,16 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
           );
           
           if (deleteResult.rowCount && deleteResult.rowCount > 0) {
-            console.log(`已删除 ${deleteResult.rowCount} 个已清仓的持仓（不在API返回列表中）`);
+            logger.info(`已删除 ${deleteResult.rowCount} 个已清仓的持仓（不在API返回列表中）`);
           }
         } catch (deleteError) {
-          console.error('删除已清仓持仓失败:', deleteError);
+          logger.error('删除已清仓持仓失败:', deleteError);
           // 不影响主流程，只记录错误
         }
       } else {
         // 如果API返回的持仓列表为空，说明所有持仓都已清仓
         // 可以选择删除所有持仓，或者保留（这里选择保留，因为可能是API调用失败）
-        console.warn('API返回的持仓列表为空，跳过删除操作（可能是API调用失败）');
+        logger.warn('API返回的持仓列表为空，跳过删除操作（可能是API调用失败）');
       }
       
       return res.json({
@@ -537,7 +538,7 @@ positionsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
         },
       });
     } catch (apiError: any) {
-      console.error('从LongPort API获取持仓失败，尝试从数据库获取:', apiError);
+      logger.error('从LongPort API获取持仓失败，尝试从数据库获取:', apiError);
       // 如果API调用失败，从数据库获取
     }
     

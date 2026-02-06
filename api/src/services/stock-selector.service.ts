@@ -4,6 +4,7 @@
  */
 
 import pool from '../config/database';
+import { logger } from '../utils/logger';
 
 export interface SymbolPoolConfig {
   mode: 'STATIC' | 'DYNAMIC' | 'INSTITUTION';
@@ -93,7 +94,7 @@ class StockSelector {
     if (filters.minVolume) {
       // Phase 3 实现：需要调用市场数据 API 获取成交量
       // 当前阶段先跳过成交量过滤
-      console.warn('成交量过滤将在 Phase 3 实现');
+      logger.warn('成交量过滤将在 Phase 3 实现');
     }
 
     return filtered;

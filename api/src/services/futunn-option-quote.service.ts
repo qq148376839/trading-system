@@ -2,6 +2,7 @@ import axios from 'axios';
 import crypto from 'crypto';
 import { getFutunnConfig, getFutunnHeaders, getFutunnSearchHeaders } from '../config/futunn';
 import { moomooProxy, getProxyMode } from '../utils/moomoo-proxy';
+import { logger } from '../utils/logger';
 
 /**
  * 富途牛牛期权行情服务
@@ -107,7 +108,7 @@ async function searchStock(keyword: string): Promise<{
     const headers = await getFutunnSearchHeaders('https://www.moomoo.com/');
     
     const startTime = Date.now();
-    console.log(`[富途搜索] 搜索正股: ${keyword} (${getProxyMode()})`);
+    logger.debug(`[富途搜索] 搜索正股: ${keyword} (${getProxyMode()})`);
     
     // 使用边缘函数代理
     const responseData = await moomooProxy({
@@ -124,7 +125,7 @@ async function searchStock(keyword: string): Promise<{
     });
     
     const duration = Date.now() - startTime;
-    console.log(`[富途搜索响应] ${keyword}:`, {
+    logger.debug(`[富途搜索响应] ${keyword}:`, {
       duration: `${duration}ms`,
       dataCode: responseData?.code,
       dataMessage: responseData?.message,
@@ -139,7 +140,7 @@ async function searchStock(keyword: string): Promise<{
     if (responseData?.code === 0 && responseData?.data?.stock) {
       // 标准格式：{ code: 0, data: { stock: [...] } }
       stockList = responseData.data.stock;
-      console.log(`[富途搜索] 找到 ${stockList.length} 个股票结果`);
+      logger.debug(`[富途搜索] 找到 ${stockList.length} 个股票结果`);
     } else if (responseData?.data?.stock) {
       stockList = responseData.data.stock;
     } else if (responseData?.stock) {
@@ -147,7 +148,7 @@ async function searchStock(keyword: string): Promise<{
     } else if (Array.isArray(responseData)) {
       stockList = responseData;
     } else {
-      console.warn(`[富途搜索] 未知的数据结构:`, {
+      logger.warn(`[富途搜索] 未知的数据结构:`, {
         code: responseData?.code,
         message: responseData?.message,
         dataKeys: responseData?.data ? Object.keys(responseData.data) : [],
@@ -159,7 +160,7 @@ async function searchStock(keyword: string): Promise<{
     for (const stock of stockList) {
       if (stock.symbol === keyword.toUpperCase() + '.US' || 
           stock.stockSymbol === keyword.toUpperCase()) {
-        console.log(`[富途搜索] 找到正股: ${keyword} -> stockId=${stock.stockId}, marketType=${stock.marketType}`);
+        logger.info(`[富途搜索] 找到正股: ${keyword} -> stockId=${stock.stockId}, marketType=${stock.marketType}`);
         return {
           stockId: String(stock.stockId),
           marketType: stock.marketType,
@@ -167,13 +168,13 @@ async function searchStock(keyword: string): Promise<{
       }
     }
     
-    console.warn(`[富途搜索] 未找到正股: ${keyword}`, {
+    logger.warn(`[富途搜索] 未找到正股: ${keyword}`, {
       searchedSymbol: keyword.toUpperCase() + '.US',
       stockList: stockList.map(s => ({ symbol: s.symbol, stockSymbol: s.stockSymbol, stockId: s.stockId })).slice(0, 5),
     });
     return null;
   } catch (error: any) {
-    console.error('[富途搜索错误] 搜索正股失败:', {
+    logger.error('[富途搜索错误] 搜索正股失败:', {
       keyword,
       errorCode: error.code,
       errorMessage: error.message,
@@ -272,7 +273,7 @@ async function getOptionFromChain(
     
     return null;
   } catch (error: any) {
-    console.error('获取期权链失败:', error.message);
+    logger.error('获取期权链失败:', error.message);
     return null;
   }
 }
@@ -349,7 +350,7 @@ async function getOptionQuote(optionId: string, marketType: number): Promise<any
     
     return null;
   } catch (error: any) {
-    console.error('获取期权行情失败:', error.message);
+    logger.error('获取期权行情失败:', error.message);
     return null;
   }
 }
@@ -375,14 +376,14 @@ export async function getFutunnOptionQuote(optionSymbol: string): Promise<{
   // 解析期权代码
   const optionInfo = parseOptionCode(optionSymbol);
   if (!optionInfo) {
-    console.error(`无法解析期权代码: ${optionSymbol}`);
+    logger.error(`无法解析期权代码: ${optionSymbol}`);
     return null;
   }
   
   // 步骤1：搜索正股
   const stockInfo = await searchStock(optionInfo.symbol);
   if (!stockInfo) {
-    console.error(`无法找到正股: ${optionInfo.symbol}`);
+    logger.error(`无法找到正股: ${optionInfo.symbol}`);
     return null;
   }
   
@@ -395,14 +396,14 @@ export async function getFutunnOptionQuote(optionSymbol: string): Promise<{
   );
   
   if (!optionChainInfo) {
-    console.error(`无法找到期权: ${optionSymbol}`);
+    logger.error(`无法找到期权: ${optionSymbol}`);
     return null;
   }
   
   // 步骤3：获取期权行情
   const quoteData = await getOptionQuote(optionChainInfo.optionId, stockInfo.marketType);
   if (!quoteData) {
-    console.error(`无法获取期权行情: ${optionSymbol}`);
+    logger.error(`无法获取期权行情: ${optionSymbol}`);
     return null;
   }
   
@@ -440,7 +441,7 @@ export async function getFutunnOptionQuotes(optionSymbols: string[]): Promise<Ar
       // 添加小延迟，避免请求过快
       await new Promise(resolve => setTimeout(resolve, 100));
     } catch (error: any) {
-      console.error(`获取 ${symbol} 行情失败:`, error.message);
+      logger.error(`获取 ${symbol} 行情失败:`, error.message);
     }
   }
   

@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { rateLimiter } from '../middleware/rateLimiter';
 import { getFutunnHeaders } from '../config/futunn';
 import { ErrorFactory, normalizeError } from '../utils/errors';
+import { logger } from '../utils/logger';
 
 export const forexRouter = Router();
 
@@ -378,7 +379,7 @@ forexRouter.get('/test-btc', async (_req: Request, res: Response, next: NextFunc
   try {
     const { testBTCRequest } = await import('../services/market-data.service');
     
-    console.log('\n========== BTC API测试开始 ==========');
+    logger.debug('\n========== BTC API测试开始 ==========');
     const result = await testBTCRequest();
     
     res.json({

@@ -63,7 +63,7 @@ class StrategyScheduler {
     }
 
     this.isRunning = true;
-    logger.log('策略调度器已启动');
+    logger.log('策略调度器已启动', { dbWrite: false });
 
     // 恢复所有运行中策略的状态
     await stateManager.restoreRunningStrategies();
@@ -92,7 +92,7 @@ class StrategyScheduler {
       }
     }
 
-    logger.log('策略调度器已停止');
+    logger.log('策略调度器已停止', { dbWrite: false });
   }
 
   /**
@@ -184,7 +184,7 @@ class StrategyScheduler {
     // 存储订单监控定时器ID（用于停止时清理）
     this.orderMonitorIntervals.set(strategyId, orderMonitorId);
 
-    logger.log(`策略 ${strategy.name} (ID: ${strategyId}) 已启动（策略周期: ${intervalDesc}，订单监控: ${orderMonitorDesc}）`);
+    logger.log(`策略 ${strategy.name} (ID: ${strategyId}) 已启动（策略周期: ${intervalDesc}，订单监控: ${orderMonitorDesc}）`, { dbWrite: false });
 
     // 立即执行一次策略周期
     try {
@@ -211,7 +211,7 @@ class StrategyScheduler {
       this.orderMonitorIntervals.delete(strategyId);
     }
     
-    logger.log(`策略 ${strategyId} 已停止`);
+    logger.log(`策略 ${strategyId} 已停止`, { dbWrite: false });
 
     // 更新数据库状态
     await pool.query('UPDATE strategies SET status = $1 WHERE id = $2', ['STOPPED', strategyId]);
@@ -255,7 +255,7 @@ class StrategyScheduler {
     const symbols = await stockSelector.getSymbolPool(symbolPoolConfig);
     
     if (!symbols || symbols.length === 0) {
-      logger.log(`策略 ${strategyId}: 股票池为空，跳过本次运行`);
+      logger.log(`策略 ${strategyId}: 股票池为空，跳过本次运行`, { dbWrite: false });
       return;
     }
 
@@ -364,12 +364,12 @@ class StrategyScheduler {
         }
       );
     } else {
-      // 纯净模式（全无事）：只记录基本统计，使用精简的metadata节省数据库空间
+      // 纯净模式（全无事）：只记录基本统计，不写入数据库
       logger.info(
         `策略 ${summary.strategyId} 执行完成: 耗时 ${duration}ms, ` +
         `扫描 ${summary.totalTargets} 个标的 (IDLE: ${summary.idle.length}, HOLDING: ${summary.holding.length})`,
-        { 
-          metadata: { 
+        {
+          metadata: {
             strategyId: summary.strategyId,
             duration,
             totalTargets: summary.totalTargets,
@@ -378,7 +378,8 @@ class StrategyScheduler {
               holding: summary.holding.length,
               other: summary.other.length
             }
-          } 
+          },
+          dbWrite: false
         }
       );
     }
@@ -848,7 +849,7 @@ class StrategyScheduler {
         return;
       }
 
-      logger.log(`策略 ${strategyId}: 监控 ${pendingOrders.length} 个未成交订单`);
+      logger.log(`策略 ${strategyId}: 监控 ${pendingOrders.length} 个未成交订单`, { dbWrite: false });
 
       // 7. 获取当前行情并评估是否需要调整订单价格
       const { getQuoteContext } = await import('../config/longport');
@@ -1144,9 +1145,8 @@ class StrategyScheduler {
         return;
       }
 
-      // 记录信号日志（关键信息，实时输出到控制台，但不写入数据库）
-      // 使用 console.log 只输出到控制台，避免写入数据库造成日志膨胀
-      console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 生成信号 ${intent.action}, 价格=${intent.entryPrice?.toFixed(2) || 'N/A'}, 原因=${intent.reason?.substring(0, 50) || 'N/A'}`);
+      // 记录信号日志（关键业务事件）
+      logger.info(`策略 ${strategyId} 标的 ${symbol}: 生成信号 ${intent.action}, 价格=${intent.entryPrice?.toFixed(2) || 'N/A'}, 原因=${intent.reason?.substring(0, 50) || 'N/A'}`);
       summary.signals.push(symbol);
 
       // ⚠️ 修复：IDLE状态下支持SELL信号（做空操作）
@@ -1301,8 +1301,7 @@ class StrategyScheduler {
         const availableCapital = await capitalManager.getAvailableCapital(strategyId);
         
         if (availableCapital <= 0) {
-          // 可用资金不足：只输出到控制台，不写入数据库（信息已在汇总日志中）
-          console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 可用资金不足 (${availableCapital.toFixed(2)})，跳过买入`);
+          logger.info(`策略 ${strategyId} 标的 ${symbol}: 可用资金不足 (${availableCapital.toFixed(2)})，跳过买入`);
           summary.errors.push(`${symbol}(NO_CAPITAL)`);
           return;
         }
@@ -1329,8 +1328,7 @@ class StrategyScheduler {
           return;
         }
 
-        // 准备买入：只输出到控制台，不写入数据库（信息已在汇总日志中）
-        console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 准备买入，数量=${intent.quantity}, 价格=${intent.entryPrice?.toFixed(2)}`);
+        logger.info(`策略 ${strategyId} 标的 ${symbol}: 准备买入，数量=${intent.quantity}, 价格=${intent.entryPrice?.toFixed(2)}`);
 
         // 申请资金（期权：使用 premium*multiplier*contracts + fees 的覆盖值）
         const allocationAmountOverride = (intent.metadata as any)?.allocationAmountOverride;
@@ -1344,8 +1342,7 @@ class StrategyScheduler {
         });
 
         if (!allocationResult.approved) {
-          // 资金申请被拒绝：只输出到控制台，不写入数据库（信息已在汇总日志中）
-          console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 资金申请被拒绝 - ${allocationResult.reason || '未知原因'}`);
+          logger.info(`策略 ${strategyId} 标的 ${symbol}: 资金申请被拒绝 - ${allocationResult.reason || '未知原因'}`);
           summary.errors.push(`${symbol}(CAPITAL_REJECTED)`);
           return;
         }
@@ -2092,8 +2089,7 @@ class StrategyScheduler {
         context = updatedContext;
         stopLoss = defaultStopLoss;
         takeProfit = defaultTakeProfit;
-        // 设置默认止盈止损：只输出到控制台，不写入数据库（信息已在汇总日志中）
-        console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 设置默认止盈止损`);
+        logger.debug(`策略 ${strategyId} 标的 ${symbol}: 设置默认止盈止损`);
       }
 
       // 4. 获取完整的持仓上下文
@@ -2150,8 +2146,7 @@ class StrategyScheduler {
         
         if (stopLossChanged || takeProfitChanged) {
           await strategyInstance.updateState(symbol, 'HOLDING', adjustmentResult.context);
-          // 动态调整止盈/止损：只输出到控制台，不写入数据库（信息已在汇总日志中）
-          console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 动态调整止盈/止损`);
+          logger.debug(`策略 ${strategyId} 标的 ${symbol}: 动态调整止盈/止损`);
           actionTaken = true;
         }
       }
@@ -2512,7 +2507,7 @@ class StrategyScheduler {
       }
 
       // 7. 记录信号并执行
-      console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: (多仓模式) 生成新信号 ${intent.action}, 合约=${newContractSymbol}, 价格=${intent.entryPrice?.toFixed(2) || 'N/A'}`);
+      logger.info(`策略 ${strategyId} 标的 ${symbol}: (多仓模式) 生成新信号 ${intent.action}, 合约=${newContractSymbol}, 价格=${intent.entryPrice?.toFixed(2) || 'N/A'}`);
       summary.signals.push(`${symbol}(NEW_CONTRACT)`);
 
       // 执行订单（BUY 信号）
@@ -2530,7 +2525,7 @@ class StrategyScheduler {
         });
 
         if (!allocationResult.approved) {
-          console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: (多仓模式) 资金申请被拒绝 - ${allocationResult.reason}`);
+          logger.info(`策略 ${strategyId} 标的 ${symbol}: (多仓模式) 资金申请被拒绝 - ${allocationResult.reason}`);
           return;
         }
 
@@ -2554,7 +2549,7 @@ class StrategyScheduler {
       }
     } catch (error: any) {
       // 不中断主流程，仅记录错误
-      console.warn(`策略 ${strategyId} 标的 ${symbol}: 多仓模式处理失败: ${error.message}`);
+      logger.warn(`策略 ${strategyId} 标的 ${symbol}: 多仓模式处理失败: ${error.message}`);
     }
   }
 
@@ -2965,7 +2960,7 @@ class StrategyScheduler {
             // 注意：手续费信息在状态同步时无法获取，需要在开仓时保存
           },
         });
-        console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 状态同步 - 从IDLE更新为HOLDING（期权持仓，交易标的=${tradedSymbol}, 数量=${qty}）`);
+        logger.info(`策略 ${strategyId} 标的 ${symbol}: 状态同步 - 从IDLE更新为HOLDING（期权持仓，交易标的=${tradedSymbol}, 数量=${qty}）`);
         return;
       }
 
@@ -3011,7 +3006,7 @@ class StrategyScheduler {
         };
 
         await strategyInstance.updateState(symbol, 'HOLDING', updatedContext);
-        console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 状态同步 - 从IDLE更新为HOLDING（做多持仓，数量=${quantity}）`);
+        logger.info(`策略 ${strategyId} 标的 ${symbol}: 状态同步 - 从IDLE更新为HOLDING（做多持仓，数量=${quantity}）`);
       } else if (quantity < 0) {
         // 卖空持仓：同步到 SHORT 状态
         const absQuantity = Math.abs(quantity);
@@ -3026,7 +3021,7 @@ class StrategyScheduler {
         };
 
         await strategyInstance.updateState(symbol, 'SHORT', updatedContext);
-        console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: 状态同步 - 从IDLE更新为SHORT（卖空持仓，数量=${quantity}）`);
+        logger.info(`策略 ${strategyId} 标的 ${symbol}: 状态同步 - 从IDLE更新为SHORT（卖空持仓，数量=${quantity}）`);
       }
     } catch (error: any) {
       logger.error(`策略 ${strategyId} 同步持仓状态失败 (${symbol}):`, error);

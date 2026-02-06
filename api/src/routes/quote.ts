@@ -2,10 +2,11 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { getQuoteContext } from '../config/longport';
 import { rateLimiter } from '../middleware/rateLimiter';
 import { Market, SecurityListCategory } from 'longport';
-import { 
+import {
   getFutunnOptionQuotes
 } from '../services/futunn-option-quote.service';
 import { ErrorFactory, normalizeError } from '../utils/errors';
+import { logger } from '../utils/logger';
 
 export const quoteRouter = Router();
 
@@ -54,13 +55,13 @@ async function getSecurityList(): Promise<Array<{ symbol: string; name_cn: strin
       lastUpdate: now,
     };
     
-    console.log(`已更新美股标的列表缓存，共 ${list.length} 个标的`);
+    logger.info(`已更新美股标的列表缓存，共 ${list.length} 个标的`, { dbWrite: false });
     return list;
   } catch (error: any) {
-    console.error('获取美股标的列表失败:', error);
+    logger.error('获取美股标的列表失败:', error);
     // 如果API失败但缓存存在，返回缓存数据
     if (securityListCache) {
-      console.warn('使用过期的缓存数据');
+      logger.warn('使用过期的缓存数据');
       return securityListCache.list;
     }
     throw error;
@@ -155,12 +156,12 @@ quoteRouter.get('/security-list', async (req: Request, res: Response, next: Next
 
 // 启动时立即加载一次，然后每30分钟更新一次
 getSecurityList().catch(err => {
-  console.error('启动时加载美股标的列表失败:', err);
+  logger.error('启动时加载美股标的列表失败:', err);
 });
 
 setInterval(() => {
   getSecurityList().catch(err => {
-    console.error('定时更新美股标的列表失败:', err);
+    logger.error('定时更新美股标的列表失败:', err);
   });
 }, 30 * 60 * 1000); // 每30分钟更新一次
 
@@ -268,7 +269,7 @@ quoteRouter.get('/', rateLimiter, async (req: Request, res: Response, next: Next
       return !normalized.endsWith('.US');
     });
     if (nonUSSymbols.length > 0) {
-      console.warn(`警告: 检测到非美股代码: ${nonUSSymbols.join(', ')}。如果账户只有美股Basic行情权限，这些代码可能无法获取实时行情。`);
+      logger.warn(`警告: 检测到非美股代码: ${nonUSSymbols.join(', ')}。如果账户只有美股Basic行情权限，这些代码可能无法获取实时行情。`);
     }
 
     // 调用长桥API
@@ -283,12 +284,12 @@ quoteRouter.get('/', rateLimiter, async (req: Request, res: Response, next: Next
       const returnedSymbols = quotes.map(q => q.symbol);
       const missingSymbols = symbols.filter(s => !returnedSymbols.includes(s));
       if (missingSymbols.length > 0) {
-        console.warn(`以下股票未能获取到数据: ${missingSymbols.join(', ')}`);
+        logger.warn(`以下股票未能获取到数据: ${missingSymbols.join(', ')}`);
         failedSymbols.push(...missingSymbols);
       }
     } catch (error: any) {
       // 如果整个请求失败，尝试逐个获取
-      console.warn('批量获取行情失败，尝试逐个获取:', error.message);
+      logger.warn('批量获取行情失败，尝试逐个获取:', error.message);
       quotes = [];
       
       // 逐个获取行情（部分成功策略）
@@ -301,7 +302,7 @@ quoteRouter.get('/', rateLimiter, async (req: Request, res: Response, next: Next
             failedSymbols.push(symbol);
           }
         } catch (singleError: any) {
-          console.warn(`获取 ${symbol} 行情失败:`, singleError.message);
+          logger.warn(`获取 ${symbol} 行情失败:`, singleError.message);
           failedSymbols.push(symbol);
         }
       }
@@ -476,7 +477,7 @@ quoteRouter.get('/option', rateLimiter, async (req: Request, res: Response, next
         },
       });
     } catch (error: any) {
-      console.error('获取期权行情失败（长桥API）:', error);
+      logger.error('获取期权行情失败（长桥API）:', error);
       
       // 处理权限错误（301604 - no quote access）
       const isPermissionError = error.message && (
@@ -486,13 +487,13 @@ quoteRouter.get('/option', rateLimiter, async (req: Request, res: Response, next
       
       if (isPermissionError) {
         // 尝试使用富途牛牛API作为fallback
-        console.log('尝试使用富途牛牛API获取期权行情...');
+        logger.debug('尝试使用富途牛牛API获取期权行情...');
         
         try {
           const futunnQuotes = await getFutunnOptionQuotes(symbols);
           
           if (futunnQuotes.length > 0) {
-            console.log(`✅ 使用富途牛牛API成功获取 ${futunnQuotes.length} 个期权行情`);
+            logger.info(`使用富途牛牛API成功获取 ${futunnQuotes.length} 个期权行情`);
             
             return res.json({
               success: true,
@@ -516,10 +517,10 @@ quoteRouter.get('/option', rateLimiter, async (req: Request, res: Response, next
               },
             });
           } else {
-            console.warn('富途牛牛API未能获取到任何期权行情');
+            logger.warn('富途牛牛API未能获取到任何期权行情');
           }
         } catch (futunnError: any) {
-          console.error('富途牛牛API获取期权行情失败:', futunnError.message);
+          logger.error('富途牛牛API获取期权行情失败:', futunnError.message);
         }
         
         // 如果富途牛牛API也失败，返回权限错误
@@ -634,32 +635,32 @@ quoteRouter.get('/market-temperature', rateLimiter, async (req: Request, res: Re
       
       // 根据SDK文档，方法确实存在：https://longportapp.github.io/openapi/nodejs/classes/QuoteContext.html#markettemperature
       // 添加详细日志来诊断问题
-      console.log('[市场温度调试] 开始检测marketTemperature方法...');
-      console.log('[市场温度调试] quoteCtx类型:', typeof quoteCtx);
-      console.log('[市场温度调试] quoteCtx构造函数:', quoteCtx.constructor?.name);
+      logger.debug('[市场温度调试] 开始检测marketTemperature方法...');
+      logger.debug('[市场温度调试] quoteCtx类型:', typeof quoteCtx);
+      logger.debug('[市场温度调试] quoteCtx构造函数:', quoteCtx.constructor?.name);
       
       // 检查实例上的所有属性（包括不可枚举的）
       const instanceOwnProps = Object.getOwnPropertyNames(quoteCtx);
-      console.log('[市场温度调试] 实例自有属性数量:', instanceOwnProps.length);
-      console.log('[市场温度调试] 实例自有属性（前20个）:', instanceOwnProps.slice(0, 20));
+      logger.debug('[市场温度调试] 实例自有属性数量:', instanceOwnProps.length);
+      logger.debug('[市场温度调试] 实例自有属性（前20个）:', instanceOwnProps.slice(0, 20));
       
       // 检查原型链
       const prototype = Object.getPrototypeOf(quoteCtx);
-      console.log('[市场温度调试] 原型类型:', typeof prototype);
-      console.log('[市场温度调试] 原型构造函数:', prototype?.constructor?.name);
+      logger.debug('[市场温度调试] 原型类型:', typeof prototype);
+      logger.debug('[市场温度调试] 原型构造函数:', prototype?.constructor?.name);
       
       const prototypeProps = Object.getOwnPropertyNames(prototype);
-      console.log('[市场温度调试] 原型属性数量:', prototypeProps.length);
-      console.log('[市场温度调试] 原型属性（前30个）:', prototypeProps.slice(0, 30));
+      logger.debug('[市场温度调试] 原型属性数量:', prototypeProps.length);
+      logger.debug('[市场温度调试] 原型属性（前30个）:', prototypeProps.slice(0, 30));
       
       // 检查是否有marketTemperature相关的方法
       const allProps = [...instanceOwnProps, ...prototypeProps];
       const tempRelated = allProps.filter(name => name.toLowerCase().includes('temperature') || name.toLowerCase().includes('temp'));
-      console.log('[市场温度调试] 包含temperature/temp的属性:', tempRelated);
+      logger.debug('[市场温度调试] 包含temperature/temp的属性:', tempRelated);
       
       // 检查是否有market相关的方法
       const marketRelated = allProps.filter(name => name.toLowerCase().includes('market') && typeof quoteCtx[name] === 'function');
-      console.log('[市场温度调试] 包含market的函数方法:', marketRelated);
+      logger.debug('[市场温度调试] 包含market的函数方法:', marketRelated);
       
       // 尝试多种方式检测和调用方法
       let tempData: any = null;
@@ -667,51 +668,51 @@ quoteRouter.get('/market-temperature', rateLimiter, async (req: Request, res: Re
       let errorDetails: any = null;
       
       // 方法1: 直接检查实例上的方法（可能不在原型链上）
-      console.log('[市场温度调试] 检查 quoteCtx.marketTemperature:', typeof quoteCtx.marketTemperature);
+      logger.debug('[市场温度调试] 检查 quoteCtx.marketTemperature:', typeof quoteCtx.marketTemperature);
       if (quoteCtx.marketTemperature && typeof quoteCtx.marketTemperature === 'function') {
         methodName = 'marketTemperature';
-        console.log('[市场温度调试] 找到方法: quoteCtx.marketTemperature，开始调用...');
+        logger.debug('[市场温度调试] 找到方法: quoteCtx.marketTemperature，开始调用...');
         try {
           tempData = await quoteCtx.marketTemperature(marketEnum);
-          console.log('[市场温度调试] 调用成功，返回类型:', typeof tempData);
+          logger.debug('[市场温度调试] 调用成功，返回类型:', typeof tempData);
         } catch (err: any) {
           errorDetails = err;
-          console.error('[市场温度调试] 调用失败:', err.message);
+          logger.error('[市场温度调试] 调用失败:', err.message);
         }
       }
       // 方法2: 检查原型链上的方法
       else if (prototype.marketTemperature && typeof prototype.marketTemperature === 'function') {
         methodName = 'marketTemperature (prototype)';
-        console.log('[市场温度调试] 找到方法: prototype.marketTemperature，开始调用...');
+        logger.debug('[市场温度调试] 找到方法: prototype.marketTemperature，开始调用...');
         try {
           tempData = await prototype.marketTemperature.call(quoteCtx, marketEnum);
-          console.log('[市场温度调试] 调用成功，返回类型:', typeof tempData);
+          logger.debug('[市场温度调试] 调用成功，返回类型:', typeof tempData);
         } catch (err: any) {
           errorDetails = err;
-          console.error('[市场温度调试] 调用失败:', err.message);
+          logger.error('[市场温度调试] 调用失败:', err.message);
         }
       }
       // 方法3: 尝试下划线命名
       else if (quoteCtx.market_temperature && typeof quoteCtx.market_temperature === 'function') {
         methodName = 'market_temperature';
-        console.log('[市场温度调试] 找到方法: quoteCtx.market_temperature，开始调用...');
+        logger.debug('[市场温度调试] 找到方法: quoteCtx.market_temperature，开始调用...');
         try {
           tempData = await quoteCtx.market_temperature(marketEnum);
-          console.log('[市场温度调试] 调用成功，返回类型:', typeof tempData);
+          logger.debug('[市场温度调试] 调用成功，返回类型:', typeof tempData);
         } catch (err: any) {
           errorDetails = err;
-          console.error('[市场温度调试] 调用失败:', err.message);
+          logger.error('[市场温度调试] 调用失败:', err.message);
         }
       }
       // 方法4: 尝试直接调用（即使检测不到，也可能存在）
       else {
-        console.log('[市场温度调试] 尝试直接调用 quoteCtx.marketTemperature（即使检测不到）...');
+        logger.debug('[市场温度调试] 尝试直接调用 quoteCtx.marketTemperature（即使检测不到）...');
         try {
           tempData = await quoteCtx.marketTemperature(marketEnum);
           methodName = 'marketTemperature (direct call)';
-          console.log('[市场温度调试] 直接调用成功！返回类型:', typeof tempData);
+          logger.debug('[市场温度调试] 直接调用成功！返回类型:', typeof tempData);
         } catch (err: any) {
-          console.log('[市场温度调试] 直接调用失败:', err.message);
+          logger.debug('[市场温度调试] 直接调用失败:', err.message);
           
           // 检查所有包含temperature的方法
           const instanceProps = instanceOwnProps
@@ -721,17 +722,17 @@ quoteRouter.get('/market-temperature', rateLimiter, async (req: Request, res: Re
             .filter(name => typeof quoteCtx[name] === 'function' && name.toLowerCase().includes('temperature'));
           
           const allTempMethods = [...instanceProps, ...prototypeMethods];
-          console.log('[市场温度调试] 包含temperature的方法:', allTempMethods);
+          logger.debug('[市场温度调试] 包含temperature的方法:', allTempMethods);
           
           if (allTempMethods.length > 0) {
             methodName = allTempMethods[0];
-            console.log('[市场温度调试] 尝试调用方法:', methodName);
+            logger.debug('[市场温度调试] 尝试调用方法:', methodName);
             try {
               tempData = await quoteCtx[methodName](marketEnum);
-              console.log('[市场温度调试] 调用成功，返回类型:', typeof tempData);
+              logger.debug('[市场温度调试] 调用成功，返回类型:', typeof tempData);
             } catch (err2: any) {
               errorDetails = err2;
-              console.error('[市场温度调试] 调用失败:', err2.message);
+              logger.error('[市场温度调试] 调用失败:', err2.message);
             }
           } else {
             // 列出所有可用方法用于调试
@@ -740,19 +741,19 @@ quoteRouter.get('/market-temperature', rateLimiter, async (req: Request, res: Re
             const allPrototypeMethods = prototypeProps
               .filter(name => typeof quoteCtx[name] === 'function' && !name.startsWith('_'));
             
-            console.error('[市场温度调试] 未找到marketTemperature方法');
-            console.error('[市场温度调试] 实例方法总数:', allInstanceMethods.length);
-            console.error('[市场温度调试] 原型方法总数:', allPrototypeMethods.length);
-            console.error('[市场温度调试] 所有原型方法:', allPrototypeMethods);
+            logger.error('[市场温度调试] 未找到marketTemperature方法');
+            logger.error('[市场温度调试] 实例方法总数:', allInstanceMethods.length);
+            logger.error('[市场温度调试] 原型方法总数:', allPrototypeMethods.length);
+            logger.error('[市场温度调试] 所有原型方法:', allPrototypeMethods);
             
             // 检查SDK版本
             let sdkVersion = 'unknown';
             try {
               const longportPackage = require('longport/package.json');
               sdkVersion = longportPackage.version;
-              console.error('[市场温度调试] LongPort SDK版本:', sdkVersion);
+              logger.error('[市场温度调试] LongPort SDK版本:', sdkVersion);
             } catch (e) {
-              console.error('[市场温度调试] 无法读取SDK版本');
+              logger.error('[市场温度调试] 无法读取SDK版本');
             }
             
             return res.status(500).json({
@@ -822,7 +823,7 @@ quoteRouter.get('/market-temperature', rateLimiter, async (req: Request, res: Re
         // 方式3: 尝试调用toString()然后解析（SDK对象通常有toString方法）
         else if (typeof tempData.toString === 'function') {
           const str = tempData.toString();
-          console.log(`MarketTemperature toString():`, str);
+          logger.debug(`MarketTemperature toString():`, str);
           
           // 尝试从字符串中提取各个字段
           const tempMatch = str.match(/temperature[:\s]+(\d+(?:\.\d+)?)/i);

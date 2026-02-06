@@ -106,11 +106,12 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     // 如果需要特定时区，可以在Docker中设置TZ环境变量
     cron.schedule('0 2 * * *', async () => {
       try {
-        console.log('执行定时Token刷新检查...');
+        const { logger: cronLogger } = await import('./utils/logger');
+        cronLogger.info('执行定时Token刷新检查...');
         const tokenRefreshService = (await import('./services/token-refresh.service')).default;
         const refreshed = await tokenRefreshService.autoRefreshIfNeeded();
         if (refreshed) {
-          console.log('Token已通过定时任务自动刷新');
+          cronLogger.info('Token已通过定时任务自动刷新');
         }
       } catch (error: any) {
         console.error('定时Token刷新失败:', error.message);
@@ -176,7 +177,11 @@ const server = app.listen(PORT, '0.0.0.0', () => {
       // 初始化日志清理服务（异步加载配置）
       await logCleanupService.init();
       
-      console.log('日志系统已启动（非阻塞、结构化、持久化）');
+      // 启动日志摘要服务
+      const logDigestService = (await import('./services/log-digest.service')).default;
+      await logDigestService.start();
+
+      console.log('日志系统已启动（非阻塞、结构化、持久化、节流+摘要）');
     } catch (error: any) {
       console.error('启动日志系统失败:', error.message);
       console.error('日志将仅输出到控制台，不会持久化到数据库');
@@ -213,7 +218,16 @@ const gracefulShutdown = async (signal: string) => {
     console.error('停止策略调度器失败:', error.message);
   }
 
-  // 4. 停止日志工作线程
+  // 4. 停止日志摘要服务
+  try {
+    const logDigestService = (await import('./services/log-digest.service')).default;
+    logDigestService.stop();
+    console.log('日志摘要服务已停止');
+  } catch (error: any) {
+    console.error('停止日志摘要服务失败:', error.message);
+  }
+
+  // 5. 停止日志工作线程
   try {
     const logWorkerService = (await import('./services/log-worker.service')).default;
     logWorkerService.stop();
@@ -222,7 +236,7 @@ const gracefulShutdown = async (signal: string) => {
     console.error('停止日志工作线程失败:', error.message);
   }
 
-  // 5. 关闭数据库连接
+  // 6. 关闭数据库连接
   try {
     const pool = (await import('./config/database')).default;
     await pool.end();

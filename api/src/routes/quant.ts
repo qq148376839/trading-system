@@ -521,7 +521,7 @@ quantRouter.get('/capital/usage', async (req: Request, res: Response, next: Next
     } catch (error: any) {
       // 如果是API限流错误，返回0并记录警告
       if (error.message && error.message.includes('429002')) {
-        console.warn('API请求限流，返回0作为总资金');
+        logger.warn('API请求限流，返回0作为总资金');
         totalCapital = 0;
       } else {
         throw error;
@@ -851,7 +851,7 @@ quantRouter.post('/strategies', async (req: Request, res: Response, next: NextFu
       let corrected = trimmed;
       if (corrected === 'APPL.US') {
         corrected = 'AAPL.US';
-        console.log(`[策略验证] 自动修正股票代码: ${trimmed} -> ${corrected}`);
+        logger.info(`[策略验证] 自动修正股票代码: ${trimmed} -> ${corrected}`);
       }
       
       if (!symbolPattern.test(corrected)) {
@@ -871,7 +871,7 @@ quantRouter.post('/strategies', async (req: Request, res: Response, next: NextFu
     // 去重
     const uniqueSymbols = [...new Set(correctedSymbols)];
     if (uniqueSymbols.length !== correctedSymbols.length) {
-      console.warn(`[策略验证] 检测到重复的股票代码，已自动去重`);
+      logger.warn(`[策略验证] 检测到重复的股票代码，已自动去重`);
     }
 
     // 使用修正后的股票代码
@@ -997,7 +997,7 @@ quantRouter.put('/strategies/:id', async (req: Request, res: Response, next: Nex
         let corrected = trimmed;
         if (corrected === 'APPL.US') {
           corrected = 'AAPL.US';
-          console.log(`[策略验证] 自动修正股票代码: ${trimmed} -> ${corrected}`);
+          logger.info(`[策略验证] 自动修正股票代码: ${trimmed} -> ${corrected}`);
         }
         
         if (!symbolPattern.test(corrected)) {
@@ -1017,7 +1017,7 @@ quantRouter.put('/strategies/:id', async (req: Request, res: Response, next: Nex
       // 去重
       const uniqueSymbols = [...new Set(correctedSymbols)];
       if (uniqueSymbols.length !== correctedSymbols.length) {
-        console.warn(`[策略验证] 检测到重复的股票代码，已自动去重`);
+        logger.warn(`[策略验证] 检测到重复的股票代码，已自动去重`);
       }
 
       // 使用修正后的股票代码
@@ -1071,7 +1071,7 @@ quantRouter.put('/strategies/:id', async (req: Request, res: Response, next: Nex
       },
     });
   } catch (error: any) {
-    console.error('更新策略失败:', error);
+    logger.error('更新策略失败:', error);
     res.status(500).json({
       success: false,
       error: { code: 'INTERNAL_ERROR', message: error.message },
@@ -1098,7 +1098,7 @@ quantRouter.delete('/strategies/:id', async (req: Request, res: Response, next: 
       try {
         await strategyScheduler.stopStrategy(parseInt(id));
       } catch (stopError: any) {
-        console.warn('停止策略失败，继续删除:', stopError);
+        logger.warn('停止策略失败，继续删除:', stopError);
       }
     }
 
@@ -1251,7 +1251,7 @@ quantRouter.get('/strategies/:id/holdings', async (req: Request, res: Response, 
     try {
       quotes = await quoteCtx.quote(symbols);
     } catch (error: any) {
-      console.warn(`[策略持仓] 获取股票价格失败:`, error.message);
+      logger.warn(`[策略持仓] 获取股票价格失败:`, error.message);
     }
 
     const holdings = await Promise.all(
@@ -1337,7 +1337,7 @@ quantRouter.get('/strategies/:id/monitoring-status', async (req: Request, res: R
         }
       }
     } catch (error: any) {
-      console.warn('获取实际持仓失败:', error.message);
+      logger.warn('获取实际持仓失败:', error.message);
     }
 
     // 4. 获取今日订单（用于检查未成交订单）
@@ -1348,7 +1348,7 @@ quantRouter.get('/strategies/:id/monitoring-status', async (req: Request, res: R
       todayOrders = await tradeCtx.todayOrders({});
       todayOrders = Array.isArray(todayOrders) ? todayOrders : [];
     } catch (error: any) {
-      console.warn('获取今日订单失败:', error.message);
+      logger.warn('获取今日订单失败:', error.message);
     }
 
     // 5. 获取当前价格（用于计算盈亏）
@@ -1371,7 +1371,7 @@ quantRouter.get('/strategies/:id/monitoring-status', async (req: Request, res: R
           }
         }
       } catch (error: any) {
-        console.warn('获取当前价格失败:', error.message);
+        logger.warn('获取当前价格失败:', error.message);
         // 如果批量获取失败，尝试逐个获取
         for (const symbol of symbols) {
           try {
@@ -1961,7 +1961,7 @@ quantRouter.post('/institutions/calculate-allocation', async (req: Request, res:
           stockPrices[symbol] = 0;
         }
       } catch (error) {
-        console.warn(`[资金分配] 获取股票价格失败: ${stock.symbol || stock}`);
+        logger.warn(`[资金分配] 获取股票价格失败: ${stock.symbol || stock}`);
         stockPrices[stock.symbol || stock] = 0;
       }
     }
@@ -1983,7 +1983,7 @@ quantRouter.post('/institutions/calculate-allocation', async (req: Request, res:
       const currentPrice = stockPrices[symbol] || stock.price || 0;
 
       if (currentPrice <= 0) {
-        console.warn(`[资金分配] 股票 ${symbol} 价格无效，跳过`);
+        logger.warn(`[资金分配] 股票 ${symbol} 价格无效，跳过`);
         continue;
       }
 

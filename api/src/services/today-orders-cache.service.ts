@@ -65,7 +65,7 @@ class TodayOrdersCacheService {
         logger.warn(`获取今日订单失败，使用过期缓存: ${error.message}`);
         return this.cache.orders;
       }
-      console.error('获取今日订单失败且无缓存:', error);
+      logger.error('获取今日订单失败且无缓存:', error);
       return [];
     }
   }

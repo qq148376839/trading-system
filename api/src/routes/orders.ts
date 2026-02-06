@@ -4,6 +4,7 @@ import { getTradeContext, getQuoteContext, Decimal, OrderType, OrderSide, OrderS
 import { validateOrderParams, normalizeOrderParams, detectMarket } from '../utils/order-validation';
 import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-limiter';
 import orderSubmissionService from '../services/order-submission.service';
+import { logger } from '../utils/logger';
 
 export const ordersRouter = Router();
 
@@ -793,7 +794,7 @@ ordersRouter.get('/account-balance', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('查询账户余额失败:', error);
+    logger.error('查询账户余额失败:', error);
     
     // 处理频率限制错误
     if (error.message && (error.message.includes('429') || error.message.includes('429002'))) {
@@ -829,10 +830,10 @@ ordersRouter.post('/sync-status', async (req: Request, res: Response) => {
     
     // 打印原始订单数据（用于分析）
     if (orders.length > 0) {
-      console.log('\n========== sync-status - todayOrders API 原始返回 ==========');
-      console.log(`订单数量: ${orders.length}`);
-      console.log(JSON.stringify(orders, null, 2));
-      console.log('==============================================================\n');
+      logger.debug('\n========== sync-status - todayOrders API 原始返回 ==========');
+      logger.debug(`订单数量: ${orders.length}`);
+      logger.debug(JSON.stringify(orders, null, 2));
+      logger.debug('==============================================================\n');
     }
     
     let syncedCount = 0;
@@ -866,7 +867,7 @@ ordersRouter.post('/sync-status', async (req: Request, res: Response) => {
           syncedCount++;
         }
       } catch (updateError) {
-        console.error(`更新订单 ${order.orderId} 状态失败:`, updateError);
+        logger.error(`更新订单 ${order.orderId} 状态失败:`, updateError);
       }
     }
     
@@ -916,13 +917,13 @@ ordersRouter.post('/sync-status', async (req: Request, res: Response) => {
         } catch (detailError: any) {
           // 处理频率限制错误
           if (detailError.message && (detailError.message.includes('429') || detailError.message.includes('429002'))) {
-            console.warn(`订单详情查询频率限制，已处理 ${detailSyncedCount} 个订单，剩余订单将在下次同步时处理`);
+            logger.warn(`订单详情查询频率限制，已处理 ${detailSyncedCount} 个订单，剩余订单将在下次同步时处理`);
             break; // 遇到频率限制，停止查询
           } else if (detailError.message && detailError.message.includes('602023')) {
             // 602023: 内部服务器错误，可能是订单不存在或已过期
-            console.warn(`订单 ${row.order_id} 可能不存在或已过期（602023）`);
+            logger.warn(`订单 ${row.order_id} 可能不存在或已过期（602023）`);
           } else {
-            console.error(`查询订单 ${row.order_id} 详情失败:`, detailError);
+            logger.error(`查询订单 ${row.order_id} 详情失败:`, detailError);
           }
         }
       }
@@ -1001,11 +1002,11 @@ ordersRouter.post('/sync-status', async (req: Request, res: Response) => {
           
           positionsSynced++;
         } catch (posError) {
-          console.error(`同步持仓 ${pos.symbol} 失败:`, posError);
+          logger.error(`同步持仓 ${pos.symbol} 失败:`, posError);
         }
       }
     } catch (posSyncError) {
-      console.error('同步持仓数据失败:', posSyncError);
+      logger.error('同步持仓数据失败:', posSyncError);
     }
     
     res.json({
@@ -1018,7 +1019,7 @@ ordersRouter.post('/sync-status', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('同步订单状态和持仓失败:', error);
+    logger.error('同步订单状态和持仓失败:', error);
     
     // 处理频率限制错误
     if (error.message && (error.message.includes('429') || error.message.includes('429002'))) {
@@ -1179,7 +1180,7 @@ ordersRouter.get('/history', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('查询历史订单失败:', error);
+    logger.error('查询历史订单失败:', error);
     
     // 处理频率限制错误
     if (error.message && (error.message.includes('429') || error.message.includes('429002'))) {
@@ -1307,7 +1308,7 @@ ordersRouter.get('/today', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('查询今日订单失败:', error);
+    logger.error('查询今日订单失败:', error);
     
     // 处理频率限制错误
     if (error.message && (error.message.includes('429') || error.message.includes('429002'))) {
@@ -1444,7 +1445,7 @@ ordersRouter.post('/submit', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('提交订单失败:', error);
+    logger.error('提交订单失败:', error);
     
     // 尝试保存失败的交易记录
     try {
@@ -1462,7 +1463,7 @@ ordersRouter.post('/submit', async (req: Request, res: Response) => {
         ]
       );
     } catch (dbError) {
-      console.error('保存失败交易记录时出错:', dbError);
+      logger.error('保存失败交易记录时出错:', dbError);
     }
 
     res.status(500).json({
@@ -1525,7 +1526,7 @@ ordersRouter.get('/security-info', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('获取标的基础信息失败:', error);
+    logger.error('获取标的基础信息失败:', error);
     res.status(500).json({
       success: false,
       error: {
@@ -1644,7 +1645,7 @@ ordersRouter.get('/estimate-max-quantity', async (req: Request, res: Response) =
       },
     });
   } catch (error: any) {
-    console.error('预估最大购买数量失败:', error);
+    logger.error('预估最大购买数量失败:', error);
     res.status(500).json({
       success: false,
       error: {
@@ -1721,7 +1722,7 @@ ordersRouter.put('/:orderId', async (req: Request, res: Response) => {
       replaceOptions.price = new Decimal(priceNum.toString());
     }
 
-    console.log('修改订单参数:', JSON.stringify(replaceOptions, null, 2));
+    logger.info('修改订单参数:', JSON.stringify(replaceOptions, null, 2));
 
     // 调用replaceOrder API
     await longportRateLimiter.execute(() =>
@@ -1754,7 +1755,7 @@ ordersRouter.put('/:orderId', async (req: Request, res: Response) => {
         updateValues
       );
     } catch (dbError) {
-      console.error('更新数据库订单记录失败:', dbError);
+      logger.error('更新数据库订单记录失败:', dbError);
       // 不返回错误，因为订单已经修改成功
     }
 
@@ -1766,7 +1767,7 @@ ordersRouter.put('/:orderId', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('修改订单失败:', error);
+    logger.error('修改订单失败:', error);
     res.status(500).json({
       success: false,
       error: {
@@ -1843,7 +1844,7 @@ ordersRouter.get('/:orderId', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('查询订单详情失败:', error);
+    logger.error('查询订单详情失败:', error);
     
     // 处理订单不存在错误
     if (error.message && (error.message.includes('602023') || error.message.includes('not found'))) {
@@ -1933,7 +1934,7 @@ ordersRouter.delete('/:orderId', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.error('取消订单失败:', error);
+    logger.error('取消订单失败:', error);
     res.status(500).json({
       success: false,
       error: {

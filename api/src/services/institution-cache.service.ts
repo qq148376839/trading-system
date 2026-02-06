@@ -3,6 +3,8 @@
  * 使用内存缓存机构列表和持仓数据，减少API调用
  */
 
+import { logger } from '../utils/logger';
+
 interface CacheItem<T> {
   data: T;
   timestamp: number;
@@ -86,7 +88,7 @@ class InstitutionCacheService {
     keysToDelete.forEach((key) => this.cache.delete(key));
 
     if (keysToDelete.length > 0) {
-      console.log(`[机构缓存] 清理了 ${keysToDelete.length} 个过期缓存`);
+      logger.debug(`[机构缓存] 清理了 ${keysToDelete.length} 个过期缓存`);
     }
   }
 

@@ -7,6 +7,7 @@ import {
 } from './futunn-option-chain.service';
 import { getFutunnOptionQuote } from './futunn-option-quote.service';
 import { normalizeMoomooOptionCodeToSymbol, getUnderlyingRoot } from '../utils/options-symbol';
+import { logger } from '../utils/logger';
 
 export type OptionDirection = 'CALL' | 'PUT';
 
@@ -89,7 +90,7 @@ async function resolveUnderlyingStockId(underlyingSymbol: string): Promise<strin
     // TODO: 补充完整的指数映射表
   };
   if (KNOWN_INDEX_STOCK_IDS[root]) {
-    console.log(`[使用已知指数映射] ${root} -> stockId=${KNOWN_INDEX_STOCK_IDS[root]}`);
+    logger.debug(`[使用已知指数映射] ${root} -> stockId=${KNOWN_INDEX_STOCK_IDS[root]}`);
     return KNOWN_INDEX_STOCK_IDS[root];
   }
 
@@ -98,7 +99,7 @@ async function resolveUnderlyingStockId(underlyingSymbol: string): Promise<strin
   if (bySymbol) {
     // 如果是未映射的指数，记录日志以便后续补充
     if (root !== underlyingSymbol.replace(/^\./, '').replace(/\.US$/, '')) {
-      console.log(`[发现未映射的标的] ${underlyingSymbol} (root=${root}) -> stockId=${bySymbol}，请更新 KNOWN_INDEX_STOCK_IDS`);
+      logger.debug(`[发现未映射的标的] ${underlyingSymbol} (root=${root}) -> stockId=${bySymbol}，请更新 KNOWN_INDEX_STOCK_IDS`);
     }
     return bySymbol;
   }
@@ -107,14 +108,14 @@ async function resolveUnderlyingStockId(underlyingSymbol: string): Promise<strin
   const cleaned = underlyingSymbol.replace(/^\./, '');
   const byCleaned = await getStockIdBySymbol(cleaned);
   if (byCleaned) {
-    console.log(`[发现未映射的指数] ${cleaned} (root=${root}) -> stockId=${byCleaned}，请更新 KNOWN_INDEX_STOCK_IDS`);
+    logger.debug(`[发现未映射的指数] ${cleaned} (root=${root}) -> stockId=${byCleaned}，请更新 KNOWN_INDEX_STOCK_IDS`);
     return byCleaned;
   }
 
   // Last attempt: use root keyword
   const byRoot = await getStockIdBySymbol(`${root}.US`);
   if (byRoot) {
-    console.log(`[发现未映射的指数] ${root}.US -> stockId=${byRoot}，请更新 KNOWN_INDEX_STOCK_IDS`);
+    logger.debug(`[发现未映射的指数] ${root}.US -> stockId=${byRoot}，请更新 KNOWN_INDEX_STOCK_IDS`);
   }
   return byRoot;
 }
@@ -148,7 +149,7 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
   });
 
   // [检查点4] 期权日期检查
-  console.log(
+  logger.debug(
     `📍 [${params.underlyingSymbol}期权日期] 可用日期=${sorted.length}个, 今日=${now.toISOString().split('T')[0]}`
   );
 
@@ -157,13 +158,13 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
   if (params.expirationMode === '0DTE') {
     if (todayExpiry) {
       pickedExpiry = todayExpiry;
-      console.log(
+      logger.debug(
         `📍 [${params.underlyingSymbol}选择] 0DTE期权 | 到期=${todayExpiry.strikeDate}, 剩余=${todayExpiry.leftDay}天`
       );
     } else {
       // 降级到最近的期权
       pickedExpiry = sorted[0];
-      console.warn(
+      logger.warn(
         `⚠️ [${params.underlyingSymbol}降级] 0DTE不可用，使用最近期权 | 最近=${sorted[0]?.strikeDate}, 剩余=${sorted[0]?.leftDay}天`
       );
     }
@@ -177,7 +178,7 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
   // [检查点5] 期权链数据
   const callOrPut = params.direction === 'CALL' ? 'CALL' : 'PUT';
   if (!chain || chain.length === 0) {
-    console.warn(`❌ [${params.underlyingSymbol}无合约] 期权链为空，无法选择合约`);
+    logger.warn(`❌ [${params.underlyingSymbol}无合约] 期权链为空，无法选择合约`);
     return null;
   }
 
@@ -189,7 +190,7 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
     const opt = params.direction === 'CALL' ? c.callOption : c.putOption;
     return opt ? parseFloat(opt.strikePrice) : -Infinity;
   }).filter(x => x !== -Infinity));
-  console.log(
+  logger.debug(
     `📍 [${params.underlyingSymbol}期权链] ${callOrPut}合约=${chain.length}个 | 行权价范围=[${strikeMin}-${strikeMax}]`
   );
 
@@ -241,7 +242,7 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
   const marketType = 2;
 
   // [检查点6] 筛选前候选数量
-  console.log(`📍 [${params.underlyingSymbol}筛选前] 候选=${candidates.length}个 ATM合约`);
+  logger.debug(`📍 [${params.underlyingSymbol}筛选前] 候选=${candidates.length}个 ATM合约`);
 
   const evaluated: SelectedOptionContract[] = [];
 
@@ -263,11 +264,11 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
 
       // 区分"数据不可用"和"值为0"
       if (delta === undefined || delta === null) {
-        console.warn(`[期权 ${optionId}] Delta 数据不可用，跳过`);
+        logger.warn(`[期权 ${optionId}] Delta 数据不可用，跳过`);
         continue;
       }
       if (theta === undefined || theta === null) {
-        console.warn(`[期权 ${optionId}] Theta 数据不可用，跳过`);
+        logger.warn(`[期权 ${optionId}] Theta 数据不可用，跳过`);
         continue;
       }
 
@@ -277,15 +278,15 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
 
       // Liquidity filters
       if (liquidity.minOpenInterest !== undefined && openInterest < liquidity.minOpenInterest) {
-        console.log(`[期权 ${optionId}] 持仓量 ${openInterest} < ${liquidity.minOpenInterest}，跳过`);
+        logger.debug(`[期权 ${optionId}] 持仓量 ${openInterest} < ${liquidity.minOpenInterest}，跳过`);
         continue;
       }
       if (liquidity.maxBidAskSpreadAbs !== undefined && spreadAbs > liquidity.maxBidAskSpreadAbs) {
-        console.log(`[期权 ${optionId}] 价差 ${spreadAbs.toFixed(2)} > ${liquidity.maxBidAskSpreadAbs}，跳过`);
+        logger.debug(`[期权 ${optionId}] 价差 ${spreadAbs.toFixed(2)} > ${liquidity.maxBidAskSpreadAbs}，跳过`);
         continue;
       }
       if (liquidity.maxBidAskSpreadPct !== undefined && spreadPct > liquidity.maxBidAskSpreadPct) {
-        console.log(`[期权 ${optionId}] 价差% ${spreadPct.toFixed(2)}% > ${liquidity.maxBidAskSpreadPct}%，跳过`);
+        logger.debug(`[期权 ${optionId}] 价差% ${spreadPct.toFixed(2)}% > ${liquidity.maxBidAskSpreadPct}%，跳过`);
         continue;
       }
 
@@ -294,15 +295,15 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
       // 因此Delta筛选应使用绝对值进行比较
       const absDelta = Math.abs(deltaNum);
       if (greek.deltaMin !== undefined && absDelta < greek.deltaMin) {
-        console.log(`[期权 ${optionId}] |Delta| ${absDelta.toFixed(4)} < ${greek.deltaMin}，跳过`);
+        logger.debug(`[期权 ${optionId}] |Delta| ${absDelta.toFixed(4)} < ${greek.deltaMin}，跳过`);
         continue;
       }
       if (greek.deltaMax !== undefined && absDelta > greek.deltaMax) {
-        console.log(`[期权 ${optionId}] |Delta| ${absDelta.toFixed(4)} > ${greek.deltaMax}，跳过`);
+        logger.debug(`[期权 ${optionId}] |Delta| ${absDelta.toFixed(4)} > ${greek.deltaMax}，跳过`);
         continue;
       }
       if (greek.thetaMaxAbs !== undefined && Math.abs(thetaNum) > greek.thetaMaxAbs) {
-        console.log(`[期权 ${optionId}] |Theta| ${Math.abs(thetaNum).toFixed(4)} > ${greek.thetaMaxAbs}，跳过`);
+        logger.debug(`[期权 ${optionId}] |Theta| ${Math.abs(thetaNum).toFixed(4)} > ${greek.thetaMaxAbs}，跳过`);
         continue;
       }
 
@@ -332,12 +333,12 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
   }
 
   // [检查点6+7] 流动性和Greeks筛选后的结果
-  console.log(
+  logger.info(
     `📍 [${params.underlyingSymbol}筛选后] 通过=${evaluated.length}个 | 持仓量≥${liquidity.minOpenInterest || 0}, 价差≤${liquidity.maxBidAskSpreadPct || 'N/A'}%, |Delta|∈[${greek.deltaMin || 0}, ${greek.deltaMax || 1}]`
   );
 
   if (evaluated.length === 0) {
-    console.warn(`❌ [${params.underlyingSymbol}无候选] 所有筛选后无合约剩余`);
+    logger.warn(`❌ [${params.underlyingSymbol}无候选] 所有筛选后无合约剩余`);
   }
 
   if (evaluated.length === 0) {

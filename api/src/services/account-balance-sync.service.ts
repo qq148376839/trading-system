@@ -107,7 +107,7 @@ class AccountBalanceSyncService {
         }
       } catch (usdError: any) {
         // 如果按币种查询失败，继续使用通用查询方式
-        console.debug('按USD币种查询失败，使用通用查询:', usdError.message);
+        logger.debug('按USD币种查询失败，使用通用查询:', usdError.message);
       }
       
       // 如果直接查询USD失败，使用通用查询方式
@@ -647,7 +647,7 @@ class AccountBalanceSyncService {
       }
 
       // 5. 更新根账户的总资金（可选，仅记录日志）
-      logger.log(`账户余额同步完成: 总资金 ${totalCapital.toFixed(2)} USD`);
+      logger.log(`账户余额同步完成: 总资金 ${totalCapital.toFixed(2)} USD`, { dbWrite: false });
 
       // 收集策略信息
       const strategies = strategiesQuery.rows.map((row: any) => ({
@@ -701,7 +701,7 @@ class AccountBalanceSyncService {
       });
     }, intervalMs);
 
-    logger.log(`账户余额定时同步已启动，间隔: ${intervalMinutes} 分钟`);
+    logger.log(`账户余额定时同步已启动，间隔: ${intervalMinutes} 分钟`, { dbWrite: false });
   }
 
   /**
@@ -711,7 +711,7 @@ class AccountBalanceSyncService {
     if (this.syncInterval) {
       clearInterval(this.syncInterval);
       this.syncInterval = null;
-      logger.log('账户余额定时同步已停止');
+      logger.log('账户余额定时同步已停止', { dbWrite: false });
     }
   }
 

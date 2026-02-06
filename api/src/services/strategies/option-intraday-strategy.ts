@@ -419,7 +419,7 @@ export class OptionIntradayStrategy extends StrategyBase {
       // 1) 检查交易时间窗口
       const windowCheck = this.isWithinTradeWindow();
       if (!windowCheck.canTrade) {
-        console.log(`📍 [${symbol}] ${windowCheck.reason}，跳过信号生成`);
+        logger.debug(`[${symbol}] ${windowCheck.reason}，跳过信号生成`);
         logData.finalResult = 'NO_SIGNAL';
         logData.rejectionReason = windowCheck.reason;
         logData.rejectionCheckpoint = 'trade_window';
@@ -436,7 +436,7 @@ export class OptionIntradayStrategy extends StrategyBase {
       logData.signalDirection = optionRec.direction;
       logData.riskLevel = optionRec.riskLevel;
 
-      console.log(`📊 [期权推荐] ${symbol}:`, {
+      logger.debug(`[期权推荐] ${symbol}:`, {
         direction: optionRec.direction,
         confidence: optionRec.confidence,
         marketScore: optionRec.marketScore,
@@ -448,7 +448,7 @@ export class OptionIntradayStrategy extends StrategyBase {
 
       // 3) 检查风险等级
       if (optionRec.riskLevel === 'EXTREME') {
-        console.warn(`⚠️ [${symbol}跳过] 风险等级EXTREME，不生成信号`);
+        logger.warn(`[${symbol}跳过] 风险等级EXTREME，不生成信号`);
         logData.finalResult = 'NO_SIGNAL';
         logData.rejectionReason = '风险等级为EXTREME，市场环境不适合交易';
         logData.rejectionCheckpoint = 'risk_check';
@@ -497,7 +497,7 @@ export class OptionIntradayStrategy extends StrategyBase {
             evaluation = { shouldTrade: false, reason: `未知策略类型` };
         }
 
-        console.log(`📍 [${symbol}/${strategy}] ${evaluation.reason}`);
+        logger.debug(`[${symbol}/${strategy}] ${evaluation.reason}`);
 
         if (evaluation.shouldTrade && evaluation.direction) {
           selectedStrategy = strategy;
@@ -509,7 +509,7 @@ export class OptionIntradayStrategy extends StrategyBase {
 
       // 5) 如果没有策略满足条件
       if (!selectedStrategy) {
-        console.log(`📍 [${symbol}] 所有策略条件均不满足，不生成信号`);
+        logger.debug(`[${symbol}] 所有策略条件均不满足，不生成信号`);
         logData.finalResult = 'NO_SIGNAL';
         logData.rejectionReason = '所有启用的策略条件均不满足';
         logData.rejectionCheckpoint = 'strategy_evaluation';
@@ -531,7 +531,7 @@ export class OptionIntradayStrategy extends StrategyBase {
       });
 
       if (!selected) {
-        console.warn(`❌ [${symbol}无合约] 未找到合适的期权合约 (${direction}, ${expirationMode})`);
+        logger.warn(`[${symbol}无合约] 未找到合适的期权合约 (${direction}, ${expirationMode})`);
         logData.finalResult = 'NO_SIGNAL';
         logData.rejectionReason = `未找到合适的期权合约 (方向=${direction}, 模式=${expirationMode})`;
         logData.rejectionCheckpoint = 'contract_selection';
@@ -546,7 +546,7 @@ export class OptionIntradayStrategy extends StrategyBase {
         : (selected.ask || selected.mid || selected.last);
 
       if (!premium || premium <= 0) {
-        console.warn(`❌ [${symbol}价格无效] ${entryPriceMode}价格=${premium}，无法下单`);
+        logger.warn(`[${symbol}价格无效] ${entryPriceMode}价格=${premium}，无法下单`);
         logData.finalResult = 'NO_SIGNAL';
         logData.rejectionReason = `入场价格无效 (${entryPriceMode}=${premium})`;
         logData.rejectionCheckpoint = 'pricing';
@@ -570,9 +570,9 @@ export class OptionIntradayStrategy extends StrategyBase {
             const availableCapital = await capitalManager.getAvailableCapital(this.strategyId);
             const maxPositionPerSymbol = await capitalManager.getMaxPositionPerSymbol(this.strategyId);
             budget = Math.min(availableCapital, maxPositionPerSymbol);
-            console.log(`📍 [${symbol}资金] 可用资金=${availableCapital.toFixed(2)}, 单标的上限=${maxPositionPerSymbol.toFixed(2)}, 预算=${budget.toFixed(2)}`);
+            logger.debug(`[${symbol}资金] 可用资金=${availableCapital.toFixed(2)}, 单标的上限=${maxPositionPerSymbol.toFixed(2)}, 预算=${budget.toFixed(2)}`);
           } catch (error: any) {
-            console.warn(`⚠️ [${symbol}] 获取可用资金失败: ${error.message}，使用默认1张合约`);
+            logger.warn(`[${symbol}] 获取可用资金失败: ${error.message}，使用默认1张合约`);
             budget = 0;
           }
         }
@@ -590,7 +590,7 @@ export class OptionIntradayStrategy extends StrategyBase {
             if (est.totalCost > budget) break;
           }
           contracts = Math.max(1, n - 1);
-          console.log(`📍 [${symbol}仓位] 预算=${budget.toFixed(2)}, 权利金=${premium.toFixed(2)}, 计算合约数=${contracts}`);
+          logger.debug(`[${symbol}仓位] 预算=${budget.toFixed(2)}, 权利金=${premium.toFixed(2)}, 计算合约数=${contracts}`);
         }
       }
 
@@ -652,14 +652,14 @@ export class OptionIntradayStrategy extends StrategyBase {
       logData.finalResult = 'SIGNAL_GENERATED';
       this.logDecision(logData);
 
-      console.log(
-        `✅ [${symbol}/${selectedStrategy}] ${direction} ${selected.optionSymbol} | 合约=${contracts}, 权利金=$${premium.toFixed(2)}, 预估成本=$${est.totalCost.toFixed(2)}`
+      logger.info(
+        `[${symbol}/${selectedStrategy}] ${direction} ${selected.optionSymbol} | 合约=${contracts}, 权利金=$${premium.toFixed(2)}, 预估成本=$${est.totalCost.toFixed(2)}`
       );
 
       return intent;
 
     } catch (error: any) {
-      console.error(`❌ [${symbol}策略执行失败]:`, error.message);
+      logger.error(`[${symbol}策略执行失败]:`, error.message);
       logData.finalResult = 'ERROR';
       logData.rejectionReason = `策略执行异常: ${error.message}`;
       logData.rejectionCheckpoint = 'error_handler';

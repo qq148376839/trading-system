@@ -7,6 +7,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import tradingRecommendationService from '../services/trading-recommendation.service';
 import { rateLimiter } from '../middleware/rateLimiter';
 import { ErrorFactory, normalizeError } from '../utils/errors';
+import { logger } from '../utils/logger';
 
 export const tradingRecommendationRouter = Router();
 
@@ -56,14 +57,14 @@ tradingRecommendationRouter.get('/', rateLimiter, async (req: Request, res: Resp
       });
     }
 
-    console.log(`开始计算 ${symbolList.length} 个股票的交易推荐...`);
+    logger.info(`开始计算 ${symbolList.length} 个股票的交易推荐...`);
 
     // 批量计算推荐
     const recommendations = await tradingRecommendationService.calculateBatchRecommendations(
       symbolList
     );
 
-    console.log(`完成交易推荐计算，成功 ${recommendations.size} 个`);
+    logger.info(`完成交易推荐计算，成功 ${recommendations.size} 个`);
 
     res.json({
       success: true,
@@ -122,12 +123,12 @@ tradingRecommendationRouter.get('/:symbol', rateLimiter, async (req: Request, re
       return next(ErrorFactory.validationError('只支持US股票，symbol格式应为：AAPL.US'));
     }
 
-    console.log(`开始计算 ${symbol} 的交易推荐...`);
+    logger.info(`开始计算 ${symbol} 的交易推荐...`);
 
     // 计算单个股票的推荐
     const recommendation = await tradingRecommendationService.calculateRecommendation(symbol);
 
-    console.log(`完成 ${symbol} 的交易推荐计算`);
+    logger.info(`完成 ${symbol} 的交易推荐计算`);
 
     res.json({
       success: true,
