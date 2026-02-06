@@ -1,268 +1,85 @@
 # Claude Code Agents
 
-This directory contains specialized agents for the trading system project. Each agent is tailored to specific roles and responsibilities aligned with the project's development workflow.
+交易系统专用 agent 集合。所有 agent 共享 `CLAUDE.md`（项目根目录）作为项目上下文。
 
-## 📋 Available Agents
+## Agent 目录
 
-### 1. developer
-**Purpose**: Code implementation and feature development
-**Use for**:
-- Implementing new features
-- Fixing bugs
-- Writing code following project standards
-- Refactoring code
+| Agent | 角色 | 触发场景 |
+|-------|------|---------|
+| **task-clarifier** | 需求澄清 | 用户请求模糊、不完整 |
+| **product-manager** | 产品经理 | 需求分析、PRD 撰写、功能规划 |
+| **architect** | 系统架构师 | 新模块设计、服务拆分、数据库 schema、技术选型 |
+| **developer** | 开发工程师 | 功能实现、Bug 修复、代码重构 |
+| **tester** | 测试工程师 | 单元测试、集成测试、质量保证 |
+| **reviewer** | 代码审查 | 代码质量、架构合规、安全检查 |
+| **debugger** | 调试专家 | Bug 排查、错误定位、性能诊断 |
+| **security-auditor** | 安全审计 | 安全漏洞、认证授权、交易安全 |
+| **project-summarizer** | 文档管理 | 变更后文档整理、导航文件更新（强制执行） |
 
-**Key Features**:
-- Follows TypeScript coding standards
-- Implements proper error handling with AppError
-- Uses structured logging with LogService
-- Ensures database operations use transactions
-- Validates funds before order submission
+## 标准工作流
 
-**Usage**:
 ```
-Launch the developer agent when you need to implement features or fix bugs
-```
-
-### 2. reviewer
-**Purpose**: Code quality and security review
-**Use for**:
-- Code reviews
-- Quality checks
-- Security audits
-- Architecture compliance verification
-
-**Key Features**:
-- Comprehensive checklist-based review
-- Priority-based feedback (P0/P1/P2)
-- Trading system specific checks
-- Security and performance audits
-
-**Usage**:
-```
-Launch the reviewer agent after implementing features to ensure code quality
+用户需求
+  │
+  ├─ 需求模糊？ → task-clarifier（澄清）
+  │
+  ├─ 需要定义需求？ → product-manager（PRD）
+  │
+  ├─ 涉及架构变更？ → architect（设计评审）
+  │
+  ├─ 需要开发？ → developer（实现）
+  │
+  ├─ 需要测试？ → tester（编写测试）
+  │
+  ├─ 需要审查？ → reviewer（代码审查）
+  │
+  ├─ 需要排错？ → debugger（调试定位）
+  │
+  ├─ 需要安全检查？ → security-auditor（安全审计）
+  │
+  └─ 完成变更 → project-summarizer（文档整理）⚠️ 强制
 ```
 
-### 3. tester
-**Purpose**: Test case writing and quality assurance
-**Use for**:
-- Writing unit tests
-- Creating integration tests
-- Test planning and execution
-- Bug reporting
+### 完整功能开发流程
 
-**Key Features**:
-- Jest-based test structure
-- AAA pattern (Arrange-Act-Assert)
-- Trading system specific test scenarios
-- Mock and stub patterns
-- Coverage requirements (>80% for core services)
-
-**Usage**:
 ```
-Launch the tester agent to write comprehensive test cases
+product-manager → architect → developer → tester → reviewer → project-summarizer
+   需求定义      架构设计      编码实现     测试编写    代码审查      文档整理
 ```
 
-### 4. product-manager
-**Purpose**: Requirements analysis and PRD documentation
-**Use for**:
-- Requirement gathering
-- PRD documentation
-- Feature specification
-- Requirements clarification
+### Bug 修复流程
 
-**Key Features**:
-- Structured requirement gathering (5W1H)
-- Standard PRD template
-- Single document principle
-- Chinese naming convention for features
-- Must confirm before generating documents
-
-**Usage**:
 ```
-Launch the product-manager agent for requirement analysis and PRD creation
+debugger → developer → tester → reviewer → project-summarizer
+  定位根因    修复代码    补充测试    审查修复      文档整理
 ```
 
-### 5. project-summarizer ⚠️ MANDATORY AGENT
-**Purpose**: Documentation organization and project summary
-**Use for**:
-- ⚠️ **MANDATORY**: After ANY code changes or feature completion
-- Summarizing conversations
-- Organizing documentation
-- Updating navigation files (README, CHANGELOG, etc.)
-- Documentation maintenance
+## 共享上下文
 
-**Key Features**:
-- Organizes docs into proper directories
-- Updates CHANGELOG.md, PROJECT_STATUS.md, README.md, CODE_MAP.md
-- Follows Chinese naming convention
-- Avoids duplicate documentation
-- Maintains documentation structure
+所有 agent 通过 `CLAUDE.md` 获取以下共享信息：
+- 项目概述（技术栈、目录结构）
+- 核心服务说明
+- 编码标准（TypeScript 规范、错误处理、日志）
+- 交易系统规则（资金安全、订单处理）
+- 文档规范（命名、目录、导航文件）
 
-**⚠️ CRITICAL - When to use**:
-```
-MUST use this agent immediately after:
-- Modifying any code files (.ts/.tsx/.js/.jsx)
-- Creating new features
-- Fixing bugs
-- Completing any development work
-- Adding new API endpoints
-- Changing database schema
+每个 agent 文件只包含**角色特有**的指令和工作流，不重复共享内容。
 
-DO NOT ask user if documentation is needed - ALWAYS generate it proactively.
-```
+## 配置格式
 
-**Usage**:
-```
-Automatically launch this agent after completing ANY work involving code changes.
-No user permission needed - this is a mandatory step.
-```
+Agent 通过 YAML front matter 配置：
 
-### 6. task-clarifier
-**Purpose**: Clarifying vague or ambiguous requests
-**Use for**:
-- Understanding unclear requests
-- Gathering missing information
-- Helping users articulate their needs
-
-**Key Features**:
-- Structured questioning approach
-- Friendly and patient tone
-- Identifies missing information
-- Provides common scenarios
-
-**Usage**:
-```
-Automatically activated when requests are vague or ambiguous
-```
-
-## 🎯 Agent Selection Guide
-
-### When to use which agent?
-
-**Implementation needed?** → `developer`
-- "Implement order submission feature"
-- "Fix the decimal type error"
-- "Add logging to strategy execution"
-
-**Code review needed?** → `reviewer`
-- "Review this code for quality issues"
-- "Check if this follows our standards"
-- "Audit this for security vulnerabilities"
-
-**Tests needed?** → `tester`
-- "Write tests for order service"
-- "Create test cases for strategy execution"
-- "Add integration tests"
-
-**Requirements unclear?** → `product-manager`
-- "I want to add a market temperature feature"
-- "Need a PRD for log aggregation"
-- "Help me define requirements for this feature"
-
-**Documentation needed?** → `project-summarizer`
-- "Summarize this conversation"
-- "Organize these documents"
-- "Update the project status"
-
-**Request unclear?** → `task-clarifier`
-- "Help me"
-- "Fix this"
-- "I need something"
-
-## ⚠️ Core Principles
-
-All agents follow these project-wide principles:
-
-### 1. Confirm Before Acting
-- **Always confirm** requirements before starting work
-- **Never assume** user intent or business rules
-- **List questions** in a structured format
-- **Wait for answers** before proceeding
-
-### 2. Follow Project Standards
-- TypeScript coding standards
-- Error handling with AppError
-- Structured logging with LogService
-- Transaction-based database operations
-- Chinese documentation naming
-
-### 3. Trading System Specific
-- Verify funds before order submission
-- Sync order status to database
-- Record strategy execution summaries
-- Atomic fund management operations
-
-### 4. Documentation Management
-- Single document per feature
-- Update existing documents instead of creating new ones
-- Use Chinese naming for features
-- Keep documentation synchronized
-
-## 📚 Project Context
-
-These agents are aware of:
-- Project architecture (layered: routes → services → utils)
-- Core services (strategy-scheduler, capital-manager, basic-execution, etc.)
-- Coding standards (TypeScript, naming conventions, error handling)
-- Testing requirements (Jest, >80% coverage for core services)
-- Trading system specifics (orders, strategies, funds management)
-
-## 🔧 Configuration
-
-Agents are configured via YAML front matter:
 ```yaml
 ---
 name: agent-name
-description: Agent purpose and use cases
-model: sonnet  # or opus/haiku
+description: "Agent purpose and trigger conditions"
+model: sonnet
 ---
 ```
 
-## 📖 Reference Documents
+## 核心原则
 
-Agents reference these project rules from `.cursor/rules/`:
-- `common.md` - Global constraints and common standards
-- `developer.md` - Development role definition
-- `reviewer.md` - Code review role definition
-- `tester.md` - Testing role definition
-- `product-manager.md` - Product manager role definition
-- `project-summarizer.md` - Documentation role definition
-- `coding-standards.md` - TypeScript coding standards
-- `architecture.md` - Project architecture
-- `testing.md` - Testing standards
-- `api-design.md` - API design standards
-- `frontend.md` - Frontend standards
-
-## 📝 Best Practices
-
-1. **Choose the right agent** for the task
-2. **Provide clear context** when launching agents
-3. **Review agent output** before implementation
-4. **Follow the agent's recommendations** on standards
-5. **Use agents sequentially** for complex tasks:
-   - product-manager → developer → tester → reviewer → project-summarizer
-
-## 🔄 Workflow Example
-
-```
-1. User has a feature idea
-   → Launch product-manager to create PRD
-
-2. PRD approved
-   → Launch developer to implement
-
-3. Code written
-   → Launch tester to write tests
-   → Launch reviewer to review code
-
-4. Everything complete
-   → Launch project-summarizer to organize docs
-```
-
-## 📌 Notes
-
-- Agents inherit project context from `.cursor/rules/`
-- All agents enforce "confirm before acting" principle
-- Agents use Chinese naming for documentation
-- Agents maintain consistency with existing project standards
+1. **先确认，再执行** — 不明确的需求必须先澄清
+2. **最小变更** — 只做必要的改动
+3. **资金安全第一** — 涉及资金/订单的变更格外谨慎
+4. **文档同步** — 代码变更后必须更新文档（project-summarizer）
