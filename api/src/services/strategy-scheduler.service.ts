@@ -50,6 +50,8 @@ class StrategyScheduler {
   // 订单提交缓存：防止重复提交订单
   private orderSubmissionCache: Map<string, { timestamp: number; orderId?: string }> = new Map();
   private readonly ORDER_CACHE_TTL = 60000; // 60秒缓存
+  // 策略执行锁：防止并发执行（当执行时间超过间隔时）
+  private strategyExecutionLocks: Map<number, boolean> = new Map();
 
   /**
    * 启动策略调度器
@@ -141,8 +143,14 @@ class StrategyScheduler {
       strategy.config
     );
 
-    // 启动定时任务（默认每分钟运行一次）
-    const intervalMs = 60 * 1000; // 1分钟
+    // 根据策略类型确定执行间隔
+    // - 期权策略（OPTION_INTRADAY_V1）：5秒，期权市场需要快速响应
+    // - 其他策略：60秒（默认）
+    // 注意：期权链数据有缓存，不会每次都请求API
+    const isOptionStrategy = strategy.type === 'OPTION_INTRADAY_V1';
+    const intervalMs = isOptionStrategy ? 5 * 1000 : 60 * 1000;
+    const intervalDesc = isOptionStrategy ? '5秒' : '1分钟';
+
     const intervalId = setInterval(async () => {
       try {
         await this.runStrategyCycle(strategyInstance, strategyId, strategy.symbol_pool_config);
@@ -159,9 +167,12 @@ class StrategyScheduler {
     }, intervalMs);
 
     this.runningStrategies.set(strategyId, intervalId);
-    
-    // 启动订单监控任务（每30秒监控一次未成交订单）
-    const orderMonitorIntervalMs = 30 * 1000; // 30秒
+
+    // 启动订单监控任务
+    // - 期权策略：5秒（与策略周期同步）
+    // - 其他策略：30秒
+    const orderMonitorIntervalMs = isOptionStrategy ? 5 * 1000 : 30 * 1000;
+    const orderMonitorDesc = isOptionStrategy ? '5秒' : '30秒';
     const orderMonitorId = setInterval(async () => {
       try {
         await this.trackPendingOrders(strategyId);
@@ -169,11 +180,11 @@ class StrategyScheduler {
         logger.error(`策略 ${strategyId} 订单监控出错:`, error);
       }
     }, orderMonitorIntervalMs);
-    
+
     // 存储订单监控定时器ID（用于停止时清理）
     this.orderMonitorIntervals.set(strategyId, orderMonitorId);
-    
-    logger.log(`策略 ${strategy.name} (ID: ${strategyId}) 已启动（策略周期: 1分钟，订单监控: 30秒）`);
+
+    logger.log(`策略 ${strategy.name} (ID: ${strategyId}) 已启动（策略周期: ${intervalDesc}，订单监控: ${orderMonitorDesc}）`);
 
     // 立即执行一次策略周期
     try {
@@ -210,6 +221,28 @@ class StrategyScheduler {
    * 运行策略周期
    */
   private async runStrategyCycle(
+    strategyInstance: StrategyBase,
+    strategyId: number,
+    symbolPoolConfig: any
+  ): Promise<void> {
+    // 🔒 执行锁检查：防止并发执行（当执行时间超过间隔时）
+    if (this.strategyExecutionLocks.get(strategyId)) {
+      logger.debug(`策略 ${strategyId}: 上次执行尚未完成，跳过本次调度`);
+      return;
+    }
+    this.strategyExecutionLocks.set(strategyId, true);
+
+    try {
+      await this.runStrategyCycleInternal(strategyInstance, strategyId, symbolPoolConfig);
+    } finally {
+      this.strategyExecutionLocks.set(strategyId, false);
+    }
+  }
+
+  /**
+   * 策略周期内部实现
+   */
+  private async runStrategyCycleInternal(
     strategyInstance: StrategyBase,
     strategyId: number,
     symbolPoolConfig: any
@@ -493,12 +526,14 @@ class StrategyScheduler {
                 filledQuantity,
               });
             }
-            
-            // 更新信号状态为EXECUTED（如果订单已成交）
-            try {
-              await basicExecutionService.updateSignalStatusByOrderId(dbOrder.order_id, 'EXECUTED');
-            } catch (signalError: any) {
-              logger.warn(`更新信号状态失败 (orderId: ${dbOrder.order_id}):`, signalError.message);
+
+            // ✅ 只有在状态发生变化时才更新信号状态（避免重复尝试匹配已处理的订单）
+            if (dbOrder.current_status !== 'FILLED') {
+              try {
+                await basicExecutionService.updateSignalStatusByOrderId(dbOrder.order_id, 'EXECUTED');
+              } catch (signalError: any) {
+                logger.warn(`更新信号状态失败 (orderId: ${dbOrder.order_id}):`, signalError.message);
+              }
             }
           } else if (status === 'CanceledStatus' || status === 'PendingCancelStatus' || status === 'WaitToCancel') {
             dbStatus = 'CANCELLED';
@@ -1024,6 +1059,12 @@ class StrategyScheduler {
           summary.actions.push(symbol);
         } else {
           summary.holding.push(symbol);
+        }
+
+        // ⚠️ 期权策略特殊处理：HOLDING状态下继续寻找新的交易机会
+        // 因为期权策略可能需要同时持有多个合约（不同到期日、不同行权价）
+        if (isOptionStrategy) {
+          await this.processOptionNewSignalWhileHolding(strategyInstance, strategyId, symbol, strategyConfig, summary);
         }
         return;
       } else if (currentState === 'SHORT') {
@@ -1662,6 +1703,34 @@ class StrategyScheduler {
   }
 
   /**
+   * 记录卖出信号到数据库
+   * 用于订单-信号关联追踪，确保 SELL 订单也有对应的信号记录
+   * @returns signal_id 返回信号ID，用于关联订单
+   */
+  private async logSellSignal(
+    strategyId: number,
+    symbol: string,
+    price: number,
+    reason: string,
+    metadata?: Record<string, any>
+  ): Promise<number> {
+    const result = await pool.query(
+      `INSERT INTO strategy_signals
+       (strategy_id, symbol, signal_type, price, reason, metadata, status)
+       VALUES ($1, $2, 'SELL', $3, $4, $5, 'PENDING')
+       RETURNING id`,
+      [
+        strategyId,
+        symbol,
+        price,
+        reason,
+        metadata ? JSON.stringify(metadata) : null,
+      ]
+    );
+    return result.rows[0].id;
+  }
+
+  /**
    * 处理持仓状态：检查止盈/止损
    * 修改：返回处理结果，以便上层做日志聚合
    */
@@ -1752,7 +1821,16 @@ class StrategyScheduler {
         return { actionTaken: false };
       }
 
-      // logger.log(...) 移除，改为聚合时由上层统计 HOLDING
+      // 调试日志：显示期权策略的 context 关键字段
+      if (isOptionStrategy) {
+        const optMeta = context.optionMeta || {};
+        logger.debug(
+          `策略 ${strategyId} 期权 ${effectiveSymbol}: context检查 | ` +
+          `entryPrice=${entryPrice} quantity=${quantity} | ` +
+          `optionMeta.optionId=${optMeta.optionId || 'N/A'} | ` +
+          `optionMeta.underlyingStockId=${optMeta.underlyingStockId || 'N/A'}`
+        );
+      }
 
       // 2. 获取当前价格
       let currentPrice = 0;
@@ -1823,7 +1901,7 @@ class StrategyScheduler {
               currentPrice = mid || bid || detail.price || 0;
               priceSource = 'futunn';
 
-              // 缓存价格（5分钟TTL）
+              // 缓存价格
               if (currentPrice > 0) {
                 const optionPriceCacheService = (await import('./option-price-cache.service')).default;
                 optionPriceCacheService.set(effectiveSymbol, {
@@ -1837,50 +1915,166 @@ class StrategyScheduler {
                 });
               }
             }
-          } else {
-            logger.warn(
-              `策略 ${strategyId} 期权 ${effectiveSymbol}: optionMeta缺少必要字段（optionId或underlyingStockId）`
-            );
           }
         } catch (error: any) {
           logger.error(`策略 ${strategyId} 期权 ${effectiveSymbol}: 富途详情获取失败: ${error.message}`);
         }
       }
 
-      if (currentPrice <= 0) {
-        return { actionTaken: false };
-      }
+      // 第四层：Fallback - 从期权symbol解析信息，通过期权链API获取价格
+      if (currentPrice <= 0 && isOptionStrategy) {
+        try {
+          const { parseOptionSymbol } = await import('../utils/options-symbol');
+          const { getOptionChain, getStockIdBySymbol, getOptionStrikeDates } = await import('./futunn-option-chain.service');
 
-      // 期权策略：收盘前30分钟强制平仓（不论盈亏）
-      let forceCloseNow = false;
-      if (isOptionStrategy) {
-        const window = await getMarketCloseWindow({
-          market: 'US',
-          noNewEntryBeforeCloseMinutes: Math.max(
-            0,
-            parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 60), 10) || 60
-          ),
-          forceCloseBeforeCloseMinutes: 30,
-        });
-        if (window) {
-          const now = new Date();
-          if (now >= window.forceCloseTimeUtc) {
-            forceCloseNow = true;
+          const parsed = parseOptionSymbol(effectiveSymbol);
+          if (parsed) {
+            logger.log(
+              `策略 ${strategyId} 期权 ${effectiveSymbol}: optionMeta缺失，尝试从symbol解析 | ` +
+              `underlying=${parsed.underlying} expiry=${parsed.expirationDate} ` +
+              `type=${parsed.optionType} strike=${parsed.strikePrice}`
+            );
+
+            // 获取标的股票ID
+            const underlyingSymbol = `${parsed.underlying}.${parsed.market}`;
+            const stockId = await getStockIdBySymbol(underlyingSymbol);
+
+            if (stockId) {
+              // 获取到期日列表，找到对应的 strikeDate（时间戳）
+              const strikeDatesResult = await getOptionStrikeDates(stockId);
+              if (strikeDatesResult && strikeDatesResult.strikeDates.length > 0) {
+                // 找到匹配的到期日
+                const targetDate = new Date(parsed.expirationDate);
+                const matchingStrikeDate = strikeDatesResult.strikeDates.find((sd: any) => {
+                  const sdDate = new Date(sd.strikeDate * 1000);
+                  return (
+                    sdDate.getFullYear() === targetDate.getFullYear() &&
+                    sdDate.getMonth() === targetDate.getMonth() &&
+                    sdDate.getDate() === targetDate.getDate()
+                  );
+                });
+
+                if (matchingStrikeDate) {
+                  // 获取期权链
+                  const chain = await getOptionChain(stockId, matchingStrikeDate.strikeDate);
+
+                  if (chain && chain.length > 0) {
+                    // 在期权链中查找匹配的期权
+                    const isCall = parsed.optionType === 'CALL';
+                    let matchedOptionId: string | null = null;
+
+                    for (const item of chain) {
+                      const opt = isCall ? item.callOption : item.putOption;
+                      if (opt) {
+                        const strikePrice = parseFloat(opt.strikePrice) || 0;
+                        if (Math.abs(strikePrice - parsed.strikePrice) < 0.01) {
+                          matchedOptionId = opt.optionId;
+                          break;
+                        }
+                      }
+                    }
+
+                    if (matchedOptionId) {
+                      // 使用 getOptionDetail 获取价格
+                      const marketType = parsed.market === 'US' ? 2 : 1;
+                      const detail = await getOptionDetail(matchedOptionId, stockId, marketType);
+
+                      if (detail) {
+                        const bid = detail.priceBid || 0;
+                        const ask = detail.priceAsk || 0;
+                        const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : detail.price || 0;
+                        currentPrice = mid || bid || detail.price || 0;
+                        priceSource = 'futunn_chain_fallback';
+
+                        // 缓存价格
+                        if (currentPrice > 0) {
+                          const optionPriceCacheService = (await import('./option-price-cache.service')).default;
+                          optionPriceCacheService.set(effectiveSymbol, {
+                            price: currentPrice,
+                            bid,
+                            ask,
+                            mid,
+                            timestamp: Date.now(),
+                            underlyingPrice: detail.underlyingPrice || 0,
+                            source: 'futunn',
+                          });
+
+                          // 补全 optionMeta（用于后续监控）
+                          context.optionMeta = {
+                            ...context.optionMeta,
+                            optionId: matchedOptionId,
+                            underlyingStockId: stockId,
+                            marketType,
+                            strikePrice: parsed.strikePrice,
+                            optionType: parsed.optionType,
+                            expirationDate: parsed.expirationDate,
+                          };
+
+                          // 更新数据库中的 context
+                          await strategyInstance.updateState(symbol, 'HOLDING', context);
+
+                          logger.log(
+                            `策略 ${strategyId} 期权 ${effectiveSymbol}: fallback成功获取价格 $${currentPrice.toFixed(2)} | ` +
+                            `已补全optionMeta (optionId=${matchedOptionId})`
+                          );
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
+        } catch (error: any) {
+          logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: fallback价格获取失败: ${error.message}`);
         }
       }
 
-      // 3. 检查默认止盈/止损设置 (逻辑保持不变，但减少普通日志)
+      if (currentPrice <= 0) {
+        // 添加诊断日志，帮助追踪价格获取失败的原因
+        logger.warn(
+          `策略 ${strategyId} 标的 ${effectiveSymbol}: 所有价格获取方式均失败，无法进行止盈止损检查 | ` +
+          `context.optionMeta: ${JSON.stringify(context.optionMeta || {})} | ` +
+          `isOptionStrategy: ${isOptionStrategy}`
+        );
+        return { actionTaken: false };
+      }
+
+      // ========== 期权策略：使用动态止盈止损服务 ==========
+      if (isOptionStrategy) {
+        return await this.processOptionDynamicExit(
+          strategyInstance,
+          strategyId,
+          symbol,
+          effectiveSymbol,
+          context,
+          currentPrice,
+          entryPrice,
+          quantity,
+          strategyConfig
+        );
+      }
+
+      // ========== 股票策略：使用原有止盈止损逻辑 ==========
+      // 收盘前强制平仓检查（股票策略通常不需要）
+      let forceCloseNow = false;
+
+      // 3. 检查默认止盈/止损设置
+      // 股票策略：使用原有比例（止盈10%，止损5%）
       let defaultStopLoss = stopLoss;
       let defaultTakeProfit = takeProfit;
       let needsUpdate = false;
-      
+
+      // 获取止盈止损比例（股票策略）
+      const stopLossPercent = 0.05;   // 股票默认5%止损
+      const takeProfitPercent = 0.10; // 股票默认10%止盈
+
       if (!defaultStopLoss && entryPrice > 0) {
-        defaultStopLoss = entryPrice * 0.95;
+        defaultStopLoss = entryPrice * (1 - stopLossPercent);
         needsUpdate = true;
       }
       if (!defaultTakeProfit && entryPrice > 0) {
-        defaultTakeProfit = entryPrice * 1.10;
+        defaultTakeProfit = entryPrice * (1 + takeProfitPercent);
         needsUpdate = true;
       }
       
@@ -1990,6 +2184,15 @@ class StrategyScheduler {
         let latestPrice = currentPrice;
         // ... (获取最新价格逻辑简化)
 
+        // ✅ 先记录卖出信号，确保订单-信号关联
+        const sellSignalId = await this.logSellSignal(
+          strategyId,
+          effectiveSymbol,
+          latestPrice,
+          `自动卖出: ${exitReason}`,
+          { ...context.metadata, exitReason, forceClose: forceCloseNow }
+        );
+
         const sellIntent = {
           action: 'SELL' as const,
           symbol: effectiveSymbol,
@@ -2001,10 +2204,11 @@ class StrategyScheduler {
             ...context.metadata,
             forceClose: forceCloseNow, // 标记是否为强制平仓（期权盘中最后30分钟）
             exitReason,
+            signalId: sellSignalId, // ✅ 传递信号ID，用于订单关联
           },
         };
 
-        logger.log(`策略 ${strategyId} 标的 ${symbol}: 执行卖出 - 原因=${exitReason} (交易标的=${effectiveSymbol})`);
+        logger.log(`策略 ${strategyId} 标的 ${symbol}: 执行卖出 - 原因=${exitReason} (交易标的=${effectiveSymbol}, signalId=${sellSignalId})`);
         const executionResult = await basicExecutionService.executeSellIntent(sellIntent, strategyId);
 
         if (executionResult.submitted && executionResult.orderId) {
@@ -2023,6 +2227,334 @@ class StrategyScheduler {
     } catch (error: any) {
       logger.error(`策略 ${strategyId} 处理持仓状态失败 (${symbol}):`, error);
       return { actionTaken: false };
+    }
+  }
+
+  /**
+   * 期权策略专用：动态止盈止损检查
+   *
+   * 基于时间衰减 + 波动率 + 价格位置的三维动态调整
+   * - 时间维度：随着到期临近，收紧止盈、放宽止损容忍度
+   * - 波动率：IV变化影响止盈止损比例
+   * - 移动止损：盈利达到一定比例后，止损上移至保本
+   * - 手续费：所有盈亏计算都包含手续费
+   */
+  private async processOptionDynamicExit(
+    strategyInstance: StrategyBase,
+    strategyId: number,
+    symbol: string,
+    effectiveSymbol: string,
+    context: any,
+    currentPrice: number,
+    entryPrice: number,
+    quantity: number,
+    strategyConfig: any
+  ): Promise<{ actionTaken: boolean }> {
+    try {
+      const optionDynamicExitService = (await import('./option-dynamic-exit.service')).default;
+
+      // 1. 从 context 获取期权元数据
+      const optionMeta = context.optionMeta || context.intent?.metadata || {};
+      const multiplier = optionMeta.multiplier || 100;
+      const entryTime = context.entryTime ? new Date(context.entryTime) : new Date();
+
+      // 2. 获取手续费信息
+      // 入场手续费：从 context 中获取（如果有），否则估算
+      let entryFees = parseFloat(String(optionMeta.estimatedFees || optionMeta.entryFees || 0));
+      if (entryFees <= 0) {
+        entryFees = optionDynamicExitService.calculateFees(quantity);
+      }
+      const estimatedExitFees = optionDynamicExitService.calculateFees(quantity);
+
+      // 3. 确定策略类型（买方/卖方）
+      // 简化：假设当前都是买方策略（做多期权）
+      const strategySide = 'BUYER' as const;
+
+      // 4. 获取当前IV（如果可用）
+      let currentIV = 0;
+      let currentDelta = 0;
+      let timeValue = 0;
+      const optionId = optionMeta.optionId || optionMeta.option_id;
+      const underlyingStockId = optionMeta.underlyingStockId || optionMeta.underlying_stock_id;
+      const marketType = optionMeta.marketType || optionMeta.market_type || 2;
+
+      if (optionId && underlyingStockId) {
+        try {
+          const detail = await getOptionDetail(String(optionId), String(underlyingStockId), Number(marketType));
+          if (detail && detail.option) {
+            currentIV = detail.option.impliedVolatility || 0;
+            currentDelta = detail.option.greeks?.hpDelta || detail.option.greeks?.delta || 0;
+            timeValue = detail.option.timeValue || 0;
+          }
+        } catch {
+          // 忽略错误，使用默认值
+        }
+      }
+
+      // 5. 构建持仓上下文
+      const marketCloseTime = optionDynamicExitService.getMarketCloseTime();
+      const positionCtx = {
+        entryPrice,
+        currentPrice,
+        quantity,
+        multiplier,
+        entryTime,
+        marketCloseTime,
+        strategySide,
+        entryIV: optionMeta.impliedVolatility || currentIV,
+        currentIV,
+        currentDelta,
+        timeValue,
+        entryFees,
+        estimatedExitFees,
+      };
+
+      // 6. 检查是否应该平仓
+      const exitCondition = optionDynamicExitService.checkExitCondition(positionCtx);
+
+      if (exitCondition) {
+        // 触发平仓条件
+        const { action, reason, pnl } = exitCondition;
+
+        logger.log(
+          `策略 ${strategyId} 期权 ${effectiveSymbol}: 动态止盈止损触发 ` +
+          `[${action}] ${reason} | ${optionDynamicExitService.formatPnLInfo(pnl, positionCtx)}`
+        );
+
+        // 检查可用持仓
+        const positionCheck = await this.checkAvailablePosition(strategyId, effectiveSymbol);
+        if (positionCheck.hasPending) {
+          return { actionTaken: false };
+        }
+
+        if (positionCheck.availableQuantity !== undefined && quantity > positionCheck.availableQuantity) {
+          logger.error(`策略 ${strategyId} 期权 ${effectiveSymbol}: 卖出数量不足`);
+          return { actionTaken: false };
+        }
+
+        // 检查是否已有待处理的卖出订单
+        const dbCheckResult = await pool.query(
+          `SELECT eo.order_id FROM execution_orders eo
+           WHERE strategy_id = $1 AND symbol = $2
+           AND side IN ('SELL', 'Sell', '2')
+           AND current_status IN ('SUBMITTED', 'NEW', 'PARTIALLY_FILLED')
+           AND eo.created_at >= NOW() - INTERVAL '1 hour'`,
+          [strategyId, effectiveSymbol]
+        );
+
+        if (dbCheckResult.rows.length > 0) {
+          return { actionTaken: false };
+        }
+
+        // 更新状态为 CLOSING
+        await strategyInstance.updateState(symbol, 'CLOSING', {
+          ...context,
+          exitReason: action,
+          exitReasonDetail: reason,
+          exitPrice: currentPrice,
+          exitPnL: pnl.netPnL,
+          exitPnLPercent: pnl.netPnLPercent,
+          totalFees: pnl.totalFees,
+        });
+
+        // 执行卖出
+        // ⚠️ 期权止盈止损统一使用市价单（快进快出），避免限价单无法成交导致亏损扩大
+        // ✅ 先记录卖出信号，确保订单-信号关联
+        const sellSignalId = await this.logSellSignal(
+          strategyId,
+          effectiveSymbol,
+          currentPrice,
+          `[${action}] ${reason}`,
+          {
+            assetClass: 'OPTION',
+            exitAction: action,
+            netPnL: pnl.netPnL,
+            netPnLPercent: pnl.netPnLPercent,
+            totalFees: pnl.totalFees,
+          }
+        );
+        logger.log(`策略 ${strategyId} 期权 ${effectiveSymbol}: 执行卖出 - ${action} (signalId=${sellSignalId})`);
+
+        const sellIntent = {
+          action: 'SELL' as const,
+          symbol: effectiveSymbol,
+          entryPrice: entryPrice,
+          sellPrice: currentPrice,
+          quantity,
+          reason: `[${action}] ${reason}`,
+          metadata: {
+            assetClass: 'OPTION',
+            exitAction: action,
+            netPnL: pnl.netPnL,
+            netPnLPercent: pnl.netPnLPercent,
+            totalFees: pnl.totalFees,
+            // 设置 forceClose=true 使用市价单，确保快速成交
+            forceClose: true,
+            signalId: sellSignalId, // ✅ 传递信号ID，用于订单关联
+          },
+        };
+
+        const executionResult = await basicExecutionService.executeSellIntent(sellIntent, strategyId);
+
+        if (executionResult.success || executionResult.submitted) {
+          return { actionTaken: true };
+        } else {
+          await strategyInstance.updateState(symbol, 'HOLDING', context);
+          logger.error(`策略 ${strategyId} 期权 ${effectiveSymbol} 卖出失败: ${executionResult.error}`);
+          return { actionTaken: false };
+        }
+      }
+
+      // 7. 未触发平仓，更新追踪信息
+      // 记录当前最高盈利（用于移动止损）
+      const currentPnL = optionDynamicExitService.calculatePnL(positionCtx);
+      const dynamicParams = optionDynamicExitService.getDynamicExitParams(positionCtx);
+      const peakPnLPercent = context.peakPnLPercent || 0;
+
+      // 输出持仓监控状态日志（每次检查都输出，方便追踪）
+      const pnlSign = currentPnL.netPnLPercent >= 0 ? '+' : '';
+      logger.log(
+        `📊 [${strategyId}] ${effectiveSymbol} 持仓监控: ` +
+        `入场$${entryPrice.toFixed(2)} → 当前$${currentPrice.toFixed(2)} | ` +
+        `净盈亏 ${pnlSign}${currentPnL.netPnLPercent.toFixed(1)}% ($${currentPnL.netPnL.toFixed(2)}) | ` +
+        `止盈=${dynamicParams.takeProfitPercent}% 止损=${dynamicParams.stopLossPercent}% | ` +
+        `${dynamicParams.adjustmentReason}`
+      );
+
+      if (currentPnL.netPnLPercent > peakPnLPercent) {
+        // 更新峰值盈利
+        await strategyInstance.updateState(symbol, 'HOLDING', {
+          ...context,
+          peakPnLPercent: currentPnL.netPnLPercent,
+          peakPrice: currentPrice,
+          lastCheckTime: new Date().toISOString(),
+        });
+        return { actionTaken: true };
+      }
+
+      return { actionTaken: false };
+    } catch (error: any) {
+      logger.error(`策略 ${strategyId} 期权动态止盈止损处理失败 (${symbol}):`, error);
+      return { actionTaken: false };
+    }
+  }
+
+  /**
+   * 期权策略专用：HOLDING状态下继续寻找新的交易机会
+   * 允许期权策略同时持有多个合约（不同到期日、不同行权价、不同方向）
+   */
+  private async processOptionNewSignalWhileHolding(
+    strategyInstance: StrategyBase,
+    strategyId: number,
+    symbol: string,
+    strategyConfig: any,
+    summary: ExecutionSummary
+  ): Promise<void> {
+    try {
+      // 1. 检查是否在交易窗口内
+      const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 60), 10) || 60);
+      const window = await getMarketCloseWindow({
+        market: 'US',
+        noNewEntryBeforeCloseMinutes: noNewEntryMins,
+        forceCloseBeforeCloseMinutes: 30,
+      });
+      if (window) {
+        const now = new Date();
+        if (now >= window.noNewEntryTimeUtc) {
+          // 不在交易窗口内，不寻找新机会
+          return;
+        }
+      }
+
+      // 2. 检查是否还有可用资金
+      const availableCapital = await capitalManager.getAvailableCapital(strategyId);
+      if (availableCapital <= 0) {
+        // 没有可用资金，不寻找新机会
+        return;
+      }
+
+      // 3. 获取当前持有的期权合约列表
+      const currentPositionsResult = await pool.query(
+        `SELECT DISTINCT
+           COALESCE((context->>'tradedSymbol')::text, symbol) as traded_symbol,
+           (context->>'quantity')::int as quantity
+         FROM strategy_instances
+         WHERE strategy_id = $1
+           AND current_state = 'HOLDING'
+           AND context->>'tradedSymbol' IS NOT NULL`,
+        [strategyId]
+      );
+      const heldContracts = new Set(
+        currentPositionsResult.rows.map((r: any) => r.traded_symbol)
+      );
+
+      // 4. 检查是否有未成交的订单
+      const hasPendingOrder = await this.checkPendingOptionOrderForUnderlying(strategyId, symbol);
+      if (hasPendingOrder) {
+        // 有未成交订单，等待处理完成
+        return;
+      }
+
+      // 5. 生成新的交易信号
+      const intent = await strategyInstance.generateSignal(symbol, undefined);
+
+      if (!intent || intent.action === 'HOLD') {
+        // 没有新信号
+        return;
+      }
+
+      // 6. 检查新信号的合约是否已经持有
+      const optionMeta = intent.metadata as any;
+      const newContractSymbol = optionMeta?.optionSymbol || intent.symbol;
+      if (newContractSymbol && heldContracts.has(newContractSymbol)) {
+        // 已经持有这个合约，不重复买入
+        return;
+      }
+
+      // 7. 记录信号并执行
+      console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: (多仓模式) 生成新信号 ${intent.action}, 合约=${newContractSymbol}, 价格=${intent.entryPrice?.toFixed(2) || 'N/A'}`);
+      summary.signals.push(`${symbol}(NEW_CONTRACT)`);
+
+      // 执行订单（BUY 信号）
+      if (intent.action === 'BUY') {
+        // 申请资金
+        const allocationAmountOverride = (intent.metadata as any)?.allocationAmountOverride;
+        const requestedAmount = typeof allocationAmountOverride === 'number' && allocationAmountOverride > 0
+          ? allocationAmountOverride
+          : intent.quantity! * (intent.entryPrice || 0);
+
+        const allocationResult = await capitalManager.requestAllocation({
+          strategyId,
+          amount: requestedAmount,
+          symbol: newContractSymbol,
+        });
+
+        if (!allocationResult.approved) {
+          console.log(`[${new Date().toISOString()}] 策略 ${strategyId} 标的 ${symbol}: (多仓模式) 资金申请被拒绝 - ${allocationResult.reason}`);
+          return;
+        }
+
+        // 更新状态为 OPENING（使用期权合约symbol作为key，允许多仓）
+        await strategyInstance.updateState(newContractSymbol, 'OPENING', {
+          intent,
+          allocationAmount: allocationResult.allocatedAmount,
+          underlyingSymbol: symbol, // 记录标的symbol用于后续映射
+        });
+
+        // 执行买入
+        const executionResult = await basicExecutionService.executeBuyIntent(intent, strategyId);
+
+        if (executionResult.success || executionResult.submitted) {
+          summary.actions.push(`${symbol}(NEW_POSITION)`);
+        } else {
+          // 失败，释放资金
+          await capitalManager.releaseAllocation(strategyId, allocationResult.allocatedAmount, newContractSymbol);
+          await strategyInstance.updateState(newContractSymbol, 'IDLE');
+        }
+      }
+    } catch (error: any) {
+      // 不中断主流程，仅记录错误
+      console.warn(`策略 ${strategyId} 标的 ${symbol}: 多仓模式处理失败: ${error.message}`);
     }
   }
 

@@ -290,12 +290,15 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
       }
 
       // Greek filters
-      if (greek.deltaMin !== undefined && deltaNum < greek.deltaMin) {
-        console.log(`[期权 ${optionId}] Delta ${deltaNum.toFixed(4)} < ${greek.deltaMin}，跳过`);
+      // 注意：PUT期权的Delta是负数（如-0.5），CALL期权的Delta是正数（如0.5）
+      // 因此Delta筛选应使用绝对值进行比较
+      const absDelta = Math.abs(deltaNum);
+      if (greek.deltaMin !== undefined && absDelta < greek.deltaMin) {
+        console.log(`[期权 ${optionId}] |Delta| ${absDelta.toFixed(4)} < ${greek.deltaMin}，跳过`);
         continue;
       }
-      if (greek.deltaMax !== undefined && deltaNum > greek.deltaMax) {
-        console.log(`[期权 ${optionId}] Delta ${deltaNum.toFixed(4)} > ${greek.deltaMax}，跳过`);
+      if (greek.deltaMax !== undefined && absDelta > greek.deltaMax) {
+        console.log(`[期权 ${optionId}] |Delta| ${absDelta.toFixed(4)} > ${greek.deltaMax}，跳过`);
         continue;
       }
       if (greek.thetaMaxAbs !== undefined && Math.abs(thetaNum) > greek.thetaMaxAbs) {
@@ -330,7 +333,7 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
 
   // [检查点6+7] 流动性和Greeks筛选后的结果
   console.log(
-    `📍 [${params.underlyingSymbol}筛选后] 通过=${evaluated.length}个 | 持仓量≥${liquidity.minOpenInterest || 0}, 价差≤${liquidity.maxBidAskSpreadPct || 'N/A'}%, Delta∈[${greek.deltaMin || 0}, ${greek.deltaMax || 1}]`
+    `📍 [${params.underlyingSymbol}筛选后] 通过=${evaluated.length}个 | 持仓量≥${liquidity.minOpenInterest || 0}, 价差≤${liquidity.maxBidAskSpreadPct || 'N/A'}%, |Delta|∈[${greek.deltaMin || 0}, ${greek.deltaMax || 1}]`
   );
 
   if (evaluated.length === 0) {
@@ -375,5 +378,164 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
   });
 
   return evaluated[0];
+}
+
+/**
+ * 选择多个期权合约（用于分散投资）
+ * 返回所有通过筛选的合约，按质量排序
+ */
+export async function selectMultipleOptionContracts(
+  params: SelectOptionContractParams,
+  maxContracts: number = 3
+): Promise<SelectedOptionContract[]> {
+  const candidateStrikes = params.candidateStrikes ?? 8;
+  const liquidity = params.liquidityFilters ?? {};
+  const greek = params.greekFilters ?? {};
+
+  const underlyingStockId = await resolveUnderlyingStockId(params.underlyingSymbol);
+  if (!underlyingStockId) return [];
+
+  const strikeDatesResp = await getOptionStrikeDates(underlyingStockId);
+  if (!strikeDatesResp || !strikeDatesResp.strikeDates || strikeDatesResp.strikeDates.length === 0) return [];
+
+  const sorted = [...strikeDatesResp.strikeDates].sort((a, b) => a.leftDay - b.leftDay);
+
+  const now = new Date();
+  const todayExpiry = sorted.find((d) => {
+    if (d.leftDay !== 0) return false;
+    const strikeDate = parseInt(String(d.strikeDate), 10);
+    const year = Math.floor(strikeDate / 10000);
+    const month = Math.floor((strikeDate % 10000) / 100) - 1;
+    const day = strikeDate % 100;
+    const expiryDate = new Date(year, month, day, 23, 59, 59);
+    return expiryDate >= now;
+  });
+
+  let pickedExpiry;
+  if (params.expirationMode === '0DTE') {
+    pickedExpiry = todayExpiry || sorted[0];
+  } else {
+    pickedExpiry = sorted[0];
+  }
+
+  if (!pickedExpiry) return [];
+
+  const strikeDate = pickedExpiry.strikeDate;
+  const chain = await getOptionChain(underlyingStockId, strikeDate);
+
+  if (!chain || chain.length === 0) return [];
+
+  let underlyingPrice = 0;
+  try {
+    const underlyingQuote = await getUnderlyingStockQuote(underlyingStockId);
+    underlyingPrice = underlyingQuote?.price || 0;
+  } catch {
+    underlyingPrice = 0;
+  }
+
+  const desiredType = params.direction === 'CALL' ? 'Call' : 'Put';
+  const pairs = chain.map((row) => {
+    const opt = params.direction === 'CALL' ? row.callOption : row.putOption;
+    return opt ? opt : null;
+  }).filter(Boolean) as Array<{
+    optionId: string;
+    code: string;
+    strikePrice: string;
+    openInterest: string;
+  }>;
+
+  if (pairs.length === 0) return [];
+
+  const byStrike = pairs
+    .map((o) => ({ o, strike: toNumber(o.strikePrice, 0) }))
+    .sort((a, b) => a.strike - b.strike);
+
+  let candidates: Array<{ o: any; strike: number; dist: number }> = [];
+  if (underlyingPrice > 0) {
+    candidates = byStrike
+      .map((x) => ({ ...x, dist: Math.abs(x.strike - underlyingPrice) }))
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, candidateStrikes);
+  } else {
+    const midIdx = Math.floor(byStrike.length / 2);
+    const half = Math.floor(candidateStrikes / 2);
+    const start = Math.max(0, midIdx - half);
+    const slice = byStrike.slice(start, start + candidateStrikes);
+    candidates = slice.map((x) => ({ ...x, dist: 0 }));
+  }
+
+  const marketType = 2;
+  const evaluated: SelectedOptionContract[] = [];
+
+  for (const c of candidates) {
+    try {
+      const optionId = String(c.o.optionId);
+      const detail = await getOptionDetail(optionId, underlyingStockId, marketType);
+      if (!detail) continue;
+
+      const bid = detail.priceBid || 0;
+      const ask = detail.priceAsk || 0;
+      const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (detail.price || 0);
+      const spreadAbs = bid > 0 && ask > 0 ? (ask - bid) : 0;
+      const spreadPct = mid > 0 ? (spreadAbs / mid) * 100 : 0;
+
+      const openInterest = detail.option?.openInterest || 0;
+      const delta = detail.option?.greeks?.hpDelta ?? detail.option?.greeks?.delta;
+      const theta = detail.option?.greeks?.hpTheta ?? detail.option?.greeks?.theta;
+
+      if (delta === undefined || delta === null) continue;
+      if (theta === undefined || theta === null) continue;
+
+      const deltaNum = toNumber(delta, 0);
+      const thetaNum = toNumber(theta, 0);
+      const absDelta = Math.abs(deltaNum);
+
+      // Liquidity filters
+      if (liquidity.minOpenInterest !== undefined && openInterest < liquidity.minOpenInterest) continue;
+      if (liquidity.maxBidAskSpreadAbs !== undefined && spreadAbs > liquidity.maxBidAskSpreadAbs) continue;
+      if (liquidity.maxBidAskSpreadPct !== undefined && spreadPct > liquidity.maxBidAskSpreadPct) continue;
+
+      // Greek filters (use absolute value for delta)
+      if (greek.deltaMin !== undefined && absDelta < greek.deltaMin) continue;
+      if (greek.deltaMax !== undefined && absDelta > greek.deltaMax) continue;
+      if (greek.thetaMaxAbs !== undefined && Math.abs(thetaNum) > greek.thetaMaxAbs) continue;
+
+      evaluated.push({
+        underlyingSymbol: params.underlyingSymbol,
+        optionSymbol: normalizeMoomooOptionCodeToSymbol(c.o.code),
+        optionId,
+        underlyingStockId,
+        marketType,
+        strikeDate,
+        strikePrice: c.strike,
+        optionType: desiredType,
+        multiplier: detail.option?.multiplier || 100,
+        bid,
+        ask,
+        mid,
+        last: detail.price || mid,
+        openInterest,
+        impliedVolatility: safePct(detail.option?.impliedVolatility || 0),
+        delta: deltaNum,
+        theta: thetaNum,
+        timeValue: toNumber(detail.option?.timeValue || 0, 0),
+      });
+    } catch {
+      // ignore candidate failures
+    }
+  }
+
+  if (evaluated.length === 0) return [];
+
+  // Sort by spread%, then open interest desc
+  evaluated.sort((a, b) => {
+    const aSpreadPct = a.mid > 0 ? ((a.ask - a.bid) / a.mid) : Number.POSITIVE_INFINITY;
+    const bSpreadPct = b.mid > 0 ? ((b.ask - b.bid) / b.mid) : Number.POSITIVE_INFINITY;
+    if (aSpreadPct !== bSpreadPct) return aSpreadPct - bSpreadPct;
+    return b.openInterest - a.openInterest;
+  });
+
+  // Return top N contracts
+  return evaluated.slice(0, maxContracts);
 }
 

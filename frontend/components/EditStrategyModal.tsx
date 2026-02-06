@@ -463,6 +463,204 @@ export default function EditStrategyModal({
               </label>
               {formData.type === 'OPTION_INTRADAY_V1' ? (
                 <>
+                  {/* 策略类型选择（多选） */}
+                  <div className="mb-4 p-4 border rounded bg-gray-50">
+                    <label className="block text-xs text-gray-700 mb-2 font-semibold">策略类型（可多选）</label>
+                    <div className="space-y-2">
+                      <div className="text-xs text-gray-500 mb-2">买方策略：</div>
+                      <div className="flex flex-wrap gap-3">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.config.strategyTypes?.buyer?.includes('DIRECTIONAL_CALL') ?? true}
+                            onChange={(e) => {
+                              const buyer = formData.config.strategyTypes?.buyer || ['DIRECTIONAL_CALL', 'DIRECTIONAL_PUT', 'STRADDLE_BUY'];
+                              const newBuyer = e.target.checked
+                                ? [...buyer, 'DIRECTIONAL_CALL']
+                                : buyer.filter((t: string) => t !== 'DIRECTIONAL_CALL');
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  strategyTypes: { ...formData.config.strategyTypes, buyer: newBuyer },
+                                },
+                              });
+                            }}
+                          />
+                          <span className="text-sm">单边买Call</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.config.strategyTypes?.buyer?.includes('DIRECTIONAL_PUT') ?? true}
+                            onChange={(e) => {
+                              const buyer = formData.config.strategyTypes?.buyer || ['DIRECTIONAL_CALL', 'DIRECTIONAL_PUT', 'STRADDLE_BUY'];
+                              const newBuyer = e.target.checked
+                                ? [...buyer, 'DIRECTIONAL_PUT']
+                                : buyer.filter((t: string) => t !== 'DIRECTIONAL_PUT');
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  strategyTypes: { ...formData.config.strategyTypes, buyer: newBuyer },
+                                },
+                              });
+                            }}
+                          />
+                          <span className="text-sm">单边买Put</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.config.strategyTypes?.buyer?.includes('STRADDLE_BUY') ?? true}
+                            onChange={(e) => {
+                              const buyer = formData.config.strategyTypes?.buyer || ['DIRECTIONAL_CALL', 'DIRECTIONAL_PUT', 'STRADDLE_BUY'];
+                              const newBuyer = e.target.checked
+                                ? [...buyer, 'STRADDLE_BUY']
+                                : buyer.filter((t: string) => t !== 'STRADDLE_BUY');
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  strategyTypes: { ...formData.config.strategyTypes, buyer: newBuyer },
+                                },
+                              });
+                            }}
+                          />
+                          <span className="text-sm">跨式买入</span>
+                        </label>
+                      </div>
+                      <div className="text-xs text-gray-500 mt-3 mb-2">价差策略：</div>
+                      <div className="flex flex-wrap gap-3">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.config.strategyTypes?.directional?.includes('BULL_SPREAD') ?? false}
+                            onChange={(e) => {
+                              const directional = formData.config.strategyTypes?.directional || [];
+                              const newDirectional = e.target.checked
+                                ? [...directional, 'BULL_SPREAD']
+                                : directional.filter((t: string) => t !== 'BULL_SPREAD');
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  strategyTypes: { ...formData.config.strategyTypes, directional: newDirectional },
+                                },
+                              });
+                            }}
+                          />
+                          <span className="text-sm">牛市价差</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.config.strategyTypes?.directional?.includes('BEAR_SPREAD') ?? false}
+                            onChange={(e) => {
+                              const directional = formData.config.strategyTypes?.directional || [];
+                              const newDirectional = e.target.checked
+                                ? [...directional, 'BEAR_SPREAD']
+                                : directional.filter((t: string) => t !== 'BEAR_SPREAD');
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  strategyTypes: { ...formData.config.strategyTypes, directional: newDirectional },
+                                },
+                              });
+                            }}
+                          />
+                          <span className="text-sm">熊市价差</span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 风险偏好和止盈止损配置 */}
+                  <div className="grid grid-cols-3 gap-4 mb-4">
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">风险偏好</label>
+                      <select
+                        value={formData.config.riskPreference || 'CONSERVATIVE'}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, riskPreference: e.target.value } })}
+                        className="border rounded px-3 py-2 w-full"
+                      >
+                        <option value="CONSERVATIVE">保守（阈值更高）</option>
+                        <option value="AGGRESSIVE">激进（阈值较低）</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">止盈 %</label>
+                      <input
+                        type="number"
+                        value={formData.config.exitRules?.takeProfitPercent ?? 45}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            config: {
+                              ...formData.config,
+                              exitRules: {
+                                ...(formData.config.exitRules || {}),
+                                takeProfitPercent: parseInt(e.target.value) || 45,
+                              },
+                            },
+                          })
+                        }
+                        className="border rounded px-3 py-2 w-full"
+                        min="10"
+                        max="200"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">盈利达到此%平仓</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">止损 %</label>
+                      <input
+                        type="number"
+                        value={formData.config.exitRules?.stopLossPercent ?? 35}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            config: {
+                              ...formData.config,
+                              exitRules: {
+                                ...(formData.config.exitRules || {}),
+                                stopLossPercent: parseInt(e.target.value) || 35,
+                              },
+                            },
+                          })
+                        }
+                        className="border rounded px-3 py-2 w-full"
+                        min="10"
+                        max="100"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">亏损达到此%平仓</p>
+                    </div>
+                  </div>
+
+                  {/* 交易时间窗口 */}
+                  <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formData.config.tradeWindow?.firstHourOnly ?? true}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            config: {
+                              ...formData.config,
+                              tradeWindow: {
+                                ...(formData.config.tradeWindow || {}),
+                                firstHourOnly: e.target.checked,
+                              },
+                            },
+                          })
+                        }
+                      />
+                      <span className="text-sm">只在开盘第一小时交易（9:30-10:30 ET）</span>
+                    </label>
+                    <p className="text-xs text-gray-500 mt-1 ml-6">末日期权建议开启，避免时间衰减风险</p>
+                  </div>
+
                   <div className="grid grid-cols-3 gap-4">
                     <div>
                       <label className="block text-xs text-gray-700 mb-1 font-medium">到期选择</label>
@@ -476,18 +674,6 @@ export default function EditStrategyModal({
                       </select>
                     </div>
                     <div>
-                      <label className="block text-xs text-gray-700 mb-1 font-medium">方向</label>
-                      <select
-                        value={formData.config.directionMode || 'FOLLOW_SIGNAL'}
-                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, directionMode: e.target.value } })}
-                        className="border rounded px-3 py-2 w-full"
-                      >
-                        <option value="FOLLOW_SIGNAL">跟随信号（BUY=Call，SELL=Put）</option>
-                        <option value="CALL_ONLY">只买Call</option>
-                        <option value="PUT_ONLY">只买Put</option>
-                      </select>
-                    </div>
-                    <div>
                       <label className="block text-xs text-gray-700 mb-1 font-medium">开仓价格</label>
                       <select
                         value={formData.config.entryPriceMode || 'ASK'}
@@ -498,6 +684,7 @@ export default function EditStrategyModal({
                         <option value="MID">用Mid</option>
                       </select>
                     </div>
+                    <div></div>
                   </div>
 
                   <div className="grid grid-cols-3 gap-4 mt-4">

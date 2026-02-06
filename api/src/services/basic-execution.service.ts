@@ -802,7 +802,8 @@ class BasicExecutionService {
       // ✅ 核心改进：使用统一订单提交服务
       // 确保量化下单和手动下单使用相同的逻辑（支持期权）
 
-      // 判断是否为期权强制平仓（盘中最后30分钟）
+      // 判断是否为期权快速平仓（止盈止损、强制平仓等）
+      // 使用市价单确保快速成交，避免限价单无法成交导致亏损扩大
       const isOptionForceClose =
         metadata?.assetClass === 'OPTION' &&
         metadata?.forceClose === true;
@@ -812,7 +813,7 @@ class BasicExecutionService {
 
       if (isOptionForceClose) {
         // 步骤1：先尝试市价单（对流动性好的期权能获得更好的价格）
-        logger.log(`策略 ${strategyId} 标的 ${symbol}: 期权强制平仓，先尝试市价单（Market Order）`);
+        logger.log(`策略 ${strategyId} 标的 ${symbol}: 期权快速平仓，先尝试市价单（Market Order）`);
 
         const marketOrderParams: any = {
           symbol,

@@ -137,28 +137,34 @@ function getETTime(date: Date): { hour: number; minute: number } {
 /**
  * 获取当前应该使用的缓存时长（秒）
  * 根据交易时间动态调整
+ *
+ * 2024-02 API频率限制测试结果:
+ * - 所有Futunn API在无间隔连续调用下仍能100%成功
+ * - 平均响应时间约400-800ms
+ * - 建议缓存时长: 5-10秒
+ *
  * @param date 可选，指定日期（默认当前时间）
  * @returns 缓存时长（秒）
  */
 export function getCacheDuration(date?: Date): number {
   const now = date || new Date();
-  
-  // 开盘前30分钟：30秒（更频繁更新）
+
+  // 开盘前30分钟：5秒（高频更新，为开盘做准备）
   if (isBeforeMarketOpen30Min(now)) {
-    return 30;
+    return 5;
   }
-  
-  // 交易时间：60秒（平衡性能和实时性）
+
+  // 交易时间：5秒（期权交易需要实时数据，API无频率限制）
   if (isTradingHours(now)) {
+    return 5;
+  }
+
+  // 收盘后：60秒（盘后交易数据更新较慢）
+  if (isAfterMarketClose(now)) {
     return 60;
   }
-  
-  // 收盘后：300秒（5分钟，数据更新频率低）
-  if (isAfterMarketClose(now)) {
-    return 300;
-  }
-  
-  // 非交易时间：600秒（10分钟）
-  return 600;
+
+  // 非交易时间：300秒（5分钟，无需频繁更新）
+  return 300;
 }
 

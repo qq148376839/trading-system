@@ -1,4 +1,3 @@
-import axios from 'axios';
 import crypto from 'crypto';
 import { getFutunnConfig, getFutunnHeaders, getFutunnSearchHeaders } from '../config/futunn';
 import { moomooProxy } from '../utils/moomoo-proxy';
@@ -92,7 +91,7 @@ function parsePrice(priceStr: string): number {
 
 /**
  * 获取期权到期日期列表
- * 
+ *
  * @param stockId 正股ID（例如：201335 对应 TSLA）
  * @returns 期权到期日期列表和成交量统计
  */
@@ -111,34 +110,41 @@ export async function getOptionStrikeDates(stockId: string): Promise<{
     total: number;
   };
 } | null> {
-  const url = 'https://www.moomoo.com/quote-api/quote-v2/get-option-strike-dates';
   const timestamp = Date.now();
-  
+
   // Token生成使用字符串类型参数
   const paramsForToken = {
     stockId: stockId,
     _: String(timestamp),
   };
-  
+
   const quoteToken = generateQuoteToken(paramsForToken);
-  
+
   // 使用统一的富途牛牛配置获取headers
   const headers = getFutunnHeaders('https://www.moomoo.com/hans/stock/TSLA-US/options-chain');
-  headers['quote-token'] = quoteToken;
-  
+
   // URL参数
   const params = {
-    stockId: stockId,
+    stockId: Number(stockId),
     _: timestamp,
   };
-  
+
   try {
-    const response = await axios.get(url, { params, headers, timeout: 10000 });
-    
-    if (response.data?.code === 0 && response.data?.data) {
+    // ✅ 改为统一走 moomooProxy（边缘函数代理，解决大陆网络超时问题）
+    const responseData = await moomooProxy({
+      path: '/quote-api/quote-v2/get-option-strike-dates',
+      params,
+      cookies: headers['Cookie'],
+      csrfToken: headers['futu-x-csrf-token'],
+      quoteToken,
+      referer: 'https://www.moomoo.com/hans/stock/TSLA-US/options-chain',
+      timeout: 15000,
+    });
+
+    if (responseData?.code === 0 && responseData?.data) {
       return {
-        strikeDates: response.data.data.strikeDates || [],
-        vol: response.data.data.vol || {
+        strikeDates: responseData.data.strikeDates || [],
+        vol: responseData.data.vol || {
           callNum: '0',
           putNum: '0',
           callRatio: 0,
@@ -147,8 +153,8 @@ export async function getOptionStrikeDates(stockId: string): Promise<{
         },
       };
     }
-    
-    console.error('获取期权到期日期列表失败:', response.data);
+
+    console.error('获取期权到期日期列表失败:', responseData);
     return null;
   } catch (error: any) {
     console.error('获取期权到期日期列表失败:', error.message);
@@ -201,23 +207,15 @@ export async function getOptionChain(
   if (!futunnConfig) {
     throw new Error('富途牛牛配置未设置');
   }
-  
-  const url = 'https://www.moomoo.com/quote-api/quote-v2/get-option-chain';
+
   const timestamp = Date.now();
-  
+
   // 判断期权是否过期
-  // 注意：期权到期日通常是美东时间当天的收盘时间（16:00 ET），对应UTC 21:00（夏令时）或22:00（冬令时）
-  // 但strikeDate时间戳通常是当天的00:00 UTC，所以我们需要判断是否已经过了到期日
   const currentTimestampSeconds = Math.floor(Date.now() / 1000);
-  // 期权到期日判断：如果当前时间已经超过到期日当天的23:59:59，则认为过期
-  // 但为了保险，我们使用更宽松的判断：如果当前时间已经超过到期日+1天，则认为过期
   const expirationDayEnd = strikeDate + 86400; // 到期日+1天
   const isExpired = currentTimestampSeconds >= expirationDayEnd;
   const expiration = isExpired ? 0 : 1;
-  
-  // 如果expiration=1仍然获取不到数据，尝试使用expiration=0
-  // 但先尝试expiration=1（未过期）
-  
+
   // Token生成使用字符串类型参数
   const paramsForToken = {
     stockId: stockId,
@@ -225,13 +223,12 @@ export async function getOptionChain(
     expiration: String(expiration),
     _: String(timestamp),
   };
-  
+
   const quoteToken = generateQuoteToken(paramsForToken);
-  
+
   // 使用统一的富途牛牛配置获取headers
   const headers = getFutunnHeaders('https://www.moomoo.com/hans/stock/TSLA-US/options-chain');
-  headers['quote-token'] = quoteToken;
-  
+
   // URL参数使用数字类型
   const params = {
     stockId: parseInt(stockId),
@@ -239,23 +236,30 @@ export async function getOptionChain(
     expiration: expiration,
     _: timestamp,
   };
-  
+
   try {
-    // 先尝试使用expiration=1（未过期）
-    let response = await axios.get(url, { params, headers, timeout: 10000 });
-    
-    if (response.data?.code === 0) {
-      const chainData = response.data.data || [];
+    // ✅ 改为统一走 moomooProxy（边缘函数代理，解决大陆网络超时问题）
+    let responseData = await moomooProxy({
+      path: '/quote-api/quote-v2/get-option-chain',
+      params,
+      cookies: headers['Cookie'],
+      csrfToken: headers['futu-x-csrf-token'],
+      quoteToken,
+      referer: 'https://www.moomoo.com/hans/stock/TSLA-US/options-chain',
+      timeout: 15000,
+    });
+
+    if (responseData?.code === 0) {
+      const chainData = responseData.data || [];
       // 如果获取到数据，直接返回
       if (chainData.length > 0) {
         return chainData;
       }
-      
+
       // 如果expiration=1没有数据，且当前判断为未过期，尝试使用expiration=0
-      // 这可能是因为期权已经接近到期或刚过期，但API仍需要expiration=0
       if (expiration === 1 && chainData.length === 0) {
         console.log(`expiration=1未获取到数据，尝试使用expiration=0获取strikeDate=${strikeDate}的期权链`);
-        
+
         // 重新生成token和参数，使用expiration=0
         const paramsForTokenExpired = {
           stockId: stockId,
@@ -264,31 +268,38 @@ export async function getOptionChain(
           _: String(timestamp),
         };
         const quoteTokenExpired = generateQuoteToken(paramsForTokenExpired);
-        const headersExpired = getFutunnHeaders('https://www.moomoo.com/hans/stock/TSLA-US/options-chain');
-        headersExpired['quote-token'] = quoteTokenExpired;
-        
+
         const paramsExpired = {
           stockId: parseInt(stockId),
           strikeDate: strikeDate,
           expiration: 0,
           _: timestamp,
         };
-        
-        response = await axios.get(url, { params: paramsExpired, headers: headersExpired, timeout: 10000 });
-        if (response.data?.code === 0) {
-          const expiredChainData = response.data.data || [];
+
+        responseData = await moomooProxy({
+          path: '/quote-api/quote-v2/get-option-chain',
+          params: paramsExpired,
+          cookies: headers['Cookie'],
+          csrfToken: headers['futu-x-csrf-token'],
+          quoteToken: quoteTokenExpired,
+          referer: 'https://www.moomoo.com/hans/stock/TSLA-US/options-chain',
+          timeout: 15000,
+        });
+
+        if (responseData?.code === 0) {
+          const expiredChainData = responseData.data || [];
           if (expiredChainData.length > 0) {
             console.log(`使用expiration=0成功获取到${expiredChainData.length}条期权链数据`);
             return expiredChainData;
           }
         }
       }
-      
+
       // 如果都没有数据，返回空数组（而不是null）
       return [];
     }
-    
-    console.error('获取期权链失败:', response.data);
+
+    console.error('获取期权链失败:', responseData);
     return null;
   } catch (error: any) {
     console.error('获取期权链失败:', error.message);

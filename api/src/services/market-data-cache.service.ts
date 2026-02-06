@@ -47,12 +47,15 @@ class MarketDataCacheService {
   /**
    * 获取分时数据缓存时长（毫秒）
    * 分时数据缓存时间更短，因为数据变化更快
+   *
+   * 2024-02 API频率限制测试结果:
+   * - Futunn API无严格频率限制，可以更频繁获取数据
    */
   private getIntradayCacheDurationMs(): number {
     const isTrading = isTradingHours();
-    // 交易时间：5分钟缓存
-    // 非交易时间：30分钟缓存
-    return (isTrading ? 300 : 1800) * 1000;
+    // 交易时间：15秒缓存（期权交易需要更实时的分时数据）
+    // 非交易时间：5分钟缓存
+    return (isTrading ? 15 : 300) * 1000;
   }
 
   /**

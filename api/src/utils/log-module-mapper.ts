@@ -39,6 +39,12 @@ const MODULE_MAPPINGS: ModuleMapping[] = [
     description: '推荐策略：基于交易推荐的策略实现',
   },
   {
+    pattern: /strategies\/option-intraday-strategy\.ts$/,
+    module: 'Strategy.Option',
+    chineseName: '期权策略',
+    description: '期权策略：末日期权交易策略，支持单边、跨式、价差等多种策略类型',
+  },
+  {
     pattern: /strategies\//,
     module: 'Strategy',
     chineseName: '策略实现',

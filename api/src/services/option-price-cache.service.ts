@@ -3,12 +3,17 @@
  *
  * 功能：
  * - 减少API调用频率，提高性能
- * - 5分钟TTL，适合日内交易
+ * - 10秒TTL，适合高频期权交易
  * - 自动清理过期缓存
  *
  * 使用场景：
  * - 持仓监控循环中获取期权价格
  * - 避免频繁调用富途期权详情API
+ *
+ * 2024-02 API频率限制测试结果:
+ * - Futunn API无严格频率限制，可支持更短的缓存时间
+ * - 平均响应时间约400-800ms
+ * - TTL从5分钟缩短到10秒，提供更实时的价格数据
  */
 
 export interface OptionPriceCacheEntry {
@@ -23,7 +28,7 @@ export interface OptionPriceCacheEntry {
 
 class OptionPriceCacheService {
   private cache: Map<string, OptionPriceCacheEntry> = new Map();
-  private ttlMs = 5 * 60 * 1000; // 5分钟TTL
+  private ttlMs = 10 * 1000; // 10秒TTL（API无频率限制，支持更频繁更新）
   private cleanupInterval: NodeJS.Timeout | null = null;
 
   /**

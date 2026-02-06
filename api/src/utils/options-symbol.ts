@@ -75,3 +75,64 @@ export function isLikelyOptionSymbol(symbol: string): boolean {
   return /^[A-Z]+[0-9]{6}[CP][0-9]+$/.test(core);
 }
 
+/**
+ * 解析期权symbol获取详细信息
+ * 例如：QQQ260205P598000.US
+ * - underlying: QQQ
+ * - expirationDate: 2026-02-05
+ * - optionType: PUT
+ * - strikePrice: 598.00
+ */
+export interface ParsedOptionSymbol {
+  underlying: string;
+  expirationDate: string;      // YYYY-MM-DD 格式
+  optionType: 'CALL' | 'PUT';
+  strikePrice: number;
+  market: string;              // US 或 HK
+  rawSymbol: string;           // 原始symbol（不含市场后缀）
+}
+
+export function parseOptionSymbol(symbol: string): ParsedOptionSymbol | null {
+  const s = String(symbol || '').trim().toUpperCase();
+
+  // 提取市场后缀
+  let market = 'US';
+  let core = s;
+  if (s.endsWith('.US')) {
+    market = 'US';
+    core = s.slice(0, -3);
+  } else if (s.endsWith('.HK')) {
+    market = 'HK';
+    core = s.slice(0, -3);
+  }
+
+  // 匹配格式：TICKER + YYMMDD + C/P + STRIKE
+  // 例如：QQQ260205P598000
+  const match = core.match(/^([A-Z]+)([0-9]{6})([CP])([0-9]+)$/);
+  if (!match) return null;
+
+  const [, underlying, dateStr, typeChar, strikeStr] = match;
+
+  // 解析日期：YYMMDD -> YYYY-MM-DD
+  const year = parseInt(dateStr.slice(0, 2), 10) + 2000;
+  const month = dateStr.slice(2, 4);
+  const day = dateStr.slice(4, 6);
+  const expirationDate = `${year}-${month}-${day}`;
+
+  // 解析期权类型
+  const optionType = typeChar === 'C' ? 'CALL' : 'PUT';
+
+  // 解析行权价：通常是实际价格 * 1000
+  // 例如：598000 -> $598.00
+  const strikePrice = parseInt(strikeStr, 10) / 1000;
+
+  return {
+    underlying,
+    expirationDate,
+    optionType,
+    strikePrice,
+    market,
+    rawSymbol: core,
+  };
+}
+
