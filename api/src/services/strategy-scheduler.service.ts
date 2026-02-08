@@ -986,9 +986,20 @@ class StrategyScheduler {
         const strategyType = strategyConfigResult.rows[0]?.type || 'RECOMMENDATION_V1';
         const strategyConfig = strategyConfigResult.rows[0]?.config || {};
         const strategyInstance = this.createStrategyInstance(strategyType, strategyId, strategyConfig);
-        await strategyInstance.updateState(symbol, 'IDLE');
-        
-        logger.log(`策略 ${strategyId} 标的 ${symbol} 订单已取消，已释放资金 ${amount.toFixed(2)}，订单ID: ${orderId}`);
+        // 读取当前context获取之前的cancelCount
+        const cancelCtxResult = await pool.query(
+          'SELECT context FROM strategy_instances WHERE strategy_id = $1 AND symbol = $2',
+          [strategyId, symbol]
+        );
+        const prevCancelCtx = cancelCtxResult.rows[0]?.context || {};
+        const prevCancelCount = prevCancelCtx.cancelCount || 0;
+
+        await strategyInstance.updateState(symbol, 'IDLE', {
+          lastCancelTime: new Date().toISOString(),
+          cancelCount: prevCancelCount + 1,
+        });
+
+        logger.log(`策略 ${strategyId} 标的 ${symbol} 订单已取消，已释放资金 ${amount.toFixed(2)}，订单ID: ${orderId}, cancelCount=${prevCancelCount + 1}`);
       }
     } catch (error: any) {
       logger.error(`处理订单取消失败 (${orderId}):`, error);
@@ -1027,9 +1038,20 @@ class StrategyScheduler {
         const strategyType = strategyConfigResult.rows[0]?.type || 'RECOMMENDATION_V1';
         const strategyConfig = strategyConfigResult.rows[0]?.config || {};
         const strategyInstance = this.createStrategyInstance(strategyType, strategyId, strategyConfig);
-        await strategyInstance.updateState(symbol, 'IDLE');
-        
-        logger.warn(`策略 ${strategyId} 标的 ${symbol} 订单被拒绝，已释放资金 ${amount.toFixed(2)}，订单ID: ${orderId}`);
+        // 读取当前context获取之前的cancelCount
+        const rejectCtxResult = await pool.query(
+          'SELECT context FROM strategy_instances WHERE strategy_id = $1 AND symbol = $2',
+          [strategyId, symbol]
+        );
+        const prevRejectCtx = rejectCtxResult.rows[0]?.context || {};
+        const prevRejectCancelCount = prevRejectCtx.cancelCount || 0;
+
+        await strategyInstance.updateState(symbol, 'IDLE', {
+          lastCancelTime: new Date().toISOString(),
+          cancelCount: prevRejectCancelCount + 1,
+        });
+
+        logger.warn(`策略 ${strategyId} 标的 ${symbol} 订单被拒绝，已释放资金 ${amount.toFixed(2)}，订单ID: ${orderId}, cancelCount=${prevRejectCancelCount + 1}`);
       }
     } catch (error: any) {
       logger.error(`处理订单拒绝失败 (${orderId}):`, error);
@@ -1108,6 +1130,22 @@ class StrategyScheduler {
           const now = new Date();
           if (now >= window.noNewEntryTimeUtc) {
             summary.idle.push(`${symbol}(NO_NEW_ENTRY_WINDOW)`);
+            return;
+          }
+        }
+      }
+
+      // 取消退避：最近被取消的标的暂不重试
+      if (isOptionStrategy) {
+        const instState = await stateManager.getInstanceState(strategyId, symbol);
+        const cancelCtx = instState?.context;
+        if (cancelCtx?.lastCancelTime) {
+          const elapsed = Date.now() - new Date(cancelCtx.lastCancelTime).getTime();
+          const cancelCount = cancelCtx.cancelCount || 1;
+          const backoffMs = Math.min(30, 5 * Math.pow(2, cancelCount - 1)) * 60000;
+          // cancelCount=1 → 5min, =2 → 10min, =3 → 20min, ≥4 → 30min(上限)
+          if (elapsed < backoffMs) {
+            summary.idle.push(`${symbol}(CANCEL_BACKOFF)`);
             return;
           }
         }
@@ -2322,9 +2360,18 @@ class StrategyScheduler {
           return { actionTaken: false };
         }
 
-        if (positionCheck.availableQuantity !== undefined && quantity > positionCheck.availableQuantity) {
-          logger.error(`策略 ${strategyId} 期权 ${effectiveSymbol}: 卖出数量不足`);
+        if (positionCheck.availableQuantity !== undefined && positionCheck.availableQuantity <= 0) {
+          logger.error(`策略 ${strategyId} 期权 ${effectiveSymbol}: 无可用持仓（实际=0）`);
           return { actionTaken: false };
+        }
+
+        // 使用实际可用持仓数量（DB记录可能与券商不一致，以券商为准）
+        let sellQuantity = quantity;
+        if (positionCheck.availableQuantity !== undefined && quantity > positionCheck.availableQuantity) {
+          logger.warn(
+            `策略 ${strategyId} 期权 ${effectiveSymbol}: DB数量(${quantity})>实际持仓(${positionCheck.availableQuantity})，以实际持仓为准`
+          );
+          sellQuantity = positionCheck.availableQuantity;
         }
 
         // 检查是否已有待处理的卖出订单
@@ -2375,7 +2422,7 @@ class StrategyScheduler {
           symbol: effectiveSymbol,
           entryPrice: entryPrice,
           sellPrice: currentPrice,
-          quantity,
+          quantity: sellQuantity,
           reason: `[${action}] ${reason}`,
           metadata: {
             assetClass: 'OPTION',
@@ -2468,14 +2515,15 @@ class StrategyScheduler {
         return;
       }
 
-      // 3. 获取当前持有的期权合约列表
+      // 3. 获取当前持有或正在买入的期权合约列表（HOLDING + OPENING + CLOSING 都算已占用）
       const currentPositionsResult = await pool.query(
         `SELECT DISTINCT
            COALESCE((context->>'tradedSymbol')::text, symbol) as traded_symbol,
+           current_state,
            (context->>'quantity')::int as quantity
          FROM strategy_instances
          WHERE strategy_id = $1
-           AND current_state = 'HOLDING'
+           AND current_state IN ('HOLDING', 'OPENING', 'CLOSING')
            AND context->>'tradedSymbol' IS NOT NULL`,
         [strategyId]
       );

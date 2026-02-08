@@ -159,7 +159,7 @@ export const DEFAULT_OPTION_STRATEGY_CONFIG: Partial<OptionIntradayStrategyConfi
   tradeWindow: {
     firstHourOnly: true,
     avoidLast30Minutes: true,
-    noNewEntryBeforeCloseMinutes: 60,
+    noNewEntryBeforeCloseMinutes: 120,
     forceCloseBeforeCloseMinutes: 30,
   },
   positionSizing: {
@@ -174,8 +174,8 @@ export const DEFAULT_OPTION_STRATEGY_CONFIG: Partial<OptionIntradayStrategyConfi
 // ============================================
 export const ENTRY_THRESHOLDS = {
   AGGRESSIVE: {
-    directionalScoreMin: 15,      // 单边买方最低得分
-    spreadScoreMin: 20,           // 价差策略最低得分
+    directionalScoreMin: 10,      // 单边买方最低得分
+    spreadScoreMin: 10,           // 价差策略最低得分
     straddleIvThreshold: 0,       // 跨式IV阈值（相对当前）
   },
   CONSERVATIVE: {
@@ -346,19 +346,19 @@ export class OptionIntradayStrategy extends StrategyBase {
     strategyType: 'BULL_SPREAD' | 'BEAR_SPREAD'
   ): { shouldTrade: boolean; direction: 'CALL' | 'PUT'; reason: string } {
     const thresholds = this.getThresholds();
-    const marketScore = optionRec.marketScore;
+    const score = optionRec.finalScore;
 
     if (strategyType === 'BULL_SPREAD') {
-      if (marketScore >= thresholds.spreadScoreMin) {
-        return { shouldTrade: true, direction: 'CALL', reason: `大盘得分${marketScore.toFixed(1)}≥${thresholds.spreadScoreMin}，适合牛市价差` };
+      if (score >= thresholds.spreadScoreMin) {
+        return { shouldTrade: true, direction: 'CALL', reason: `综合得分${score.toFixed(1)}≥${thresholds.spreadScoreMin}，适合牛市价差` };
       }
     } else {
-      if (marketScore <= -thresholds.spreadScoreMin) {
-        return { shouldTrade: true, direction: 'PUT', reason: `大盘得分${marketScore.toFixed(1)}≤-${thresholds.spreadScoreMin}，适合熊市价差` };
+      if (score <= -thresholds.spreadScoreMin) {
+        return { shouldTrade: true, direction: 'PUT', reason: `综合得分${score.toFixed(1)}≤-${thresholds.spreadScoreMin}，适合熊市价差` };
       }
     }
 
-    return { shouldTrade: false, direction: strategyType === 'BULL_SPREAD' ? 'CALL' : 'PUT', reason: `大盘得分${marketScore.toFixed(1)}未达阈值±${thresholds.spreadScoreMin}` };
+    return { shouldTrade: false, direction: strategyType === 'BULL_SPREAD' ? 'CALL' : 'PUT', reason: `综合得分${score.toFixed(1)}未达阈值±${thresholds.spreadScoreMin}` };
   }
 
   /**

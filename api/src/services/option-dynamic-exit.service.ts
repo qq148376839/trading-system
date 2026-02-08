@@ -355,13 +355,31 @@ class OptionDynamicExitService {
       }
     }
 
-    // 4. 止损检查
-    if (pnl.netPnLPercent <= -dynamicParams.stopLossPercent) {
-      return {
-        action: 'STOP_LOSS',
-        reason: `净亏损${pnl.netPnLPercent.toFixed(1)}% ≤ -${dynamicParams.stopLossPercent}% | ${dynamicParams.adjustmentReason}`,
-        pnl,
-      };
+    // 4. 止损检查（持仓时间感知冷静期）
+    const holdingMinutes = (now.getTime() - (ctx.entryTime || now).getTime()) / 60000;
+
+    if (holdingMinutes < 3) {
+      // 0-3分钟: 仅安全阀(50%)生效，跳过常规止损
+      // fall through 到下面的安全阀检查
+    } else if (holdingMinutes < 10) {
+      // 3-10分钟: 止损线放宽1.5倍
+      const widenedSL = dynamicParams.stopLossPercent * 1.5;
+      if (pnl.netPnLPercent <= -widenedSL) {
+        return {
+          action: 'STOP_LOSS',
+          reason: `净亏损${pnl.netPnLPercent.toFixed(1)}% ≤ -${widenedSL.toFixed(1)}%(冷静期1.5x, 持仓${holdingMinutes.toFixed(0)}min) | ${dynamicParams.adjustmentReason}`,
+          pnl,
+        };
+      }
+    } else {
+      // 10+分钟: 标准止损（原逻辑）
+      if (pnl.netPnLPercent <= -dynamicParams.stopLossPercent) {
+        return {
+          action: 'STOP_LOSS',
+          reason: `净亏损${pnl.netPnLPercent.toFixed(1)}% ≤ -${dynamicParams.stopLossPercent}% | ${dynamicParams.adjustmentReason}`,
+          pnl,
+        };
+      }
     }
 
     // 5. 强制止损：单笔最大亏损限制（安全阀）
