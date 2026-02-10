@@ -49,27 +49,15 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Swagger JSON spec（调试 + 程序化访问）
-app.get('/api/docs/spec.json', (_req, res) => {
+// Swagger spec JSON 端点（供 Swagger UI 通过 URL 加载，同时可用于调试）
+app.get('/api/swagger.json', (_req, res) => {
   res.json(swaggerSpec);
 });
 
-// Swagger 诊断端点
-app.get('/api/docs/debug', (_req, res) => {
-  const spec = swaggerSpec as any;
-  const paths = Object.keys(spec.paths || {});
-  res.json({
-    __dirname,
-    pathCount: paths.length,
-    paths: paths.slice(0, 20),
-    hasComponents: !!spec.components,
-    openapi: spec.openapi,
-    info: spec.info,
-  });
-});
-
-// API 路由
-app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+// API 文档 UI — 使用 URL 模式加载 spec（避免 swagger-ui-express 内联 spec 时 url 优先级问题）
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(null, {
+  swaggerUrl: '/api/swagger.json',
+}));
 app.use('/api/quote', quoteRouter);
 app.use('/api/candlesticks', candlesticksRouter);
 app.use('/api/watchlist', watchlistRouter);
