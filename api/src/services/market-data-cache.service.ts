@@ -181,22 +181,73 @@ class MarketDataCacheService {
       this.isFetching = false;
       this.fetchPromise = null;
       return this.cache;
-    }).catch((error) => {
+    }).catch(async (error) => {
       this.consecutiveFailures++;
       this.isFetching = false;
       this.fetchPromise = null;
 
-      // 保留旧缓存数据（用于止盈止损等关键操作），但仍向新信号生成抛出错误
+      // 三级降级：旧缓存 < 5分钟 → 延长超时重试 → 旧缓存兜底
       if (this.cache) {
-        const staleAge = Math.floor((Date.now() - this.cache.timestamp) / 1000);
-        logger.warn(
-          `市场数据获取失败（连续${this.consecutiveFailures}次），保留旧缓存数据（${staleAge}秒前）: ${error.message}`
-        );
-        // 不更新 timestamp，下次调用仍会尝试刷新
-      } else {
-        logger.error(`市场数据获取失败且无缓存可用: ${error.message}`);
+        const staleAgeMs = Date.now() - this.cache.timestamp;
+        const staleAgeSec = Math.floor(staleAgeMs / 1000);
+        const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 分钟
+
+        // 级别 1：旧缓存 < 5 分钟，直接使用
+        if (staleAgeMs < STALE_THRESHOLD_MS) {
+          logger.warn(
+            `市场数据获取失败（连续${this.consecutiveFailures}次），` +
+            `使用旧缓存（${staleAgeSec}秒前）: ${error.message}`
+          );
+          return this.cache;
+        }
+
+        // 级别 2：旧缓存 > 5 分钟，延长超时重试一次
+        logger.warn(`市场数据旧缓存已过期（${staleAgeSec}秒），延长超时重试...`);
+        try {
+          const retryData = await marketDataService.getAllMarketData(
+            count, includeIntraday, { timeout: 30000 }
+          );
+
+          // 验证 + 更新缓存（同正常路径）
+          if (!retryData.spx || retryData.spx.length < 50) {
+            throw new Error(`SPX数据不足（${retryData.spx?.length || 0}）`);
+          }
+          if (!retryData.usdIndex || retryData.usdIndex.length < 50) {
+            throw new Error(`USD Index数据不足（${retryData.usdIndex?.length || 0}）`);
+          }
+          if (!retryData.btc || retryData.btc.length < 50) {
+            throw new Error(`BTC数据不足（${retryData.btc?.length || 0}）`);
+          }
+
+          this.cache = {
+            spx: retryData.spx,
+            usdIndex: retryData.usdIndex,
+            btc: retryData.btc,
+            vix: retryData.vix || [],
+            marketTemperature: retryData.marketTemperature,
+            timestamp: Date.now(),
+          };
+
+          if (includeIntraday) {
+            this.cache.usdIndexHourly = retryData.usdIndexHourly || [];
+            this.cache.btcHourly = retryData.btcHourly || [];
+            this.cache.hourlyTimestamp = Date.now();
+          }
+
+          this.consecutiveFailures = 0;
+          logger.info(`延长超时重试成功，缓存已更新`);
+          return this.cache;
+        } catch {
+          // 级别 3：重试也失败，旧缓存兜底
+          logger.warn(
+            `延长超时重试失败，使用旧缓存兜底（${staleAgeSec}秒前）`
+          );
+          return this.cache;
+        }
       }
 
+      // 无旧缓存，必须 throw
+      logger.error(`市场数据获取失败且无缓存可用: ${error.message}`);
       throw error;
     });
 

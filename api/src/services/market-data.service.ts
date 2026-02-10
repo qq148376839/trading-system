@@ -168,7 +168,8 @@ class MarketDataService {
     instrumentType: string,
     subInstrumentType: string,
     type: number = 2, // 1=分时, 2=日K
-    count: number = 100
+    count: number = 100,
+    timeout: number = 15000
   ): Promise<CandlestickData[]> {
     // 熔断器检查：如果该 stockId+type 正在冷却中，直接返回空数组
     if (!this.checkCircuitBreaker(stockId, type)) {
@@ -233,7 +234,7 @@ class MarketDataService {
         csrfToken: headers['futu-x-csrf-token'],
         quoteToken: quoteToken,
         referer: referer,
-        timeout: 15000,
+        timeout,
       });
 
       // 检查响应数据
@@ -302,7 +303,8 @@ class MarketDataService {
     marketCode: string,
     instrumentType: string,
     subInstrumentType: string,
-    count: number = 100
+    count: number = 100,
+    timeout: number = 15000
   ): Promise<CandlestickData[]> {
     return this.getCandlesticksIntraday(
       stockId,
@@ -311,7 +313,8 @@ class MarketDataService {
       instrumentType,
       subInstrumentType,
       2, // 日K
-      count
+      count,
+      timeout
     );
   }
 
@@ -424,42 +427,45 @@ class MarketDataService {
   /**
    * 获取SPX日K数据
    */
-  async getSPXCandlesticks(count: number = 100): Promise<CandlestickData[]> {
+  async getSPXCandlesticks(count: number = 100, timeout: number = 15000): Promise<CandlestickData[]> {
     return this.getCandlesticks(
       this.config.spx.stockId,
       this.config.spx.marketId,
       this.config.spx.marketCode,
       this.config.spx.instrumentType,  // SPX使用6
       this.config.spx.subInstrumentType,  // SPX使用6001
-      count
+      count,
+      timeout
     );
   }
 
   /**
    * 获取USD Index日K数据
    */
-  async getUSDIndexCandlesticks(count: number = 100): Promise<CandlestickData[]> {
+  async getUSDIndexCandlesticks(count: number = 100, timeout: number = 15000): Promise<CandlestickData[]> {
     return this.getCandlesticks(
       this.config.usdIndex.stockId,
       this.config.usdIndex.marketId,
       this.config.usdIndex.marketCode,
       '10',  // K线数据固定使用10
       '10001',  // K线数据固定使用10001
-      count
+      count,
+      timeout
     );
   }
 
   /**
    * 获取BTC日K数据
    */
-  async getBTCCandlesticks(count: number = 100): Promise<CandlestickData[]> {
+  async getBTCCandlesticks(count: number = 100, timeout: number = 15000): Promise<CandlestickData[]> {
     return this.getCandlesticks(
       this.config.btc.stockId,
       this.config.btc.marketId,
       this.config.btc.marketCode,
       this.config.btc.instrumentType,  // BTC使用11
       this.config.btc.subInstrumentType,  // BTC使用11002
-      count
+      count,
+      timeout
     );
   }
 
@@ -683,7 +689,8 @@ class MarketDataService {
     marketCode: string,
     instrumentType: string,
     subInstrumentType: string,
-    count: number = 100
+    count: number = 100,
+    timeout: number = 15000
   ): Promise<CandlestickData[]> {
     // 注意：富途API可能不支持直接获取小时K
     // 这里先使用日K数据，后续根据实际API调整
@@ -695,7 +702,8 @@ class MarketDataService {
       instrumentType,
       subInstrumentType,
       1, // 分时数据（可能需要调整为实际的小时K类型）
-      count
+      count,
+      timeout
     );
   }
 
@@ -703,14 +711,15 @@ class MarketDataService {
    * 获取BTC小时K数据
    * 注意：分时数据API通常返回更多数据（如500条），使用更大的默认值
    */
-  async getBTCHourlyCandlesticks(count: number = 500): Promise<CandlestickData[]> {
+  async getBTCHourlyCandlesticks(count: number = 500, timeout: number = 15000): Promise<CandlestickData[]> {
     return this.getHourlyCandlesticks(
       this.config.btc.stockId,
       this.config.btc.marketId,
       this.config.btc.marketCode,
       this.config.btc.instrumentType,
       this.config.btc.subInstrumentType,
-      count
+      count,
+      timeout
     );
   }
 
@@ -718,14 +727,15 @@ class MarketDataService {
    * 获取USD Index小时K数据
    * 注意：分时数据API通常返回更多数据（如500条），使用更大的默认值
    */
-  async getUSDIndexHourlyCandlesticks(count: number = 500): Promise<CandlestickData[]> {
+  async getUSDIndexHourlyCandlesticks(count: number = 500, timeout: number = 15000): Promise<CandlestickData[]> {
     return this.getHourlyCandlesticks(
       this.config.usdIndex.stockId,
       this.config.usdIndex.marketId,
       this.config.usdIndex.marketCode,
       '10',
       '10001',
-      count
+      count,
+      timeout
     );
   }
 
@@ -915,26 +925,27 @@ class MarketDataService {
    * 批量获取所有市场数据（包含分时数据）
    * 如果关键市场指标（SPX、USD Index、BTC）获取失败，将抛出错误，而不是返回空数组
    */
-  async getAllMarketData(count: number = 100, includeIntraday: boolean = false) {
+  async getAllMarketData(count: number = 100, includeIntraday: boolean = false, options?: { timeout?: number }) {
+    const timeout = options?.timeout ?? 15000;
     try {
       // 关键市场指标：使用重试机制（3次，间隔500ms）
       const criticalPromises = [
         retryWithBackoff(
-          () => this.getSPXCandlesticks(count),
+          () => this.getSPXCandlesticks(count, timeout),
           { maxRetries: 3, initialDelayMs: 500 }
         ).catch(err => {
           logger.error(`获取SPX数据失败（已重试3次）:`, err.message);
           throw new Error(`SPX数据获取失败: ${err.message}`);
         }),
         retryWithBackoff(
-          () => this.getUSDIndexCandlesticks(count),
+          () => this.getUSDIndexCandlesticks(count, timeout),
           { maxRetries: 3, initialDelayMs: 500 }
         ).catch(err => {
           logger.error(`获取USD Index日K数据失败（已重试3次）:`, err.message);
           throw new Error(`USD Index数据获取失败: ${err.message}`);
         }),
         retryWithBackoff(
-          () => this.getBTCCandlesticks(count),
+          () => this.getBTCCandlesticks(count, timeout),
           { maxRetries: 3, initialDelayMs: 500 }
         ).catch(err => {
           logger.error(`获取BTC数据失败（已重试3次）:`, err.message);
@@ -957,11 +968,11 @@ class MarketDataService {
       const optionalPromises: Promise<any[]>[] = [];
       if (includeIntraday) {
         optionalPromises.push(
-          this.getUSDIndexHourlyCandlesticks(count).catch(err => {
+          this.getUSDIndexHourlyCandlesticks(count, timeout).catch(err => {
             logger.warn(`获取USD Index分时数据失败（非关键）:`, err.message);
             return [];
           }),
-          this.getBTCHourlyCandlesticks(count).catch(err => {
+          this.getBTCHourlyCandlesticks(count, timeout).catch(err => {
             logger.warn(`获取BTC分时数据失败（非关键）:`, err.message);
             return [];
           })

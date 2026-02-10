@@ -7,6 +7,24 @@
 
 ## 🆕 最近更新
 
+### 2026-02-10: 市场数据降级容错 + 已平仓自动转 IDLE
+
+**修复内容**：
+1. ✅ 市场数据三级降级：BTC/USD 超时不再阻断全链路，旧缓存<5分钟直接复用，超时重试30s，最终旧缓存兜底
+2. ✅ timeout 参数全链路透传：`getAllMarketData` → `getCandlesticks` → `moomooProxy`，重试时可指定 30s
+3. ✅ 已平仓持仓自动转 IDLE：券商报告 `availableQuantity=0` 时不再死循环刷 error，一次 warn 后转 IDLE
+
+**修改文件**：
+- 📝 `api/src/services/market-data-cache.service.ts`（三级降级）
+- 📝 `api/src/services/market-data.service.ts`（timeout 透传）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（零持仓自动转 IDLE）
+
+**预期效果**：
+- BTC/USD 数据超时时推荐算法仍可运行（使用旧缓存）
+- 已平仓期权不再每 5 秒刷一条 error 日志
+
+---
+
 ### 2026-02-10: 修复富途 API 与 LongPort SDK 兼容性问题（7 项）
 
 **修复内容**：

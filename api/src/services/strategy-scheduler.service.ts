@@ -2501,8 +2501,16 @@ class StrategyScheduler {
         }
 
         if (positionCheck.availableQuantity !== undefined && positionCheck.availableQuantity <= 0) {
-          logger.error(`策略 ${strategyId} 期权 ${effectiveSymbol}: 无可用持仓（实际=0）`);
-          return { actionTaken: false };
+          logger.warn(
+            `策略 ${strategyId} 期权 ${effectiveSymbol}: 券商报告无持仓，自动转为IDLE`
+          );
+          await strategyInstance.updateState(symbol, 'IDLE', {
+            ...context,
+            autoClosedReason: 'broker_position_zero',
+            autoClosedAt: new Date().toISOString(),
+            previousState: 'HOLDING',
+          });
+          return { actionTaken: true };
         }
 
         // 使用实际可用持仓数量（DB记录可能与券商不一致，以券商为准）

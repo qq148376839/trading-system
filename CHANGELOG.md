@@ -2,6 +2,30 @@
 
 ## 2026-02-10
 
+### 市场数据降级容错 + 已平仓自动转 IDLE
+
+**功能/修复**: 修复两个日志遗留问题 — BTC/USD 数据超时导致全链路阻断，已平仓持仓反复刷 error 日志。
+
+**问题 A — BTC/USD 数据失败时全链路阻断**:
+- 根因: `market-data-cache.service.ts` 的 `.catch()` 保留旧缓存但仍 throw，上游 `Promise.all()` 全部失败
+- 修复: 三级降级策略 — 旧缓存<5分钟直接返回 → 延长超时(30s)重试 → 旧缓存兜底
+- `market-data.service.ts` 全链路透传 `timeout` 参数（默认 15s 不变，重试时 30s）
+
+**问题 B — 已平仓持仓反复刷 error 日志（1970 次）**:
+- 根因: 券商侧已平仓（availableQuantity=0），DB 状态仍为 HOLDING，5秒循环持续触发
+- 修复: `availableQuantity<=0` 时自动转 IDLE（`error` → `warn`，`actionTaken: true`）
+
+**修改文件**:
+- 📝 `api/src/services/market-data-cache.service.ts`（三级降级 `.catch()` 处理）
+- 📝 `api/src/services/market-data.service.ts`（timeout 参数透传）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（零持仓自动转 IDLE）
+
+**验证结果**:
+- TypeScript 编译通过 ✅
+- 279 个测试全部通过 ✅
+
+---
+
 ### 修复富途 API 与 LongPort SDK 兼容性问题（7 项）
 
 **功能/修复**: 修复 LongPort 期权路径交叉调用 Moomoo API 导致的 Greeks 为零、IV 格式不一致、strikeDate 格式混乱等 7 个问题。
