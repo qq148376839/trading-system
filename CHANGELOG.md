@@ -2,6 +2,38 @@
 
 ## 2026-02-10
 
+### 日志导出接口流式改造（Streaming NDJSON）
+
+**功能/修复**: `/api/logs/export` 从一次性加载全部结果改为流式导出，解决大数据量导出时网关/CDN 超时问题。
+
+**实现内容**:
+1. ✅ **流式查询**：使用 `pg-query-stream` 将数据库查询结果以流的方式逐行写入 HTTP 响应
+2. ✅ **NDJSON 格式**：响应格式从单个大 JSON 改为 NDJSON（每行一个 JSON 对象，可独立 `JSON.parse()`）
+3. ✅ **连接安全**：独立获取 `PoolClient`，`req.on('close')` 监听客户端断开自动释放连接
+4. ✅ **结构化输出**：第一行 meta（导出时间 + 筛选条件），中间数据行，最后一行 summary（总数）
+
+**新增依赖**:
+- `pg-query-stream`（流式 PostgreSQL 查询）
+
+**修改文件**:
+- 📝 `api/src/routes/logs.ts`（export 路由流式改造）
+
+**响应格式变更**:
+```
+之前: {"success":true,"data":{"exportedAt":"...","total":50000,"logs":[...]}}
+之后（NDJSON，每行一个对象）:
+  {"meta":{"exportedAt":"...","filters":{...}}}
+  {"id":1,"timestamp":"...","level":"INFO",...}
+  {"summary":{"total":50000}}
+```
+
+**预期效果**:
+- 大数据量导出不再超时（边查边发，连接持续有数据流动）
+- 内存占用从 O(n) 降为 O(1)（不再一次性加载全部结果）
+- 最大导出 100,000 条限制保持不变
+
+---
+
 ### 期权价格获取切换长桥 API 主源
 
 **功能/修复**: 将期权价格/IV 的获取从富途 API 主源切换为长桥 API 主源，富途降级为备用。新增统一长桥期权行情服务，封装 `optionQuote()` + `depth()` + 多层 fallback 链。

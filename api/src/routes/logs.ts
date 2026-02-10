@@ -4,6 +4,8 @@
  */
 
 import express, { Request, Response, NextFunction } from 'express';
+import { PoolClient } from 'pg';
+import QueryStream from 'pg-query-stream';
 import pool from '../config/database';
 import { logger } from '../utils/logger';
 import { ErrorFactory } from '../utils/errors';
@@ -193,6 +195,16 @@ logsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
  * 查询参数与查询API相同，但返回JSON文件下载
  */
 logsRouter.get('/export', async (req: Request, res: Response, next: NextFunction) => {
+  let client: PoolClient | undefined;
+  let released = false;
+
+  const releaseClient = (): void => {
+    if (!released && client) {
+      released = true;
+      client.release();
+    }
+  };
+
   try {
     const {
       module,
@@ -204,12 +216,12 @@ logsRouter.get('/export', async (req: Request, res: Response, next: NextFunction
 
     // 构建查询条件（与查询API相同）
     const conditions: string[] = [];
-    const params: any[] = [];
+    const params: (string | string[])[] = [];
     let paramIndex = 1;
 
     if (module) {
       conditions.push(`module = $${paramIndex++}`);
-      params.push(module);
+      params.push(module as string);
     }
 
     if (level) {
@@ -229,7 +241,6 @@ logsRouter.get('/export', async (req: Request, res: Response, next: NextFunction
         if (isNaN(startDate.getTime())) {
           return next(ErrorFactory.validationError('start_time格式错误，请使用ISO 8601格式'));
         }
-        // 使用ISO字符串，PostgreSQL的TIMESTAMPTZ可以直接解析
         conditions.push(`timestamp >= $${paramIndex++}::timestamptz`);
         params.push(startDate.toISOString());
       } catch (error) {
@@ -243,7 +254,6 @@ logsRouter.get('/export', async (req: Request, res: Response, next: NextFunction
         if (isNaN(endDate.getTime())) {
           return next(ErrorFactory.validationError('end_time格式错误，请使用ISO 8601格式'));
         }
-        // 使用ISO字符串，PostgreSQL的TIMESTAMPTZ可以直接解析
         conditions.push(`timestamp <= $${paramIndex++}::timestamptz`);
         params.push(endDate.toISOString());
       } catch (error) {
@@ -253,14 +263,14 @@ logsRouter.get('/export', async (req: Request, res: Response, next: NextFunction
 
     if (trace_id) {
       conditions.push(`trace_id = $${paramIndex++}`);
-      params.push(trace_id);
+      params.push(trace_id as string);
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     // 调试日志：记录导出查询条件和参数
     if (start_time || end_time || module || level || trace_id) {
-      logger.debug('[Logs.API] 导出日志 - 筛选条件', {
+      logger.debug('[Logs.API] 导出日志(流式) - 筛选条件', {
         start_time: start_time ? new Date(start_time as string).toISOString() : null,
         end_time: end_time ? new Date(end_time as string).toISOString() : null,
         module,
@@ -274,8 +284,8 @@ logsRouter.get('/export', async (req: Request, res: Response, next: NextFunction
 
     // 限制最大导出数量（100000条）
     const maxExportLimit = 100000;
-    const query = `
-      SELECT 
+    const queryText = `
+      SELECT
         id,
         timestamp,
         level,
@@ -291,44 +301,78 @@ logsRouter.get('/export', async (req: Request, res: Response, next: NextFunction
       ORDER BY timestamp DESC
       LIMIT $${paramIndex++}
     `;
-    
-    params.push(maxExportLimit);
-    const result = await pool.query(query, params);
+    params.push(String(maxExportLimit));
 
-    // 格式化数据
-    const logs = result.rows.map((row) => ({
-      id: row.id,
-      timestamp: row.timestamp,
-      level: row.level,
-      module: row.module,
-      message: row.message,
-      traceId: row.trace_id,
-      extraData: row.extra_data,
-      filePath: row.file_path,
-      lineNo: row.line_no,
-      createdAt: row.created_at,
-    }));
+    // 获取独立的数据库连接用于流式查询
+    client = await pool.connect();
+
+    // 客户端断开时释放连接
+    req.on('close', releaseClient);
+
+    const stream = client.query(new QueryStream(queryText, params, { batchSize: 500 }));
 
     // 生成文件名
     const now = new Date();
     const dateStr = now.toISOString().split('T')[0];
-    const filename = `logs-${dateStr}.json`;
+    const filename = `logs-${dateStr}.ndjson`;
 
-    // 设置响应头
-    res.setHeader('Content-Type', 'application/json');
+    // 设置流式响应头
+    res.setHeader('Content-Type', 'application/x-ndjson');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Transfer-Encoding', 'chunked');
 
-    // 返回JSON数据
-    res.json({
-      success: true,
-      data: {
-        exportedAt: now.toISOString(),
-        total: logs.length,
-        logs,
-      },
+    // 写入 meta 行
+    const filters: Record<string, string> = {};
+    if (module) filters.module = module as string;
+    if (level) filters.level = level as string;
+    if (start_time) filters.start_time = start_time as string;
+    if (end_time) filters.end_time = end_time as string;
+    if (trace_id) filters.trace_id = trace_id as string;
+
+    res.write(JSON.stringify({ meta: { exportedAt: now.toISOString(), filters } }) + '\n');
+
+    let total = 0;
+
+    stream.on('data', (row: Record<string, unknown>) => {
+      total++;
+      const formatted = {
+        id: row.id,
+        timestamp: row.timestamp,
+        level: row.level,
+        module: row.module,
+        message: row.message,
+        traceId: row.trace_id,
+        extraData: row.extra_data,
+        filePath: row.file_path,
+        lineNo: row.line_no,
+        createdAt: row.created_at,
+      };
+      res.write(JSON.stringify(formatted) + '\n');
     });
-  } catch (error: any) {
-    logger.error('[Logs.API] 导出日志失败', { error: error.message });
+
+    stream.on('end', () => {
+      // 写入 summary 行
+      res.write(JSON.stringify({ summary: { total } }) + '\n');
+      res.end();
+      releaseClient();
+      logger.info(`[Logs.API] 流式导出完成，共 ${total} 条`);
+    });
+
+    stream.on('error', (err: Error) => {
+      logger.error('[Logs.API] 流式导出查询出错', { error: err.message });
+      releaseClient();
+      // 如果还没开始发送数据头之外的内容，可以尝试发送错误
+      if (!res.headersSent) {
+        next(ErrorFactory.internalError('导出日志失败', err));
+      } else {
+        // 已经开始发送数据，只能中断连接
+        res.end();
+      }
+    });
+  } catch (error: unknown) {
+    releaseClient();
+    const errMsg = error instanceof Error ? error.message : String(error);
+    logger.error('[Logs.API] 导出日志失败', { error: errMsg });
     next(ErrorFactory.internalError('导出日志失败', error));
   }
 });
