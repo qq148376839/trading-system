@@ -1,5 +1,6 @@
 import swaggerJsdoc from 'swagger-jsdoc';
 import path from 'path';
+import fs from 'fs';
 import { version } from '../../package.json';
 
 // 使用 __dirname 计算路径，确保无论 CWD 是什么都能找到源文件
@@ -7,6 +8,27 @@ import { version } from '../../package.json';
 // 生产模式: __dirname = api/dist/config → 扫描 api/dist/routes/*.js（编译后保留JSDoc注释）
 const routesDir = path.resolve(__dirname, '../routes');
 const configDir = path.resolve(__dirname, '../config');
+
+// glob 在所有平台上都需要正斜杠（Windows 的 path.join 产生反斜杠会导致匹配失败）
+const toGlobPath = (p: string) => p.split(path.sep).join('/');
+
+const apiPatterns = [
+  toGlobPath(path.join(routesDir, '*.ts')),
+  toGlobPath(path.join(routesDir, '*.js')),
+  toGlobPath(path.join(configDir, '*.ts')),
+  toGlobPath(path.join(configDir, '*.js')),
+];
+
+// 启动时诊断：检查目录和文件
+console.log('[Swagger] __dirname:', __dirname);
+console.log('[Swagger] routesDir:', routesDir);
+console.log('[Swagger] apiPatterns:', apiPatterns);
+try {
+  const routeFiles = fs.readdirSync(routesDir);
+  console.log(`[Swagger] routesDir 包含 ${routeFiles.length} 个文件:`, routeFiles.slice(0, 5).join(', '), routeFiles.length > 5 ? '...' : '');
+} catch (e: any) {
+  console.error(`[Swagger] ⚠️ 无法读取 routesDir: ${e.message}`);
+}
 
 const options: swaggerJsdoc.Options = {
   definition: {
@@ -41,20 +63,14 @@ const options: swaggerJsdoc.Options = {
       },
     ],
   },
-  // 扫描路由和配置文件中的 @openapi 注释
-  // 同时匹配 .ts（开发）和 .js（生产编译后），避免路径找不到
-  apis: [
-    path.join(routesDir, '*.ts'),
-    path.join(routesDir, '*.js'),
-    path.join(configDir, '*.ts'),
-    path.join(configDir, '*.js'),
-  ],
+  apis: apiPatterns,
 };
 
 export const swaggerSpec = swaggerJsdoc(options);
 
-
-
-
-
-
+// 启动时诊断：输出解析结果
+const pathCount = Object.keys((swaggerSpec as any).paths || {}).length;
+console.log(`[Swagger] 解析完成: ${pathCount} 个 API 路径`);
+if (pathCount === 0) {
+  console.warn('[Swagger] ⚠️ 未发现任何 API 路径！请检查 @openapi 注解和文件路径');
+}

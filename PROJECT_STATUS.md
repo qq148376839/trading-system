@@ -7,6 +7,32 @@
 
 ## 🆕 最近更新
 
+### 2026-02-10: Swagger API文档跨平台路径修复
+
+**修复内容**：
+1. ✅ 修复 Windows 反斜杠路径导致 `glob.sync()` 匹配 0 文件的问题（`toGlobPath()` 统一转正斜杠）
+2. ✅ 修复 Docker 生产环境无 `src/` 目录导致 Swagger 为空（`__dirname` 动态解析到 `dist/routes/*.js`）
+3. ✅ 新增启动诊断日志：输出 routesDir、glob 模式、文件数量、API 路径数
+4. ✅ 验证通过：开发/生产模式均解析出 44 个 API 路径
+
+**修改文件**：
+- 📝 `api/src/config/swagger.ts`（toGlobPath + 诊断日志）
+
+---
+
+### 2026-02-10: 普通账户编辑/删除修复 + API文档嵌入
+
+**修复内容**：
+1. ✅ 资金管理普通账户无法编辑/删除：SQL 策略计数改为仅统计 RUNNING 状态
+2. ✅ API文档改为 iframe 嵌入前端框架内（`/api-docs` 页面），不再跳转新标签页
+
+**修改文件**：
+- 📝 `api/src/routes/quant.ts`（3处 SQL 添加 `AND status = 'RUNNING'`）
+- 📝 `frontend/app/api-docs/page.tsx`（新增 iframe 页面）
+- 📝 `frontend/components/AppLayout.tsx`（侧边栏链接改为内部路由）
+
+---
+
 ### 2026-02-10: LongPort期权链主源 + API文档入口 + 0DTE时间限制
 
 **优化内容**：

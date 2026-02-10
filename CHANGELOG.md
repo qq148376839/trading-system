@@ -2,6 +2,49 @@
 
 ## 2026-02-10
 
+### Swagger API文档修复 — 跨平台路径 + 启动诊断
+
+**功能/修复**: 修复 Swagger 文档显示 "No operations defined in spec!" 的问题，同时增加启动诊断日志。
+
+**根因分析**:
+1. Windows 上 `path.join()` 产生反斜杠路径（`D:\...\routes\*.ts`），`swagger-jsdoc` 内部的 `glob.sync()` 无法正确匹配
+2. Docker 生产环境只有 `dist/` 目录，旧代码使用 `apis: ['./src/routes/*.ts']` 相对路径匹配 0 个文件
+
+**修复方案**:
+- 新增 `toGlobPath()` 函数，将 `path.sep`（Windows `\`）统一转换为 `/`
+- 使用 `__dirname` + 正斜杠转换，在生产环境正确解析到 `dist/routes/*.js`
+- 新增启动诊断日志：输出 `__dirname`、glob 模式、文件数量、解析路径数
+
+**修改文件**:
+- 📝 `api/src/config/swagger.ts`（toGlobPath + 启动诊断日志）
+
+**验证结果**:
+- 开发模式（tsx）：44 个 API 路径 ✅
+- 生产模式（dist/）：44 个 API 路径 ✅
+
+---
+
+### 普通账户无法编辑/删除修复
+
+**功能/修复**: 资金管理页面普通账户无法编辑或删除（回归问题）。
+
+**根因**: SQL 查询统计所有策略（含已停止/错误状态），应只统计 RUNNING 状态的策略。
+
+**修改文件**:
+- 📝 `api/src/routes/quant.ts`（3处 SQL 查询添加 `AND status = 'RUNNING'`）
+
+---
+
+### API文档嵌入前端页面
+
+**功能/修复**: API文档从新标签页跳转改为嵌入前端框架内，使用 iframe 展示。
+
+**修改文件**:
+- 📝 `frontend/app/api-docs/page.tsx`（新增，iframe 嵌入 Swagger UI）
+- 📝 `frontend/components/AppLayout.tsx`（侧边栏改用 `<Link href="/api-docs">`）
+
+---
+
 ### LongPort期权链主源 + API文档入口 + 0DTE时间限制
 
 **功能/修复**: 将期权链数据获取从富途切换为LongPort主源（富途备用），前端新增API文档入口，并为0DTE期权增加买入截止和强制平仓时间限制。
