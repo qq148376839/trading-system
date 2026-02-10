@@ -757,54 +757,64 @@ class MarketDataService {
       // 最多获取1000条（API的限制）
       const requestCount = Math.min(daysFromTargetToToday + 100, 1000);
 
-      // 关键市场指标：必须全部成功，否则抛出错误
-      const criticalPromises = [
-        this.getSPXCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)),
-        this.getUSDIndexCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)),
-        this.getBTCCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)),
-      ];
+      // 关键市场指标：串行获取，避免并发触发 Moomoo 403 限频
+      const histDelay = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+      const histSpx = await this.getSPXCandlesticks(requestCount)
+        .then(data => this.filterDataBeforeDate(data, targetDate, count))
+        .catch(err => { logger.error(`获取SPX历史数据失败:`, err.message); return [] as CandlestickData[]; });
+      await histDelay(800);
+
+      const histUsd = await this.getUSDIndexCandlesticks(requestCount)
+        .then(data => this.filterDataBeforeDate(data, targetDate, count))
+        .catch(err => { logger.error(`获取USD Index历史数据失败:`, err.message); return [] as CandlestickData[]; });
+      await histDelay(800);
+
+      const histBtc = await this.getBTCCandlesticks(requestCount)
+        .then(data => this.filterDataBeforeDate(data, targetDate, count))
+        .catch(err => { logger.error(`获取BTC历史数据失败:`, err.message); return [] as CandlestickData[]; });
 
       // VIX恐慌指数（重要但非关键，允许失败）
-      // 使用historyCandlesticksByOffset获取历史数据，传入targetDate
-      const vixPromise = this.getVIXCandlesticks(requestCount, targetDate)
-        .then(data => this.filterDataBeforeDate(data, targetDate, count))
-        .catch(err => {
-          logger.warn(`获取VIX历史数据失败:`, err.message);
-          return [];
-        });
+      const vixPromise = histDelay(800).then(() =>
+        this.getVIXCandlesticks(requestCount, targetDate)
+          .then(data => this.filterDataBeforeDate(data, targetDate, count))
+          .catch(err => {
+            logger.warn(`获取VIX历史数据失败:`, err.message);
+            return [];
+          })
+      );
 
       // 历史市场温度（重要但非关键，允许失败）
-      // 计算历史温度的开始和结束日期
       const tempEndDate = targetDate;
       const tempStartDate = new Date(targetDate);
-      tempStartDate.setDate(tempStartDate.getDate() - count * 2); // 2倍缓冲，确保覆盖
-      
+      tempStartDate.setDate(tempStartDate.getDate() - count * 2);
+
       const tempPromise = this.getHistoricalMarketTemperature(tempStartDate, tempEndDate)
         .catch(err => {
           logger.warn(`获取历史市场温度失败:`, err.message);
           return null;
         });
 
-      // 分时数据：可选，失败时返回空数组
+      // 分时数据：可选，串行获取
       const optionalPromises: Promise<any[]>[] = [];
       if (includeIntraday) {
         optionalPromises.push(
-          this.getUSDIndexHourlyCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)).catch(err => {
-            logger.warn(`获取USD Index分时历史数据失败（非关键）:`, err.message);
-            return [];
-          }),
-          this.getBTCHourlyCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)).catch(err => {
-            logger.warn(`获取BTC分时历史数据失败（非关键）:`, err.message);
-            return [];
-          })
+          histDelay(1600).then(() =>
+            this.getUSDIndexHourlyCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)).catch(err => {
+              logger.warn(`获取USD Index分时历史数据失败（非关键）:`, err.message);
+              return [];
+            })
+          ),
+          histDelay(2400).then(() =>
+            this.getBTCHourlyCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)).catch(err => {
+              logger.warn(`获取BTC分时历史数据失败（非关键）:`, err.message);
+              return [];
+            })
+          )
         );
       }
 
-      // 先获取关键数据，如果失败会抛出错误
-      const criticalResults = await Promise.all(criticalPromises.map(p => p.catch(err => {
-        logger.error(`获取历史市场数据失败:`, err.message);
-        throw new Error(`历史市场数据获取失败: ${err.message}`);
-      })));
+      const criticalResults = [histSpx, histUsd, histBtc];
 
       // 检查关键数据是否充足
       if (!criticalResults[0] || criticalResults[0].length < 50) {
@@ -928,59 +938,71 @@ class MarketDataService {
   async getAllMarketData(count: number = 100, includeIntraday: boolean = false, options?: { timeout?: number }) {
     const timeout = options?.timeout ?? 15000;
     try {
-      // 关键市场指标：使用重试机制（3次，间隔500ms）
-      const criticalPromises = [
-        retryWithBackoff(
-          () => this.getSPXCandlesticks(count, timeout),
-          { maxRetries: 3, initialDelayMs: 500 }
-        ).catch(err => {
-          logger.error(`获取SPX数据失败（已重试3次）:`, err.message);
-          throw new Error(`SPX数据获取失败: ${err.message}`);
-        }),
-        retryWithBackoff(
-          () => this.getUSDIndexCandlesticks(count, timeout),
-          { maxRetries: 3, initialDelayMs: 500 }
-        ).catch(err => {
-          logger.error(`获取USD Index日K数据失败（已重试3次）:`, err.message);
-          throw new Error(`USD Index数据获取失败: ${err.message}`);
-        }),
-        retryWithBackoff(
-          () => this.getBTCCandlesticks(count, timeout),
-          { maxRetries: 3, initialDelayMs: 500 }
-        ).catch(err => {
-          logger.error(`获取BTC数据失败（已重试3次）:`, err.message);
-          throw new Error(`BTC数据获取失败: ${err.message}`);
-        }),
-      ];
+      // 关键市场指标：串行获取，避免并发触发 Moomoo 403 限频
+      // 每次请求间隔 800ms，每个指标内部仍有 3 次重试
+      const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-      // VIX 和 市场温度（非关键，允许失败）
+      const spxData = await retryWithBackoff(
+        () => this.getSPXCandlesticks(count, timeout),
+        { maxRetries: 3, initialDelayMs: 1000 }
+      ).catch(err => {
+        logger.error(`获取SPX数据失败（已重试3次）:`, err.message);
+        return [] as CandlestickData[];
+      });
+
+      await delay(800);
+
+      const usdIndexData = await retryWithBackoff(
+        () => this.getUSDIndexCandlesticks(count, timeout),
+        { maxRetries: 3, initialDelayMs: 1000 }
+      ).catch(err => {
+        logger.error(`获取USD Index日K数据失败（已重试3次）:`, err.message);
+        return [] as CandlestickData[];
+      });
+
+      await delay(800);
+
+      const btcData = await retryWithBackoff(
+        () => this.getBTCCandlesticks(count, timeout),
+        { maxRetries: 3, initialDelayMs: 1000 }
+      ).catch(err => {
+        logger.error(`获取BTC数据失败（已重试3次）:`, err.message);
+        return [] as CandlestickData[];
+      });
+
+      const criticalResults = [spxData, usdIndexData, btcData];
+
+      // VIX 和 市场温度（非关键，允许失败，可并发）
       const vixPromise = this.getVIXCandlesticks(count).catch(err => {
         logger.warn(`获取VIX数据失败:`, err.message);
         return [];
       });
-      
+
       const marketTempPromise = this.getMarketTemperature().catch(err => {
         logger.warn(`获取实时市场温度失败:`, err.message);
         return null;
       });
 
-      // 分时数据：可选，失败时返回空数组
+      // 分时数据：可选，串行获取避免限频
       const optionalPromises: Promise<any[]>[] = [];
       if (includeIntraday) {
         optionalPromises.push(
-          this.getUSDIndexHourlyCandlesticks(count, timeout).catch(err => {
-            logger.warn(`获取USD Index分时数据失败（非关键）:`, err.message);
-            return [];
-          }),
-          this.getBTCHourlyCandlesticks(count, timeout).catch(err => {
-            logger.warn(`获取BTC分时数据失败（非关键）:`, err.message);
-            return [];
-          })
+          (async () => {
+            await delay(800);
+            return this.getUSDIndexHourlyCandlesticks(count, timeout).catch(err => {
+              logger.warn(`获取USD Index分时数据失败（非关键）:`, err.message);
+              return [];
+            });
+          })(),
+          (async () => {
+            await delay(1600);
+            return this.getBTCHourlyCandlesticks(count, timeout).catch(err => {
+              logger.warn(`获取BTC分时数据失败（非关键）:`, err.message);
+              return [];
+            });
+          })()
         );
       }
-
-      // 先获取关键数据，如果失败会抛出错误
-      const criticalResults = await Promise.all(criticalPromises);
 
       // 检查关键数据是否充足
       if (!criticalResults[0] || criticalResults[0].length < 50) {
