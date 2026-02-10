@@ -2224,6 +2224,68 @@ class StrategyScheduler {
           }
         }
 
+        // 价格获取全部失败时，检查期权是否已过期 → 自动清理
+        if (isOptionStrategy) {
+          let isExpiredOption = false;
+          try {
+            const optMeta = context.optionMeta || context.intent?.metadata || {};
+            const strikeDateVal = optMeta.strikeDate || context.strikeDate;
+            if (strikeDateVal) {
+              const sdStr = String(strikeDateVal);
+              let dateStr = sdStr;
+              if (sdStr.length !== 8) {
+                const d = new Date(parseInt(sdStr, 10) * 1000);
+                if (!isNaN(d.getTime())) {
+                  dateStr = d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' }).replace(/-/g, '');
+                }
+              }
+              const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }).replace(/-/g, '');
+              isExpiredOption = dateStr < todayStr;
+            }
+            if (!isExpiredOption && effectiveSymbol) {
+              const core = effectiveSymbol.replace(/\.(US|HK)$/i, '');
+              const match = core.match(/[A-Z]+(\d{6})[CP]/);
+              if (match) {
+                const yymmdd = match[1];
+                const yy = parseInt(yymmdd.substring(0, 2), 10);
+                const mm = yymmdd.substring(2, 4);
+                const dd = yymmdd.substring(4, 6);
+                const fullYear = yy >= 50 ? 1900 + yy : 2000 + yy;
+                const dateStr = `${fullYear}${mm}${dd}`;
+                const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }).replace(/-/g, '');
+                isExpiredOption = dateStr < todayStr;
+              }
+            }
+          } catch { /* 解析失败不影响 */ }
+
+          if (isExpiredOption) {
+            // 已过期期权：核对券商持仓后自动清理
+            const positionCheck = await this.checkAvailablePosition(strategyId, effectiveSymbol);
+            if (!positionCheck.hasPending &&
+                (positionCheck.availableQuantity === undefined || positionCheck.availableQuantity <= 0)) {
+              logger.warn(
+                `策略 ${strategyId} 期权 ${effectiveSymbol}: 已过期+价格获取失败+券商无持仓，自动转为IDLE`
+              );
+              // 取消 TSLPPCT 保护单（如果存在）
+              if (context.tslpOrderId) {
+                try {
+                  await trailingStopProtectionService.cancelProtection(context.tslpOrderId, strategyId, effectiveSymbol);
+                } catch { /* 忽略 */ }
+              }
+              await strategyInstance.updateState(symbol, 'IDLE', {
+                ...context,
+                autoClosedReason: 'option_expired_no_price',
+                autoClosedAt: new Date().toISOString(),
+                previousState: 'HOLDING',
+              });
+              return { actionTaken: true };
+            }
+            logger.warn(
+              `策略 ${strategyId} 期权 ${effectiveSymbol}: 已过期+价格获取失败，但券商仍报告持仓(qty=${positionCheck.availableQuantity})，继续监控`
+            );
+          }
+        }
+
         logger.warn(
           `策略 ${strategyId} 标的 ${effectiveSymbol}: 所有价格获取方式均失败，无法进行止盈止损检查 | ` +
           `context.optionMeta: ${JSON.stringify(context.optionMeta || {})} | ` +
