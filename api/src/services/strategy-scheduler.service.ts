@@ -1397,21 +1397,6 @@ class StrategyScheduler {
           `[策略执行验证] 策略 ${strategyId} 标的 ${symbol} 执行被阻止: ${validation.reason}`
         );
         summary.errors.push(`${symbol}(VALIDATION_FAILED)`);
-        
-        await pool.query(
-          `INSERT INTO signal_logs (strategy_id, symbol, signal_type, signal_data, created_at)
-           VALUES ($1, $2, $3, $4, NOW())`,
-          [
-            strategyId,
-            symbol,
-            'VALIDATION_FAILED',
-            JSON.stringify({
-              intent,
-              reason: validation.reason,
-              timestamp: new Date().toISOString(),
-            }),
-          ]
-        );
         return;
       }
 
@@ -3656,7 +3641,9 @@ class StrategyScheduler {
       
       if (instanceResult.rows.length > 0) {
         const instance = instanceResult.rows[0];
-        const context = instance.context ? JSON.parse(instance.context) : {};
+        const context = instance.context
+          ? (typeof instance.context === 'string' ? JSON.parse(instance.context) : instance.context)
+          : {};
         
         if (intent.action === 'SELL' && instance.current_state === 'HOLDING') {
           const buyPrice = context.buyPrice || context.entryPrice;
