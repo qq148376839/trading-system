@@ -59,6 +59,8 @@ export interface PositionContext {
   dayLow?: number;              // 当日最低价
   pivotHigh?: number;           // 关键阻力位
   pivotLow?: number;            // 关键支撑位
+  // 0DTE 标记
+  is0DTE?: boolean;             // 是否为当日到期（末日期权）
 }
 
 /** 盈亏计算结果 */
@@ -317,9 +319,18 @@ class OptionDynamicExitService {
     const pnl = this.calculatePnL(ctx);
     const now = new Date();
 
-    // 1. 时间止损：收盘前10分钟强制平仓
+    // 0. 0DTE 强制平仓：收盘前120分钟，末日期权不论盈亏全部市价平仓
     const msToClose = ctx.marketCloseTime.getTime() - now.getTime();
     const minutesToClose = msToClose / (1000 * 60);
+    if (ctx.is0DTE && minutesToClose <= 120 && minutesToClose > 0) {
+      return {
+        action: 'TIME_STOP',
+        reason: `0DTE期权收盘前${minutesToClose.toFixed(0)}分钟，强制平仓 | 净盈亏=${pnl.netPnLPercent.toFixed(1)}%`,
+        pnl,
+      };
+    }
+
+    // 1. 时间止损：收盘前10分钟强制平仓（非0DTE）
     if (minutesToClose <= 10 && minutesToClose > 0) {
       return {
         action: 'TIME_STOP',

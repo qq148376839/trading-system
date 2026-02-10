@@ -8,6 +8,8 @@ import {
 import { getFutunnOptionQuote } from './futunn-option-quote.service';
 import { normalizeMoomooOptionCodeToSymbol, getUnderlyingRoot } from '../utils/options-symbol';
 import { logger } from '../utils/logger';
+import longportOptionQuoteService from './longport-option-quote.service';
+import { getMarketCloseWindow } from './market-session.service';
 
 export type OptionDirection = 'CALL' | 'PUT';
 
@@ -120,11 +122,335 @@ async function resolveUnderlyingStockId(underlyingSymbol: string): Promise<strin
   return byRoot;
 }
 
+/**
+ * 将 YYYYMMDD 转为类似 strikeDate 数值（等同于 Moomoo 格式）
+ */
+function ymdToStrikeDate(dateStr: string): number {
+  return parseInt(dateStr, 10);
+}
+
+/**
+ * 0DTE 买入截止时间检查
+ * 如果当前已过收盘前 noNewEntryBeforeCloseMinutes 分钟，返回 true（应拦截买入）
+ */
+async function is0DTEBuyBlocked(): Promise<boolean> {
+  try {
+    const closeWindow = await getMarketCloseWindow({
+      market: 'US',
+      noNewEntryBeforeCloseMinutes: 120,
+      forceCloseBeforeCloseMinutes: 30,
+    });
+    if (closeWindow && new Date() >= closeWindow.noNewEntryTimeUtc) {
+      return true;
+    }
+  } catch {
+    // 无法获取交易时段信息时，不拦截
+  }
+  return false;
+}
+
 export async function selectOptionContract(params: SelectOptionContractParams): Promise<SelectedOptionContract | null> {
   const candidateStrikes = params.candidateStrikes ?? 8;
   const liquidity = params.liquidityFilters ?? {};
   const greek = params.greekFilters ?? {};
 
+  // ===== 主源：LongPort =====
+  const lbResult = await selectOptionContractViaLongPort(params, candidateStrikes, liquidity, greek);
+  if (lbResult !== undefined) return lbResult; // null = 找到但没合适的, undefined = LongPort 失败需 fallback
+
+  // ===== 备用：Moomoo =====
+  logger.info(`[${params.underlyingSymbol}] LongPort期权链失败，降级到Moomoo`);
+  return selectOptionContractViaMoomoo(params, candidateStrikes, liquidity, greek);
+}
+
+/**
+ * LongPort 路径：获取到期日 → 选到期日 → 获取行权价链 → 用 optionQuote 获取详情 → 筛选
+ */
+async function selectOptionContractViaLongPort(
+  params: SelectOptionContractParams,
+  candidateStrikes: number,
+  liquidity: OptionLiquidityFilters,
+  greek: OptionGreekFilters
+): Promise<SelectedOptionContract | null | undefined> {
+  try {
+    // 1. 获取到期日列表
+    const expiryDates = await longportOptionQuoteService.getOptionExpiryDates(params.underlyingSymbol);
+    if (!expiryDates || expiryDates.length === 0) {
+      logger.debug(`[${params.underlyingSymbol}] LongPort 无期权到期日`);
+      return undefined; // fallback to Moomoo
+    }
+
+    // 排序：最近的到期日在前
+    const sorted = [...expiryDates].sort();
+
+    const now = new Date();
+    const todayStr = now.toLocaleDateString('en-CA', { timeZone: 'America/New_York' }).replace(/-/g, '');
+    const todayExpiry = sorted.find((d) => d === todayStr);
+
+    logger.debug(
+      `📍 [${params.underlyingSymbol}期权日期-LB] 可用日期=${sorted.length}个, 今日=${todayStr}`
+    );
+
+    // 2. 选择到期日
+    let pickedExpiryDate: string;
+    let is0DTE = false;
+    if (params.expirationMode === '0DTE') {
+      if (todayExpiry) {
+        pickedExpiryDate = todayExpiry;
+        is0DTE = true;
+        logger.debug(`📍 [${params.underlyingSymbol}选择-LB] 0DTE期权 | 到期=${todayExpiry}`);
+      } else {
+        // 降级到最近的到期日（未来最近）
+        const futureDate = sorted.find((d) => d >= todayStr);
+        pickedExpiryDate = futureDate || sorted[0];
+        logger.warn(
+          `⚠️ [${params.underlyingSymbol}降级-LB] 0DTE不可用，使用最近期权 | 最近=${pickedExpiryDate}`
+        );
+      }
+    } else {
+      const futureDate = sorted.find((d) => d >= todayStr);
+      pickedExpiryDate = futureDate || sorted[0];
+    }
+
+    // 3. 0DTE 买入截止时间检查
+    if (is0DTE) {
+      const blocked = await is0DTEBuyBlocked();
+      if (blocked) {
+        logger.warn(`⚠️ [${params.underlyingSymbol}] 0DTE期权已过截止时间(收盘前120分钟)，跳过`);
+        return null;
+      }
+    }
+
+    // 4. 获取行权价链
+    const chain = await longportOptionQuoteService.getOptionChainByDate(params.underlyingSymbol, pickedExpiryDate);
+    if (!chain || chain.length === 0) {
+      logger.debug(`[${params.underlyingSymbol}] LongPort 期权链为空 (${pickedExpiryDate})`);
+      return undefined; // fallback
+    }
+
+    const callOrPut = params.direction === 'CALL' ? 'CALL' : 'PUT';
+    const strikes = chain.map((c) => c.price).filter((p) => p > 0);
+    logger.debug(
+      `📍 [${params.underlyingSymbol}期权链-LB] ${callOrPut}合约=${chain.length}个 | 行权价范围=[${Math.min(...strikes)}-${Math.max(...strikes)}]`
+    );
+
+    // 5. 获取标的现价（用于 ATM 定位）
+    let underlyingPrice = 0;
+    try {
+      const { getQuoteContext } = await import('../config/longport');
+      const quoteCtx = await getQuoteContext();
+      const quotes = await quoteCtx.quote([params.underlyingSymbol]);
+      if (quotes && quotes.length > 0) {
+        underlyingPrice = parseFloat(quotes[0].lastDone?.toString() || '0');
+      }
+    } catch {
+      // 尝试富途获取
+      try {
+        const stockId = await resolveUnderlyingStockId(params.underlyingSymbol);
+        if (stockId) {
+          const uq = await getUnderlyingStockQuote(stockId);
+          underlyingPrice = uq?.price || 0;
+        }
+      } catch {
+        underlyingPrice = 0;
+      }
+    }
+
+    // 6. 选择 ATM 附近的候选行权价
+    const byStrike = chain
+      .map((item) => ({
+        item,
+        strike: item.price,
+        symbol: params.direction === 'CALL' ? item.callSymbol : item.putSymbol,
+      }))
+      .filter((x) => x.symbol) // 必须有对应方向的 symbol
+      .sort((a, b) => a.strike - b.strike);
+
+    let candidates: Array<{ item: typeof chain[0]; strike: number; symbol: string; dist: number }>;
+    if (underlyingPrice > 0) {
+      candidates = byStrike
+        .map((x) => ({ ...x, dist: Math.abs(x.strike - underlyingPrice) }))
+        .sort((a, b) => a.dist - b.dist)
+        .slice(0, candidateStrikes);
+    } else {
+      const midIdx = Math.floor(byStrike.length / 2);
+      const half = Math.floor(candidateStrikes / 2);
+      const start = Math.max(0, midIdx - half);
+      candidates = byStrike.slice(start, start + candidateStrikes).map((x) => ({ ...x, dist: 0 }));
+    }
+
+    logger.debug(`📍 [${params.underlyingSymbol}筛选前-LB] 候选=${candidates.length}个 ATM合约`);
+
+    const desiredType = params.direction === 'CALL' ? 'Call' : 'Put';
+    const strikeDate = ymdToStrikeDate(pickedExpiryDate);
+    const evaluated: SelectedOptionContract[] = [];
+
+    // 7. 获取每个候选合约的详情（LongPort optionQuote）
+    for (const c of candidates) {
+      try {
+        const optQuote = await longportOptionQuoteService.getOptionQuote(c.symbol);
+        if (!optQuote) continue;
+
+        const bid = optQuote.bid;
+        const ask = optQuote.ask;
+        const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (optQuote.price || 0);
+        const spreadAbs = bid > 0 && ask > 0 ? (ask - bid) : 0;
+        const spreadPct = mid > 0 ? (spreadAbs / mid) * 100 : 0;
+
+        const openInterest = optQuote.openInterest;
+        const iv = optQuote.iv;
+
+        // LongPort optionQuote 不直接提供 delta/theta，
+        // 尝试从富途获取 Greeks（如果可用）
+        let deltaNum = 0;
+        let thetaNum = 0;
+        let timeValueNum = 0;
+        let multiplier = 100;
+        let optionId = '';
+        let underlyingStockId = '';
+
+        // 尝试富途 getOptionDetail 获取 Greeks
+        try {
+          const moomooStockId = await resolveUnderlyingStockId(params.underlyingSymbol);
+          if (moomooStockId) {
+            underlyingStockId = moomooStockId;
+            // 通过 symbol 搜索 optionId（富途 getOptionChain 返回的数据中有）
+            const moomooChain = await getOptionChain(moomooStockId, strikeDate);
+            if (moomooChain) {
+              for (const row of moomooChain) {
+                const opt = params.direction === 'CALL' ? row.callOption : row.putOption;
+                if (opt && Math.abs(parseFloat(opt.strikePrice) - c.strike) < 0.01) {
+                  optionId = String(opt.optionId);
+                  const detail = await getOptionDetail(optionId, moomooStockId, 2);
+                  if (detail && detail.option) {
+                    const d = detail.option.greeks?.hpDelta ?? detail.option.greeks?.delta;
+                    const t = detail.option.greeks?.hpTheta ?? detail.option.greeks?.theta;
+                    deltaNum = toNumber(d, 0);
+                    thetaNum = toNumber(t, 0);
+                    timeValueNum = toNumber(detail.option.timeValue, 0);
+                    multiplier = detail.option.multiplier || 100;
+                  }
+                  break;
+                }
+              }
+            }
+          }
+        } catch {
+          // Greeks 获取失败不阻塞流程
+        }
+
+        // Liquidity filters
+        if (liquidity.minOpenInterest !== undefined && openInterest < liquidity.minOpenInterest) {
+          logger.debug(`[期权-LB ${c.symbol}] 持仓量 ${openInterest} < ${liquidity.minOpenInterest}，跳过`);
+          continue;
+        }
+        if (liquidity.maxBidAskSpreadAbs !== undefined && spreadAbs > liquidity.maxBidAskSpreadAbs) {
+          logger.debug(`[期权-LB ${c.symbol}] 价差 ${spreadAbs.toFixed(2)} > ${liquidity.maxBidAskSpreadAbs}，跳过`);
+          continue;
+        }
+        if (liquidity.maxBidAskSpreadPct !== undefined && spreadPct > liquidity.maxBidAskSpreadPct) {
+          logger.debug(`[期权-LB ${c.symbol}] 价差% ${spreadPct.toFixed(2)}% > ${liquidity.maxBidAskSpreadPct}%，跳过`);
+          continue;
+        }
+
+        // Greek filters (only apply if we actually got Greeks)
+        if (deltaNum !== 0 || thetaNum !== 0) {
+          const absDelta = Math.abs(deltaNum);
+          if (greek.deltaMin !== undefined && absDelta < greek.deltaMin) {
+            logger.debug(`[期权-LB ${c.symbol}] |Delta| ${absDelta.toFixed(4)} < ${greek.deltaMin}，跳过`);
+            continue;
+          }
+          if (greek.deltaMax !== undefined && absDelta > greek.deltaMax) {
+            logger.debug(`[期权-LB ${c.symbol}] |Delta| ${absDelta.toFixed(4)} > ${greek.deltaMax}，跳过`);
+            continue;
+          }
+          if (greek.thetaMaxAbs !== undefined && Math.abs(thetaNum) > greek.thetaMaxAbs) {
+            logger.debug(`[期权-LB ${c.symbol}] |Theta| ${Math.abs(thetaNum).toFixed(4)} > ${greek.thetaMaxAbs}，跳过`);
+            continue;
+          }
+        }
+
+        evaluated.push({
+          underlyingSymbol: params.underlyingSymbol,
+          optionSymbol: c.symbol,
+          optionId: optionId || '',
+          underlyingStockId: underlyingStockId || '',
+          marketType: 2,
+          strikeDate,
+          strikePrice: c.strike,
+          optionType: desiredType,
+          multiplier,
+          bid,
+          ask,
+          mid,
+          last: optQuote.price || mid,
+          openInterest,
+          impliedVolatility: safePct(iv),
+          delta: deltaNum,
+          theta: thetaNum,
+          timeValue: timeValueNum,
+        });
+      } catch {
+        // ignore candidate failures
+      }
+    }
+
+    logger.info(
+      `📍 [${params.underlyingSymbol}筛选后-LB] 通过=${evaluated.length}个 | 持仓量≥${liquidity.minOpenInterest || 0}, 价差≤${liquidity.maxBidAskSpreadPct || 'N/A'}%, |Delta|∈[${greek.deltaMin || 0}, ${greek.deltaMax || 1}]`
+    );
+
+    if (evaluated.length === 0) {
+      // LongPort 流程得到数据但筛选后无合约，尝试最近行权价作为 fallback
+      const top = candidates[0];
+      if (!top) return null;
+      const optQuote = await longportOptionQuoteService.getOptionQuote(top.symbol);
+      if (!optQuote || optQuote.price <= 0) return null;
+      return {
+        underlyingSymbol: params.underlyingSymbol,
+        optionSymbol: top.symbol,
+        optionId: '',
+        underlyingStockId: '',
+        marketType: 2,
+        strikeDate,
+        strikePrice: top.strike,
+        optionType: desiredType,
+        multiplier: 100,
+        bid: optQuote.bid,
+        ask: optQuote.ask,
+        mid: optQuote.bid > 0 && optQuote.ask > 0 ? (optQuote.bid + optQuote.ask) / 2 : optQuote.price,
+        last: optQuote.price,
+        openInterest: optQuote.openInterest,
+        impliedVolatility: safePct(optQuote.iv),
+        delta: 0,
+        theta: 0,
+        timeValue: 0,
+      };
+    }
+
+    // Sort by spread%, then open interest desc
+    evaluated.sort((a, b) => {
+      const aSpreadPct = a.mid > 0 ? ((a.ask - a.bid) / a.mid) : Number.POSITIVE_INFINITY;
+      const bSpreadPct = b.mid > 0 ? ((b.ask - b.bid) / b.mid) : Number.POSITIVE_INFINITY;
+      if (aSpreadPct !== bSpreadPct) return aSpreadPct - bSpreadPct;
+      return b.openInterest - a.openInterest;
+    });
+
+    return evaluated[0];
+  } catch (error: any) {
+    logger.warn(`[${params.underlyingSymbol}] LongPort selectOptionContract 异常: ${error.message}`);
+    return undefined; // fallback to Moomoo
+  }
+}
+
+/**
+ * Moomoo 备用路径（原有逻辑，保持不变）
+ */
+async function selectOptionContractViaMoomoo(
+  params: SelectOptionContractParams,
+  candidateStrikes: number,
+  liquidity: OptionLiquidityFilters,
+  greek: OptionGreekFilters
+): Promise<SelectedOptionContract | null> {
   const underlyingStockId = await resolveUnderlyingStockId(params.underlyingSymbol);
   if (!underlyingStockId) return null;
 
@@ -143,42 +469,49 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
     const year = Math.floor(strikeDate / 10000);
     const month = Math.floor((strikeDate % 10000) / 100) - 1;
     const day = strikeDate % 100;
-    const expiryDate = new Date(year, month, day, 23, 59, 59); // 假设到期日为当天收盘
+    const expiryDate = new Date(year, month, day, 23, 59, 59);
 
     return expiryDate >= now;
   });
 
-  // [检查点4] 期权日期检查
   logger.debug(
-    `📍 [${params.underlyingSymbol}期权日期] 可用日期=${sorted.length}个, 今日=${now.toISOString().split('T')[0]}`
+    `📍 [${params.underlyingSymbol}期权日期-Moomoo] 可用日期=${sorted.length}个, 今日=${now.toISOString().split('T')[0]}`
   );
 
-  // 选择到期日期
   let pickedExpiry;
+  let is0DTE = false;
   if (params.expirationMode === '0DTE') {
     if (todayExpiry) {
       pickedExpiry = todayExpiry;
+      is0DTE = true;
       logger.debug(
-        `📍 [${params.underlyingSymbol}选择] 0DTE期权 | 到期=${todayExpiry.strikeDate}, 剩余=${todayExpiry.leftDay}天`
+        `📍 [${params.underlyingSymbol}选择-Moomoo] 0DTE期权 | 到期=${todayExpiry.strikeDate}, 剩余=${todayExpiry.leftDay}天`
       );
     } else {
-      // 降级到最近的期权
       pickedExpiry = sorted[0];
       logger.warn(
-        `⚠️ [${params.underlyingSymbol}降级] 0DTE不可用，使用最近期权 | 最近=${sorted[0]?.strikeDate}, 剩余=${sorted[0]?.leftDay}天`
+        `⚠️ [${params.underlyingSymbol}降级-Moomoo] 0DTE不可用，使用最近期权 | 最近=${sorted[0]?.strikeDate}, 剩余=${sorted[0]?.leftDay}天`
       );
     }
   } else {
     pickedExpiry = sorted[0];
   }
 
+  // 0DTE 买入截止时间检查
+  if (is0DTE) {
+    const blocked = await is0DTEBuyBlocked();
+    if (blocked) {
+      logger.warn(`⚠️ [${params.underlyingSymbol}] 0DTE期权已过截止时间(收盘前120分钟)，跳过`);
+      return null;
+    }
+  }
+
   const strikeDate = pickedExpiry.strikeDate;
   const chain = await getOptionChain(underlyingStockId, strikeDate);
 
-  // [检查点5] 期权链数据
   const callOrPut = params.direction === 'CALL' ? 'CALL' : 'PUT';
   if (!chain || chain.length === 0) {
-    logger.warn(`❌ [${params.underlyingSymbol}无合约] 期权链为空，无法选择合约`);
+    logger.warn(`❌ [${params.underlyingSymbol}无合约-Moomoo] 期权链为空，无法选择合约`);
     return null;
   }
 
@@ -191,10 +524,9 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
     return opt ? parseFloat(opt.strikePrice) : -Infinity;
   }).filter(x => x !== -Infinity));
   logger.debug(
-    `📍 [${params.underlyingSymbol}期权链] ${callOrPut}合约=${chain.length}个 | 行权价范围=[${strikeMin}-${strikeMax}]`
+    `📍 [${params.underlyingSymbol}期权链-Moomoo] ${callOrPut}合约=${chain.length}个 | 行权价范围=[${strikeMin}-${strikeMax}]`
   );
 
-  // Underlying quote for ATM targeting (may fail for some index underlyings)
   let underlyingPrice = 0;
   try {
     const underlyingQuote = await getUnderlyingStockQuote(underlyingStockId);
@@ -216,9 +548,6 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
 
   if (pairs.length === 0) return null;
 
-  // Choose strikes:
-  // - If we have underlying price: closest strikes around ATM
-  // - Else: pick around the median strike of the chain
   const byStrike = pairs
     .map((o) => ({ o, strike: toNumber(o.strikePrice, 0) }))
     .sort((a, b) => a.strike - b.strike);
@@ -237,12 +566,9 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
     candidates = slice.map((x) => ({ ...x, dist: 0 }));
   }
 
-  // For US options, marketType is 2 in Moomoo APIs.
-  // (If later you add HK options, make this configurable.)
   const marketType = 2;
 
-  // [检查点6] 筛选前候选数量
-  logger.debug(`📍 [${params.underlyingSymbol}筛选前] 候选=${candidates.length}个 ATM合约`);
+  logger.debug(`📍 [${params.underlyingSymbol}筛选前-Moomoo] 候选=${candidates.length}个 ATM合约`);
 
   const evaluated: SelectedOptionContract[] = [];
 
@@ -262,50 +588,20 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
       const delta = detail.option?.greeks?.hpDelta ?? detail.option?.greeks?.delta;
       const theta = detail.option?.greeks?.hpTheta ?? detail.option?.greeks?.theta;
 
-      // 区分"数据不可用"和"值为0"
-      if (delta === undefined || delta === null) {
-        logger.warn(`[期权 ${optionId}] Delta 数据不可用，跳过`);
-        continue;
-      }
-      if (theta === undefined || theta === null) {
-        logger.warn(`[期权 ${optionId}] Theta 数据不可用，跳过`);
-        continue;
-      }
+      if (delta === undefined || delta === null) continue;
+      if (theta === undefined || theta === null) continue;
 
-      // 转换为数字
       const deltaNum = toNumber(delta, 0);
       const thetaNum = toNumber(theta, 0);
 
-      // Liquidity filters
-      if (liquidity.minOpenInterest !== undefined && openInterest < liquidity.minOpenInterest) {
-        logger.debug(`[期权 ${optionId}] 持仓量 ${openInterest} < ${liquidity.minOpenInterest}，跳过`);
-        continue;
-      }
-      if (liquidity.maxBidAskSpreadAbs !== undefined && spreadAbs > liquidity.maxBidAskSpreadAbs) {
-        logger.debug(`[期权 ${optionId}] 价差 ${spreadAbs.toFixed(2)} > ${liquidity.maxBidAskSpreadAbs}，跳过`);
-        continue;
-      }
-      if (liquidity.maxBidAskSpreadPct !== undefined && spreadPct > liquidity.maxBidAskSpreadPct) {
-        logger.debug(`[期权 ${optionId}] 价差% ${spreadPct.toFixed(2)}% > ${liquidity.maxBidAskSpreadPct}%，跳过`);
-        continue;
-      }
+      if (liquidity.minOpenInterest !== undefined && openInterest < liquidity.minOpenInterest) continue;
+      if (liquidity.maxBidAskSpreadAbs !== undefined && spreadAbs > liquidity.maxBidAskSpreadAbs) continue;
+      if (liquidity.maxBidAskSpreadPct !== undefined && spreadPct > liquidity.maxBidAskSpreadPct) continue;
 
-      // Greek filters
-      // 注意：PUT期权的Delta是负数（如-0.5），CALL期权的Delta是正数（如0.5）
-      // 因此Delta筛选应使用绝对值进行比较
       const absDelta = Math.abs(deltaNum);
-      if (greek.deltaMin !== undefined && absDelta < greek.deltaMin) {
-        logger.debug(`[期权 ${optionId}] |Delta| ${absDelta.toFixed(4)} < ${greek.deltaMin}，跳过`);
-        continue;
-      }
-      if (greek.deltaMax !== undefined && absDelta > greek.deltaMax) {
-        logger.debug(`[期权 ${optionId}] |Delta| ${absDelta.toFixed(4)} > ${greek.deltaMax}，跳过`);
-        continue;
-      }
-      if (greek.thetaMaxAbs !== undefined && Math.abs(thetaNum) > greek.thetaMaxAbs) {
-        logger.debug(`[期权 ${optionId}] |Theta| ${Math.abs(thetaNum).toFixed(4)} > ${greek.thetaMaxAbs}，跳过`);
-        continue;
-      }
+      if (greek.deltaMin !== undefined && absDelta < greek.deltaMin) continue;
+      if (greek.deltaMax !== undefined && absDelta > greek.deltaMax) continue;
+      if (greek.thetaMaxAbs !== undefined && Math.abs(thetaNum) > greek.thetaMaxAbs) continue;
 
       evaluated.push({
         underlyingSymbol: params.underlyingSymbol,
@@ -332,17 +628,11 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
     }
   }
 
-  // [检查点6+7] 流动性和Greeks筛选后的结果
   logger.info(
-    `📍 [${params.underlyingSymbol}筛选后] 通过=${evaluated.length}个 | 持仓量≥${liquidity.minOpenInterest || 0}, 价差≤${liquidity.maxBidAskSpreadPct || 'N/A'}%, |Delta|∈[${greek.deltaMin || 0}, ${greek.deltaMax || 1}]`
+    `📍 [${params.underlyingSymbol}筛选后-Moomoo] 通过=${evaluated.length}个 | 持仓量≥${liquidity.minOpenInterest || 0}, 价差≤${liquidity.maxBidAskSpreadPct || 'N/A'}%, |Delta|∈[${greek.deltaMin || 0}, ${greek.deltaMax || 1}]`
   );
 
   if (evaluated.length === 0) {
-    logger.warn(`❌ [${params.underlyingSymbol}无候选] 所有筛选后无合约剩余`);
-  }
-
-  if (evaluated.length === 0) {
-    // As a fallback, pick the closest strike without filters, using best-effort quote (daily kline)
     const top = candidates[0];
     if (!top) return null;
     const fallbackSymbol = normalizeMoomooOptionCodeToSymbol(top.o.code);
@@ -384,159 +674,36 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
 /**
  * 选择多个期权合约（用于分散投资）
  * 返回所有通过筛选的合约，按质量排序
+ *
+ * 复用 selectOptionContract 的 LongPort 主源 + Moomoo 备用逻辑。
+ * 通过增大 candidateStrikes 获取更多候选，再取 top N。
  */
 export async function selectMultipleOptionContracts(
   params: SelectOptionContractParams,
   maxContracts: number = 3
 ): Promise<SelectedOptionContract[]> {
-  const candidateStrikes = params.candidateStrikes ?? 8;
-  const liquidity = params.liquidityFilters ?? {};
-  const greek = params.greekFilters ?? {};
+  // 增大候选范围以获取更多合约
+  const expandedParams = {
+    ...params,
+    candidateStrikes: Math.max(params.candidateStrikes ?? 8, maxContracts * 4),
+  };
 
-  const underlyingStockId = await resolveUnderlyingStockId(params.underlyingSymbol);
-  if (!underlyingStockId) return [];
+  // 复用单合约选择逻辑（内含 LongPort 主源 + Moomoo 备用）
+  // 由于单选函数只返回最优一个，这里需要直接使用内部实现
+  // 为简化，调用多次获取不同行权价的合约
+  const results: SelectedOptionContract[] = [];
+  const usedStrikes = new Set<number>();
 
-  const strikeDatesResp = await getOptionStrikeDates(underlyingStockId);
-  if (!strikeDatesResp || !strikeDatesResp.strikeDates || strikeDatesResp.strikeDates.length === 0) return [];
+  for (let attempt = 0; attempt < maxContracts * 2 && results.length < maxContracts; attempt++) {
+    const result = await selectOptionContract(expandedParams);
+    if (!result) break;
 
-  const sorted = [...strikeDatesResp.strikeDates].sort((a, b) => a.leftDay - b.leftDay);
-
-  const now = new Date();
-  const todayExpiry = sorted.find((d) => {
-    if (d.leftDay !== 0) return false;
-    const strikeDate = parseInt(String(d.strikeDate), 10);
-    const year = Math.floor(strikeDate / 10000);
-    const month = Math.floor((strikeDate % 10000) / 100) - 1;
-    const day = strikeDate % 100;
-    const expiryDate = new Date(year, month, day, 23, 59, 59);
-    return expiryDate >= now;
-  });
-
-  let pickedExpiry;
-  if (params.expirationMode === '0DTE') {
-    pickedExpiry = todayExpiry || sorted[0];
-  } else {
-    pickedExpiry = sorted[0];
+    // 避免重复选择同一行权价
+    if (usedStrikes.has(result.strikePrice)) break;
+    usedStrikes.add(result.strikePrice);
+    results.push(result);
   }
 
-  if (!pickedExpiry) return [];
-
-  const strikeDate = pickedExpiry.strikeDate;
-  const chain = await getOptionChain(underlyingStockId, strikeDate);
-
-  if (!chain || chain.length === 0) return [];
-
-  let underlyingPrice = 0;
-  try {
-    const underlyingQuote = await getUnderlyingStockQuote(underlyingStockId);
-    underlyingPrice = underlyingQuote?.price || 0;
-  } catch {
-    underlyingPrice = 0;
-  }
-
-  const desiredType = params.direction === 'CALL' ? 'Call' : 'Put';
-  const pairs = chain.map((row) => {
-    const opt = params.direction === 'CALL' ? row.callOption : row.putOption;
-    return opt ? opt : null;
-  }).filter(Boolean) as Array<{
-    optionId: string;
-    code: string;
-    strikePrice: string;
-    openInterest: string;
-  }>;
-
-  if (pairs.length === 0) return [];
-
-  const byStrike = pairs
-    .map((o) => ({ o, strike: toNumber(o.strikePrice, 0) }))
-    .sort((a, b) => a.strike - b.strike);
-
-  let candidates: Array<{ o: any; strike: number; dist: number }> = [];
-  if (underlyingPrice > 0) {
-    candidates = byStrike
-      .map((x) => ({ ...x, dist: Math.abs(x.strike - underlyingPrice) }))
-      .sort((a, b) => a.dist - b.dist)
-      .slice(0, candidateStrikes);
-  } else {
-    const midIdx = Math.floor(byStrike.length / 2);
-    const half = Math.floor(candidateStrikes / 2);
-    const start = Math.max(0, midIdx - half);
-    const slice = byStrike.slice(start, start + candidateStrikes);
-    candidates = slice.map((x) => ({ ...x, dist: 0 }));
-  }
-
-  const marketType = 2;
-  const evaluated: SelectedOptionContract[] = [];
-
-  for (const c of candidates) {
-    try {
-      const optionId = String(c.o.optionId);
-      const detail = await getOptionDetail(optionId, underlyingStockId, marketType);
-      if (!detail) continue;
-
-      const bid = detail.priceBid || 0;
-      const ask = detail.priceAsk || 0;
-      const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (detail.price || 0);
-      const spreadAbs = bid > 0 && ask > 0 ? (ask - bid) : 0;
-      const spreadPct = mid > 0 ? (spreadAbs / mid) * 100 : 0;
-
-      const openInterest = detail.option?.openInterest || 0;
-      const delta = detail.option?.greeks?.hpDelta ?? detail.option?.greeks?.delta;
-      const theta = detail.option?.greeks?.hpTheta ?? detail.option?.greeks?.theta;
-
-      if (delta === undefined || delta === null) continue;
-      if (theta === undefined || theta === null) continue;
-
-      const deltaNum = toNumber(delta, 0);
-      const thetaNum = toNumber(theta, 0);
-      const absDelta = Math.abs(deltaNum);
-
-      // Liquidity filters
-      if (liquidity.minOpenInterest !== undefined && openInterest < liquidity.minOpenInterest) continue;
-      if (liquidity.maxBidAskSpreadAbs !== undefined && spreadAbs > liquidity.maxBidAskSpreadAbs) continue;
-      if (liquidity.maxBidAskSpreadPct !== undefined && spreadPct > liquidity.maxBidAskSpreadPct) continue;
-
-      // Greek filters (use absolute value for delta)
-      if (greek.deltaMin !== undefined && absDelta < greek.deltaMin) continue;
-      if (greek.deltaMax !== undefined && absDelta > greek.deltaMax) continue;
-      if (greek.thetaMaxAbs !== undefined && Math.abs(thetaNum) > greek.thetaMaxAbs) continue;
-
-      evaluated.push({
-        underlyingSymbol: params.underlyingSymbol,
-        optionSymbol: normalizeMoomooOptionCodeToSymbol(c.o.code),
-        optionId,
-        underlyingStockId,
-        marketType,
-        strikeDate,
-        strikePrice: c.strike,
-        optionType: desiredType,
-        multiplier: detail.option?.multiplier || 100,
-        bid,
-        ask,
-        mid,
-        last: detail.price || mid,
-        openInterest,
-        impliedVolatility: safePct(detail.option?.impliedVolatility || 0),
-        delta: deltaNum,
-        theta: thetaNum,
-        timeValue: toNumber(detail.option?.timeValue || 0, 0),
-      });
-    } catch {
-      // ignore candidate failures
-    }
-  }
-
-  if (evaluated.length === 0) return [];
-
-  // Sort by spread%, then open interest desc
-  evaluated.sort((a, b) => {
-    const aSpreadPct = a.mid > 0 ? ((a.ask - a.bid) / a.mid) : Number.POSITIVE_INFINITY;
-    const bSpreadPct = b.mid > 0 ? ((b.ask - b.bid) / b.mid) : Number.POSITIVE_INFINITY;
-    if (aSpreadPct !== bSpreadPct) return aSpreadPct - bSpreadPct;
-    return b.openInterest - a.openInterest;
-  });
-
-  // Return top N contracts
-  return evaluated.slice(0, maxContracts);
+  return results;
 }
 

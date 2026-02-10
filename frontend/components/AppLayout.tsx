@@ -14,6 +14,7 @@ import {
   EyeOutlined,
   StockOutlined,
   FileSearchOutlined,
+  ApiOutlined,
 } from '@ant-design/icons'
 import { usePathname, useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -115,6 +116,11 @@ export default function AppLayout({ children }: AppLayoutProps) {
       key: '/config',
       icon: <SettingOutlined />,
       label: <Link href="/config">系统配置</Link>,
+    },
+    {
+      key: 'api-docs',
+      icon: <ApiOutlined />,
+      label: <a href="/api/docs" target="_blank" rel="noopener noreferrer">API文档</a>,
     },
   ]
 

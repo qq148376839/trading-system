@@ -296,6 +296,39 @@ class StrategyScheduler {
       return;
     }
 
+    // 期权策略：收盘前120分钟且无持仓时，跳过本周期（避免资源浪费）
+    const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy;
+    if (isOptionStrategy) {
+      try {
+        const closeWindow = await getMarketCloseWindow({
+          market: 'US',
+          noNewEntryBeforeCloseMinutes: 120,
+          forceCloseBeforeCloseMinutes: 30,
+        });
+        if (closeWindow && new Date() >= closeWindow.noNewEntryTimeUtc) {
+          const activeResult = await pool.query(
+            `SELECT COUNT(*) as cnt FROM strategy_instances
+             WHERE strategy_id = $1 AND current_state IN ('HOLDING','OPENING','CLOSING')`,
+            [strategyId]
+          );
+          if (parseInt(activeResult.rows[0].cnt) === 0) {
+            // 限频日志：每5分钟记录一次
+            const now = Date.now();
+            const lastLogKey = `0dte_idle_skip_${strategyId}`;
+            const lastLogTime = (this as any)[lastLogKey] || 0;
+            if (now - lastLogTime > 5 * 60 * 1000) {
+              logger.debug(`策略 ${strategyId}: 收盘前120分钟，已无持仓，跳过监控`);
+              (this as any)[lastLogKey] = now;
+            }
+            return;
+          }
+          // 仍有持仓 → 继续执行（等待 0DTE TIME_STOP 触发平仓）
+        }
+      } catch {
+        // 获取失败不阻塞
+      }
+    }
+
     // 初始化执行汇总
     const summary: ExecutionSummary = {
       strategyId,
@@ -310,8 +343,6 @@ class StrategyScheduler {
     };
 
     summary.totalTargets = symbols.length;
-    // 只有在调试模式下才输出详细的开始日志
-    // logger.debug(`策略 ${strategyId}: 开始处理 ${symbols.length} 个标的: ${symbols.join(', ')}`);
 
     // 3. 分批并行处理多个股票（避免连接池耗尽）
     // 每批处理10个标的，避免一次性占用过多数据库连接
@@ -2386,7 +2417,45 @@ class StrategyScheduler {
         }
       }
 
-      // 5. 构建持仓上下文
+      // 5. 判断是否为 0DTE（末日期权）
+      let is0DTE = false;
+      try {
+        // 方法1: 从 optionMeta.strikeDate 判断
+        const strikeDateVal = optionMeta.strikeDate || context.strikeDate;
+        if (strikeDateVal) {
+          const sdStr = String(strikeDateVal);
+          // 转为 YYYYMMDD 格式
+          let dateStr = sdStr;
+          if (sdStr.length !== 8) {
+            // 可能是时间戳（秒级），转为 YYYYMMDD
+            const d = new Date(parseInt(sdStr, 10) * 1000);
+            if (!isNaN(d.getTime())) {
+              dateStr = d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' }).replace(/-/g, '');
+            }
+          }
+          const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }).replace(/-/g, '');
+          is0DTE = dateStr === todayStr;
+        }
+        // 方法2: 从 effectiveSymbol 解析到期日 (如 AAPL260210C100000.US)
+        if (!is0DTE && effectiveSymbol) {
+          const core = effectiveSymbol.replace(/\.(US|HK)$/i, '');
+          const match = core.match(/[A-Z]+(\d{6})[CP]/);
+          if (match) {
+            const yymmdd = match[1]; // e.g. "260210"
+            const yy = parseInt(yymmdd.substring(0, 2), 10);
+            const mm = yymmdd.substring(2, 4);
+            const dd = yymmdd.substring(4, 6);
+            const fullYear = yy >= 50 ? 1900 + yy : 2000 + yy;
+            const dateStr = `${fullYear}${mm}${dd}`;
+            const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }).replace(/-/g, '');
+            is0DTE = dateStr === todayStr;
+          }
+        }
+      } catch {
+        // 解析失败，默认非 0DTE
+      }
+
+      // 6. 构建持仓上下文
       const marketCloseTime = optionDynamicExitService.getMarketCloseTime();
       const positionCtx = {
         entryPrice,
@@ -2402,9 +2471,10 @@ class StrategyScheduler {
         timeValue,
         entryFees,
         estimatedExitFees,
+        is0DTE,
       };
 
-      // 6. 检查是否应该平仓
+      // 7. 检查是否应该平仓
       const exitCondition = optionDynamicExitService.checkExitCondition(positionCtx);
 
       if (exitCondition) {

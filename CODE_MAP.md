@@ -2,7 +2,7 @@
 
 本文档详细说明了项目中每个文件的作用以及文件之间的调用和关联关系。
 
-**最后更新**: 2026-02-10（期权价格获取切换长桥API主源：新增longport-option-quote服务）
+**最后更新**: 2026-02-10（LongPort期权链主源 + API文档入口 + 0DTE时间限制）
 
 ---
 
@@ -273,12 +273,16 @@ trading-system/
 **作用**: 期权相关 API
 
 **API**:
-- `GET /api/options/chain?symbol=...` - 期权链
-- `GET /api/options/quote?symbol=...` - 期权行情
+- `GET /api/options/chain?symbol=...` - 期权链（富途）
+- `GET /api/options/quote?symbol=...` - 期权行情（富途）
+- `GET /api/options/lb/expiry-dates?symbol=...` - 期权到期日列表（LongPort）
+- `GET /api/options/lb/chain?symbol=...&expiry=...` - 期权链数据（LongPort）
+- `GET /api/options/lb/quote?symbol=...` - 期权行情（LongPort）
 
 **调用关系**:
-- ✅ 使用 `services/futunn-option-chain.service.ts` - 期权链服务
-- ✅ 使用 `services/futunn-option-quote.service.ts` - 期权行情服务
+- ✅ 使用 `services/futunn-option-chain.service.ts` - 期权链服务（富途）
+- ✅ 使用 `services/futunn-option-quote.service.ts` - 期权行情服务（富途）
+- ✅ 使用 `services/longport-option-quote.service.ts` - 期权到期日/期权链/行情服务（LongPort）
 
 **被调用**:
 - 📌 `server.ts` - 注册路由
@@ -480,7 +484,7 @@ trading-system/
 
 **被调用**:
 - 📌 `routes/options.ts` - 期权链 API
-- 📌 `services/options-contract-selector.service.ts` - 期权合约选择
+- 📌 `services/options-contract-selector.service.ts` - 期权合约选择（备用源，LongPort失败时降级）
 - 📌 `services/strategy-scheduler.service.ts` - 期权价格获取（持仓监控）
 
 #### `api/src/services/option-price-cache.service.ts`
@@ -674,6 +678,7 @@ trading-system/
 - 时间衰减(Theta)管理
 - Delta对冲信号生成
 - 支持多种期权策略类型
+- **0DTE强制平仓**：`PositionContext` 包含 `is0DTE` 字段，收盘前120分钟触发 TIME_STOP 强制退出
 
 **调用关系**:
 - ✅ 使用 `services/trading-recommendation.service.ts` - 获取市场状态
@@ -807,7 +812,7 @@ trading-system/
 
 **调用关系**:
 - ✅ 使用 `services/trading-recommendation.service.ts` - underlying 方向信号
-- ✅ 使用 `services/options-contract-selector.service.ts` - 合约选择
+- ✅ 使用 `services/options-contract-selector.service.ts` - 合约选择（LongPort主源 + 富途备用，含0DTE买入截止）
 - ✅ 使用 `services/options-fee.service.ts` - 费用与资金占用估算
 
 **被调用**:

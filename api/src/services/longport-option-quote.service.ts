@@ -43,7 +43,78 @@ export interface OptionPriceResult {
   source: string;
 }
 
+export interface StrikePriceInfoResult {
+  price: number;
+  callSymbol: string;
+  putSymbol: string;
+  standard: boolean;
+}
+
 class LongPortOptionQuoteService {
+  /**
+   * 获取期权到期日列表
+   * 调用 LongPort optionChainExpiryDateList API
+   * @param symbol - 标的代码，如 "AAPL.US"
+   * @returns 到期日字符串数组，格式 "YYYYMMDD"
+   */
+  async getOptionExpiryDates(symbol: string): Promise<string[]> {
+    try {
+      const quoteCtx = await getQuoteContext();
+      const dates = await quoteCtx.optionChainExpiryDateList(symbol);
+
+      if (!dates || dates.length === 0) {
+        return [];
+      }
+
+      // NaiveDate → "YYYYMMDD" 字符串
+      return dates.map((d: any) => {
+        const year = d.year;
+        const month = String(d.month).padStart(2, '0');
+        const day = String(d.day).padStart(2, '0');
+        return `${year}${month}${day}`;
+      });
+    } catch (error: any) {
+      logger.warn(`${symbol} LongPort optionChainExpiryDateList 失败: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * 获取某到期日的行权价列表（含 call/put symbol）
+   * 调用 LongPort optionChainInfoByDate API
+   * @param symbol - 标的代码，如 "AAPL.US"
+   * @param expiryDate - 到期日，格式 "YYYYMMDD"
+   * @returns StrikePriceInfoResult[]
+   */
+  async getOptionChainByDate(symbol: string, expiryDate: string): Promise<StrikePriceInfoResult[]> {
+    try {
+      const longport = require('longport');
+      const { NaiveDate } = longport;
+
+      const year = parseInt(expiryDate.substring(0, 4), 10);
+      const month = parseInt(expiryDate.substring(4, 6), 10);
+      const day = parseInt(expiryDate.substring(6, 8), 10);
+      const naiveDate = new NaiveDate(year, month, day);
+
+      const quoteCtx = await getQuoteContext();
+      const chain = await quoteCtx.optionChainInfoByDate(symbol, naiveDate);
+
+      if (!chain || chain.length === 0) {
+        return [];
+      }
+
+      return chain.map((item: any) => ({
+        price: parseFloat(item.price?.toString() || '0'),
+        callSymbol: item.callSymbol || '',
+        putSymbol: item.putSymbol || '',
+        standard: item.standard ?? true,
+      }));
+    } catch (error: any) {
+      logger.warn(`${symbol} LongPort optionChainInfoByDate(${expiryDate}) 失败: ${error.message}`);
+      return [];
+    }
+  }
+
   /**
    * 获取期权行情（含 IV）
    * 调用 LongPort optionQuote API

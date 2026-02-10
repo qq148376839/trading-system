@@ -9,9 +9,226 @@ import {
   getOptionKline,
   getOptionMinute,
 } from '../services/futunn-option-chain.service';
+import longportOptionQuoteService from '../services/longport-option-quote.service';
 import { ErrorFactory, normalizeError } from '../utils/errors';
 
 export const optionsRouter = Router();
+
+// =============================================
+// LongPort 期权链 API（主数据源）
+// =============================================
+
+/**
+ * @openapi
+ * /options/lb/expiry-dates:
+ *   get:
+ *     tags:
+ *       - 期权(LongPort)
+ *     summary: 获取期权到期日列表 (LongPort)
+ *     description: 通过 LongPort SDK 获取指定标的的期权到期日列表
+ *     parameters:
+ *       - in: query
+ *         name: symbol
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 标的代码，如 AAPL.US
+ *     responses:
+ *       200:
+ *         description: 成功返回到期日列表
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     symbol:
+ *                       type: string
+ *                     expiryDates:
+ *                       type: array
+ *                       items:
+ *                         type: string
+ *                       description: 到期日列表，格式 YYYYMMDD
+ */
+optionsRouter.get('/lb/expiry-dates', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { symbol } = req.query;
+    if (!symbol || typeof symbol !== 'string') {
+      return next(ErrorFactory.missingParameter('symbol'));
+    }
+
+    const expiryDates = await longportOptionQuoteService.getOptionExpiryDates(symbol);
+
+    res.json({
+      success: true,
+      data: {
+        symbol,
+        expiryDates,
+      },
+    });
+  } catch (error: any) {
+    return next(normalizeError(error));
+  }
+});
+
+/**
+ * @openapi
+ * /options/lb/chain:
+ *   get:
+ *     tags:
+ *       - 期权(LongPort)
+ *     summary: 获取期权行权价链 (LongPort)
+ *     description: 通过 LongPort SDK 获取指定到期日的期权行权价列表（含 call/put symbol）
+ *     parameters:
+ *       - in: query
+ *         name: symbol
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 标的代码，如 AAPL.US
+ *       - in: query
+ *         name: expiryDate
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 到期日，格式 YYYYMMDD
+ *     responses:
+ *       200:
+ *         description: 成功返回行权价链
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     symbol:
+ *                       type: string
+ *                     expiryDate:
+ *                       type: string
+ *                     chain:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           price:
+ *                             type: number
+ *                           callSymbol:
+ *                             type: string
+ *                           putSymbol:
+ *                             type: string
+ *                           standard:
+ *                             type: boolean
+ */
+optionsRouter.get('/lb/chain', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { symbol, expiryDate } = req.query;
+    if (!symbol || typeof symbol !== 'string') {
+      return next(ErrorFactory.missingParameter('symbol'));
+    }
+    if (!expiryDate || typeof expiryDate !== 'string') {
+      return next(ErrorFactory.missingParameter('expiryDate'));
+    }
+
+    // 验证日期格式 YYYYMMDD
+    if (!/^\d{8}$/.test(expiryDate)) {
+      return next(ErrorFactory.validationError('expiryDate 格式必须为 YYYYMMDD'));
+    }
+
+    const chain = await longportOptionQuoteService.getOptionChainByDate(symbol, expiryDate);
+
+    res.json({
+      success: true,
+      data: {
+        symbol,
+        expiryDate,
+        chain,
+      },
+    });
+  } catch (error: any) {
+    return next(normalizeError(error));
+  }
+});
+
+/**
+ * @openapi
+ * /options/lb/quote:
+ *   get:
+ *     tags:
+ *       - 期权(LongPort)
+ *     summary: 获取期权实时行情 (LongPort)
+ *     description: 通过 LongPort SDK 获取期权实时行情（价格 + IV + Greeks）
+ *     parameters:
+ *       - in: query
+ *         name: symbol
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 期权代码，如 AAPL220429C100000.US
+ *     responses:
+ *       200:
+ *         description: 成功返回期权行情
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     price:
+ *                       type: number
+ *                     iv:
+ *                       type: number
+ *                     openInterest:
+ *                       type: number
+ *                     volume:
+ *                       type: number
+ *                     strikePrice:
+ *                       type: number
+ *                     underlyingSymbol:
+ *                       type: string
+ *                     bid:
+ *                       type: number
+ *                     ask:
+ *                       type: number
+ *                     source:
+ *                       type: string
+ */
+optionsRouter.get('/lb/quote', rateLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { symbol } = req.query;
+    if (!symbol || typeof symbol !== 'string') {
+      return next(ErrorFactory.missingParameter('symbol'));
+    }
+
+    const quote = await longportOptionQuoteService.getOptionQuote(symbol);
+
+    if (!quote) {
+      return next(ErrorFactory.externalApiError('LongPort', '获取期权行情失败'));
+    }
+
+    res.json({
+      success: true,
+      data: quote,
+    });
+  } catch (error: any) {
+    return next(normalizeError(error));
+  }
+});
+
+// =============================================
+// 富途 Moomoo 期权 API（备用数据源）
+// =============================================
 
 /**
  * GET /api/options/strike-dates

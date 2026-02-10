@@ -2,6 +2,44 @@
 
 ## 2026-02-10
 
+### LongPort期权链主源 + API文档入口 + 0DTE时间限制
+
+**功能/修复**: 将期权链数据获取从富途切换为LongPort主源（富途备用），前端新增API文档入口，并为0DTE期权增加买入截止和强制平仓时间限制。
+
+**实现内容**:
+
+#### 1. LongPort期权链API作为主源
+1. ✅ **`longport-option-quote.service.ts` 新增方法**：`getOptionExpiryDates()`（获取期权到期日列表）、`getOptionChainByDate()`（按日期获取期权链）
+2. ✅ **`options-contract-selector.service.ts` 重构**：LongPort 作为期权链主源，富途降级为备用（fallback）
+3. ✅ **新增3个LongPort路由**：
+   - `GET /api/options/lb/expiry-dates` — 获取期权到期日列表（LongPort）
+   - `GET /api/options/lb/chain` — 获取期权链数据（LongPort）
+   - `GET /api/options/lb/quote` — 获取期权行情（LongPort）
+
+#### 2. 前端API文档入口
+4. ✅ **`AppLayout.tsx` 侧边栏新增**：在系统区域添加"API文档"链接，新标签页打开 `/api/docs`
+
+#### 3. 0DTE期权时间限制（三部分）
+5. ✅ **0DTE买入截止**（`options-contract-selector.service.ts`）：收盘前120分钟禁止买入0DTE期权
+6. ✅ **0DTE强制平仓**（`option-dynamic-exit.service.ts`）：`PositionContext` 新增 `is0DTE` 字段，收盘前120分钟触发 TIME_STOP 强制平仓
+7. ✅ **0DTE清仓后跳过监控**（`strategy-scheduler.service.ts`）：截止时间后若无活跃持仓，跳过当前监控周期
+
+**修改文件**:
+- 📝 `api/src/services/longport-option-quote.service.ts`（新增 `getOptionExpiryDates()` / `getOptionChainByDate()`）
+- 📝 `api/src/services/options-contract-selector.service.ts`（LongPort主源 + 0DTE买入截止）
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（`is0DTE` + TIME_STOP 120分钟）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（0DTE清仓后跳过监控）
+- 📝 `api/src/routes/options.ts`（新增3个LongPort路由）
+- 📝 `frontend/components/AppLayout.tsx`（侧边栏新增API文档链接）
+
+**预期效果**:
+- 期权链数据获取延迟降低（LongPort SDK 直连）
+- 富途API保留为完整备用，自动降级
+- 0DTE期权风控增强：收盘前120分钟自动截止买入 + 强制平仓
+- API文档可通过前端侧边栏直接访问
+
+---
+
 ### 日志导出接口流式改造（Streaming NDJSON）
 
 **功能/修复**: `/api/logs/export` 从一次性加载全部结果改为流式导出，解决大数据量导出时网关/CDN 超时问题。

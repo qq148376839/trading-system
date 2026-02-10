@@ -7,6 +7,31 @@
 
 ## 🆕 最近更新
 
+### 2026-02-10: LongPort期权链主源 + API文档入口 + 0DTE时间限制
+
+**优化内容**：
+1. ✅ LongPort 期权链 API 作为主源：`longport-option-quote.service.ts` 新增到期日/期权链方法，`options-contract-selector.service.ts` 重构为 LongPort 主源 + 富途备用
+2. ✅ 新增3个 LongPort 路由：`/api/options/lb/expiry-dates`、`/api/options/lb/chain`、`/api/options/lb/quote`
+3. ✅ 前端侧边栏新增"API文档"入口（`AppLayout.tsx`），新标签页打开 `/api/docs`
+4. ✅ 0DTE 买入截止：收盘前120分钟禁止买入0DTE期权（`options-contract-selector.service.ts`）
+5. ✅ 0DTE 强制平仓：`PositionContext` 新增 `is0DTE`，收盘前120分钟触发 TIME_STOP（`option-dynamic-exit.service.ts`）
+6. ✅ 0DTE 清仓后跳过监控：截止时间后无活跃持仓则跳过周期（`strategy-scheduler.service.ts`）
+
+**修改文件**：
+- 📝 `api/src/services/longport-option-quote.service.ts`（新增到期日/期权链方法）
+- 📝 `api/src/services/options-contract-selector.service.ts`（LongPort主源 + 0DTE截止）
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（is0DTE + TIME_STOP）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（0DTE清仓跳过监控）
+- 📝 `api/src/routes/options.ts`（3个LongPort路由）
+- 📝 `frontend/components/AppLayout.tsx`（API文档链接）
+
+**预期效果**：
+- 期权链获取延迟降低，富途自动降级备用
+- 0DTE风控增强：收盘前120分钟截止买入 + 强制平仓
+- API文档可从前端直接访问
+
+---
+
 ### 2026-02-10: 日志导出接口流式改造（Streaming NDJSON）
 
 **优化内容**：
@@ -501,6 +526,6 @@
 
 ---
 
-**最后更新**: 2026-02-10（进度更新：日志导出流式改造 Streaming NDJSON + 期权价格获取切换长桥主源）
+**最后更新**: 2026-02-10（进度更新：LongPort期权链主源 + API文档入口 + 0DTE时间限制）
 **项目版本**: 1.0
 
