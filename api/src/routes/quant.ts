@@ -206,15 +206,15 @@ quantRouter.put('/capital/allocations/:id', async (req: Request, res: Response, 
       return next(ErrorFactory.resourceConflict('系统账户不允许修改名称'));
     }
 
-    // 检查是否有策略在使用此账户
+    // 检查是否有运行中的策略在使用此账户（已停止的策略不阻止编辑）
     const strategiesResult = await pool.query(
-      'SELECT COUNT(*) as count FROM strategies WHERE capital_allocation_id = $1',
+      "SELECT COUNT(*) as count FROM strategies WHERE capital_allocation_id = $1 AND status = 'RUNNING'",
       [id]
     );
     const strategyCount = parseInt(strategiesResult.rows[0].count || '0');
     if (strategyCount > 0) {
       return next(ErrorFactory.resourceConflict(
-        `该资金分配账户正在被 ${strategyCount} 个策略使用，无法修改`,
+        `该资金分配账户正在被 ${strategyCount} 个运行中的策略使用，无法修改`,
         { strategyCount }
       ));
     }
@@ -351,15 +351,15 @@ quantRouter.delete('/capital/allocations/:id', async (req: Request, res: Respons
       return next(ErrorFactory.resourceConflict('系统账户无法删除'));
     }
 
-    // 检查是否有策略在使用此账户
+    // 检查是否有运行中的策略在使用此账户（已停止的策略不阻止删除）
     const strategiesResult = await pool.query(
-      'SELECT COUNT(*) as count FROM strategies WHERE capital_allocation_id = $1',
+      "SELECT COUNT(*) as count FROM strategies WHERE capital_allocation_id = $1 AND status = 'RUNNING'",
       [id]
     );
     const strategyCount = parseInt(strategiesResult.rows[0].count || '0');
     if (strategyCount > 0) {
       return next(ErrorFactory.resourceConflict(
-        `该资金分配账户正在被 ${strategyCount} 个策略使用，无法删除`,
+        `该资金分配账户正在被 ${strategyCount} 个运行中的策略使用，无法删除`,
         { strategyCount }
       ));
     }
@@ -529,12 +529,12 @@ quantRouter.get('/capital/usage', async (req: Request, res: Response, next: Next
     }
 
     const allocationsResult = await pool.query(`
-      SELECT 
-        ca.*, 
+      SELECT
+        ca.*,
         COUNT(DISTINCT s.id) as strategy_count,
         COUNT(DISTINCT child.id) as children_count
       FROM capital_allocations ca
-      LEFT JOIN strategies s ON s.capital_allocation_id = ca.id
+      LEFT JOIN strategies s ON s.capital_allocation_id = ca.id AND s.status = 'RUNNING'
       LEFT JOIN capital_allocations child ON child.parent_id = ca.id
       GROUP BY ca.id
       ORDER BY ca.created_at DESC
