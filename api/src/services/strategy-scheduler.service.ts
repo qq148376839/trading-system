@@ -24,6 +24,7 @@ import shortValidationService from './short-position-validation.service';
 import { INITIAL_MARGIN_RATIO, MARGIN_SAFETY_BUFFER, DEFAULT_SHORT_QUANTITY_LIMIT } from './short-position-validation.service';
 import { getMarketCloseWindow } from './market-session.service';
 import { getOptionPrefixesForUnderlying, isLikelyOptionSymbol } from '../utils/options-symbol';
+import { estimateOptionOrderTotalCost } from './options-fee.service';
 import { getOptionDetail } from './futunn-option-chain.service';
 import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-limiter';
 import longportOptionQuoteService from './longport-option-quote.service';
@@ -3059,12 +3060,80 @@ class StrategyScheduler {
         return;
       }
 
-      // 7. 记录信号并执行
+      // 7. 计算该标的剩余可用预算（多仓模式需扣除已持仓占用）
+      let remainingBudget = availableCapital;
+      try {
+        const maxPerSymbol = await capitalManager.getMaxPositionPerSymbol(strategyId);
+        // 查询该underlying已占用的资金
+        const prefixes = getOptionPrefixesForUnderlying(symbol);
+        const usedResult = await pool.query(
+          `SELECT COALESCE((context->>'tradedSymbol')::text, symbol) as traded_symbol,
+                  COALESCE((context->>'allocationAmount')::numeric, 0) as allocation_amount
+           FROM strategy_instances
+           WHERE strategy_id = $1 AND current_state IN ('HOLDING', 'OPENING')`,
+          [strategyId]
+        );
+        let usedForSymbol = 0;
+        for (const row of usedResult.rows) {
+          const tradedSym = String(row.traded_symbol || '').toUpperCase();
+          if (!isLikelyOptionSymbol(tradedSym)) continue;
+          if (prefixes.some((p: string) => tradedSym.toUpperCase().startsWith(p.toUpperCase()))) {
+            usedForSymbol += parseFloat(row.allocation_amount || '0');
+          }
+        }
+        remainingBudget = Math.min(availableCapital, Math.max(0, maxPerSymbol - usedForSymbol));
+        logger.debug(
+          `策略 ${strategyId} 标的 ${symbol}: (多仓模式) 单标的上限=${maxPerSymbol.toFixed(2)}, 已用=${usedForSymbol.toFixed(2)}, 剩余预算=${remainingBudget.toFixed(2)}`
+        );
+      } catch (budgetErr: any) {
+        logger.warn(`策略 ${strategyId} 标的 ${symbol}: 计算剩余预算失败: ${budgetErr.message}`);
+      }
+
+      if (remainingBudget <= 0) {
+        // 无剩余预算，不需要生成信号
+        return;
+      }
+
+      // 8. 记录信号并执行
       logger.info(`策略 ${strategyId} 标的 ${symbol}: (多仓模式) 生成新信号 ${intent.action}, 合约=${newContractSymbol}, 价格=${intent.entryPrice?.toFixed(2) || 'N/A'}`);
       summary.signals.push(`${symbol}(NEW_CONTRACT)`);
 
       // 执行订单（BUY 信号）
       if (intent.action === 'BUY') {
+        // 根据剩余预算重新计算合约数（策略生成信号时不知道已占用金额）
+        const premium = intent.entryPrice || 0;
+        if (premium > 0 && intent.quantity) {
+          const meta = intent.metadata as any;
+          const feeModel = meta?.feeModel;
+          let fittedContracts = intent.quantity;
+          for (let n = intent.quantity; n >= 1; n--) {
+            const est = estimateOptionOrderTotalCost({ premium, contracts: n, feeModel });
+            if (est.totalCost <= remainingBudget) {
+              fittedContracts = n;
+              break;
+            }
+            if (n === 1) {
+              // 即使1张也超预算
+              logger.info(
+                `策略 ${strategyId} 标的 ${symbol}: (多仓模式) 剩余预算${remainingBudget.toFixed(2)}不足以购买1张合约(需${est.totalCost.toFixed(2)})`
+              );
+              return;
+            }
+          }
+          if (fittedContracts !== intent.quantity) {
+            logger.info(
+              `策略 ${strategyId} 标的 ${symbol}: (多仓模式) 合约数调整 ${intent.quantity} → ${fittedContracts}（剩余预算=${remainingBudget.toFixed(2)}）`
+            );
+            intent.quantity = fittedContracts;
+            // 重新计算 allocationAmountOverride
+            const newEst = estimateOptionOrderTotalCost({ premium, contracts: fittedContracts, feeModel });
+            if (meta) {
+              meta.allocationAmountOverride = newEst.totalCost;
+              meta.estimatedCost = newEst.totalCost;
+            }
+          }
+        }
+
         // 申请资金
         const allocationAmountOverride = (intent.metadata as any)?.allocationAmountOverride;
         const requestedAmount = typeof allocationAmountOverride === 'number' && allocationAmountOverride > 0
