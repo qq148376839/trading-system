@@ -198,10 +198,14 @@ export default function LogsPage() {
     loadLogs()
   }, [loadLogs])
 
-  // 导出日志
+  // 导出状态
+  const [exporting, setExporting] = useState(false)
+  const [exportProgress, setExportProgress] = useState(0)
+
+  // 导出日志（流式 NDJSON + 实时进度）
   const handleExport = async () => {
     try {
-      const params: any = {}
+      const params: Record<string, string> = {}
 
       if (filters.module) {
         params.module = filters.module
@@ -220,21 +224,36 @@ export default function LogsPage() {
         params.end_time = filters.dateRange[1].toISOString()
       }
 
-      message.loading({ content: '正在导出日志...', key: 'export' })
-      const blob = await logsApi.exportLogs(params)
-      
+      setExporting(true)
+      setExportProgress(0)
+      message.loading({ content: '正在导出日志...', key: 'export', duration: 0 })
+
+      let finalCount = 0
+      const blob = await logsApi.exportLogs(params, (count) => {
+        finalCount = count
+        setExportProgress(count)
+        message.loading({
+          content: `正在导出日志... 已接收 ${count.toLocaleString()} 条`,
+          key: 'export',
+          duration: 0,
+        })
+      })
+
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `logs-${dayjs().format('YYYY-MM-DD')}.json`
+      a.download = `logs-${dayjs().format('YYYY-MM-DD')}.ndjson`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
       window.URL.revokeObjectURL(url)
 
-      message.success({ content: '导出成功', key: 'export' })
-    } catch (err: any) {
-      message.error({ content: err.message || '导出失败', key: 'export' })
+      message.success({ content: `导出成功，共 ${finalCount.toLocaleString()} 条`, key: 'export' })
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : '导出失败'
+      message.error({ content: errMsg, key: 'export' })
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -595,8 +614,9 @@ export default function LogsPage() {
               type="primary"
               icon={<DownloadOutlined />}
               onClick={handleExport}
+              loading={exporting}
             >
-              导出日志
+              {exporting ? `导出中 (${exportProgress.toLocaleString()})` : '导出日志'}
             </Button>
             <Button
               danger

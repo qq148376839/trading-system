@@ -818,22 +818,67 @@ export const logsApi = {
   },
 
   /**
-   * 导出日志
-   * @param params 查询参数（与getLogs相同）
+   * 流式导出日志（NDJSON）
+   * 使用 fetch + ReadableStream 逐行读取，实时回调进度
+   * @param params 查询参数
+   * @param onProgress 进度回调，参数为已接收的行数
+   * @returns 包含所有 NDJSON 文本的 Blob
    */
-  exportLogs: async (params?: {
-    module?: string
-    level?: string
-    start_time?: string
-    end_time?: string
-    trace_id?: string
-  }): Promise<Blob> => {
-    // api 实例的响应拦截器已返回 response.data，所以这里直接就是 Blob
-    const data = await api.get(`/logs/export`, {
-      params,
-      responseType: 'blob',
-    })
-    return data as any
+  exportLogs: async (
+    params?: {
+      module?: string
+      level?: string
+      start_time?: string
+      end_time?: string
+      trace_id?: string
+    },
+    onProgress?: (count: number) => void,
+  ): Promise<Blob> => {
+    const query = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== '') query.set(k, v)
+      })
+    }
+    const baseURL = process.env.NEXT_PUBLIC_API_URL || '/api'
+    const url = `${baseURL}/logs/export${query.toString() ? '?' + query.toString() : ''}`
+
+    const resp = await fetch(url)
+    if (!resp.ok) {
+      throw new Error(`导出失败: ${resp.status} ${resp.statusText}`)
+    }
+
+    const reader = resp.body?.getReader()
+    if (!reader) {
+      throw new Error('浏览器不支持流式读取')
+    }
+
+    const decoder = new TextDecoder()
+    const chunks: BlobPart[] = []
+    let lineCount = 0
+    let buffer = ''
+
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (value) {
+        chunks.push(value)
+        // 统计换行符来计数行数（每行一个 JSON 对象）
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        // 最后一个元素可能是不完整的行，保留在 buffer
+        buffer = lines.pop() || ''
+        lineCount += lines.filter(l => l.trim()).length
+        onProgress?.(lineCount)
+      }
+      if (done) break
+    }
+    // 处理最后的 buffer 残余
+    if (buffer.trim()) {
+      lineCount++
+      onProgress?.(lineCount)
+    }
+
+    return new Blob(chunks, { type: 'application/x-ndjson' })
   },
 
   /**
