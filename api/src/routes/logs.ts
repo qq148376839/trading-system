@@ -314,7 +314,7 @@ logsRouter.get('/export', async (req: Request, res: Response, next: NextFunction
     // 生成文件名
     const now = new Date();
     const dateStr = now.toISOString().split('T')[0];
-    const filename = `logs-${dateStr}.ndjson`;
+    const filename = `logs-${dateStr}.json`;
 
     // 设置流式响应头
     res.setHeader('Content-Type', 'application/x-ndjson');

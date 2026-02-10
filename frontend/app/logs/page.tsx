@@ -242,7 +242,7 @@ export default function LogsPage() {
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `logs-${dayjs().format('YYYY-MM-DD')}.ndjson`
+      a.download = `logs-${dayjs().format('YYYY-MM-DD')}.json`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
