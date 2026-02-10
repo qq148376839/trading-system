@@ -1,0 +1,420 @@
+/**
+ * TSLPPCT 跟踪止损保护服务
+ *
+ * 期权买入成功后，自动挂出 TSLPPCT 跟踪止损保护单作为安全网。
+ * 动态监控保留全部智能逻辑，通过 replaceOrder 实时调整 TSLPPCT 参数。
+ *
+ * 核心功能：
+ * 1. 提交 TSLPPCT 保护单
+ * 2. 调整 trailing percent（replaceOrder / cancel+re-submit fallback）
+ * 3. 三步确认取消保护单
+ * 4. 查询保护单状态
+ * 5. 根据时段/IV/盈利动态计算 trailing percent
+ */
+
+import { getTradeContext, OrderType, OrderSide, TimeInForceType, Decimal } from '../config/longport';
+import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-limiter';
+import { logger } from '../utils/logger';
+import pool from '../config/database';
+import type { TradingPhase } from './option-dynamic-exit.service';
+
+// ============================================
+// 常量
+// ============================================
+
+const DEFAULT_TRAILING_PERCENT = 45;
+const DEFAULT_LIMIT_OFFSET = 0.10;
+const MIN_TRAILING_PERCENT = 8;
+const MAX_TRAILING_PERCENT = 50;
+const ADJUST_THRESHOLD = 3; // trailing_percent 差异≥3% 才调用 replaceOrder
+
+const TSLP_TAG = '[TSLP]';
+
+// ============================================
+// 类型
+// ============================================
+
+interface SubmitResult {
+  success: boolean;
+  orderId?: string;
+  error?: string;
+}
+
+interface CancelResult {
+  success: boolean;
+  alreadyFilled?: boolean;
+  alreadyCancelled?: boolean;
+  error?: string;
+}
+
+type ProtectionStatus = 'active' | 'filled' | 'cancelled' | 'expired' | 'unknown';
+
+interface TrailingPercentParams {
+  phase: TradingPhase;
+  entryIV?: number;
+  currentIV?: number;
+  netPnLPercent?: number;
+  is0DTE?: boolean;
+}
+
+// ============================================
+// 服务
+// ============================================
+
+class TrailingStopProtectionService {
+
+  /**
+   * 提交 TSLPPCT 保护单
+   */
+  async submitProtection(
+    symbol: string,
+    quantity: number,
+    trailingPercent: number = DEFAULT_TRAILING_PERCENT,
+    limitOffset: number = DEFAULT_LIMIT_OFFSET,
+    expireDate: string,
+    strategyId: number,
+  ): Promise<SubmitResult> {
+    try {
+      const tradeCtx = await getTradeContext();
+
+      const orderOptions: Record<string, unknown> = {
+        symbol,
+        orderType: OrderType.TSLPPCT,
+        side: OrderSide.Sell,
+        submittedQuantity: new Decimal(quantity.toString()),
+        timeInForce: TimeInForceType.GoodTilDate,
+        trailingPercent: new Decimal(trailingPercent.toString()),
+        limitOffset: new Decimal(limitOffset.toString()),
+        expireDate: new Date(expireDate),
+        remark: 'TSLP_AUTO',
+      };
+
+      const response = await longportRateLimiter.execute(() =>
+        retryWithBackoff<any>(() => tradeCtx.submitOrder(orderOptions as any) as any)
+      );
+
+      if (!response || !response.orderId) {
+        const errMsg = '未返回订单ID';
+        logger.log(
+          `${TSLP_TAG} 策略 ${strategyId} 期权 ${symbol}: TSLPPCT提交失败(${errMsg})，降级到纯监控模式`,
+          { dbWrite: true },
+        );
+        return { success: false, error: errMsg };
+      }
+
+      // 写入 execution_orders 表
+      await pool.query(
+        `INSERT INTO execution_orders
+         (strategy_id, symbol, order_id, side, quantity, price, current_status, execution_stage)
+         VALUES ($1, $2, $3, 'SELL', $4, 0, 'SUBMITTED', 1)`,
+        [strategyId, symbol, response.orderId, quantity],
+      );
+
+      logger.log(
+        `${TSLP_TAG} 策略 ${strategyId} 期权 ${symbol}: TSLPPCT保护单已提交 orderId=${response.orderId}, trailing=${trailingPercent}%`,
+        { dbWrite: true },
+      );
+
+      return { success: true, orderId: response.orderId };
+    } catch (error: any) {
+      const errMsg = error?.message || String(error);
+      logger.log(
+        `${TSLP_TAG} 策略 ${strategyId} 期权 ${symbol}: TSLPPCT提交失败(${errMsg})，降级到纯监控模式`,
+        { dbWrite: true },
+      );
+      return { success: false, error: errMsg };
+    }
+  }
+
+  /**
+   * 调整 TSLPPCT 保护单参数
+   *
+   * 先尝试 replaceOrder；若 SDK 不支持 trailing 参数则 fallback 到 cancel + re-submit。
+   */
+  async adjustProtection(
+    orderId: string,
+    newTrailingPercent: number,
+    newLimitOffset: number,
+    quantity: number,
+    strategyId: number,
+    symbol: string,
+    expireDate?: string,
+  ): Promise<SubmitResult> {
+    try {
+      const tradeCtx = await getTradeContext();
+
+      // 先尝试 replaceOrder（部分 SDK 版本可能不支持 trailing 参数）
+      try {
+        await longportRateLimiter.execute(() =>
+          retryWithBackoff<any>(() =>
+            tradeCtx.replaceOrder({
+              orderId,
+              quantity: new Decimal(quantity.toString()),
+              trailingPercent: new Decimal(newTrailingPercent.toString()),
+              limitOffset: new Decimal(newLimitOffset.toString()),
+            } as any) as any
+          )
+        );
+
+        logger.log(
+          `${TSLP_TAG} 策略 ${strategyId} 期权 ${symbol}: TSLPPCT调整成功 → trailing=${newTrailingPercent}%`,
+          { dbWrite: true },
+        );
+        return { success: true, orderId };
+      } catch (replaceErr: any) {
+        const msg = replaceErr?.message || '';
+        const code = replaceErr?.code || '';
+        // 如果是"不支持修改"类错误，fallback 到 cancel + re-submit
+        if (
+          code === '602012' ||
+          msg.includes('602012') ||
+          msg.includes('not supported') ||
+          msg.includes('trailing')
+        ) {
+          logger.warn(
+            `${TSLP_TAG} 策略 ${strategyId} 期权 ${symbol}: replaceOrder不支持trailing参数, fallback到cancel+re-submit`,
+          );
+        } else {
+          // 其他错误直接抛出
+          throw replaceErr;
+        }
+      }
+
+      // Fallback: cancel old → submit new
+      await this.cancelProtection(orderId, strategyId, symbol);
+
+      if (!expireDate) {
+        // 无法重新提交（缺少 expireDate）
+        return { success: false, error: 'fallback缺少expireDate' };
+      }
+
+      const resubmitResult = await this.submitProtection(
+        symbol,
+        quantity,
+        newTrailingPercent,
+        newLimitOffset,
+        expireDate,
+        strategyId,
+      );
+      return resubmitResult;
+    } catch (error: any) {
+      const errMsg = error?.message || String(error);
+      logger.log(
+        `${TSLP_TAG} 策略 ${strategyId} 期权 ${symbol}: TSLPPCT调整失败: ${errMsg}`,
+        { dbWrite: true },
+      );
+      return { success: false, error: errMsg };
+    }
+  }
+
+  /**
+   * 三步确认取消 TSLPPCT 保护单
+   *
+   * Step 1: orderDetail 查状态 → 已成交/已撤直接返回
+   * Step 2: cancelOrder
+   * Step 3: 等待 500ms → orderDetail 再次确认
+   */
+  async cancelProtection(
+    orderId: string,
+    strategyId: number,
+    symbol: string,
+  ): Promise<CancelResult> {
+    try {
+      const tradeCtx = await getTradeContext();
+
+      // Step 1: 查询当前状态
+      let detail: any;
+      try {
+        detail = await longportRateLimiter.execute(() =>
+          retryWithBackoff<any>(() => tradeCtx.orderDetail(orderId) as any)
+        );
+      } catch {
+        // 查询失败，仍尝试取消
+      }
+
+      if (detail) {
+        const status = this.normalizeOrderStatus(detail.status);
+        if (status === 'filled') {
+          logger.log(
+            `${TSLP_TAG} 策略 ${strategyId} 期权 ${symbol}: TSLPPCT已触发成交！无需取消`,
+            { dbWrite: true },
+          );
+          return { success: true, alreadyFilled: true };
+        }
+        if (status === 'cancelled' || status === 'expired') {
+          return { success: true, alreadyCancelled: true };
+        }
+      }
+
+      // Step 2: 执行取消
+      await longportRateLimiter.execute(() =>
+        retryWithBackoff<any>(() => tradeCtx.cancelOrder(orderId) as any)
+      );
+
+      // Step 3: 等待 500ms 再确认
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      try {
+        const confirmDetail = await longportRateLimiter.execute(() =>
+          retryWithBackoff<any>(() => tradeCtx.orderDetail(orderId) as any)
+        );
+        const confirmStatus = this.normalizeOrderStatus(confirmDetail?.status);
+        if (confirmStatus === 'filled') {
+          logger.log(
+            `${TSLP_TAG} 策略 ${strategyId} 期权 ${symbol}: TSLPPCT在取消前已触发成交！`,
+            { dbWrite: true },
+          );
+          return { success: true, alreadyFilled: true };
+        }
+      } catch {
+        // 确认查询失败，不阻塞
+      }
+
+      logger.log(
+        `${TSLP_TAG} 策略 ${strategyId} 期权 ${symbol}: 已取消TSLPPCT(${orderId})`,
+        { dbWrite: true },
+      );
+      return { success: true };
+    } catch (error: any) {
+      const errMsg = error?.message || String(error);
+      logger.warn(
+        `${TSLP_TAG} 策略 ${strategyId} 期权 ${symbol}: 取消TSLPPCT失败: ${errMsg}`,
+      );
+      return { success: false, error: errMsg };
+    }
+  }
+
+  /**
+   * 查询 TSLPPCT 保护单状态
+   */
+  async checkProtectionStatus(orderId: string): Promise<ProtectionStatus> {
+    try {
+      const tradeCtx = await getTradeContext();
+      const detail = await longportRateLimiter.execute(() =>
+        retryWithBackoff<any>(() => tradeCtx.orderDetail(orderId) as any)
+      );
+      return this.normalizeOrderStatus(detail?.status);
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  /**
+   * 根据时段 / IV / 盈利情况计算应设的 trailingPercent
+   *
+   * 规则：
+   * - 时段映射: EARLY→45%, MID→35%, LATE→25%, FINAL→15%
+   * - IV 调整: IV 涨>20% → +5%, IV 跌>20% → -5%
+   * - 盈利收紧: 盈利>30% → min(current,20%), 盈利>50% → min(current,15%)
+   * - 0DTE: min(current, 15%)
+   * - Clamp to [8%, 50%]
+   */
+  getTrailingPercentForPhase(params: TrailingPercentParams): number {
+    // 基础映射
+    const phaseMap: Record<TradingPhase, number> = {
+      EARLY: 45,
+      MID: 35,
+      LATE: 25,
+      FINAL: 15,
+    };
+
+    let tp = phaseMap[params.phase] ?? DEFAULT_TRAILING_PERCENT;
+
+    // IV 调整
+    if (params.entryIV && params.currentIV && params.entryIV > 0) {
+      const ivChange = (params.currentIV - params.entryIV) / params.entryIV;
+      if (ivChange > 0.2) {
+        tp += 5;
+      } else if (ivChange < -0.2) {
+        tp -= 5;
+      }
+    }
+
+    // 盈利收紧
+    if (params.netPnLPercent !== undefined) {
+      if (params.netPnLPercent > 50) {
+        tp = Math.min(tp, 15);
+      } else if (params.netPnLPercent > 30) {
+        tp = Math.min(tp, 20);
+      }
+    }
+
+    // 0DTE 收紧
+    if (params.is0DTE) {
+      tp = Math.min(tp, 15);
+    }
+
+    // Clamp
+    return Math.max(MIN_TRAILING_PERCENT, Math.min(MAX_TRAILING_PERCENT, tp));
+  }
+
+  /**
+   * 从 symbol 或 optionMeta 解析期权到期日（YYYY-MM-DD）
+   */
+  extractOptionExpireDate(tradedSymbol: string, optionMeta?: any): string {
+    // 1. 优先从 optionMeta.strikeDate 取
+    const strikeDateVal = optionMeta?.strikeDate;
+    if (strikeDateVal) {
+      const sdStr = String(strikeDateVal);
+      if (sdStr.length === 8) {
+        // YYYYMMDD → YYYY-MM-DD
+        return `${sdStr.substring(0, 4)}-${sdStr.substring(4, 6)}-${sdStr.substring(6, 8)}`;
+      }
+      // 可能是时间戳（秒级）
+      const ts = parseInt(sdStr, 10);
+      if (!isNaN(ts) && ts > 1000000000) {
+        const d = new Date(ts * 1000);
+        if (!isNaN(d.getTime())) {
+          return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+        }
+      }
+    }
+
+    // 2. 从 symbol 解析 (例如 AAPL260210C100000.US)
+    const core = tradedSymbol.replace(/\.(US|HK)$/i, '');
+    const match = core.match(/[A-Z]+(\d{6})[CP]/);
+    if (match) {
+      const yymmdd = match[1]; // e.g. "260210"
+      const yy = parseInt(yymmdd.substring(0, 2), 10);
+      const mm = yymmdd.substring(2, 4);
+      const dd = yymmdd.substring(4, 6);
+      const fullYear = yy >= 50 ? 1900 + yy : 2000 + yy;
+      return `${fullYear}-${mm}-${dd}`;
+    }
+
+    // 3. Fallback: 当日 +7 天
+    const fallback = new Date();
+    fallback.setDate(fallback.getDate() + 7);
+    return fallback.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  }
+
+  // ============================================
+  // 内部辅助
+  // ============================================
+
+  private normalizeOrderStatus(status: any): ProtectionStatus {
+    if (!status) return 'unknown';
+    const s = String(status);
+
+    if (s.includes('Filled') || s === 'FilledStatus') return 'filled';
+    if (s.includes('Cancel') || s === 'CanceledStatus') return 'cancelled';
+    if (s.includes('Expired') || s === 'ExpiredStatus') return 'expired';
+    if (
+      s.includes('New') ||
+      s.includes('NotReported') ||
+      s.includes('WaitTo') ||
+      s.includes('Pending') ||
+      s === 'NewStatus'
+    ) {
+      return 'active';
+    }
+    return 'unknown';
+  }
+}
+
+// 导出常量供外部引用
+export { DEFAULT_TRAILING_PERCENT, DEFAULT_LIMIT_OFFSET, ADJUST_THRESHOLD, MIN_TRAILING_PERCENT, MAX_TRAILING_PERCENT };
+
+// 导出单例
+const trailingStopProtectionService = new TrailingStopProtectionService();
+export default trailingStopProtectionService;

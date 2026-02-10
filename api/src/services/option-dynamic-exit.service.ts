@@ -165,6 +165,14 @@ class OptionDynamicExitService {
   }
 
   /**
+   * 获取当前持仓的交易时段（公开 helper，供 TSLPPCT 服务调用）
+   */
+  getPhaseForPosition(marketCloseTime?: Date): TradingPhase {
+    const closeTime = marketCloseTime || this.getMarketCloseTime();
+    return this.getTradingPhase(new Date(), closeTime);
+  }
+
+  /**
    * 计算盈亏（含手续费）
    */
   calculatePnL(ctx: PositionContext): PnLResult {

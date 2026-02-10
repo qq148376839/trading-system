@@ -2,7 +2,7 @@
 
 本文档详细说明了项目中每个文件的作用以及文件之间的调用和关联关系。
 
-**最后更新**: 2026-02-10（LongPort期权链主源 + API文档入口 + 0DTE时间限制）
+**最后更新**: 2026-02-10（TSLPPCT 跟踪止损保护 + 期权监控频率优化）
 
 ---
 
@@ -669,6 +669,27 @@ trading-system/
 **被调用**:
 - 📌 `services/strategy-scheduler.service.ts` - 策略调度器（持仓监控）
 
+#### `api/src/services/trailing-stop-protection.service.ts`
+**作用**: TSLPPCT 跟踪止损保护服务
+
+**主要功能**:
+- 管理券商侧跟踪止损单（Trailing Stop Loss Percentage），作为期权持仓安全网
+- 期权买入成交后自动提交 TSLPPCT 订单（默认 trailing=45%）
+- 动态调整跟踪百分比：按持仓阶段（EARLY 45%、MID 35%、LATE 25%、FINAL 15%）+ IV/PnL/0DTE 因素
+- 取消 TSLPPCT 订单（动态退出触发时先取消再市价卖出）
+- 补挂/状态检查：检测 TSLPPCT 订单是否有效，失效时尝试补挂
+- 降级容错：提交失败时退化为纯监控模式（无券商侧保护）
+
+**调用关系**:
+- ✅ 使用 `config/longport.ts` - 获取交易上下文（提交/取消跟踪止损单）
+- ✅ 使用 `services/option-dynamic-exit.service.ts` - 获取持仓阶段（`getPhaseForPosition()`）
+- ✅ 使用 `utils/logger.ts` - 日志记录
+
+**被调用**:
+- 📌 `services/strategy-scheduler.service.ts` - 策略调度器（买入后提交、动态退出前取消、持仓监控中补挂/调整）
+
+---
+
 #### `api/src/services/option-dynamic-exit.service.ts`
 **作用**: 期权动态止盈止损服务
 
@@ -718,6 +739,8 @@ trading-system/
 - 动态持仓管理（集成动态调整逻辑）
 - 更新信号状态（订单取消/拒绝时）
 - 期权止盈止损执行（使用市价单MO确保快速成交）
+- TSLPPCT 跟踪止损保护集成（买入后自动提交、动态退出前取消、持仓监控中补挂/状态检查/动态调整）
+- 期权监控频率优化（从 5 秒降至 90 秒，券商侧保护替代高频轮询）
 
 **调用关系**:
 - ✅ 使用 `config/database.ts` - 数据库操作
@@ -730,6 +753,7 @@ trading-system/
 - ✅ 使用 `services/basic-execution.service.ts` - 订单执行
 - ✅ 使用 `services/dynamic-position-manager.service.ts` - 动态持仓管理
 - ✅ 使用 `services/option-dynamic-exit.service.ts` - 期权动态止盈止损
+- ✅ 使用 `services/trailing-stop-protection.service.ts` - TSLPPCT 跟踪止损保护（买入后提交、退出前取消、补挂/调整）
 - ✅ 使用 `services/trading-recommendation.service.ts` - 交易推荐服务（获取ATR）
 - ✅ 使用 `services/market-session.service.ts` - 收盘窗口计算（禁开仓/强平）
 - ✅ 使用 `config/longport.ts` - 获取持仓和订单（直接调用 SDK）

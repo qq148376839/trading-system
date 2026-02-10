@@ -7,6 +7,30 @@
 
 ## 🆕 最近更新
 
+### 2026-02-10: TSLPPCT 跟踪止损保护
+
+**优化内容**：
+1. ✅ 新增 TSLPPCT 跟踪止损保护服务（`trailing-stop-protection.service.ts`）：券商侧跟踪止损单作为期权持仓安全网
+2. ✅ 期权买入成交后自动提交 TSLPPCT 跟踪止损单（默认 trailing=45%）
+3. ✅ 动态调整跟踪百分比：按阶段（EARLY 45%→MID 35%→LATE 25%→FINAL 15%）+ IV/PnL/0DTE 因素
+4. ✅ 动态退出触发时先取消 TSLPPCT，再执行市价卖出
+5. ✅ 交易推送检测 TSLPPCT 成交，自动转 IDLE
+6. ✅ 降级容错：TSLPPCT 提交失败时退化为纯监控模式
+7. ✅ 期权监控频率从 5 秒降至 90 秒（券商侧保护替代高频轮询）
+
+**修改文件**：
+- 📝 `api/src/services/trailing-stop-protection.service.ts`（新增）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（5处变更）
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（getPhaseForPosition）
+- 📝 `api/src/services/trade-push.service.ts`（TSLPPCT 成交检测）
+
+**预期效果**：
+- 系统宕机期间期权持仓仍有券商侧跟踪止损保护
+- 监控频率降低 18 倍（5s→90s），减少 API 调用和系统负载
+- 无数据库 schema 变更，新字段存储在现有 JSONB context 列中
+
+---
+
 ### 2026-02-10: 市场数据降级容错 + 已平仓自动转 IDLE
 
 **修复内容**：
@@ -593,6 +617,6 @@
 
 ---
 
-**最后更新**: 2026-02-10（进度更新：LongPort期权链主源 + API文档入口 + 0DTE时间限制）
+**最后更新**: 2026-02-10（进度更新：TSLPPCT 跟踪止损保护 + 期权监控频率优化）
 **项目版本**: 1.0
 

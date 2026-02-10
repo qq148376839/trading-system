@@ -6,6 +6,7 @@
 import { getTradeContext } from '../config/longport';
 import { logger } from '../utils/logger';
 import strategyScheduler from './strategy-scheduler.service';
+import stateManager from './state-manager.service';
 import basicExecutionService from './basic-execution.service';
 import orderPreventionMetrics from './order-prevention-metrics.service';
 import pool from '../config/database';
@@ -144,6 +145,39 @@ class TradePushService {
           .catch(error => {
             logger.error(`[交易推送] 重新计算可用持仓失败 (${symbol}):`, error);
           });
+      }
+
+      // TSLPPCT 保护单成交检测
+      const isSellOrder = side === 'Sell' || side === 2 || side === 'SELL' || side === 'sell';
+      if (isSellOrder && normalizedStatus === 'FilledStatus') {
+        try {
+          const tslpMatch = await pool.query(
+            `SELECT si.strategy_id, si.symbol, si.context
+             FROM strategy_instances si
+             WHERE si.context->>'tslpOrderId' = $1
+               AND si.current_state = 'HOLDING'
+             LIMIT 1`,
+            [orderId],
+          );
+          if (tslpMatch.rows.length > 0) {
+            const row = tslpMatch.rows[0];
+            const ctx = typeof row.context === 'string' ? JSON.parse(row.context) : (row.context || {});
+            logger.log(
+              `[交易推送][TSLP] 检测到TSLPPCT保护单成交: 策略${row.strategy_id} 标的${row.symbol}, 订单ID=${orderId}`,
+              { dbWrite: true },
+            );
+            await stateManager.updateState(row.strategy_id, row.symbol, 'IDLE', {
+              ...ctx,
+              autoClosedReason: 'tslp_triggered_push',
+              autoClosedAt: new Date().toISOString(),
+              previousState: 'HOLDING',
+              tslpExecutedPrice: executedPrice ? parseFloat(String(executedPrice)) : undefined,
+              tslpExecutedQuantity: executedQuantity ? parseInt(String(executedQuantity)) : undefined,
+            });
+          }
+        } catch (tslpErr: any) {
+          logger.error('[交易推送][TSLP] TSLPPCT成交检测失败:', tslpErr);
+        }
       }
 
       // ⚠️ 修复：标准化订单方向（区分开仓和平仓）

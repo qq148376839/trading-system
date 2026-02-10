@@ -2,6 +2,38 @@
 
 ## 2026-02-10
 
+### TSLPPCT 跟踪止损保护 + 期权监控频率优化
+
+**功能/修复**: 新增 TSLPPCT（Trailing Stop Loss Percentage）券商侧跟踪止损保护，作为期权持仓的安全网；同时将期权监控频率从 5 秒降至 90 秒，由券商侧保护替代高频轮询。
+
+**实现内容**:
+1. ✅ **新增跟踪止损保护服务**（`trailing-stop-protection.service.ts`）：管理 TSLPPCT 券商侧跟踪止损单，作为期权持仓的安全网
+2. ✅ **买入成功后自动提交 TSLPPCT**：期权买入成交后自动提交跟踪止损单（默认 trailing=45%）
+3. ✅ **动态调整跟踪百分比**：按持仓阶段调整（EARLY 45%、MID 35%、LATE 25%、FINAL 15%），同时结合 IV、PnL、0DTE 因素
+4. ✅ **动态退出前取消 TSLPPCT**：`processOptionDynamicExit` 触发卖出时，先取消 TSLPPCT 订单再执行市价卖出
+5. ✅ **交易推送检测 TSLPPCT 成交**：`trade-push.service.ts` 检测 TSLPPCT 止损单成交，自动转 IDLE
+6. ✅ **竞态条件防护**：CLOSING 转换前重新检查状态，防止 TSLPPCT 成交与动态退出并发冲突
+7. ✅ **降级容错**：TSLPPCT 提交失败时降级为纯监控模式（无券商侧保护）
+8. ✅ **期权监控频率优化**：从 5 秒降至 90 秒（券商侧保护替代高频轮询）
+
+**新增文件**:
+- 📝 `api/src/services/trailing-stop-protection.service.ts`（TSLPPCT 跟踪止损保护服务）
+
+**修改文件**:
+- 📝 `api/src/services/strategy-scheduler.service.ts`（5处变更：import、买入自动提交、订单成交自动提交、processOptionDynamicExit 补挂/检查/取消/调整、监控频率 5s→90s）
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（新增 `getPhaseForPosition()` 辅助方法）
+- 📝 `api/src/services/trade-push.service.ts`（检测 TSLPPCT 成交，自动转 IDLE）
+
+**设计要点**:
+- 无数据库 schema 迁移：新字段存储在现有 JSONB `context` 列中
+- 券商侧执行：跟踪止损单由券商维护，系统宕机期间保护仍有效
+- 监控频率降低 18 倍（5s→90s）：减少 API 调用和系统负载
+
+**验证结果**:
+- TypeScript 编译通过 ✅
+
+---
+
 ### 市场数据降级容错 + 已平仓自动转 IDLE
 
 **功能/修复**: 修复两个日志遗留问题 — BTC/USD 数据超时导致全链路阻断，已平仓持仓反复刷 error 日志。
