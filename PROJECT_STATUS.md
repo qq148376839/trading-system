@@ -7,6 +7,29 @@
 
 ## 🆕 最近更新
 
+### 2026-02-10: 修复富途 API 与 LongPort SDK 兼容性问题（7 项）
+
+**修复内容**：
+1. ✅ 消除 LongPort→Moomoo 交叉调用：新增 `getGreeks()` 批量方法（`calcIndexes` API），LongPort 路径不再依赖 Moomoo
+2. ✅ IV 格式归一化：LongPort 小数制(0.35)自动转百分比制(35.0)，匹配 Moomoo 格式
+3. ✅ strikeDate 统一为 YYYYMMDD：Moomoo 路径出口处 Unix 时间戳→YYYYMMDD 转换
+4. ✅ `contractMultiplier` 从 SDK 读取（不再硬编码 100）
+5. ✅ `entryIV` 兜底归一化：兼容数据库中旧格式数据
+6. ✅ 期权价格缓存分级 TTL：LongPort 5秒 / Moomoo 10秒
+
+**修改文件**：
+- 📝 `api/src/services/longport-option-quote.service.ts`（getGreeks + contractMultiplier + IV 归一化）
+- 📝 `api/src/services/options-contract-selector.service.ts`（替换交叉调用 + strikeDate 统一）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（entryIV 兜底）
+- 📝 `api/src/services/option-price-cache.service.ts`（分级 TTL）
+
+**预期效果**：
+- LongPort 路径 Greeks（delta/theta）从 0 恢复为正常值
+- ivChange 从 ±99% 异常恢复为 ±20% 正常波动
+- 富途 API 代码零修改，向后兼容旧数据
+
+---
+
 ### 2026-02-10: Swagger API文档跨平台路径修复
 
 **修复内容**：

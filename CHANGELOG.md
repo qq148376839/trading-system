@@ -2,6 +2,42 @@
 
 ## 2026-02-10
 
+### 修复富途 API 与 LongPort SDK 兼容性问题（7 项）
+
+**功能/修复**: 修复 LongPort 期权路径交叉调用 Moomoo API 导致的 Greeks 为零、IV 格式不一致、strikeDate 格式混乱等 7 个问题。
+
+**问题清单**:
+1. ⚠️严重 — LongPort 路径交叉调用 Moomoo 传入错误 strikeDate 格式（YYYYMMDD 传给期望 Unix 时间戳的 API）
+2. ⚠️严重 — LongPort SDK 有 `calcIndexes()` 可获取 Greeks 但未使用，完全依赖 Moomoo（因问题1失败）
+3. ⚠️严重 — IV 格式不一致：LongPort 小数(0.35) vs Moomoo 百分比(35.0)，导致 ivChange 出现 99% 误差
+4. 中等 — LongPort 路径 `optionId`/`underlyingStockId` 因交叉调用失败为空
+5. 中等 — `SelectedOptionContract.strikeDate` 两种路径格式不同
+6. 低 — `contractMultiplier` 硬编码为 100
+7. 低 — `safePct()` 不做 IV 尺度归一化
+
+**修复方案**:
+- 新增 `getGreeks()` 批量方法（`calcIndexes` API），消除 Moomoo 交叉调用
+- IV 归一化为百分比制（小数 < 5 自动 ×100）
+- Moomoo 路径 strikeDate 统一转换为 YYYYMMDD
+- `contractMultiplier` 从 SDK 读取
+- `entryIV` 兜底归一化（兼容旧数据）
+
+**附加优化**:
+- 期权价格缓存按数据来源区分 TTL：LongPort 5秒（与监控周期对齐）/ Moomoo 10秒
+
+**修改文件**:
+- 📝 `api/src/services/longport-option-quote.service.ts`（新增 `getGreeks()` + `contractMultiplier` + IV 归一化）
+- 📝 `api/src/services/options-contract-selector.service.ts`（替换 Moomoo 交叉调用 + strikeDate 统一）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（entryIV 兜底归一化）
+- 📝 `api/src/services/option-price-cache.service.ts`（LongPort 5s / Moomoo 10s 分级 TTL）
+
+**验证结果**:
+- TypeScript 编译通过 ✅
+- 279 个测试全部通过 ✅
+- `futunn-option-chain.service.ts` 零修改 ✅
+
+---
+
 ### Swagger API文档修复 — 跨平台路径 + 启动诊断
 
 **功能/修复**: 修复 Swagger 文档显示 "No operations defined in spec!" 的问题，同时增加启动诊断日志。

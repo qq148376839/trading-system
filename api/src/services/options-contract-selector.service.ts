@@ -285,7 +285,11 @@ async function selectOptionContractViaLongPort(
     const strikeDate = ymdToStrikeDate(pickedExpiryDate);
     const evaluated: SelectedOptionContract[] = [];
 
-    // 7. 获取每个候选合约的详情（LongPort optionQuote）
+    // 7. 批量获取所有候选合约的 Greeks（LongPort calcIndexes）
+    const candidateSymbols = candidates.map(c => c.symbol).filter(Boolean);
+    const greeksMap = await longportOptionQuoteService.getGreeks(candidateSymbols);
+
+    // 8. 获取每个候选合约的详情（LongPort optionQuote）
     for (const c of candidates) {
       try {
         const optQuote = await longportOptionQuoteService.getOptionQuote(c.symbol);
@@ -300,43 +304,16 @@ async function selectOptionContractViaLongPort(
         const openInterest = optQuote.openInterest;
         const iv = optQuote.iv;
 
-        // LongPort optionQuote 不直接提供 delta/theta，
-        // 尝试从富途获取 Greeks（如果可用）
+        // 从 LongPort calcIndexes 批量结果中获取 Greeks
         let deltaNum = 0;
         let thetaNum = 0;
-        let timeValueNum = 0;
-        let multiplier = 100;
-        let optionId = '';
-        let underlyingStockId = '';
+        const timeValueNum = 0;
+        const multiplier = optQuote.contractMultiplier || 100;
 
-        // 尝试富途 getOptionDetail 获取 Greeks
-        try {
-          const moomooStockId = await resolveUnderlyingStockId(params.underlyingSymbol);
-          if (moomooStockId) {
-            underlyingStockId = moomooStockId;
-            // 通过 symbol 搜索 optionId（富途 getOptionChain 返回的数据中有）
-            const moomooChain = await getOptionChain(moomooStockId, strikeDate);
-            if (moomooChain) {
-              for (const row of moomooChain) {
-                const opt = params.direction === 'CALL' ? row.callOption : row.putOption;
-                if (opt && Math.abs(parseFloat(opt.strikePrice) - c.strike) < 0.01) {
-                  optionId = String(opt.optionId);
-                  const detail = await getOptionDetail(optionId, moomooStockId, 2);
-                  if (detail && detail.option) {
-                    const d = detail.option.greeks?.hpDelta ?? detail.option.greeks?.delta;
-                    const t = detail.option.greeks?.hpTheta ?? detail.option.greeks?.theta;
-                    deltaNum = toNumber(d, 0);
-                    thetaNum = toNumber(t, 0);
-                    timeValueNum = toNumber(detail.option.timeValue, 0);
-                    multiplier = detail.option.multiplier || 100;
-                  }
-                  break;
-                }
-              }
-            }
-          }
-        } catch {
-          // Greeks 获取失败不阻塞流程
+        const greeks = greeksMap.get(c.symbol);
+        if (greeks) {
+          deltaNum = greeks.delta;
+          thetaNum = greeks.theta;
         }
 
         // Liquidity filters
@@ -373,8 +350,8 @@ async function selectOptionContractViaLongPort(
         evaluated.push({
           underlyingSymbol: params.underlyingSymbol,
           optionSymbol: c.symbol,
-          optionId: optionId || '',
-          underlyingStockId: underlyingStockId || '',
+          optionId: '',
+          underlyingStockId: '',
           marketType: 2,
           strikeDate,
           strikePrice: c.strike,
@@ -405,6 +382,7 @@ async function selectOptionContractViaLongPort(
       if (!top) return null;
       const optQuote = await longportOptionQuoteService.getOptionQuote(top.symbol);
       if (!optQuote || optQuote.price <= 0) return null;
+      const fallbackGreeks = greeksMap.get(top.symbol);
       return {
         underlyingSymbol: params.underlyingSymbol,
         optionSymbol: top.symbol,
@@ -414,15 +392,15 @@ async function selectOptionContractViaLongPort(
         strikeDate,
         strikePrice: top.strike,
         optionType: desiredType,
-        multiplier: 100,
+        multiplier: optQuote.contractMultiplier || 100,
         bid: optQuote.bid,
         ask: optQuote.ask,
         mid: optQuote.bid > 0 && optQuote.ask > 0 ? (optQuote.bid + optQuote.ask) / 2 : optQuote.price,
         last: optQuote.price,
         openInterest: optQuote.openInterest,
         impliedVolatility: safePct(optQuote.iv),
-        delta: 0,
-        theta: 0,
+        delta: fallbackGreeks?.delta || 0,
+        theta: fallbackGreeks?.theta || 0,
         timeValue: 0,
       };
     }
@@ -506,8 +484,15 @@ async function selectOptionContractViaMoomoo(
     }
   }
 
-  const strikeDate = pickedExpiry.strikeDate;
-  const chain = await getOptionChain(underlyingStockId, strikeDate);
+  const moomooStrikeDate = pickedExpiry.strikeDate; // Unix 时间戳，用于 Moomoo API
+  const chain = await getOptionChain(underlyingStockId, moomooStrikeDate);
+
+  // 转为 YYYYMMDD 用于 SelectedOptionContract 存储（统一格式）
+  const sdObj = new Date(moomooStrikeDate * 1000);
+  const strikeDate = parseInt(
+    sdObj.toLocaleDateString('en-CA', { timeZone: 'America/New_York' }).replace(/-/g, ''),
+    10
+  );
 
   const callOrPut = params.direction === 'CALL' ? 'CALL' : 'PUT';
   if (!chain || chain.length === 0) {

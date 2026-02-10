@@ -27,6 +27,15 @@ export interface OptionQuoteResult {
   bid: number;
   ask: number;
   source: string;
+  contractMultiplier: number;
+}
+
+export interface OptionGreeksResult {
+  delta: number;
+  gamma: number;
+  theta: number;
+  vega: number;
+  rho: number;
 }
 
 export interface OptionDepthResult {
@@ -130,25 +139,43 @@ class LongPortOptionQuoteService {
 
       const q = quotes[0];
       const price = parseFloat(q.lastDone?.toString() || '0');
-      const bid = parseFloat((q as any).bidPrice?.toString() || '0');
-      const ask = parseFloat((q as any).askPrice?.toString() || '0');
 
-      const ext = q.optionExtend || (q as any).option_extend;
-      const iv = ext ? parseFloat(ext.impliedVolatility?.toString() || '0') : 0;
-      const openInterest = ext ? parseFloat(ext.openInterest?.toString() || '0') : 0;
-      const strikePrice = ext ? parseFloat(ext.strikePrice?.toString() || '0') : 0;
-      const underlyingSymbol = ext?.underlyingSymbol || '';
+      // LongPort OptionQuote 所有字段都是顶级属性（不是子对象）
+      // SDK 类型定义中没有 bidPrice/askPrice，尝试从 depth 获取
+      const rawIV = parseFloat(q.impliedVolatility?.toString() || '0');
+      // LongPort 返回小数 (0.35 = 35%)，归一化为百分比制 (35.0) 以匹配 Moomoo 格式
+      // 安全阈值：小于 5 判定为小数制（5.0 小数制 = 500% IV，极端罕见）
+      const iv = rawIV > 0 && rawIV < 5 ? rawIV * 100 : rawIV;
+      const openInterest = typeof q.openInterest === 'number' ? q.openInterest : 0;
+      const strikePrice = parseFloat(q.strikePrice?.toString() || '0');
+      const underlyingSymbol = q.underlyingSymbol || '';
+      const volume = typeof q.volume === 'number' ? q.volume : 0;
+      const contractMultiplier = parseFloat(q.contractMultiplier?.toString() || '100') || 100;
+
+      // OptionQuote 类没有 bid/ask，尝试通过 depth 获取盘口
+      let bid = 0;
+      let ask = 0;
+      try {
+        const depthData = await this.getOptionDepth(symbol);
+        if (depthData) {
+          bid = depthData.bestBid;
+          ask = depthData.bestAsk;
+        }
+      } catch {
+        // depth 获取失败不影响主流程
+      }
 
       return {
         price,
         iv,
         openInterest,
-        volume: q.volume || 0,
+        volume,
         strikePrice,
         underlyingSymbol,
         bid,
         ask,
         source: 'longport-optionQuote',
+        contractMultiplier,
       };
     } catch (error: any) {
       // 权限错误不用 error 级别
@@ -198,6 +225,46 @@ class LongPortOptionQuoteService {
       logger.warn(`${symbol} LongPort depth 失败: ${error.message}`);
       return null;
     }
+  }
+
+  /**
+   * 批量获取期权 Greeks（Delta/Gamma/Theta/Vega/Rho）
+   * 调用 LongPort calcIndexes API
+   * @param symbols - 期权合约代码数组
+   * @returns Map<symbol, OptionGreeksResult>
+   */
+  async getGreeks(symbols: string[]): Promise<Map<string, OptionGreeksResult>> {
+    const result = new Map<string, OptionGreeksResult>();
+    if (!symbols || symbols.length === 0) return result;
+
+    try {
+      const longport = require('longport');
+      const { CalcIndex } = longport;
+      const quoteCtx = await getQuoteContext();
+
+      const calcResults = await quoteCtx.calcIndexes(symbols, [
+        CalcIndex.Delta,
+        CalcIndex.Gamma,
+        CalcIndex.Theta,
+        CalcIndex.Vega,
+        CalcIndex.Rho,
+      ]);
+
+      for (const item of calcResults) {
+        result.set(item.symbol, {
+          delta: parseFloat(item.delta?.toString() || '0'),
+          gamma: parseFloat(item.gamma?.toString() || '0'),
+          theta: parseFloat(item.theta?.toString() || '0'),
+          vega: parseFloat(item.vega?.toString() || '0'),
+          rho: parseFloat(item.rho?.toString() || '0'),
+        });
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.warn(`LongPort calcIndexes 失败 (${symbols.length} symbols): ${msg}`);
+    }
+
+    return result;
   }
 
   /**

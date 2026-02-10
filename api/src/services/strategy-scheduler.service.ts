@@ -2418,6 +2418,9 @@ class StrategyScheduler {
       }
 
       // 5. 判断是否为 0DTE（末日期权）
+      // strikeDate 格式兼容：
+      // - 新数据: YYYYMMDD numeric (20260204, length=8)
+      // - 旧数据: Unix 时间戳秒 (1738627200, length=10)
       let is0DTE = false;
       try {
         // 方法1: 从 optionMeta.strikeDate 判断
@@ -2465,7 +2468,12 @@ class StrategyScheduler {
         entryTime,
         marketCloseTime,
         strategySide,
-        entryIV: optionMeta.impliedVolatility || currentIV,
+        entryIV: (() => {
+          let iv = optionMeta.impliedVolatility || currentIV;
+          // 兜底：旧数据可能是小数制 (0.35)，归一化为百分比制 (35.0)
+          if (iv > 0 && iv < 5) iv = iv * 100;
+          return iv;
+        })(),
         currentIV,
         currentDelta,
         timeValue,

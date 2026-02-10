@@ -3,17 +3,16 @@
  *
  * 功能：
  * - 减少API调用频率，提高性能
- * - 10秒TTL，适合高频期权交易
+ * - 按数据来源区分 TTL：LongPort 5秒，其他 10秒
  * - 自动清理过期缓存
  *
  * 使用场景：
  * - 持仓监控循环中获取期权价格
- * - 避免频繁调用富途期权详情API
+ * - 避免频繁调用期权行情API
  *
- * 2024-02 API频率限制测试结果:
- * - Futunn API无严格频率限制，可支持更短的缓存时间
- * - 平均响应时间约400-800ms
- * - TTL从5分钟缩短到10秒，提供更实时的价格数据
+ * TTL 策略：
+ * - LongPort: 5秒（10次/秒限额，与5秒监控周期对齐）
+ * - Futunn:  10秒（无严格频率限制，但响应较慢400-800ms）
  */
 
 import { logger } from '../utils/logger';
@@ -30,7 +29,8 @@ export interface OptionPriceCacheEntry {
 
 class OptionPriceCacheService {
   private cache: Map<string, OptionPriceCacheEntry> = new Map();
-  private ttlMs = 10 * 1000; // 10秒TTL（API无频率限制，支持更频繁更新）
+  private ttlMs = 10 * 1000; // 默认 TTL（Futunn 等来源）
+  private longportTtlMs = 5 * 1000; // LongPort 来源 TTL（与5秒监控周期对齐）
   private cleanupInterval: NodeJS.Timeout | null = null;
 
   /**
@@ -45,13 +45,15 @@ class OptionPriceCacheService {
 
   /**
    * 获取缓存条目（如果未过期）
+   * LongPort 来源使用更短的 TTL（5秒），其他来源使用默认 TTL（10秒）
    */
   get(symbol: string): OptionPriceCacheEntry | null {
     const entry = this.cache.get(symbol.toUpperCase());
     if (!entry) return null;
 
-    // 检查是否过期
-    if (Date.now() - entry.timestamp > this.ttlMs) {
+    // 根据数据来源选择 TTL
+    const ttl = entry.source === 'longport' ? this.longportTtlMs : this.ttlMs;
+    if (Date.now() - entry.timestamp > ttl) {
       this.cache.delete(symbol.toUpperCase());
       return null;
     }
@@ -93,7 +95,8 @@ class OptionPriceCacheService {
     let expiredEntries = 0;
 
     for (const entry of this.cache.values()) {
-      if (now - entry.timestamp > this.ttlMs) {
+      const ttl = entry.source === 'longport' ? this.longportTtlMs : this.ttlMs;
+      if (now - entry.timestamp > ttl) {
         expiredEntries++;
       } else {
         validEntries++;
@@ -120,7 +123,8 @@ class OptionPriceCacheService {
       const toDelete: string[] = [];
 
       for (const [symbol, entry] of this.cache.entries()) {
-        if (now - entry.timestamp > this.ttlMs) {
+        const ttl = entry.source === 'longport' ? this.longportTtlMs : this.ttlMs;
+        if (now - entry.timestamp > ttl) {
           toDelete.push(symbol);
         }
       }
