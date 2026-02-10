@@ -246,8 +246,55 @@ class MarketDataCacheService {
         }
       }
 
-      // 无旧缓存，必须 throw
-      logger.error(`市场数据获取失败且无缓存可用: ${error.message}`);
+      // 无旧缓存 → 冷启动重试（最多2次，间隔递增）
+      const MAX_COLD_RETRIES = 2;
+      for (let attempt = 1; attempt <= MAX_COLD_RETRIES; attempt++) {
+        const retryDelaySec = attempt * 5; // 5s, 10s
+        logger.warn(
+          `市场数据获取失败且无缓存（连续${this.consecutiveFailures}次），` +
+          `${retryDelaySec}秒后冷启动重试 ${attempt}/${MAX_COLD_RETRIES}...`
+        );
+        await new Promise(r => setTimeout(r, retryDelaySec * 1000));
+
+        try {
+          const retryData = await marketDataService.getAllMarketData(
+            count, includeIntraday, { timeout: 30000 }
+          );
+
+          if (!retryData.spx || retryData.spx.length < 50) {
+            throw new Error(`SPX数据不足（${retryData.spx?.length || 0}）`);
+          }
+          if (!retryData.usdIndex || retryData.usdIndex.length < 50) {
+            throw new Error(`USD Index数据不足（${retryData.usdIndex?.length || 0}）`);
+          }
+          if (!retryData.btc || retryData.btc.length < 50) {
+            throw new Error(`BTC数据不足（${retryData.btc?.length || 0}）`);
+          }
+
+          this.cache = {
+            spx: retryData.spx,
+            usdIndex: retryData.usdIndex,
+            btc: retryData.btc,
+            vix: retryData.vix || [],
+            marketTemperature: retryData.marketTemperature,
+            timestamp: Date.now(),
+          };
+
+          if (includeIntraday) {
+            this.cache.usdIndexHourly = retryData.usdIndexHourly || [];
+            this.cache.btcHourly = retryData.btcHourly || [];
+            this.cache.hourlyTimestamp = Date.now();
+          }
+
+          this.consecutiveFailures = 0;
+          logger.info(`冷启动重试 ${attempt}/${MAX_COLD_RETRIES} 成功，缓存已建立`);
+          return this.cache;
+        } catch (retryErr: any) {
+          logger.warn(`冷启动重试 ${attempt}/${MAX_COLD_RETRIES} 失败: ${retryErr.message}`);
+        }
+      }
+
+      logger.error(`市场数据获取失败且无缓存可用（已重试${MAX_COLD_RETRIES}次）: ${error.message}`);
       throw error;
     });
 
