@@ -49,6 +49,25 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Swagger JSON spec（调试 + 程序化访问）
+app.get('/api/docs/spec.json', (_req, res) => {
+  res.json(swaggerSpec);
+});
+
+// Swagger 诊断端点
+app.get('/api/docs/debug', (_req, res) => {
+  const spec = swaggerSpec as any;
+  const paths = Object.keys(spec.paths || {});
+  res.json({
+    __dirname,
+    pathCount: paths.length,
+    paths: paths.slice(0, 20),
+    hasComponents: !!spec.components,
+    openapi: spec.openapi,
+    info: spec.info,
+  });
+});
+
 // API 路由
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 app.use('/api/quote', quoteRouter);
