@@ -1,5 +1,12 @@
 import swaggerJsdoc from 'swagger-jsdoc';
+import path from 'path';
 import { version } from '../../package.json';
+
+// 使用 __dirname 计算路径，确保无论 CWD 是什么都能找到源文件
+// 开发模式: __dirname = api/src/config → 扫描 api/src/routes/*.ts
+// 生产模式: __dirname = api/dist/config → 扫描 api/dist/routes/*.js（编译后保留JSDoc注释）
+const routesDir = path.resolve(__dirname, '../routes');
+const configDir = path.resolve(__dirname, '../config');
 
 const options: swaggerJsdoc.Options = {
   definition: {
@@ -34,8 +41,14 @@ const options: swaggerJsdoc.Options = {
       },
     ],
   },
-  // 自动扫描路由文件中的注释
-  apis: ['./src/routes/*.ts', './src/config/*.ts'], 
+  // 扫描路由和配置文件中的 @openapi 注释
+  // 同时匹配 .ts（开发）和 .js（生产编译后），避免路径找不到
+  apis: [
+    path.join(routesDir, '*.ts'),
+    path.join(routesDir, '*.js'),
+    path.join(configDir, '*.ts'),
+    path.join(configDir, '*.js'),
+  ],
 };
 
 export const swaggerSpec = swaggerJsdoc(options);

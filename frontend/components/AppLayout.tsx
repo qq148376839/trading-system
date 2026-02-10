@@ -118,9 +118,9 @@ export default function AppLayout({ children }: AppLayoutProps) {
       label: <Link href="/config">系统配置</Link>,
     },
     {
-      key: 'api-docs',
+      key: '/api-docs',
       icon: <ApiOutlined />,
-      label: <a href="/api/docs" target="_blank" rel="noopener noreferrer">API文档</a>,
+      label: <Link href="/api-docs">API文档</Link>,
     },
   ]
 
@@ -184,6 +184,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
         items.push({ title: isLast ? '系统配置' : <Link href={currentPath}>系统配置</Link> })
       } else if (path === 'options') {
         items.push({ title: isLast ? '期权链' : <Link href={currentPath}>期权链</Link> })
+      } else if (path === 'api-docs') {
+        items.push({ title: isLast ? 'API文档' : <Link href={currentPath}>API文档</Link> })
       } else {
         items.push({ title: path })
       }
