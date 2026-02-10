@@ -45,6 +45,7 @@ interface ExecutionSummary {
 
 class StrategyScheduler {
   private runningStrategies: Map<number, NodeJS.Timeout> = new Map();
+  private positionMgmtIntervals: Map<number, NodeJS.Timeout> = new Map();
   private orderMonitorIntervals: Map<number, NodeJS.Timeout> = new Map();
   private isRunning: boolean = false;
   // 持仓缓存：避免频繁调用 stockPositions() API
@@ -87,6 +88,14 @@ class StrategyScheduler {
       this.runningStrategies.delete(strategyId);
     }
     
+    // 停止所有持仓管理定时器
+    if (this.positionMgmtIntervals) {
+      for (const [strategyId, mgmtId] of this.positionMgmtIntervals.entries()) {
+        clearInterval(mgmtId);
+        this.positionMgmtIntervals.delete(strategyId);
+      }
+    }
+
     // 停止所有订单监控
     if (this.orderMonitorIntervals) {
       for (const [strategyId, monitorId] of this.orderMonitorIntervals.entries()) {
@@ -151,31 +160,42 @@ class StrategyScheduler {
     // - 其他策略：60秒（默认）
     // 注意：期权链数据有缓存，不会每次都请求API
     const isOptionStrategy = strategy.type === 'OPTION_INTRADAY_V1';
-    const intervalMs = isOptionStrategy ? 90 * 1000 : 60 * 1000;
-    const intervalDesc = isOptionStrategy ? '90秒' : '1分钟';
 
+    // 期权策略：分离入场扫描(15s)与持仓管理(90s)
+    // 非期权策略：统一60s周期
+    const entryScanMs = isOptionStrategy ? 15 * 1000 : 60 * 1000;
+    const positionMgmtMs = isOptionStrategy ? 90 * 1000 : 60 * 1000;
+
+    // 入场扫描定时器（快速扫描 IDLE 标的，寻找新机会）
     const intervalId = setInterval(async () => {
       try {
-        await this.runStrategyCycle(strategyInstance, strategyId, strategy.symbol_pool_config);
+        await this.runStrategyCycle(strategyInstance, strategyId, strategy.symbol_pool_config, isOptionStrategy ? 'entry' : 'all');
       } catch (error: any) {
         logger.error(`策略 ${strategyId} 运行出错:`, error);
-        // 更新策略状态为 ERROR
         await pool.query(
           'UPDATE strategies SET status = $1 WHERE id = $2',
           ['ERROR', strategyId]
         );
-        // 停止该策略
         this.stopStrategy(strategyId);
       }
-    }, intervalMs);
+    }, entryScanMs);
 
     this.runningStrategies.set(strategyId, intervalId);
 
-    // 启动订单监控任务
-    // - 期权策略：5秒（与策略周期同步）
-    // - 其他策略：30秒
-    const orderMonitorIntervalMs = isOptionStrategy ? 90 * 1000 : 30 * 1000;
-    const orderMonitorDesc = isOptionStrategy ? '90秒' : '30秒';
+    // 期权策略：独立的持仓管理定时器（HOLDING/SHORT/CLOSING 退出检查 + TSLPPCT调整）
+    if (isOptionStrategy) {
+      const positionMgmtId = setInterval(async () => {
+        try {
+          await this.runStrategyCycle(strategyInstance, strategyId, strategy.symbol_pool_config, 'position');
+        } catch (error: any) {
+          logger.error(`策略 ${strategyId} 持仓管理出错:`, error);
+        }
+      }, positionMgmtMs);
+      this.positionMgmtIntervals.set(strategyId, positionMgmtId);
+    }
+
+    // 订单监控
+    const orderMonitorIntervalMs = isOptionStrategy ? 30 * 1000 : 30 * 1000;
     const orderMonitorId = setInterval(async () => {
       try {
         await this.trackPendingOrders(strategyId);
@@ -184,10 +204,10 @@ class StrategyScheduler {
       }
     }, orderMonitorIntervalMs);
 
-    // 存储订单监控定时器ID（用于停止时清理）
     this.orderMonitorIntervals.set(strategyId, orderMonitorId);
 
-    logger.log(`策略 ${strategy.name} (ID: ${strategyId}) 已启动（策略周期: ${intervalDesc}，订单监控: ${orderMonitorDesc}）`, { dbWrite: false });
+    const intervalDesc = isOptionStrategy ? `入场扫描${entryScanMs / 1000}秒，持仓管理${positionMgmtMs / 1000}秒` : `${entryScanMs / 1000}秒`;
+    logger.log(`策略 ${strategy.name} (ID: ${strategyId}) 已启动（${intervalDesc}，订单监控: ${orderMonitorIntervalMs / 1000}秒）`, { dbWrite: false });
 
     // 立即执行一次策略周期
     try {
@@ -207,6 +227,13 @@ class StrategyScheduler {
       this.runningStrategies.delete(strategyId);
     }
     
+    // 停止持仓管理
+    const positionMgmtId = this.positionMgmtIntervals?.get(strategyId);
+    if (positionMgmtId) {
+      clearInterval(positionMgmtId);
+      this.positionMgmtIntervals.delete(strategyId);
+    }
+
     // 停止订单监控
     const orderMonitorId = this.orderMonitorIntervals?.get(strategyId);
     if (orderMonitorId) {
@@ -226,19 +253,21 @@ class StrategyScheduler {
   private async runStrategyCycle(
     strategyInstance: StrategyBase,
     strategyId: number,
-    symbolPoolConfig: any
+    symbolPoolConfig: any,
+    mode: 'all' | 'entry' | 'position' = 'all'
   ): Promise<void> {
-    // 🔒 执行锁检查：防止并发执行（当执行时间超过间隔时）
-    if (this.strategyExecutionLocks.get(strategyId)) {
-      logger.debug(`策略 ${strategyId}: 上次执行尚未完成，跳过本次调度`);
+    // 🔒 执行锁检查：entry 和 position 使用独立锁，避免互相阻塞
+    const lockKey = mode === 'all' ? strategyId : strategyId + (mode === 'entry' ? 100000 : 200000);
+    if (this.strategyExecutionLocks.get(lockKey)) {
+      logger.debug(`策略 ${strategyId} [${mode}]: 上次执行尚未完成，跳过本次调度`);
       return;
     }
-    this.strategyExecutionLocks.set(strategyId, true);
+    this.strategyExecutionLocks.set(lockKey, true);
 
     try {
-      await this.runStrategyCycleInternal(strategyInstance, strategyId, symbolPoolConfig);
+      await this.runStrategyCycleInternal(strategyInstance, strategyId, symbolPoolConfig, mode);
     } finally {
-      this.strategyExecutionLocks.set(strategyId, false);
+      this.strategyExecutionLocks.set(lockKey, false);
     }
   }
 
@@ -248,7 +277,8 @@ class StrategyScheduler {
   private async runStrategyCycleInternal(
     strategyInstance: StrategyBase,
     strategyId: number,
-    symbolPoolConfig: any
+    symbolPoolConfig: any,
+    mode: 'all' | 'entry' | 'position' = 'all'
   ): Promise<void> {
     // ✅ 交易日检查：非交易日不执行策略监控
     const today = new Date();
@@ -352,7 +382,7 @@ class StrategyScheduler {
     for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
       const batch = symbols.slice(i, i + BATCH_SIZE);
       await Promise.all(
-        batch.map((symbol) => this.processSymbol(strategyInstance, strategyId, symbol, summary))
+        batch.map((symbol) => this.processSymbol(strategyInstance, strategyId, symbol, summary, mode))
       );
       // 批次之间稍作延迟，避免数据库压力过大
       if (i + BATCH_SIZE < symbols.length) {
@@ -1147,14 +1177,23 @@ class StrategyScheduler {
     strategyInstance: StrategyBase,
     strategyId: number,
     symbol: string,
-    summary: ExecutionSummary
+    summary: ExecutionSummary,
+    mode: 'all' | 'entry' | 'position' = 'all'
   ): Promise<void> {
     try {
       // 检查当前状态
       const currentState = await strategyInstance.getCurrentState(symbol);
       const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy;
       const strategyConfig: any = (strategyInstance as any)?.config || {};
-      
+
+      // 模式过滤：entry模式只处理IDLE，position模式只处理非IDLE
+      if (mode === 'entry' && currentState !== 'IDLE') {
+        return;
+      }
+      if (mode === 'position' && currentState === 'IDLE') {
+        return;
+      }
+
       // 根据状态进行不同处理
       if (currentState === 'HOLDING') {
         // 持仓状态：检查是否需要卖出（止盈/止损）
@@ -3564,10 +3603,20 @@ class StrategyScheduler {
           }
         }
 
+        // 尝试保留已有的 entryTime（避免 IDLE→HOLDING 反复重置导致止损冷静期永不过期）
+        let preservedEntryTime: string | undefined;
+        try {
+          const existingState = await stateManager.getInstanceState(strategyId, symbol);
+          const existingCtx = existingState?.context;
+          if (existingCtx?.entryTime) {
+            preservedEntryTime = existingCtx.entryTime;
+          }
+        } catch { /* ignore */ }
+
         await strategyInstance.updateState(symbol, 'HOLDING', {
           entryPrice,
           quantity: qty,
-          entryTime: new Date().toISOString(),
+          entryTime: preservedEntryTime || new Date().toISOString(),
           tradedSymbol,
           // 期权默认不设置止盈止损，避免与强平逻辑冲突；仍保留字段兼容
           originalStopLoss: undefined,
@@ -3613,13 +3662,23 @@ class StrategyScheduler {
         }
       }
 
+      // 尝试保留已有的 entryTime（避免状态振荡重置止损冷静期）
+      let preservedEntryTimeForSync: string | undefined;
+      try {
+        const existingState = await stateManager.getInstanceState(strategyId, symbol);
+        const existingCtx = existingState?.context;
+        if (existingCtx?.entryTime) {
+          preservedEntryTimeForSync = existingCtx.entryTime;
+        }
+      } catch { /* ignore */ }
+
       // ⚠️ 修复：根据持仓数量判断状态类型
       if (quantity > 0) {
         // 做多持仓：同步到 HOLDING 状态
         const updatedContext = {
           entryPrice: actualPosition?.costPrice || actualPosition?.avgPrice || costPrice,
           quantity: quantity,
-          entryTime: new Date().toISOString(),
+          entryTime: preservedEntryTimeForSync || new Date().toISOString(),
           originalStopLoss: costPrice * 0.95,  // 默认止损-5%
           originalTakeProfit: costPrice * 1.10,  // 默认止盈+10%
           currentStopLoss: costPrice * 0.95,
@@ -3635,7 +3694,7 @@ class StrategyScheduler {
         const updatedContext = {
           entryPrice: actualPosition?.costPrice || actualPosition?.avgPrice || costPrice,  // 卖空价格
           quantity: quantity,  // 负数
-          entryTime: new Date().toISOString(),
+          entryTime: preservedEntryTimeForSync || new Date().toISOString(),
           originalStopLoss: costPrice * 1.03,  // 默认止损+3%（价格上涨）
           originalTakeProfit: costPrice * 0.97,  // 默认止盈-3%（价格下跌）
           currentStopLoss: costPrice * 1.03,

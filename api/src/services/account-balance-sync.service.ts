@@ -10,6 +10,7 @@ import capitalManager from './capital-manager.service';
 import stateManager from './state-manager.service';
 import basicExecutionService from './basic-execution.service';
 import orderPreventionMetrics from './order-prevention-metrics.service';
+import { getOptionPrefixesForUnderlying, isLikelyOptionSymbol } from '../utils/options-symbol';
 
 interface BalanceDiscrepancy {
   strategyId: number;
@@ -343,26 +344,41 @@ class AccountBalanceSyncService {
           const currentState = instance.current_state;
           const normalizedSymbol = this.normalizeSymbol(originalSymbol);
           
-          // 尝试多种格式匹配
-          let positionValue = positionMap.get(originalSymbol) || 0;
-          if (positionValue === 0 && normalizedSymbol !== originalSymbol) {
-            positionValue = positionMap.get(normalizedSymbol) || 0;
-          }
-          
-          // 检查是否有未成交订单
-          const hasPendingOrder = pendingOrderSymbols.has(originalSymbol);
-          
-          // 解析context
+          // 解析context（提前，供后续匹配使用）
           let context: any = {};
           if (instance.context) {
             try {
-              context = typeof instance.context === 'string' 
+              context = typeof instance.context === 'string'
                 ? JSON.parse(instance.context)
                 : instance.context;
             } catch (e) {
               logger.warn(`[账户余额同步] 解析策略实例上下文失败 (${originalSymbol}):`, e);
             }
           }
+
+          // 尝试多种格式匹配
+          let positionValue = positionMap.get(originalSymbol) || 0;
+          if (positionValue === 0 && normalizedSymbol !== originalSymbol) {
+            positionValue = positionMap.get(normalizedSymbol) || 0;
+          }
+          // 期权匹配：underlying symbol (如SPY.US) 对应期权持仓 (如SPY260210C694000.US)
+          if (positionValue === 0 && !isLikelyOptionSymbol(originalSymbol)) {
+            const prefixes = getOptionPrefixesForUnderlying(originalSymbol).map(p => p.toUpperCase());
+            for (const [posKey, posVal] of positionMap) {
+              const posKeyUpper = posKey.toUpperCase();
+              if (isLikelyOptionSymbol(posKeyUpper) && prefixes.some(p => posKeyUpper.startsWith(p))) {
+                positionValue = posVal;
+                break;
+              }
+            }
+          }
+          // 反向匹配：context.tradedSymbol 可能是期权symbol，也检查它
+          if (positionValue === 0 && context?.tradedSymbol) {
+            positionValue = positionMap.get(context.tradedSymbol) || 0;
+          }
+
+          // 检查是否有未成交订单
+          const hasPendingOrder = pendingOrderSymbols.has(originalSymbol);
           
           // 判断是否需要修复
           // 1. HOLDING状态但实际持仓不存在 -> 需要修复

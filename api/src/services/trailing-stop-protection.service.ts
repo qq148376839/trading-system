@@ -77,6 +77,16 @@ class TrailingStopProtectionService {
     try {
       const tradeCtx = await getTradeContext();
 
+      // LongPort SDK 要求 NaiveDate 而非 JS Date
+      const longport = require('longport');
+      const { NaiveDate } = longport;
+      const dateParts = expireDate.split('-'); // YYYY-MM-DD
+      const expireNaiveDate = new NaiveDate(
+        parseInt(dateParts[0], 10),
+        parseInt(dateParts[1], 10),
+        parseInt(dateParts[2], 10)
+      );
+
       const orderOptions: Record<string, unknown> = {
         symbol,
         orderType: OrderType.TSLPPCT,
@@ -85,7 +95,7 @@ class TrailingStopProtectionService {
         timeInForce: TimeInForceType.GoodTilDate,
         trailingPercent: new Decimal(trailingPercent.toString()),
         limitOffset: new Decimal(limitOffset.toString()),
-        expireDate: new Date(expireDate),
+        expireDate: expireNaiveDate,
         remark: 'TSLP_AUTO',
       };
 

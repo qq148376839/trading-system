@@ -403,7 +403,7 @@ class OptionDynamicExitService {
     }
 
     // 5. 强制止损：单笔最大亏损限制（安全阀）
-    const maxLossPercent = 50; // 单笔最大亏损50%
+    const maxLossPercent = 40; // 单笔最大亏损40%（硬上限，无视冷静期）
     if (pnl.netPnLPercent <= -maxLossPercent) {
       return {
         action: 'STOP_LOSS',
