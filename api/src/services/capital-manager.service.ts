@@ -7,6 +7,7 @@ import pool from '../config/database';
 import { getTradeContext } from '../config/longport';
 import accountBalanceSyncService from './account-balance-sync.service';
 import { logger } from '../utils/logger';
+import { isLikelyOptionSymbol, getOptionPrefixesForUnderlying } from '../utils/options-symbol';
 
 export interface CapitalAllocation {
   id: number;
@@ -394,38 +395,69 @@ class CapitalManager {
 
     // 4. 检查标的级限制（如果提供 symbol）
     if (request.symbol) {
-      // 查询该标的的当前持仓
-      const positionResult = await pool.query(
-        `SELECT SUM(quantity * avg_price) as total_value 
-         FROM auto_trades 
-         WHERE strategy_id = $1 AND symbol = $2 AND side = 'BUY' AND status = 'FILLED'
-         AND close_time IS NULL`,
-        [request.strategyId, request.symbol]
-      );
-      const positionValue = parseFloat(positionResult.rows[0]?.total_value || '0');
-      
+      let positionValue = 0;
+
+      // 判断是否为期权合约 symbol
+      const isOption = isLikelyOptionSymbol(request.symbol);
+
+      if (isOption) {
+        // 期权合约：通过 strategy_instances 查询该 underlying 下所有合约的已用资金
+        // 因为 auto_trades 中存的是 underlying symbol，无法按期权合约查询
+        // 从 request.symbol 提取 underlying 前缀来匹配
+        const underlyingPrefix = request.symbol.replace(/\d{6}[CP]\d+\.US$/i, '');
+        const prefixes = getOptionPrefixesForUnderlying(underlyingPrefix + '.US');
+
+        // 查询该 underlying 下所有状态为 HOLDING/OPENING 的期权合约的 allocationAmount
+        const optionPositionResult = await pool.query(
+          `SELECT
+             COALESCE((context->>'tradedSymbol')::text, symbol) as traded_symbol,
+             COALESCE((context->>'allocationAmount')::numeric, 0) as allocation_amount,
+             current_state
+           FROM strategy_instances
+           WHERE strategy_id = $1
+             AND current_state IN ('HOLDING', 'OPENING')`,
+          [request.strategyId]
+        );
+
+        for (const row of optionPositionResult.rows) {
+          const tradedSym = String(row.traded_symbol || '').toUpperCase();
+          if (!isLikelyOptionSymbol(tradedSym)) continue;
+          if (prefixes.some((p: string) => tradedSym.toUpperCase().startsWith(p.toUpperCase()))) {
+            positionValue += parseFloat(row.allocation_amount || '0');
+          }
+        }
+      } else {
+        // 股票：使用 auto_trades 查询（原逻辑）
+        const positionResult = await pool.query(
+          `SELECT SUM(quantity * avg_price) as total_value
+           FROM auto_trades
+           WHERE strategy_id = $1 AND symbol = $2 AND side = 'BUY' AND status = 'FILLED'
+           AND close_time IS NULL`,
+          [request.strategyId, request.symbol]
+        );
+        positionValue = parseFloat(positionResult.rows[0]?.total_value || '0');
+      }
+
       // 动态计算标的级限制：策略总资金 / 标的数量
-      // 首先获取标的池中的标的数量
-      let symbolCount = 1; // 默认值，避免除零
+      let symbolCount = 1;
       try {
         const stockSelector = (await import('./stock-selector.service')).default;
         const symbols = await stockSelector.getSymbolPool(strategy.symbol_pool_config || {});
-        symbolCount = Math.max(1, symbols.length); // 至少为1，避免除零
+        symbolCount = Math.max(1, symbols.length);
       } catch (error: any) {
         logger.warn(`无法获取策略 ${request.strategyId} 的标的池，使用默认限制:`, error.message);
-        // 如果无法获取标的池，使用固定百分比（向后兼容）
-        symbolCount = 20; // 假设20个标的，相当于5%的限制
+        symbolCount = 20;
       }
-      
+
       // 动态分配：策略总资金平均分配给所有标的
       const maxPositionPerSymbol = allocatedAmount / symbolCount;
       const newPositionValue = positionValue + request.amount;
-      
+
       if (newPositionValue > maxPositionPerSymbol) {
         return {
           approved: false,
           allocatedAmount: 0,
-          reason: `标的 ${request.symbol} 持仓超过限制: ${positionValue.toFixed(2)} + ${request.amount.toFixed(2)} = ${newPositionValue.toFixed(2)} > ${maxPositionPerSymbol.toFixed(2)} (策略总资金 ${allocatedAmount.toFixed(2)} / ${symbolCount} 个标的)`,
+          reason: `标的 ${request.symbol} 持仓超过限制: 已用${positionValue.toFixed(2)} + 申请${request.amount.toFixed(2)} = ${newPositionValue.toFixed(2)} > 上限${maxPositionPerSymbol.toFixed(2)} (策略总资金 ${allocatedAmount.toFixed(2)} / ${symbolCount} 个标的)`,
         };
       }
     }

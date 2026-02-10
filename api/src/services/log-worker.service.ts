@@ -7,7 +7,6 @@
 import pool from '../config/database';
 import { infraLogger } from '../utils/infra-logger';
 import configService from './config.service';
-import { infraLogger } from '../utils/infra-logger';
 
 interface LogEntry {
   timestamp: Date;

@@ -26,6 +26,7 @@ import { getMarketCloseWindow } from './market-session.service';
 import { getOptionPrefixesForUnderlying, isLikelyOptionSymbol } from '../utils/options-symbol';
 import { getOptionDetail } from './futunn-option-chain.service';
 import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-limiter';
+import longportOptionQuoteService from './longport-option-quote.service';
 
 // 定义执行汇总接口
 interface ExecutionSummary {
@@ -703,18 +704,28 @@ class StrategyScheduler {
                     }
                   }
 
-                  await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
-                    entryPrice: avgPrice,
-                    quantity: filledQuantity,
-                    stopLoss: context.stopLoss,
-                    takeProfit: context.takeProfit,
-                    orderId: dbOrder.order_id,
-                    tradedSymbol: context.tradedSymbol || (dbOrder.symbol !== instanceKeySymbol ? dbOrder.symbol : undefined),
-                    optionMeta: context.optionMeta || (context.intent?.metadata ? context.intent.metadata : undefined),
-                    allocationAmount,
-                  });
-                  
-                  logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol} 买入订单已成交，更新状态为HOLDING，订单ID: ${dbOrder.order_id}`);
+                  // 检查是否已经是HOLDING状态（避免重复更新和日志）
+                  const currentInstanceState = await strategyInstance.getCurrentState(instanceKeySymbol);
+                  if (currentInstanceState === 'HOLDING') {
+                    // 已经是HOLDING，只需确保DB状态标记为FILLED
+                    await pool.query(
+                      `UPDATE execution_orders SET current_status = 'FILLED', updated_at = NOW() WHERE order_id = $1 AND current_status != 'FILLED'`,
+                      [dbOrder.order_id]
+                    );
+                  } else {
+                    await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
+                      entryPrice: avgPrice,
+                      quantity: filledQuantity,
+                      stopLoss: context.stopLoss,
+                      takeProfit: context.takeProfit,
+                      orderId: dbOrder.order_id,
+                      tradedSymbol: context.tradedSymbol || (dbOrder.symbol !== instanceKeySymbol ? dbOrder.symbol : undefined),
+                      optionMeta: context.optionMeta || (context.intent?.metadata ? context.intent.metadata : undefined),
+                      allocationAmount,
+                    });
+
+                    logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol} 买入订单已成交，更新状态为HOLDING，订单ID: ${dbOrder.order_id}`);
+                  }
                 } else if (isSell) {
                   // 卖出订单成交：更新状态为IDLE，释放资金
                   let instanceKeySymbol = dbOrder.symbol;
@@ -1871,35 +1882,55 @@ class StrategyScheduler {
       let currentPrice = 0;
       let priceSource = '';
 
-      // 期权策略：优先检查缓存
+      // 期权策略：使用统一的长桥期权行情服务（含缓存 + fallback）
       if (isOptionStrategy) {
-        const optionPriceCacheService = (await import('./option-price-cache.service')).default;
-        const cached = optionPriceCacheService.get(effectiveSymbol);
-        if (cached) {
-          currentPrice = cached.price;
-          priceSource = `cache(${cached.source})`;
+        const optionMeta = context.optionMeta || {};
+        const priceResult = await longportOptionQuoteService.getOptionPrice(effectiveSymbol, {
+          optionId: optionMeta.optionId || optionMeta.option_id,
+          underlyingStockId: optionMeta.underlyingStockId || optionMeta.underlying_stock_id,
+          marketType: optionMeta.marketType || optionMeta.market_type || 2,
+        });
+        if (priceResult && priceResult.price > 0) {
+          currentPrice = priceResult.price;
+          priceSource = priceResult.source;
         }
       }
 
-      // 第一层：LongPort实时行情API
-      if (currentPrice <= 0) {
+      // 非期权策略或期权服务未返回价格：LongPort实时行情API
+      if (currentPrice <= 0 && !isOptionStrategy) {
         try {
           const { getQuoteContext } = await import('../config/longport');
           const quoteCtx = await getQuoteContext();
           const quotes = await quoteCtx.quote([effectiveSymbol]);
           if (quotes && quotes.length > 0) {
-            const price = parseFloat(quotes[0].lastDone?.toString() || quotes[0].last_done?.toString() || '0');
+            const q = quotes[0];
+            let price = parseFloat(q.lastDone?.toString() || q.last_done?.toString() || '0');
+            let src = 'longport-lastDone';
+            if (price <= 0) {
+              const bid = parseFloat(q.bidPrice?.toString() || '0');
+              const ask = parseFloat(q.askPrice?.toString() || '0');
+              if (bid > 0 && ask > 0) {
+                price = (bid + ask) / 2;
+                src = 'longport-mid';
+              } else if (ask > 0) {
+                price = ask;
+                src = 'longport-ask';
+              } else if (bid > 0) {
+                price = bid;
+                src = 'longport-bid';
+              }
+            }
             if (price > 0) {
               currentPrice = price;
-              priceSource = 'longport';
+              priceSource = src;
             }
           }
         } catch (error: any) {
-          logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: LongPort行情获取失败: ${error.message}`);
+          logger.warn(`策略 ${strategyId} 标的 ${effectiveSymbol}: LongPort行情获取失败: ${error.message}`);
         }
       }
 
-      // 第二层：持仓缓存数据
+      // 额外备用层：持仓缓存数据
       if (currentPrice <= 0) {
         try {
           const allPositions = await this.getCachedPositions();
@@ -1915,44 +1946,7 @@ class StrategyScheduler {
             }
           }
         } catch (error: any) {
-          logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: 持仓缓存获取失败: ${error.message}`);
-        }
-      }
-
-      // 第三层：期权策略特有 - 富途期权详情API
-      if (currentPrice <= 0 && isOptionStrategy) {
-        try {
-          const optionMeta = context.optionMeta || {};
-          const optionId = optionMeta.optionId || optionMeta.option_id;
-          const underlyingStockId = optionMeta.underlyingStockId || optionMeta.underlying_stock_id;
-          const marketType = optionMeta.marketType || optionMeta.market_type || 2;
-
-          if (optionId && underlyingStockId) {
-            const detail = await getOptionDetail(String(optionId), String(underlyingStockId), Number(marketType) || 2);
-            if (detail) {
-              const bid = detail.priceBid || 0;
-              const ask = detail.priceAsk || 0;
-              const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (detail.price || 0);
-              currentPrice = mid || bid || detail.price || 0;
-              priceSource = 'futunn';
-
-              // 缓存价格
-              if (currentPrice > 0) {
-                const optionPriceCacheService = (await import('./option-price-cache.service')).default;
-                optionPriceCacheService.set(effectiveSymbol, {
-                  price: currentPrice,
-                  bid,
-                  ask,
-                  mid,
-                  timestamp: Date.now(),
-                  underlyingPrice: detail.underlyingPrice || 0,
-                  source: 'futunn',
-                });
-              }
-            }
-          }
-        } catch (error: any) {
-          logger.error(`策略 ${strategyId} 期权 ${effectiveSymbol}: 富途详情获取失败: ${error.message}`);
+          logger.warn(`策略 ${strategyId} 标的 ${effectiveSymbol}: 持仓缓存获取失败: ${error.message}`);
         }
       }
 
@@ -2066,7 +2060,61 @@ class StrategyScheduler {
       }
 
       if (currentPrice <= 0) {
-        // 添加诊断日志，帮助追踪价格获取失败的原因
+        // 期权策略：当所有价格获取方式失败时，检查是否需要紧急平仓
+        // 0DTE期权在收盘时会归零，必须在收盘前卖出
+        if (isOptionStrategy && entryPrice > 0 && quantity > 0) {
+          try {
+            const closeWindow = await getMarketCloseWindow({
+              market: 'US',
+              noNewEntryBeforeCloseMinutes: 60,
+              forceCloseBeforeCloseMinutes: 30,
+            });
+            const now = new Date();
+            if (closeWindow && now >= closeWindow.forceCloseTimeUtc) {
+              // 收盘前30分钟内，价格获取全部失败 → 紧急市价单平仓
+              logger.error(
+                `策略 ${strategyId} 期权 ${effectiveSymbol}: ⚠️ 收盘前紧急平仓 - 所有价格获取失败但临近收盘，使用市价单避免归零`
+              );
+
+              // 检查可用持仓
+              const positionCheck = await this.checkAvailablePosition(strategyId, effectiveSymbol);
+              const sellQty = positionCheck.availableQuantity !== undefined
+                ? Math.min(quantity, positionCheck.availableQuantity)
+                : quantity;
+              if (sellQty > 0 && !positionCheck.hasPending) {
+                await strategyInstance.updateState(symbol, 'CLOSING', {
+                  ...context,
+                  exitReason: 'EMERGENCY_CLOSE',
+                  exitReasonDetail: '价格获取失败+临近收盘，紧急市价单平仓',
+                });
+
+                const emergencySellIntent = {
+                  action: 'SELL' as const,
+                  symbol: effectiveSymbol,
+                  entryPrice: entryPrice,
+                  sellPrice: entryPrice * 0.5, // 使用入场价一半作为参考价（市价单不依赖此值）
+                  quantity: sellQty,
+                  reason: '紧急平仓: 价格获取失败+临近收盘',
+                  metadata: {
+                    assetClass: 'OPTION',
+                    exitAction: 'EMERGENCY_CLOSE',
+                    forceClose: true,
+                  },
+                };
+
+                const result = await basicExecutionService.executeSellIntent(emergencySellIntent, strategyId);
+                if (result.success || result.submitted) {
+                  return { actionTaken: true };
+                }
+                // 卖出失败，回滚状态
+                await strategyInstance.updateState(symbol, 'HOLDING', context);
+              }
+            }
+          } catch (emergencyError: any) {
+            logger.error(`策略 ${strategyId} 期权 ${effectiveSymbol}: 紧急平仓检查失败: ${emergencyError.message}`);
+          }
+        }
+
         logger.warn(
           `策略 ${strategyId} 标的 ${effectiveSymbol}: 所有价格获取方式均失败，无法进行止盈止损检查 | ` +
           `context.optionMeta: ${JSON.stringify(context.optionMeta || {})} | ` +
@@ -2303,7 +2351,7 @@ class StrategyScheduler {
       // 简化：假设当前都是买方策略（做多期权）
       const strategySide = 'BUYER' as const;
 
-      // 4. 获取当前IV（如果可用）
+      // 4. 获取当前IV（如果可用）- 优先使用 LongPort optionQuote
       let currentIV = 0;
       let currentDelta = 0;
       let timeValue = 0;
@@ -2311,11 +2359,25 @@ class StrategyScheduler {
       const underlyingStockId = optionMeta.underlyingStockId || optionMeta.underlying_stock_id;
       const marketType = optionMeta.marketType || optionMeta.market_type || 2;
 
-      if (optionId && underlyingStockId) {
+      // 主源：LongPort optionQuote（含 IV）
+      try {
+        const optQuote = await longportOptionQuoteService.getOptionQuote(effectiveSymbol);
+        if (optQuote && optQuote.iv > 0) {
+          currentIV = optQuote.iv;
+          logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: LongPort optionQuote IV=${currentIV.toFixed(2)}`);
+        }
+      } catch {
+        // 忽略错误，降级到富途
+      }
+
+      // 备用：富途 getOptionDetail（含 IV + Delta + timeValue）
+      if ((currentIV <= 0 || currentDelta === 0) && optionId && underlyingStockId) {
         try {
           const detail = await getOptionDetail(String(optionId), String(underlyingStockId), Number(marketType));
           if (detail && detail.option) {
-            currentIV = detail.option.impliedVolatility || 0;
+            if (currentIV <= 0) {
+              currentIV = detail.option.impliedVolatility || 0;
+            }
             currentDelta = detail.option.greeks?.hpDelta || detail.option.greeks?.delta || 0;
             timeValue = detail.option.timeValue || 0;
           }

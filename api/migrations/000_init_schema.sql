@@ -211,7 +211,12 @@ INSERT INTO system_config (config_key, config_value, encrypted, description) VAL
     ('log_queue_min_size', '5000', false, '日志队列最小大小（动态调整下限）'),
     ('log_queue_max_size', '50000', false, '日志队列最大大小（动态调整上限）'),
     ('log_batch_size', '100', false, '日志批量写入大小（每次写入数据库的日志条数）'),
-    ('log_batch_interval', '1000', false, '日志批量写入间隔（毫秒）')
+    ('log_batch_interval', '1000', false, '日志批量写入间隔（毫秒）'),
+    ('log_throttle_enabled', 'true', false, '启用日志节流（同一消息模板在窗口内只写一条到库）'),
+    ('log_throttle_window_seconds', '30', false, '日志节流窗口时间（秒）'),
+    ('log_digest_enabled', 'true', false, '启用日志摘要（高频指标定期聚合写入）'),
+    ('log_digest_interval_minutes', '5', false, '日志摘要刷新间隔（分钟）'),
+    ('log_debug_to_db', 'false', false, '应急开关：启用 DEBUG 级别日志入库（默认关闭以减少DB压力）')
 ON CONFLICT (config_key) DO UPDATE SET 
     -- Update description if it changed (always update for clarity)
     description = EXCLUDED.description,
@@ -590,6 +595,227 @@ BEGIN
         END IF;
     END IF;
 END $$;
+
+-- ============================================================================
+-- 第八部分：验证失败日志表（011_create_validation_failure_logs.sql）
+-- ============================================================================
+
+-- Validation Failure Logs Table
+-- Purpose: Store short position validation failure logs
+CREATE TABLE IF NOT EXISTS validation_failure_logs (
+    id SERIAL PRIMARY KEY,
+    strategy_id INTEGER NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    failure_type VARCHAR(50) NOT NULL,
+    reason TEXT,
+    timestamp TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+
+    CONSTRAINT fk_validation_logs_strategy
+        FOREIGN KEY (strategy_id)
+        REFERENCES strategies(id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_validation_logs_strategy_id
+    ON validation_failure_logs(strategy_id);
+
+CREATE INDEX IF NOT EXISTS idx_validation_logs_symbol
+    ON validation_failure_logs(symbol);
+
+CREATE INDEX IF NOT EXISTS idx_validation_logs_timestamp
+    ON validation_failure_logs(timestamp DESC);
+
+CREATE INDEX IF NOT EXISTS idx_validation_logs_failure_type
+    ON validation_failure_logs(failure_type);
+
+CREATE INDEX IF NOT EXISTS idx_validation_logs_strategy_symbol
+    ON validation_failure_logs(strategy_id, symbol, timestamp DESC);
+
+COMMENT ON TABLE validation_failure_logs IS '卖空验证失败日志记录表 - 记录策略执行过程中卖空验证失败的情况';
+COMMENT ON COLUMN validation_failure_logs.id IS '主键ID，自增';
+COMMENT ON COLUMN validation_failure_logs.strategy_id IS '策略ID，关联 strategies 表';
+COMMENT ON COLUMN validation_failure_logs.symbol IS '标的代码（如 TSLA.US, AAPL.US）';
+COMMENT ON COLUMN validation_failure_logs.failure_type IS '失败类型（如 SHORT_VALIDATION_FAILED, MARGIN_CHECK_FAILED）';
+COMMENT ON COLUMN validation_failure_logs.reason IS '失败原因详情';
+COMMENT ON COLUMN validation_failure_logs.timestamp IS '失败时间';
+COMMENT ON COLUMN validation_failure_logs.created_at IS '记录创建时间';
+
+-- ============================================================================
+-- 第九部分：期权策略决策日志表（012_create_option_decision_logs.sql）
+-- ============================================================================
+
+-- Option Strategy Decision Logs Table
+-- Purpose: 记录期权策略的完整决策链路，用于分析未下单原因
+CREATE TABLE IF NOT EXISTS option_strategy_decision_logs (
+    id BIGSERIAL PRIMARY KEY,
+
+    -- 基本信息
+    strategy_id INTEGER REFERENCES strategies(id) ON DELETE CASCADE,
+    underlying_symbol VARCHAR(20) NOT NULL,
+    execution_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- 检查点1: 市场数据充足性
+    data_check_spx_count INTEGER,
+    data_check_usd_count INTEGER,
+    data_check_btc_count INTEGER,
+    data_check_vix_available BOOLEAN,
+    data_check_temperature_available BOOLEAN,
+    data_check_passed BOOLEAN DEFAULT false,
+    data_check_error TEXT,
+
+    -- 检查点2: 信号方向判定
+    signal_direction VARCHAR(10) CHECK (signal_direction IN ('CALL', 'PUT', 'HOLD')),
+    signal_confidence INTEGER,
+    signal_market_score DECIMAL(10, 2),
+    signal_intraday_score DECIMAL(10, 2),
+    signal_time_adjustment DECIMAL(10, 2),
+    signal_final_score DECIMAL(10, 2),
+
+    -- 检查点3: 风险等级评估
+    risk_level VARCHAR(20) CHECK (risk_level IN ('LOW', 'MEDIUM', 'HIGH', 'EXTREME')),
+    risk_vix_value DECIMAL(10, 2),
+    risk_temperature_value DECIMAL(10, 2),
+    risk_score INTEGER,
+    risk_blocked BOOLEAN DEFAULT false,
+
+    -- 检查点4: 0DTE期权可用性
+    dte_check_mode VARCHAR(10),
+    dte_check_available BOOLEAN,
+    dte_check_expiry_date VARCHAR(20),
+    dte_check_left_days INTEGER,
+
+    -- 检查点5: 期权链数据
+    chain_contracts_count INTEGER,
+    chain_strike_range_min DECIMAL(15, 4),
+    chain_strike_range_max DECIMAL(15, 4),
+    chain_data_available BOOLEAN DEFAULT false,
+
+    -- 检查点6+7: 流动性和Greeks筛选
+    filter_candidates_before INTEGER,
+    filter_liquidity_passed INTEGER,
+    filter_greeks_passed INTEGER,
+    filter_final_selected BOOLEAN DEFAULT false,
+    filter_reason TEXT,
+
+    -- 检查点8: 入场价格有效性
+    price_mode VARCHAR(10),
+    price_ask DECIMAL(15, 4),
+    price_bid DECIMAL(15, 4),
+    price_mid DECIMAL(15, 4),
+    price_selected DECIMAL(15, 4),
+    price_valid BOOLEAN DEFAULT false,
+
+    -- 检查点9: 信号生成结果
+    signal_generated BOOLEAN DEFAULT false,
+    signal_id INTEGER REFERENCES strategy_signals(id) ON DELETE SET NULL,
+    option_symbol VARCHAR(50),
+    option_contracts INTEGER,
+    option_premium DECIMAL(15, 4),
+    option_delta DECIMAL(10, 4),
+    option_theta DECIMAL(10, 4),
+    estimated_cost DECIMAL(15, 4),
+
+    -- 最终结果和原因
+    final_result VARCHAR(20) CHECK (final_result IN ('SIGNAL_GENERATED', 'NO_SIGNAL', 'ERROR')) NOT NULL,
+    rejection_reason TEXT,
+    rejection_checkpoint VARCHAR(50),
+
+    -- 额外数据
+    extra_data JSONB,
+
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_option_decision_logs_strategy_time
+    ON option_strategy_decision_logs(strategy_id, execution_time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_option_decision_logs_symbol
+    ON option_strategy_decision_logs(underlying_symbol);
+
+CREATE INDEX IF NOT EXISTS idx_option_decision_logs_result
+    ON option_strategy_decision_logs(final_result);
+
+CREATE INDEX IF NOT EXISTS idx_option_decision_logs_rejection_checkpoint
+    ON option_strategy_decision_logs(rejection_checkpoint) WHERE rejection_checkpoint IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_option_decision_logs_execution_time
+    ON option_strategy_decision_logs(execution_time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_option_decision_logs_extra_data
+    ON option_strategy_decision_logs USING GIN(extra_data);
+
+COMMENT ON TABLE option_strategy_decision_logs IS '期权策略决策链路日志表，记录9个关键检查点的详细数据';
+COMMENT ON COLUMN option_strategy_decision_logs.id IS '主键，自增';
+COMMENT ON COLUMN option_strategy_decision_logs.strategy_id IS '策略ID，外键关联strategies表';
+COMMENT ON COLUMN option_strategy_decision_logs.underlying_symbol IS '底层标的代码（如QQQ.US）';
+COMMENT ON COLUMN option_strategy_decision_logs.execution_time IS '执行时间（美东时间）';
+COMMENT ON COLUMN option_strategy_decision_logs.data_check_passed IS '数据检查是否通过';
+COMMENT ON COLUMN option_strategy_decision_logs.signal_direction IS '推荐信号方向（CALL/PUT/HOLD）';
+COMMENT ON COLUMN option_strategy_decision_logs.signal_confidence IS '信号置信度（0-100）';
+COMMENT ON COLUMN option_strategy_decision_logs.risk_level IS '风险等级评估结果';
+COMMENT ON COLUMN option_strategy_decision_logs.risk_blocked IS '是否因风险过高被阻止';
+COMMENT ON COLUMN option_strategy_decision_logs.dte_check_mode IS '到期模式（0DTE/NEAREST）';
+COMMENT ON COLUMN option_strategy_decision_logs.filter_final_selected IS '是否最终筛选出合约';
+COMMENT ON COLUMN option_strategy_decision_logs.price_valid IS '入场价格是否有效';
+COMMENT ON COLUMN option_strategy_decision_logs.signal_generated IS '是否成功生成交易信号';
+COMMENT ON COLUMN option_strategy_decision_logs.final_result IS '最终结果（SIGNAL_GENERATED/NO_SIGNAL/ERROR）';
+COMMENT ON COLUMN option_strategy_decision_logs.rejection_reason IS '被拒绝的原因描述';
+COMMENT ON COLUMN option_strategy_decision_logs.rejection_checkpoint IS '在哪个检查点被拒绝（1-9）';
+
+-- ============================================================================
+-- 第十部分：订单防重指标表（create_order_prevention_metrics_table.sql）
+-- ============================================================================
+
+-- Order Prevention Metrics Table
+-- Purpose: Records historical data of order duplicate prevention metrics
+CREATE TABLE IF NOT EXISTS order_prevention_metrics (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
+
+    -- Position validation metrics
+    position_validation_total INTEGER DEFAULT 0,
+    position_validation_passed INTEGER DEFAULT 0,
+    position_validation_failed INTEGER DEFAULT 0,
+
+    -- Order deduplication metrics
+    duplicate_order_prevented INTEGER DEFAULT 0,
+    duplicate_order_by_cache INTEGER DEFAULT 0,
+    duplicate_order_by_pending INTEGER DEFAULT 0,
+
+    -- Short position detection metrics
+    short_position_detected INTEGER DEFAULT 0,
+    short_position_closed INTEGER DEFAULT 0,
+    short_position_close_failed INTEGER DEFAULT 0,
+
+    -- Trade push metrics
+    trade_push_received INTEGER DEFAULT 0,
+    trade_push_error INTEGER DEFAULT 0,
+
+    -- Order rejection metrics
+    order_rejected_by_position INTEGER DEFAULT 0,
+    order_rejected_by_duplicate INTEGER DEFAULT 0,
+
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_order_prevention_metrics_timestamp ON order_prevention_metrics(timestamp);
+CREATE INDEX IF NOT EXISTS idx_order_prevention_metrics_created_at ON order_prevention_metrics(created_at);
+
+COMMENT ON TABLE order_prevention_metrics IS 'Order duplicate prevention mechanism metrics table';
+COMMENT ON COLUMN order_prevention_metrics.position_validation_total IS 'Total position validation count';
+COMMENT ON COLUMN order_prevention_metrics.position_validation_passed IS 'Position validation passed count';
+COMMENT ON COLUMN order_prevention_metrics.position_validation_failed IS 'Position validation failed count';
+COMMENT ON COLUMN order_prevention_metrics.duplicate_order_prevented IS 'Total duplicate order prevented count';
+COMMENT ON COLUMN order_prevention_metrics.duplicate_order_by_cache IS 'Duplicate order prevented by cache count';
+COMMENT ON COLUMN order_prevention_metrics.duplicate_order_by_pending IS 'Duplicate order prevented by pending order check count';
+COMMENT ON COLUMN order_prevention_metrics.short_position_detected IS 'Short position detected count';
+COMMENT ON COLUMN order_prevention_metrics.short_position_closed IS 'Short position auto-closed success count';
+COMMENT ON COLUMN order_prevention_metrics.short_position_close_failed IS 'Short position auto-closed failed count';
+COMMENT ON COLUMN order_prevention_metrics.trade_push_received IS 'Trade push received count';
+COMMENT ON COLUMN order_prevention_metrics.trade_push_error IS 'Trade push error count';
+COMMENT ON COLUMN order_prevention_metrics.order_rejected_by_position IS 'Order rejected due to insufficient position count';
+COMMENT ON COLUMN order_prevention_metrics.order_rejected_by_duplicate IS 'Order rejected due to duplicate submission count';
 
 -- ============================================================================
 -- 第五部分：初始化数据

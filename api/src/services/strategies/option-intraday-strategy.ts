@@ -365,8 +365,15 @@ export class OptionIntradayStrategy extends StrategyBase {
    * 记录决策日志到 system_logs
    */
   private logDecision(data: OptionDecisionLogData): void {
+    // 市场数据不可用是基础设施问题，降级为 warn 而非 error
+    const isDataError = data.rejectionReason && (
+      data.rejectionReason.includes('数据不足') ||
+      data.rejectionReason.includes('数据获取失败') ||
+      data.rejectionReason.includes('无法提供交易建议')
+    );
     const level = data.finalResult === 'SIGNAL_GENERATED' ? 'info' :
-                  data.finalResult === 'ERROR' ? 'error' : 'info';
+                  (data.finalResult === 'ERROR' && !isDataError) ? 'error' :
+                  data.finalResult === 'ERROR' ? 'warn' : 'info';
 
     const message = data.finalResult === 'SIGNAL_GENERATED'
       ? `期权信号生成: ${data.entrySignal?.direction} ${data.entrySignal?.optionSymbol}`
@@ -659,7 +666,17 @@ export class OptionIntradayStrategy extends StrategyBase {
       return intent;
 
     } catch (error: any) {
-      logger.error(`[${symbol}策略执行失败]:`, error.message);
+      // 区分市场数据不可用（基础设施问题）和真正的策略错误
+      const isDataError = error.message && (
+        error.message.includes('数据不足') ||
+        error.message.includes('数据获取失败') ||
+        error.message.includes('无法提供交易建议')
+      );
+      if (isDataError) {
+        logger.warn(`[${symbol}策略执行失败]: 市场数据不可用 - ${error.message}`);
+      } else {
+        logger.error(`[${symbol}策略执行失败]:`, error.message);
+      }
       logData.finalResult = 'ERROR';
       logData.rejectionReason = `策略执行异常: ${error.message}`;
       logData.rejectionCheckpoint = 'error_handler';

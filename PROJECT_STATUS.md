@@ -1,11 +1,29 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-06
+**更新时间**: 2026-02-10
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-02-10: 期权价格获取切换长桥 API 主源
+
+**优化内容**：
+1. ✅ 新增统一长桥期权行情服务（`longport-option-quote.service.ts`）
+2. ✅ 期权价格获取链：缓存 → LongPort optionQuote → LongPort depth → 富途（备用）→ LongPort quote
+3. ✅ IV 获取：LongPort optionQuote 主源，富途 getOptionDetail 备用
+4. ✅ 4个服务文件同步切换：strategy-scheduler / basic-execution / option-dynamic-exit
+
+**相关文档**：
+- 📄 [期权价格获取切换长桥主源](docs/features/260210-期权价格获取切换长桥主源.md)
+
+**预期效果**：
+- 期权价格延迟降低（长桥 SDK 直连）
+- optionQuote 同时返回价格和 IV，减少 API 调用次数
+- 富途 API 完整保留为备用
+
+---
 
 ### 2026-02-06: 日志系统降噪 + 全面重构 ⭐ 核心架构
 

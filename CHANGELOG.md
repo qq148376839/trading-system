@@ -1,5 +1,38 @@
 # 更新日志
 
+## 2026-02-10
+
+### 期权价格获取切换长桥 API 主源
+
+**功能/修复**: 将期权价格/IV 的获取从富途 API 主源切换为长桥 API 主源，富途降级为备用。新增统一长桥期权行情服务，封装 `optionQuote()` + `depth()` + 多层 fallback 链。
+
+**实现内容**:
+1. ✅ **新增 `longport-option-quote.service.ts`**：统一封装 `getOptionQuote()`（含IV）、`getOptionDepth()`（盘口）、`getOptionPrice()`（完整fallback链）
+2. ✅ **strategy-scheduler 价格获取简化**：`processHoldingPosition()` 从4层 if/else 替换为统一服务调用
+3. ✅ **strategy-scheduler IV获取优化**：`processOptionDynamicExit()` IV 改为 LongPort 主源、富途备用
+4. ✅ **basic-execution 价格验证优化**：`getCurrentMarketPrice()` 期权路径切换为统一服务
+5. ✅ **option-dynamic-exit IV获取优化**：`buildPositionContext()` IV 改为 LongPort 主源
+
+**新增文件**:
+- 📝 `api/src/services/longport-option-quote.service.ts`（统一长桥期权行情服务）
+
+**修改文件**:
+- 📝 `api/src/services/strategy-scheduler.service.ts`（价格/IV获取切换长桥主源）
+- 📝 `api/src/services/basic-execution.service.ts`（期权价格验证切换长桥主源）
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（IV获取切换长桥主源）
+
+**价格获取优先级（改动后）**:
+```
+缓存 → LongPort optionQuote() → LongPort depth() → 富途 getOptionDetail() → LongPort quote()
+```
+
+**预期效果**:
+- 期权价格延迟降低（长桥 SDK 直连 vs 富途 HTTP API）
+- optionQuote 同时返回价格和 IV，减少 API 调用次数
+- 富途 API 保留为完整备用，权限错误（301604）自动降级
+
+---
+
 ## 2026-02-06
 
 ### 日志系统降噪 — 减少不必要的DB写入

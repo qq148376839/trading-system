@@ -35,6 +35,23 @@ class MarketDataCacheService {
   private cache: MarketDataCache | null = null;
   private isFetching: boolean = false; // 防止并发请求
   private fetchPromise: Promise<MarketDataCache> | null = null;
+  private consecutiveFailures: number = 0;
+
+  /**
+   * 获取缓存数据（即使已过期）用于止盈止损等关键操作
+   * 当新鲜数据不可用时，旧数据总比没有好
+   * @returns 缓存数据或 null
+   */
+  getStaleCache(): MarketDataCache | null {
+    return this.cache;
+  }
+
+  /**
+   * 获取连续失败次数
+   */
+  getConsecutiveFailures(): number {
+    return this.consecutiveFailures;
+  }
 
   /**
    * 获取当前缓存时长（毫秒）
@@ -160,15 +177,26 @@ class MarketDataCacheService {
         this.cache.hourlyTimestamp = Date.now();
       }
 
+      this.consecutiveFailures = 0;
       this.isFetching = false;
       this.fetchPromise = null;
       return this.cache;
     }).catch((error) => {
-      // 清除缓存，避免使用无效数据
-      this.cache = null;
+      this.consecutiveFailures++;
       this.isFetching = false;
       this.fetchPromise = null;
-      // 抛出错误，让调用方知道数据获取失败
+
+      // 保留旧缓存数据（用于止盈止损等关键操作），但仍向新信号生成抛出错误
+      if (this.cache) {
+        const staleAge = Math.floor((Date.now() - this.cache.timestamp) / 1000);
+        logger.warn(
+          `市场数据获取失败（连续${this.consecutiveFailures}次），保留旧缓存数据（${staleAge}秒前）: ${error.message}`
+        );
+        // 不更新 timestamp，下次调用仍会尝试刷新
+      } else {
+        logger.error(`市场数据获取失败且无缓存可用: ${error.message}`);
+      }
+
       throw error;
     });
 

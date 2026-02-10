@@ -16,6 +16,7 @@ import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-li
 import optionPriceCacheService from './option-price-cache.service';
 import { getOptionDetail } from './futunn-option-chain.service';
 import orderSubmissionService from './order-submission.service';
+import longportOptionQuoteService from './longport-option-quote.service';
 
 export interface ExecutionResult {
   success: boolean;
@@ -213,79 +214,22 @@ class BasicExecutionService {
       // 检查是否为期权（包含6位数字+C/P+数字的模式）
       const isOption = /[A-Z]{1,5}\d{6}[CP]\d+/.test(symbol);
 
-      // 如果是期权，先检查缓存
+      // 期权：使用统一的长桥期权行情服务（含缓存 + LongPort主源 + 富途备用）
       if (isOption) {
-        const cached = optionPriceCacheService.get(symbol);
-        if (cached) {
-          logger.debug(`${symbol} 使用缓存价格: ${cached.price.toFixed(4)}`);
-          return cached.price;
+        const priceResult = await longportOptionQuoteService.getOptionPrice(symbol, {
+          optionId: metadata?.optionId ? String(metadata.optionId) : undefined,
+          underlyingStockId: metadata?.underlyingStockId ? String(metadata.underlyingStockId) : undefined,
+          marketType: metadata?.marketType || 2,
+        });
+        if (priceResult && priceResult.price > 0) {
+          logger.debug(`${symbol} 期权价格: ${priceResult.price.toFixed(4)} (source: ${priceResult.source})`);
+          return priceResult.price;
         }
-
-        // 期权：使用富途API获取详情
-        if (metadata && metadata.optionId && metadata.underlyingStockId) {
-          try {
-            logger.debug(`${symbol} 使用富途API获取期权价格: optionId=${metadata.optionId}, underlyingStockId=${metadata.underlyingStockId}`);
-
-            const detail = await getOptionDetail(
-              String(metadata.optionId),
-              String(metadata.underlyingStockId),
-              metadata.marketType || 2
-            );
-
-            if (detail) {
-              let price = detail.price;
-              const bid = detail.priceBid || 0;
-              const ask = detail.priceAsk || 0;
-              let priceSource = 'futunn-lastPrice';
-
-              // 如果最新价格无效，使用中间价
-              if (price <= 0 && bid > 0 && ask > 0) {
-                price = (bid + ask) / 2;
-                priceSource = 'futunn-mid';
-                logger.debug(`${symbol} 使用富途中间价: bid=${bid.toFixed(4)}, ask=${ask.toFixed(4)}, mid=${price.toFixed(4)}`);
-              }
-
-              // 如果仍然无效，使用ask
-              if (price <= 0 && ask > 0) {
-                price = ask;
-                priceSource = 'futunn-ask';
-                logger.debug(`${symbol} 使用富途卖一价: ${price.toFixed(4)}`);
-              }
-
-              // 最后尝试bid
-              if (price <= 0 && bid > 0) {
-                price = bid;
-                priceSource = 'futunn-bid';
-                logger.debug(`${symbol} 使用富途买一价: ${price.toFixed(4)}`);
-              }
-
-              if (price > 0) {
-                // 缓存价格
-                optionPriceCacheService.set(symbol, {
-                  price,
-                  bid: bid || price,
-                  ask: ask || price,
-                  mid: (bid > 0 && ask > 0) ? (bid + ask) / 2 : price,
-                  timestamp: Date.now(),
-                  underlyingPrice: detail.underlyingStock?.price || detail.underlyingPrice || 0,
-                  source: 'futunn',
-                });
-                logger.debug(`${symbol} 富途API获取价格成功: ${price.toFixed(4)} (source: ${priceSource})`);
-                return price;
-              }
-            }
-          } catch (error: any) {
-            logger.warn(`${symbol} 富途API获取期权价格失败:`, error.message);
-          }
-        } else {
-          logger.warn(`${symbol} 是期权但缺少optionId或underlyingStockId，无法使用富途API`);
-        }
-
-        // 回退：尝试使用LongPort API（可能失败）
-        logger.debug(`${symbol} 回退到LongPort API获取期权价格`);
+        logger.warn(`${symbol} 统一期权行情服务未返回价格`);
+        return null;
       }
 
-      // 股票或期权回退：使用LongPort API
+      // 股票：使用LongPort API
       const { getQuoteContext } = await import('../config/longport');
       const quoteCtx = await getQuoteContext();
       const quotes = await quoteCtx.quote([symbol]);
@@ -293,13 +237,11 @@ class BasicExecutionService {
       if (quotes && quotes.length > 0) {
         const quote = quotes[0];
 
-        // 尝试多种价格字段，优先级：lastDone > last_done > 中间价 > 卖一价 > 买一价
         let price = 0;
         let bid = 0;
         let ask = 0;
         let priceSource = '';
 
-        // 解析bid和ask价格
         if (quote.bidPrice) {
           bid = parseFloat((quote.bidPrice as any)?.toString() || '0');
         }
@@ -307,7 +249,6 @@ class BasicExecutionService {
           ask = parseFloat((quote.askPrice as any)?.toString() || '0');
         }
 
-        // 1. 最近成交价（最优先）
         if (quote.lastDone) {
           price = parseFloat(quote.lastDone.toString());
           priceSource = 'lastDone';
@@ -316,21 +257,18 @@ class BasicExecutionService {
           priceSource = 'last_done';
         }
 
-        // 2. 如果没有最近成交价，使用中间价（bid-ask中点）
         if (price <= 0 && ask > 0 && bid > 0) {
           price = (ask + bid) / 2;
           priceSource = 'mid';
           logger.debug(`${symbol} 使用中间价: bid=${bid.toFixed(4)}, ask=${ask.toFixed(4)}, mid=${price.toFixed(4)}`);
         }
 
-        // 3. 如果没有中间价，使用卖一价（ask）
         if (price <= 0 && ask > 0) {
           price = ask;
           priceSource = 'ask';
           logger.debug(`${symbol} 使用卖一价: ${price.toFixed(4)}`);
         }
 
-        // 4. 最后尝试买一价（bid）
         if (price <= 0 && bid > 0) {
           price = bid;
           priceSource = 'bid';
@@ -338,19 +276,6 @@ class BasicExecutionService {
         }
 
         if (price > 0) {
-          // 如果是期权，缓存价格信息
-          if (isOption) {
-            optionPriceCacheService.set(symbol, {
-              price,
-              bid: bid || price,
-              ask: ask || price,
-              mid: (bid > 0 && ask > 0) ? (bid + ask) / 2 : price,
-              timestamp: Date.now(),
-              underlyingPrice: 0,
-              source: 'longport',
-            });
-            logger.debug(`${symbol} LongPort获取价格成功并缓存: ${price.toFixed(4)} (source: ${priceSource})`);
-          }
           return price;
         } else {
           logger.warn(`${symbol} 所有价格字段均无效`, {
@@ -802,18 +727,17 @@ class BasicExecutionService {
       // ✅ 核心改进：使用统一订单提交服务
       // 确保量化下单和手动下单使用相同的逻辑（支持期权）
 
-      // 判断是否为期权快速平仓（止盈止损、强制平仓等）
-      // 使用市价单确保快速成交，避免限价单无法成交导致亏损扩大
-      const isOptionForceClose =
-        metadata?.assetClass === 'OPTION' &&
-        metadata?.forceClose === true;
+      // 判断是否为期权订单（买入和卖出都使用市价单，实现快进快出）
+      // 期权价格波动快，限价单容易因价格变动错过成交机会
+      const isOptionOrder = metadata?.assetClass === 'OPTION';
 
       // 方案一：市价单 + 限价单Fallback（渐进式策略）
       let submitResult: any;
 
-      if (isOptionForceClose) {
-        // 步骤1：先尝试市价单（对流动性好的期权能获得更好的价格）
-        logger.log(`策略 ${strategyId} 标的 ${symbol}: 期权快速平仓，先尝试市价单（Market Order）`);
+      if (isOptionOrder) {
+        // 步骤1：先尝试市价单（期权快进快出，避免限价单错过机会）
+        const orderAction = side === 'BUY' ? '快速买入' : '快速平仓';
+        logger.log(`策略 ${strategyId} 标的 ${symbol}: 期权${orderAction}，使用市价单（Market Order）`);
 
         const marketOrderParams: any = {
           symbol,
@@ -822,7 +746,7 @@ class BasicExecutionService {
           submitted_quantity: absQuantity.toString(),
           time_in_force: 'Day',
           outside_rth: market === 'US' ? 'ANY_TIME' : 'RTH_ONLY',
-          remark: `策略${strategyId}自动下单（期权强制平仓-市价单）`,
+          remark: `策略${strategyId}自动下单（期权市价单-${side === 'BUY' ? '买入' : '平仓'}）`,
         };
 
         submitResult = await orderSubmissionService.submitOrder(marketOrderParams);
@@ -837,17 +761,20 @@ class BasicExecutionService {
 
           if (isLiquidityError) {
             logger.warn(
-              `策略 ${strategyId} 标的 ${symbol}: 市价单被拒绝（流动性不足），fallback到极低价限价单`
+              `策略 ${strategyId} 标的 ${symbol}: 市价单被拒绝（流动性不足），fallback到限价单`
             );
 
-            // 使用极低价格的限价单，确保快速成交
-            // 对于深度虚值期权：使用$0.01
-            // 对于其他期权：使用当前价的10%，最低$0.01
-            const fallbackPrice =
-              formattedPrice < 0.1 ? 0.01 : Math.max(0.01, formattedPrice * 0.1);
+            // 买入：使用高价限价单确保成交（当前价 * 1.05，向上取整到分）
+            // 卖出：使用极低价限价单确保成交（当前价 * 0.1，最低$0.01）
+            let fallbackPrice: number;
+            if (side === 'BUY') {
+              fallbackPrice = Math.ceil(formattedPrice * 1.05 * 100) / 100;
+            } else {
+              fallbackPrice = formattedPrice < 0.1 ? 0.01 : Math.max(0.01, formattedPrice * 0.1);
+            }
 
             logger.log(
-              `策略 ${strategyId} 标的 ${symbol}: 使用极低价限价单 $${fallbackPrice.toFixed(2)}（原价 $${formattedPrice.toFixed(2)}）`
+              `策略 ${strategyId} 标的 ${symbol}: 使用限价单fallback $${fallbackPrice.toFixed(2)}（原价 $${formattedPrice.toFixed(2)}）`
             );
 
             const limitOrderParams: any = {
@@ -858,7 +785,7 @@ class BasicExecutionService {
               submitted_price: fallbackPrice.toFixed(2),
               time_in_force: 'Day',
               outside_rth: market === 'US' ? 'ANY_TIME' : 'RTH_ONLY',
-              remark: `策略${strategyId}自动下单（期权强制平仓-限价单fallback）`,
+              remark: `策略${strategyId}自动下单（期权限价单fallback-${side === 'BUY' ? '买入' : '平仓'}）`,
             };
 
             submitResult = await orderSubmissionService.submitOrder(limitOrderParams);

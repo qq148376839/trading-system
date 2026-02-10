@@ -16,6 +16,7 @@
 
 import { getOptionDetail } from './futunn-option-chain.service';
 import { isTradingHours } from '../utils/trading-hours';
+import longportOptionQuoteService from './longport-option-quote.service';
 
 // ============================================
 // 类型定义
@@ -458,16 +459,28 @@ class OptionDynamicExitService {
       estimatedExitFees,
     };
 
-    // 尝试获取期权详情（含IV、Delta等）
-    if (optionId && underlyingStockId) {
+    // 主源：LongPort optionQuote 获取 IV
+    try {
+      const optQuote = await longportOptionQuoteService.getOptionQuote(optionSymbol);
+      if (optQuote && optQuote.iv > 0) {
+        ctx.currentIV = optQuote.iv;
+      }
+    } catch {
+      // 忽略错误，降级到富途
+    }
+
+    // 备用：富途 getOptionDetail（含 IV + Delta + timeValue）
+    if ((ctx.currentIV <= 0 || !ctx.currentDelta) && optionId && underlyingStockId) {
       try {
         const detail = await getOptionDetail(optionId, underlyingStockId, marketType);
         if (detail && detail.option) {
-          ctx.currentIV = detail.option.impliedVolatility || 0;
+          if (ctx.currentIV <= 0) {
+            ctx.currentIV = detail.option.impliedVolatility || 0;
+          }
           ctx.currentDelta = detail.option.greeks?.hpDelta || detail.option.greeks?.delta || 0;
           ctx.timeValue = detail.option.timeValue || 0;
         }
-      } catch (error) {
+      } catch {
         // 忽略错误，使用默认值
       }
     }

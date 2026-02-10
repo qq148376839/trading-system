@@ -24,6 +24,59 @@ interface CandlestickData {
 class MarketDataService {
   private baseUrl = 'https://www.moomoo.com/quote-api/quote-v2';
 
+  // 熔断器状态：stockId → { failures, lastFailTime, circuitOpen }
+  private circuitBreakers: Map<string, {
+    failures: number;
+    lastFailTime: number;
+    circuitOpen: boolean;
+  }> = new Map();
+  private readonly CIRCUIT_FAILURE_THRESHOLD = 5; // 连续失败5次后熔断
+  private readonly CIRCUIT_COOLDOWN_MS = 60000; // 熔断冷却60秒
+
+  /**
+   * 检查熔断器状态
+   * @returns true 表示可以请求, false 表示熔断中
+   */
+  private checkCircuitBreaker(stockId: string, type: number): boolean {
+    const key = `${stockId}_${type}`;
+    const state = this.circuitBreakers.get(key);
+    if (!state) return true;
+
+    if (state.circuitOpen) {
+      const elapsed = Date.now() - state.lastFailTime;
+      if (elapsed >= this.CIRCUIT_COOLDOWN_MS) {
+        // 冷却期已过，半开状态，允许一次尝试
+        state.circuitOpen = false;
+        return true;
+      }
+      // 仍在冷却期
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * 记录API调用结果
+   */
+  private recordCircuitResult(stockId: string, type: number, success: boolean): void {
+    const key = `${stockId}_${type}`;
+    if (success) {
+      this.circuitBreakers.delete(key);
+      return;
+    }
+
+    const state = this.circuitBreakers.get(key) || { failures: 0, lastFailTime: 0, circuitOpen: false };
+    state.failures++;
+    state.lastFailTime = Date.now();
+    if (state.failures >= this.CIRCUIT_FAILURE_THRESHOLD) {
+      state.circuitOpen = true;
+      logger.warn(
+        `[熔断器] stockId=${stockId} type=${type} 连续失败${state.failures}次，熔断${this.CIRCUIT_COOLDOWN_MS / 1000}秒`
+      );
+    }
+    this.circuitBreakers.set(key, state);
+  }
+
   // 富途API配置（参考CLAUDE.md和Python脚本）
   // 注意：对于K线数据（get-kline），instrumentType和subInstrumentType固定为10和10001
   // 只有marketCode需要根据不同的市场来设置
@@ -117,6 +170,11 @@ class MarketDataService {
     type: number = 2, // 1=分时, 2=日K
     count: number = 100
   ): Promise<CandlestickData[]> {
+    // 熔断器检查：如果该 stockId+type 正在冷却中，直接返回空数组
+    if (!this.checkCircuitBreaker(stockId, type)) {
+      return [];
+    }
+
     try {
       const timestamp = Date.now();
 
@@ -180,6 +238,7 @@ class MarketDataService {
 
       // 检查响应数据
       if (!responseData) {
+        this.recordCircuitResult(stockId, type, false);
         logger.error(`[富途API错误] stockId=${stockId}, type=${type}: 响应数据为空`);
         return [];
       }
@@ -213,17 +272,20 @@ class MarketDataService {
           logger.debug(`分时数据截断: API返回${dataArray.length}条，使用最后${count}条`);
         }
         
+        this.recordCircuitResult(stockId, type, true);
         return this.parseCandlestickData(slicedData);
       } else {
         // 只在错误时输出日志
         const errorMsg = responseData?.message || '未知错误';
+        this.recordCircuitResult(stockId, type, false);
         logger.error(`[富途API错误] stockId=${stockId}, type=${type}: ${errorMsg}`);
         return [];
       }
     } catch (error: any) {
-      const errorMsg = error.response?.status === 504 
-        ? `网关超时 (504)` 
+      const errorMsg = error.response?.status === 504
+        ? `网关超时 (504)`
         : error.message || '未知错误';
+      this.recordCircuitResult(stockId, type, false);
       // 简化错误日志
       logger.error(`[富途API] stockId=${stockId}, type=${type}: ${errorMsg}`);
       return [];
