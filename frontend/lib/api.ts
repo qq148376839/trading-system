@@ -470,6 +470,30 @@ export const configApi = {
   },
 
   /**
+   * 获取单个配置的解密值
+   */
+  getConfigValue: (key: string, username: string, password: string): Promise<{ success: boolean; data?: { key: string; value: string }; error?: { message: string } }> => {
+    return api.post('/config/get-value', { key, username, password })
+  },
+
+  /**
+   * 测试 Moomoo Cookie 是否可用
+   */
+  testMoomooCookie: (cookies: string, csrfToken: string, username: string, password: string): Promise<{
+    success: boolean;
+    data?: {
+      cookieValid: boolean;
+      responseCode: number;
+      responseMessage: string;
+      duration: string;
+      dataPoints: number;
+    };
+    error?: { message: string };
+  }> => {
+    return api.post('/config/test-moomoo-cookie', { cookies, csrfToken, username, password })
+  },
+
+  /**
    * 创建管理员账户
    */
   createAdmin: (newUsername: string, newPassword: string, username: string, password: string): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {

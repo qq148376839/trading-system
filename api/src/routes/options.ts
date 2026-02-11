@@ -217,9 +217,41 @@ optionsRouter.get('/lb/quote', rateLimiter, async (req: Request, res: Response, 
       return next(ErrorFactory.externalApiError('LongPort', '获取期权行情失败'));
     }
 
+    // 补充合约乘数/类型等额外信息（从 SDK 原始 OptionQuote 对象获取）
+    let contractMultiplier: number | undefined;
+    let contractType: string | undefined;
+    let contractSize: number | undefined;
+    let expiryDate: string | undefined;
+    let historicalVolatility: number | undefined;
+    try {
+      const { getQuoteContext } = await import('../config/longport');
+      const quoteCtx = await getQuoteContext();
+      const rawQuotes = await quoteCtx.optionQuote([symbol]);
+      if (rawQuotes && rawQuotes.length > 0) {
+        const raw = rawQuotes[0];
+        contractMultiplier = parseFloat(raw.contractMultiplier?.toString() || '0') || undefined;
+        contractType = raw.contractType !== undefined ? String(raw.contractType) : undefined;
+        contractSize = parseFloat(raw.contractSize?.toString() || '0') || undefined;
+        historicalVolatility = parseFloat(raw.historicalVolatility?.toString() || '0') || undefined;
+        if (raw.expiryDate) {
+          const ed = raw.expiryDate;
+          expiryDate = `${ed.year}${String(ed.month).padStart(2, '0')}${String(ed.day).padStart(2, '0')}`;
+        }
+      }
+    } catch {
+      // 额外信息获取失败不影响主响应
+    }
+
     res.json({
       success: true,
-      data: quote,
+      data: {
+        ...quote,
+        ...(contractMultiplier !== undefined && { contractMultiplier }),
+        ...(contractType !== undefined && { contractType }),
+        ...(contractSize !== undefined && { contractSize }),
+        ...(expiryDate !== undefined && { expiryDate }),
+        ...(historicalVolatility !== undefined && { historicalVolatility }),
+      },
     });
   } catch (error: any) {
     return next(normalizeError(error));

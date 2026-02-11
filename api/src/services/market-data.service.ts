@@ -4,8 +4,8 @@
  */
 
 import axios from 'axios';
-import crypto from 'crypto';
 import { getFutunnHeaders } from '../config/futunn';
+import { generateQuoteToken } from '../utils/moomoo-quote-token';
 import { moomooProxy, getProxyMode } from '../utils/moomoo-proxy';
 import { getQuoteContext } from '../config/longport';
 import { retryWithBackoff } from '../utils/longport-rate-limiter';
@@ -133,30 +133,6 @@ class MarketDataService {
   }
 
   /**
-   * 生成quote-token（参照futunn获取行情.py）
-   */
-  private generateQuoteToken(params: Record<string, string>): string {
-    // 使用JSON.stringify生成token（不是urlencode）
-    const dataStr = JSON.stringify(params);
-
-    // HMAC-SHA512加密
-    const hmac = crypto.createHmac('sha512', 'quote_web');
-    hmac.update(dataStr);
-    const hmacResult = hmac.digest('hex');
-
-    // 取前10位
-    const firstSlice = hmacResult.substring(0, 10);
-
-    // SHA256哈希
-    const sha256 = crypto.createHash('sha256');
-    sha256.update(firstSlice);
-    const sha256Result = sha256.digest('hex');
-
-    // 取前10位作为token
-    return sha256Result.substring(0, 10);
-  }
-
-  /**
    * 获取K线数据（支持日K和分时数据）
    * type: 1 = 分时（使用get-quote-minute接口）, 2 = 日K（使用get-kline接口）
    * 注意：分时数据（type=1）必须使用get-quote-minute接口，不能使用get-kline接口
@@ -204,7 +180,7 @@ class MarketDataService {
         _: timestamp.toString(),
       };
 
-      const quoteToken = this.generateQuoteToken(tokenParams);
+      const quoteToken = generateQuoteToken(tokenParams);
       
       // 请求参数（使用数字格式）
       const requestParams: any = {
@@ -277,9 +253,13 @@ class MarketDataService {
         return this.parseCandlestickData(slicedData);
       } else {
         // 只在错误时输出日志
+        const errorCode = responseData?.code ?? 'N/A';
         const errorMsg = responseData?.message || '未知错误';
         this.recordCircuitResult(stockId, type, false);
-        logger.error(`[富途API错误] stockId=${stockId}, type=${type}: ${errorMsg}`);
+        logger.error(`[富途API错误] stockId=${stockId}, type=${type}, code=${errorCode}: ${errorMsg}`, {
+          responseKeys: responseData ? Object.keys(responseData) : [],
+          responseSnippet: JSON.stringify(responseData).substring(0, 300),
+        });
         return [];
       }
     } catch (error: any) {

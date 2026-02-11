@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { configApi, tokenRefreshApi } from '@/lib/api'
 import AppLayout from '@/components/AppLayout'
@@ -14,6 +14,18 @@ interface ConfigItem {
   updatedAt: string
   updatedBy: string | null
 }
+
+interface MoomooCookieRow {
+  id: string
+  csrfToken: string
+  cookies: string
+  label: string
+  status: 'unknown' | 'testing' | 'valid' | 'expired'
+  testMessage?: string
+}
+
+// 配置表格中隐藏的键（由 Moomoo Cookie 管理区接管）
+const HIDDEN_CONFIG_KEYS = ['moomoo_guest_cookies', 'futunn_cookies', 'futunn_csrf_token', 'futunn_search_cookies']
 
 export default function ConfigPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
@@ -37,15 +49,19 @@ export default function ConfigPage() {
     is_active: boolean
   }>>([])
   const [showAdminManagement, setShowAdminManagement] = useState(false)
-  const [editingAdmin, setEditingAdmin] = useState<{ 
+  const [editingAdmin, setEditingAdmin] = useState<{
     id: number
     username: string
-    oldPassword: string      // 原密码（用于修改密码时验证）
-    newPassword: string       // 新密码
-    confirmPassword: string   // 确认新密码
-    is_active: boolean 
+    oldPassword: string
+    newPassword: string
+    confirmPassword: string
+    is_active: boolean
   } | null>(null)
   const [newAdmin, setNewAdmin] = useState({ username: '', password: '', confirmPassword: '' })
+
+  // Moomoo Cookie 管理状态
+  const [cookieRows, setCookieRows] = useState<MoomooCookieRow[]>([])
+  const [cookieSaving, setCookieSaving] = useState(false)
 
   // 检查Token状态
   useEffect(() => {
@@ -64,6 +80,34 @@ export default function ConfigPage() {
     }
   }, [isAuthenticated])
 
+  // 加载 Moomoo Cookies
+  const loadMoomooCookies = useCallback(async (authUsername?: string, authPassword?: string) => {
+    const u = authUsername || username
+    const p = authPassword || password
+    try {
+      const result = await configApi.getConfigValue('moomoo_guest_cookies', u, p)
+      if (result.success && result.data?.value) {
+        const raw = result.data.value
+        if (raw && raw.trim() !== '' && raw.trim() !== '[]') {
+          const parsed: Array<{ csrfToken?: string; cookies?: string; label?: string }> = JSON.parse(raw)
+          const rows: MoomooCookieRow[] = parsed.map((item, idx) => ({
+            id: `cookie-${Date.now()}-${idx}`,
+            csrfToken: item.csrfToken || '',
+            cookies: item.cookies || '',
+            label: item.label || `Guest #${idx + 1}`,
+            status: 'unknown' as const,
+          }))
+          setCookieRows(rows)
+          return
+        }
+      }
+      setCookieRows([])
+    } catch {
+      // 初次加载失败时不报错，保持空列表
+      setCookieRows([])
+    }
+  }, [username, password])
+
   // 登录
   const handleLogin = async (values: { username: string; password: string }) => {
     setLoading(true)
@@ -76,6 +120,7 @@ export default function ConfigPage() {
         setPassword(values.password)
         setIsAuthenticated(true)
         await loadConfigs(values.username, values.password)
+        await loadMoomooCookies(values.username, values.password)
       }
     } catch (error: any) {
       setError(error.message || '登录失败')
@@ -92,7 +137,6 @@ export default function ConfigPage() {
       const result = await configApi.getConfigs(currentUsername, currentPassword)
       if (result.success) {
         setConfigs(result.data.configs)
-        // 重新获取Token状态（因为配置可能影响Token状态显示）
         try {
           const statusResult = await tokenRefreshApi.getTokenStatus()
           if (statusResult.success) {
@@ -123,26 +167,24 @@ export default function ConfigPage() {
 
   // 更新管理员账户
   const handleUpdateAdmin = async (
-    adminId: number, 
-    updates: { 
+    adminId: number,
+    updates: {
       username?: string
       oldPassword?: string
       newPassword?: string
       confirmPassword?: string
-      is_active?: boolean 
+      is_active?: boolean
     }
   ) => {
-    // 检查是否有有效的更新字段
     const hasUpdates = (updates.username !== undefined && updates.username !== null && updates.username !== '') ||
                       (updates.newPassword !== undefined && updates.newPassword !== null && updates.newPassword !== '') ||
                       (updates.is_active !== undefined && updates.is_active !== null)
-    
+
     if (!hasUpdates) {
       message.warning('没有需要更新的内容')
       return
     }
 
-    // 如果更新密码，验证两次输入是否一致
     if (updates.newPassword) {
       if (!updates.oldPassword) {
         message.error('修改密码需要提供原密码')
@@ -250,7 +292,6 @@ export default function ConfigPage() {
           if (result.success) {
             message.success('Token刷新成功！')
             await loadConfigs()
-            // 重新获取Token状态
             const statusResult = await tokenRefreshApi.getTokenStatus()
             if (statusResult.success) {
               setTokenStatus(statusResult.data)
@@ -263,6 +304,99 @@ export default function ConfigPage() {
         }
       },
     })
+  }
+
+  // ── Moomoo Cookie 管理 ──────────────────────────────────
+  const handleAddCookieRow = () => {
+    setCookieRows(prev => [
+      ...prev,
+      {
+        id: `cookie-${Date.now()}`,
+        csrfToken: '',
+        cookies: '',
+        label: `Guest #${prev.length + 1}`,
+        status: 'unknown',
+      },
+    ])
+  }
+
+  const handleRemoveCookieRow = (id: string) => {
+    setCookieRows(prev => prev.filter(r => r.id !== id))
+  }
+
+  const handleUpdateCookieRow = (id: string, field: keyof MoomooCookieRow, value: string) => {
+    setCookieRows(prev =>
+      prev.map(r => (r.id === id ? { ...r, [field]: value, status: 'unknown' as const, testMessage: undefined } : r))
+    )
+  }
+
+  const handleTestCookie = async (id: string) => {
+    const row = cookieRows.find(r => r.id === id)
+    if (!row) return
+    if (!row.csrfToken.trim() || !row.cookies.trim()) {
+      message.warning('请先填写 csrfToken 和 cookies')
+      return
+    }
+
+    setCookieRows(prev => prev.map(r => (r.id === id ? { ...r, status: 'testing' as const, testMessage: undefined } : r)))
+
+    try {
+      const result = await configApi.testMoomooCookie(row.cookies.trim(), row.csrfToken.trim(), username, password)
+      if (result.success && result.data) {
+        const { cookieValid, duration, dataPoints, responseMessage } = result.data
+        setCookieRows(prev =>
+          prev.map(r =>
+            r.id === id
+              ? {
+                  ...r,
+                  status: cookieValid ? 'valid' : 'expired',
+                  testMessage: cookieValid
+                    ? `${duration} | ${dataPoints}条数据`
+                    : responseMessage,
+                }
+              : r
+          )
+        )
+      }
+    } catch (err: any) {
+      setCookieRows(prev =>
+        prev.map(r => (r.id === id ? { ...r, status: 'expired' as const, testMessage: err.message } : r))
+      )
+    }
+  }
+
+  const handleSaveCookies = async () => {
+    // 过滤空行
+    const validRows = cookieRows.filter(r => r.csrfToken.trim() && r.cookies.trim())
+    const payload = validRows.map((r, idx) => ({
+      csrfToken: r.csrfToken.trim(),
+      cookies: r.cookies.trim(),
+      label: r.label.trim() || `Guest #${idx + 1}`,
+    }))
+
+    setCookieSaving(true)
+    try {
+      await configApi.updateConfig('moomoo_guest_cookies', JSON.stringify(payload), true, username, password)
+      message.success('Moomoo Cookies 保存成功')
+      await loadConfigs()
+    } catch (err: any) {
+      message.error(err.message || '保存失败')
+    } finally {
+      setCookieSaving(false)
+    }
+  }
+
+  const statusTag = (row: MoomooCookieRow) => {
+    switch (row.status) {
+      case 'testing':
+        return <Tag color="processing">测试中...</Tag>
+      case 'valid':
+        return <Tag color="success">有效 {row.testMessage}</Tag>
+      case 'expired':
+        return <Tag color="error">过期 {row.testMessage ? `- ${row.testMessage}` : ''}</Tag>
+      default:
+        return <Tag>未测试</Tag>
+    }
   }
 
   if (!isAuthenticated) {
@@ -467,17 +601,17 @@ export default function ConfigPage() {
                   type="primary"
                   onClick={() => {
                     const updates: any = {}
-                    
+
                     if (editingAdmin.username !== record.username && editingAdmin.username.trim() !== '') {
                       updates.username = editingAdmin.username.trim()
                     }
-                    
+
                     if (editingAdmin.newPassword && editingAdmin.newPassword.trim() !== '') {
                       updates.oldPassword = editingAdmin.oldPassword
                       updates.newPassword = editingAdmin.newPassword.trim()
                       updates.confirmPassword = editingAdmin.confirmPassword
                     }
-                    
+
                     if (Object.keys(updates).length > 0) {
                       handleUpdateAdmin(record.id, updates)
                     } else {
@@ -524,13 +658,16 @@ export default function ConfigPage() {
     },
   ]
 
+  // 过滤掉由 Cookie 管理区接管的配置键
+  const filteredConfigs = configs.filter(c => !HIDDEN_CONFIG_KEYS.includes(c.key))
+
   return (
     <AppLayout>
       <Card>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <Link href="/" style={{ color: '#1890ff' }}>
-              ← 返回主页
+              &larr; 返回主页
             </Link>
             <h1 style={{ fontSize: 24, fontWeight: 600, margin: 0 }}>系统配置管理</h1>
           </div>
@@ -624,11 +761,91 @@ export default function ConfigPage() {
           />
         )}
 
+        {/* Moomoo Cookie 管理 */}
+        <Card style={{ marginBottom: 16 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Moomoo Cookie 管理</h2>
+          <Alert
+            message="使用说明"
+            description="无痕浏览器打开 moomoo.com -> F12 -> Network -> 复制任意API请求的 Cookie 和 csrfToken。多组Cookie轮询可分散频率限制。保存后约5分钟生效（后端定时刷新）。"
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+          />
+
+          {cookieRows.map((row, idx) => (
+            <Card
+              key={row.id}
+              size="small"
+              style={{ marginBottom: 12 }}
+              title={
+                <Space>
+                  <span>#{idx + 1}</span>
+                  <Input
+                    size="small"
+                    value={row.label}
+                    onChange={(e) => handleUpdateCookieRow(row.id, 'label', e.target.value)}
+                    style={{ width: 140 }}
+                    placeholder="标签"
+                  />
+                  {statusTag(row)}
+                </Space>
+              }
+              extra={
+                <Space>
+                  <Button
+                    size="small"
+                    onClick={() => handleTestCookie(row.id)}
+                    loading={row.status === 'testing'}
+                  >
+                    测试
+                  </Button>
+                  <Button
+                    size="small"
+                    danger
+                    onClick={() => handleRemoveCookieRow(row.id)}
+                  >
+                    删除
+                  </Button>
+                </Space>
+              }
+            >
+              <Space direction="vertical" style={{ width: '100%' }} size="small">
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 2 }}>csrfToken:</div>
+                  <Input
+                    size="small"
+                    value={row.csrfToken}
+                    onChange={(e) => handleUpdateCookieRow(row.id, 'csrfToken', e.target.value)}
+                    placeholder="粘贴 csrfToken"
+                  />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 2 }}>cookies:</div>
+                  <Input.TextArea
+                    rows={2}
+                    value={row.cookies}
+                    onChange={(e) => handleUpdateCookieRow(row.id, 'cookies', e.target.value)}
+                    placeholder="粘贴完整 Cookie 字符串"
+                    style={{ fontSize: 11, fontFamily: 'monospace' }}
+                  />
+                </div>
+              </Space>
+            </Card>
+          ))}
+
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 8 }}>
+            <Button onClick={handleAddCookieRow}>+ 添加Cookie</Button>
+            <Button type="primary" onClick={handleSaveCookies} loading={cookieSaving}>
+              保存
+            </Button>
+          </div>
+        </Card>
+
         {/* 管理员账户管理 */}
         {showAdminManagement && (
           <Card style={{ marginBottom: 16 }}>
             <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>管理员账户管理</h2>
-            
+
             {/* 创建新管理员 */}
             <Card size="small" style={{ marginBottom: 16 }}>
               <h3 style={{ fontSize: 14, fontWeight: 500, marginBottom: 12 }}>创建新管理员</h3>
@@ -673,7 +890,7 @@ export default function ConfigPage() {
         )}
 
         <Table
-          dataSource={configs}
+          dataSource={filteredConfigs}
           columns={configColumns}
           rowKey="key"
           pagination={false}
@@ -696,4 +913,3 @@ export default function ConfigPage() {
     </AppLayout>
   )
 }
-

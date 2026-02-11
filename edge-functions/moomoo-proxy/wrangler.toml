@@ -1,0 +1,15 @@
+name = "moomoo-proxy"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# 绑定自定义域名（需要在 CF Dashboard 添加 DNS 记录）
+# routes = [
+#   { pattern = "moomoo-api.riowang.win/*", zone_name = "riowang.win" }
+# ]
+
+# KV 绑定（用于 cookie 缓存，向后兼容直接 curl 调用）
+# 部署前需要创建 KV namespace：wrangler kv:namespace create MOOMOO_CACHE
+# 然后将返回的 id 填入下方
+# [[kv_namespaces]]
+# binding = "MOOMOO_CACHE"
+# id = "YOUR_KV_NAMESPACE_ID"

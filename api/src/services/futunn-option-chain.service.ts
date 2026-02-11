@@ -1,6 +1,6 @@
-import crypto from 'crypto';
 import { getFutunnConfig, getFutunnHeaders, getFutunnSearchHeaders } from '../config/futunn';
 import { moomooProxy } from '../utils/moomoo-proxy';
+import { generateQuoteToken } from '../utils/moomoo-quote-token';
 import { logger } from '../utils/logger';
 
 /**
@@ -13,36 +13,6 @@ import { logger } from '../utils/logger';
  * 
  * 参考文档：OPTION_CHAIN_FEASIBILITY_ANALYSIS.md
  */
-
-/**
- * 生成quote-token
- * 与现有实现一致，使用字符串类型参数
- */
-function generateQuoteToken(params: Record<string, string>): string {
-  const dataStr = JSON.stringify(params);
-  
-  if (dataStr.length <= 0) {
-    return 'quote';
-  }
-  
-  // HMAC-SHA512加密
-  const hmacResult = crypto
-    .createHmac('sha512', 'quote_web')
-    .update(dataStr)
-    .digest('hex');
-  
-  const firstSlice = hmacResult.substring(0, 10);
-  
-  // SHA256哈希
-  const sha256Result = crypto
-    .createHash('sha256')
-    .update(firstSlice)
-    .digest('hex');
-  
-  const token = sha256Result.substring(0, 10);
-  
-  return token;
-}
 
 /**
  * 解析成交量字符串（支持"万"等单位）

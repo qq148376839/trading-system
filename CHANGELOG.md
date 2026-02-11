@@ -2,6 +2,63 @@
 
 ## 2026-02-11
 
+### Moomoo 多 Cookie 管理与边缘代理优化
+
+**功能**: 实现 Moomoo Cookie 多账户管理 UI、后端 DB 驱动配置加载、Cookie 测试 API、边缘函数 URL DB 配置化，以及 Cloudflare Worker wrangler v4 迁移部署。
+
+**实现内容**:
+
+#### 1. 前端多 Cookie 管理 UI (`frontend/app/config/page.tsx`)
+- 新增 `MoomooCookieRow` 接口和状态管理
+- Moomoo Cookie 管理卡片：逐行添加/删除/测试/保存
+- 状态标签：unknown / testing / valid / expired，测试后显示结果
+- 登录后从 DB 加载，保存为 JSON 到 `moomoo_guest_cookies`
+- Config 表列表过滤掉 `moomoo_guest_cookies`、`futunn_cookies`、`futunn_csrf_token`、`futunn_search_cookies`
+
+#### 2. 后端 DB 驱动 Cookie 加载 (`api/src/config/futunn.ts`)
+- `refreshDBConfigs()` 从 DB 读取 `moomoo_guest_cookies`，5 分钟 TTL 缓存
+- `getEffectiveConfigs()` 优先返回 DB 配置，无可用时降级到硬编码
+- `initFutunnConfig()` 启动时异步 DB 加载 + `setInterval` 定期刷新
+
+#### 3. Cookie 测试 API (`api/src/routes/config.ts`)
+- `POST /api/config/get-value` — 返回解密后的配置值
+- `POST /api/config/test-moomoo-cookie` — 通过边缘代理测试 Cookie（SPX 日 K 数据）
+
+#### 4. 前端 API 方法 (`frontend/lib/api.ts`)
+- `configApi.getConfigValue(key, username, password)`
+- `configApi.testMoomooCookie(cookies, csrfToken, username, password)`
+
+#### 5. 边缘函数 URL 从 DB 加载 (`api/src/utils/moomoo-proxy.ts`)
+- 从 DB 读取 `moomoo_edge_function_url` 和 `use_moomoo_edge_function`
+- 5 分钟缓存 TTL，环境变量 fallback
+- `getProxyMode()` 改为 async（所有调用方已同步调整）
+
+#### 6. DB 迁移 (`api/migrations/000_init_schema.sql`)
+- 新增种子数据：`moomoo_guest_cookies`、`moomoo_edge_function_url`、`use_moomoo_edge_function`
+
+#### 7. Cloudflare Worker 部署 (`edge-functions/moomoo-proxy/`)
+- `wrangler.toml` 迁移到 `wrangler.jsonc`（wrangler v4）
+- KV namespace `MOOMOO_CACHE` 已创建
+- Routes: `moomoo-api.riowang.win/*`，已部署
+
+**新增文件**:
+- `api/src/utils/moomoo-quote-token.ts`（Quote token 计算工具）
+- `edge-functions/moomoo-proxy/wrangler.jsonc`（Cloudflare Worker 配置）
+
+**修改文件**:
+- 📝 `frontend/app/config/page.tsx`（多 Cookie 管理 UI）
+- 📝 `frontend/lib/api.ts`（新增 configApi 方法）
+- 📝 `api/src/config/futunn.ts`（DB 驱动 Cookie 加载）
+- 📝 `api/src/routes/config.ts`（新增测试/获取值 API）
+- 📝 `api/src/utils/moomoo-proxy.ts`（边缘函数 URL 从 DB 加载，getProxyMode async）
+- 📝 `api/src/routes/forex.ts`、`futunn-test.ts`、`options.ts`（适配 async getProxyMode）
+- 📝 `api/src/services/futunn-option-chain.service.ts`、`futunn-option-quote.service.ts`、`institution-stock-selector.service.ts`、`market-data.service.ts`（适配 async getProxyMode）
+- 📝 `api/migrations/000_init_schema.sql`（新增种子数据）
+
+**相关文档**: [Moomoo 多 Cookie 管理与边缘代理优化](docs/features/260211-Moomoo多Cookie管理与边缘代理优化.md)
+
+---
+
 ### 回滚 TSLPPCT + 恢复原始监控频率 + 启动预热
 
 **功能/修复**: 完全移除 TSLPPCT 券商侧跟踪止损逻辑（实际运行中 100% 失败且引入多处不稳定），恢复 9140d2c 之前的交易流程；修复 entryPrice 类型错误；新增启动时市场数据预热避免多策略并发限流。

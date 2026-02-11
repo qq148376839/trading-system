@@ -7,6 +7,26 @@
 
 ## 🆕 最近更新
 
+### 2026-02-11: Moomoo 多 Cookie 管理与边缘代理优化
+
+**变更内容**:
+1. 前端多 Cookie 管理 UI：逐行添加/删除/测试/保存，状态标签（unknown/testing/valid/expired）
+2. 后端 DB 驱动 Cookie 加载：`refreshDBConfigs()` 5 分钟 TTL 缓存，`getEffectiveConfigs()` 优先 DB 配置
+3. Cookie 测试 API：`POST /api/config/test-moomoo-cookie` 通过边缘代理验证 Cookie 有效性
+4. 边缘函数 URL 从 DB 加载：`moomoo_edge_function_url` + `use_moomoo_edge_function`，`getProxyMode()` 改为 async
+5. Cloudflare Worker 迁移到 `wrangler.jsonc`（v4）并部署到 `moomoo-api.riowang.win`
+
+**修改文件**:
+- 📝 `frontend/app/config/page.tsx`（多 Cookie UI）
+- 📝 `api/src/config/futunn.ts`（DB 驱动 Cookie）
+- 📝 `api/src/routes/config.ts`（测试/获取值 API）
+- 📝 `api/src/utils/moomoo-proxy.ts`（边缘函数 URL 从 DB 加载）
+- 📝 7 个服务/路由文件适配 async `getProxyMode()`
+
+**相关文档**: [Moomoo 多 Cookie 管理与边缘代理优化](docs/features/260211-Moomoo多Cookie管理与边缘代理优化.md)
+
+---
+
 ### 2026-02-11: 回滚 TSLPPCT + 恢复原始监控 + 启动预热
 
 **变更内容**：
@@ -607,6 +627,6 @@
 
 ---
 
-**最后更新**: 2026-02-10（进度更新：TSLPPCT 跟踪止损保护 + 期权监控频率优化）
+**最后更新**: 2026-02-11（Moomoo 多 Cookie 管理与边缘代理优化）
 **项目版本**: 1.0
 

@@ -193,6 +193,95 @@ configRouter.post('/', requireAdmin, async (req: Request, res: Response, next: N
 });
 
 /**
+ * POST /api/config/get-value
+ * 获取单个配置的解密值（需要管理员认证）
+ */
+configRouter.post('/get-value', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { key } = req.body;
+    if (!key) {
+      return next(ErrorFactory.missingParameter('key'));
+    }
+
+    const value = await configService.getConfig(key);
+
+    res.json({
+      success: true,
+      data: { key, value: value ?? '' },
+    });
+  } catch (error: unknown) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
+ * POST /api/config/test-moomoo-cookie
+ * 测试指定 Cookie 是否可用（需要管理员认证）
+ * 通过边缘函数代理请求 SPX 日K 数据来验证
+ */
+configRouter.post('/test-moomoo-cookie', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { cookies, csrfToken } = req.body;
+    if (!cookies || !csrfToken) {
+      return next(ErrorFactory.missingParameter('cookies 或 csrfToken'));
+    }
+
+    const { moomooProxy } = await import('../utils/moomoo-proxy');
+    const startTime = Date.now();
+
+    try {
+      // 请求 SPX 日K（stockId=200003）来测试 cookie 有效性
+      const response = await moomooProxy({
+        path: '/api/quote/kline',
+        params: {
+          stockId: '200003',
+          marketType: 1,
+          type: 2,       // 日K
+          count: 100,
+        },
+        cookies,
+        csrfToken,
+        timeout: 20000,
+      });
+
+      const duration = Date.now() - startTime;
+      const code = response?.code ?? response?.data?.code;
+      const msg = response?.message ?? response?.data?.message ?? 'OK';
+      const dataList = response?.data?.list ?? response?.list ?? [];
+
+      res.json({
+        success: true,
+        data: {
+          cookieValid: code === 0 || code === undefined,
+          responseCode: code ?? 0,
+          responseMessage: msg,
+          duration: `${duration}ms`,
+          dataPoints: Array.isArray(dataList) ? dataList.length : 0,
+        },
+      });
+    } catch (testError: unknown) {
+      const duration = Date.now() - startTime;
+      const msg = testError instanceof Error ? testError.message : String(testError);
+
+      res.json({
+        success: true,
+        data: {
+          cookieValid: false,
+          responseCode: -1,
+          responseMessage: msg,
+          duration: `${duration}ms`,
+          dataPoints: 0,
+        },
+      });
+    }
+  } catch (error: unknown) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
  * GET /api/config/:key
  * 获取单个配置值（需要管理员认证）
  */
@@ -264,7 +353,7 @@ configRouter.put('/:key', requireAdmin, async (req: Request, res: Response, next
     // 确定是否需要加密（根据配置项类型）
     const shouldEncrypt = encrypted !== undefined 
       ? encrypted 
-      : ['longport_app_key', 'longport_app_secret', 'longport_access_token', 'futunn_csrf_token', 'futunn_cookies'].includes(key);
+      : ['longport_app_key', 'longport_app_secret', 'longport_access_token', 'futunn_csrf_token', 'futunn_cookies', 'moomoo_guest_cookies'].includes(key);
 
     await configService.setConfig(key, String(value), shouldEncrypt, adminUsername);
     
@@ -297,7 +386,7 @@ configRouter.post('/batch', requireAdmin, async (req: Request, res: Response, ne
       value: String(config.value),
       encrypted: config.encrypted !== undefined 
         ? config.encrypted 
-        : ['longport_app_key', 'longport_app_secret', 'longport_access_token', 'futunn_csrf_token', 'futunn_cookies'].includes(config.key),
+        : ['longport_app_key', 'longport_app_secret', 'longport_access_token', 'futunn_csrf_token', 'futunn_cookies', 'moomoo_guest_cookies'].includes(config.key),
     }));
 
     await configService.setConfigs(configsWithEncryption, adminUsername);

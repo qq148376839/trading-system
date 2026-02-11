@@ -1,0 +1,18 @@
+{
+  "name": "moomoo-proxy",
+  "main": "src/index.js",
+  "compatibility_date": "2024-01-01",
+
+  // KV 绑定（cookie 缓存，向后兼容直接 curl 调用）
+  "kv_namespaces": [
+    {
+      "binding": "MOOMOO_CACHE",
+      "id": "792746a2ab82498cbbf143ba30c1731c"
+    }
+  ],
+
+  // 绑定自定义域名
+  "routes": [
+    { "pattern": "moomoo-api.riowang.win/*", "zone_name": "riowang.win" }
+  ]
+}

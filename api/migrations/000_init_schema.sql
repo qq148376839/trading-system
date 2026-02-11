@@ -216,7 +216,10 @@ INSERT INTO system_config (config_key, config_value, encrypted, description) VAL
     ('log_throttle_window_seconds', '30', false, '日志节流窗口时间（秒）'),
     ('log_digest_enabled', 'true', false, '启用日志摘要（高频指标定期聚合写入）'),
     ('log_digest_interval_minutes', '5', false, '日志摘要刷新间隔（分钟）'),
-    ('log_debug_to_db', 'false', false, '应急开关：启用 DEBUG 级别日志入库（默认关闭以减少DB压力）')
+    ('log_debug_to_db', 'false', false, '应急开关：启用 DEBUG 级别日志入库（默认关闭以减少DB压力）'),
+    ('moomoo_guest_cookies', '[]', true, 'Moomoo多组游客Cookies（JSON数组）'),
+    ('moomoo_edge_function_url', 'https://moomoo-api.riowang.win', false, 'Moomoo边缘函数代理URL'),
+    ('use_moomoo_edge_function', 'true', false, '是否启用Moomoo边缘函数代理（true启用，false直连moomoo.com）')
 ON CONFLICT (config_key) DO UPDATE SET 
     -- Update description if it changed (always update for clarity)
     description = EXCLUDED.description,

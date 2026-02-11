@@ -1,7 +1,7 @@
 import axios from 'axios';
-import crypto from 'crypto';
 import { getFutunnConfig, getFutunnHeaders, getFutunnSearchHeaders } from '../config/futunn';
 import { moomooProxy, getProxyMode } from '../utils/moomoo-proxy';
+import { generateQuoteToken } from '../utils/moomoo-quote-token';
 import { logger } from '../utils/logger';
 
 /**
@@ -21,37 +21,6 @@ export function setFutunnConfig(config: { csrfToken: string; cookies: string }) 
   // 这个函数保留用于向后兼容
   const { setFutunnConfig: setConfig } = require('../config/futunn');
   setConfig(config);
-}
-
-/**
- * 生成quote-token
- * 与 forex.ts 中的实现一致，但使用字符串类型参数
- */
-function generateQuoteToken(params: Record<string, string>): string {
-  // 重要：参数值必须是字符串类型（已验证匹配浏览器行为）
-  const dataStr = JSON.stringify(params);
-  
-  if (dataStr.length <= 0) {
-    return 'quote';
-  }
-  
-  // HMAC-SHA512加密
-  const hmacResult = crypto
-    .createHmac('sha512', 'quote_web')
-    .update(dataStr)
-    .digest('hex');
-  
-  const firstSlice = hmacResult.substring(0, 10);
-  
-  // SHA256哈希
-  const sha256Result = crypto
-    .createHash('sha256')
-    .update(firstSlice)
-    .digest('hex');
-  
-  const token = sha256Result.substring(0, 10);
-  
-  return token;
 }
 
 /**
@@ -108,7 +77,8 @@ async function searchStock(keyword: string): Promise<{
     const headers = await getFutunnSearchHeaders('https://www.moomoo.com/');
     
     const startTime = Date.now();
-    logger.debug(`[富途搜索] 搜索正股: ${keyword} (${getProxyMode()})`);
+    const proxyMode = await getProxyMode();
+    logger.debug(`[富途搜索] 搜索正股: ${keyword} (${proxyMode})`);
     
     // 使用边缘函数代理
     const responseData = await moomooProxy({

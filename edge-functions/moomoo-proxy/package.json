@@ -1,0 +1,11 @@
+{
+  "name": "moomoo-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Independent Cloudflare Worker for Moomoo API proxy",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail --format json"
+  }
+}

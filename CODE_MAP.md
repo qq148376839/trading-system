@@ -2,7 +2,7 @@
 
 本文档详细说明了项目中每个文件的作用以及文件之间的调用和关联关系。
 
-**最后更新**: 2026-02-10（TSLPPCT 跟踪止损保护 + 期权监控频率优化）
+**最后更新**: 2026-02-11（Moomoo 多 Cookie 管理与边缘代理优化）
 
 ---
 
@@ -117,11 +117,13 @@ trading-system/
 - 📌 `services/account-balance-sync.service.ts` - 余额同步
 
 #### `api/src/config/futunn.ts`
-**作用**: 富途牛牛 API 配置
+**作用**: 富途牛牛 API 配置（DB 驱动 + 硬编码 fallback）
 
 **主要功能**:
-- 读取富途 API 配置（CSRF Token、Cookies）
-- 提供配置访问接口
+- 从 DB 读取 `moomoo_guest_cookies` 配置（`refreshDBConfigs()`，5 分钟 TTL 缓存）
+- `getEffectiveConfigs()` 优先返回 DB 配置，无可用时降级到硬编码默认值
+- `initFutunnConfig()` 启动时异步 DB 加载 + `setInterval` 定期刷新
+- `getFutunnConfig()` 保持同步接口，下游无需改动
 
 **调用关系**:
 - ✅ 使用 `config.service` 读取数据库配置
@@ -294,10 +296,13 @@ trading-system/
 **API**:
 - `GET /api/config` - 获取配置
 - `PUT /api/config/:key` - 更新配置
+- `POST /api/config/get-value` - 获取解密后的配置值
+- `POST /api/config/test-moomoo-cookie` - 测试 Moomoo Cookie 有效性（通过边缘代理请求 SPX 日K）
 
 **调用关系**:
 - ✅ 使用 `services/config.service.ts` - 配置服务
 - ✅ 使用 `middleware/rateLimiter.ts` - 限流中间件
+- ✅ 使用 `utils/moomoo-proxy.ts` - Moomoo API 代理（Cookie 测试）
 
 **被调用**:
 - 📌 `server.ts` - 注册路由
@@ -882,23 +887,41 @@ trading-system/
 - 📌 `services/log.service.ts` - 日志服务
 
 #### `api/src/utils/moomoo-proxy.ts`
-**作用**: Moomoo API 代理工具
+**作用**: Moomoo API 代理工具（边缘函数 URL 从 DB 加载）
 
 **主要功能**:
 - 代理富途/Moomoo API 请求
 - 处理 quote-token 计算
 - 错误处理和重试
-- 通过边缘函数代理访问（解决IP限制问题）
+- 从 DB 读取 `moomoo_edge_function_url` 和 `use_moomoo_edge_function`（5 分钟缓存 TTL，环境变量 fallback）
+- `getProxyMode()` 为 async 方法
 
 **调用关系**:
 - ✅ 使用 `config/futunn.ts` - 富途配置
-- ✅ 调用边缘函数 (`https://cfapi.riowang.win/api/moomooapi`)
+- ✅ 使用 `services/config.service.ts` - 读取边缘函数 URL 配置
+- ✅ 调用边缘函数（URL 从 DB 配置读取，默认 `moomoo-api.riowang.win`）
 
 **被调用**:
 - 📌 `services/market-data.service.ts` - 市场数据服务
 - 📌 `services/futunn-option-quote.service.ts` - 期权行情服务
 - 📌 `services/futunn-option-chain.service.ts` - 期权链服务
 - 📌 `services/institution-stock-selector.service.ts` - 机构选股服务
+- 📌 `routes/config.ts` - Cookie 测试 API
+- 📌 `routes/forex.ts` - 外汇行情
+- 📌 `routes/futunn-test.ts` - 富途测试
+- 📌 `routes/options.ts` - 期权路由
+
+#### `api/src/utils/moomoo-quote-token.ts`
+**作用**: Moomoo Quote Token 计算工具
+
+**主要功能**:
+- 计算 Moomoo API 请求所需的 quote-token（HMAC-SHA512 + SHA256）
+
+**调用关系**:
+- ✅ 无外部依赖
+
+**被调用**:
+- 📌 `utils/moomoo-proxy.ts` - Moomoo API 代理
 
 #### `api/src/utils/order-validation.ts`
 **作用**: 订单验证工具
@@ -1905,6 +1928,45 @@ frontend/app/* (所有页面)
 - ✅ 合并010和011到`000_init_schema.sql`
 - ✅ 归档历史迁移脚本（001-011）
 - ✅ 保留012作为可选的历史数据修复脚本
+
+---
+
+## 最新变更（2026-02-11）
+
+### Moomoo 多 Cookie 管理与边缘代理优化
+
+**新增文件**:
+- `api/src/utils/moomoo-quote-token.ts` - Quote Token 计算工具
+  - 调用关系：无外部依赖
+  - 被调用：`utils/moomoo-proxy.ts`
+- `edge-functions/moomoo-proxy/wrangler.jsonc` - Cloudflare Worker 配置（wrangler v4）
+- `edge-functions/moomoo-proxy/` - Worker 部署目录（KV: MOOMOO_CACHE, Routes: moomoo-api.riowang.win）
+
+**修改文件**:
+- `api/src/config/futunn.ts` - 新增 DB 驱动 Cookie 加载
+  - 变更内容：`refreshDBConfigs()` / `getEffectiveConfigs()` / `initFutunnConfig()` 启动加载+定期刷新
+- `api/src/routes/config.ts` - 新增 Cookie 测试 API
+  - 变更内容：`POST /api/config/get-value` + `POST /api/config/test-moomoo-cookie`
+- `api/src/utils/moomoo-proxy.ts` - 边缘函数 URL 从 DB 加载
+  - 变更内容：`getProxyMode()` 改为 async，从 DB 读取 `moomoo_edge_function_url`
+- `frontend/app/config/page.tsx` - 多 Cookie 管理 UI
+  - 变更内容：`MoomooCookieRow` 接口、逐行管理、状态标签、DB 加载/保存
+- `frontend/lib/api.ts` - 新增 configApi 方法
+  - 变更内容：`getConfigValue()` + `testMoomooCookie()`
+- `api/migrations/000_init_schema.sql` - 新增种子数据
+  - 变更内容：`moomoo_guest_cookies`、`moomoo_edge_function_url`、`use_moomoo_edge_function`
+
+**调用关系变更**:
+- `getProxyMode()` 改为 async，以下文件同步调整：
+  - `api/src/routes/forex.ts`
+  - `api/src/routes/futunn-test.ts`
+  - `api/src/routes/options.ts`
+  - `api/src/services/futunn-option-chain.service.ts`
+  - `api/src/services/futunn-option-quote.service.ts`
+  - `api/src/services/institution-stock-selector.service.ts`
+  - `api/src/services/market-data.service.ts`
+- `routes/config.ts` 新增依赖：`utils/moomoo-proxy.ts`（Cookie 测试）
+- `utils/moomoo-proxy.ts` 新增依赖：`services/config.service.ts`（读取边缘函数 URL）
 
 ---
 

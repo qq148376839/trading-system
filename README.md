@@ -477,6 +477,21 @@ const mappedOrder = mapOrderData(orderDetail);
 
 ## 📝 重要更新
 
+### 2026-02-11: Moomoo 多 Cookie 管理与边缘代理优化
+
+**功能**: 实现 Moomoo Cookie 多账户管理 UI、DB 驱动配置加载、Cookie 测试 API、边缘函数 URL DB 配置化
+
+**核心改进**:
+- 前端多 Cookie 管理 UI：逐行添加/删除/测试/保存，状态标签显示有效性
+- 后端 DB 驱动 Cookie 加载：5 分钟缓存 TTL，硬编码 fallback
+- Cookie 测试 API：通过边缘代理验证 Cookie 有效性
+- 边缘函数 URL 从 DB 加载：`getProxyMode()` 改为 async
+- Cloudflare Worker 迁移到 wrangler v4 并部署到 `moomoo-api.riowang.win`
+
+**详细内容**: 参考 [Moomoo 多 Cookie 管理与边缘代理优化](docs/features/260211-Moomoo多Cookie管理与边缘代理优化.md)
+
+---
+
 ### 2026-02-06: 日志系统全面重构 ⭐ 核心架构
 
 **优化**: 全面重构日志系统，实现级别门控、节流机制、摘要聚合，DB写入量减少95-98%
@@ -839,4 +854,4 @@ MIT License
 
 ---
 
-**最后更新**: 2026-02-06 (日志系统全面重构)
+**最后更新**: 2026-02-11 (Moomoo 多 Cookie 管理与边缘代理优化)

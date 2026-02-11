@@ -1,8 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import axios from 'axios';
-import crypto from 'crypto';
 import { rateLimiter } from '../middleware/rateLimiter';
 import { getFutunnHeaders } from '../config/futunn';
+import { generateQuoteToken } from '../utils/moomoo-quote-token';
 import { ErrorFactory, normalizeError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
@@ -52,33 +52,6 @@ const QUOTE_TYPE_MAP: Record<string, string> = {
   'quarter': '11',    // 季K
   'year': '5',        // 年K
 };
-
-/**
- * 生成quote-token
- * 参考market-data.service.ts的实现（HMAC-SHA512 + SHA256）
- * 注意：不需要对参数排序，直接使用JSON.stringify
- */
-function generateQuoteToken(params: Record<string, string>): string {
-  // 使用JSON.stringify生成token（不是urlencode）
-  // 注意：JavaScript对象的键顺序在JSON.stringify时保持插入顺序
-  const dataStr = JSON.stringify(params);
-  
-  // HMAC-SHA512加密
-  const hmac = crypto.createHmac('sha512', 'quote_web');
-  hmac.update(dataStr);
-  const hmacResult = hmac.digest('hex');
-  
-  // 取前10位
-  const firstSlice = hmacResult.substring(0, 10);
-  
-  // SHA256哈希
-  const sha256 = crypto.createHash('sha256');
-  sha256.update(firstSlice);
-  const sha256Result = sha256.digest('hex');
-  
-  // 取前10位作为token
-  return sha256Result.substring(0, 10);
-}
 
 /**
  * @openapi

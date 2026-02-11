@@ -4,6 +4,7 @@
  */
 
 import { moomooProxy } from '../utils/moomoo-proxy';
+import { generateQuoteToken } from '../utils/moomoo-quote-token';
 import institutionCache from './institution-cache.service';
 import { parseChineseNumber } from '../utils/chinese-number-parser';
 import { logger } from '../utils/logger';
@@ -90,15 +91,25 @@ export async function getInstitutionList(
 
   try {
     logger.log(`[机构选股] 调用API获取机构列表: page=${page}, pageSize=${pageSize}`);
-    
+
+    const timestamp = Date.now();
+    const tokenParams: Record<string, string> = {
+      page: String(page),
+      pageSize: String(pageSize),
+      _: String(timestamp),
+    };
+    const quoteToken = generateQuoteToken(tokenParams);
+
     const response = await moomooProxy({
       path: '/quote-api/quote-v2/get-owner-position-list',
       params: {
         page,
         pageSize,
+        _: timestamp,
       },
       cookies: getDefaultCookies(),
       csrfToken: getDefaultCsrfToken(),
+      quoteToken,
       referer: 'https://www.moomoo.com/hans/quote/institution-tracking',
       timeout: 10000,
     });
@@ -154,12 +165,16 @@ export async function getPopularInstitutions(): Promise<Institution[]> {
 
   try {
     logger.log(`[机构选股] 调用API获取热门机构列表`);
-    
+
+    // get-popular-position 不需要查询参数，但需要 quote-token（空对象计算）
+    const popularQuoteToken = generateQuoteToken({});
+
     const response = await moomooProxy({
       path: '/quote-api/quote-v2/get-popular-position',
       params: {},
       cookies: getDefaultCookies(),
       csrfToken: getDefaultCsrfToken(),
+      quoteToken: popularQuoteToken,
       referer: 'https://www.moomoo.com/hans/quote/institution-tracking',
       timeout: 10000,
     });
@@ -270,7 +285,17 @@ export async function getInstitutionHoldings(
 
   try {
     logger.log(`[机构选股] 调用API获取机构持仓: ${institutionId}, periodId=${periodId}`);
-    
+
+    const holdingTimestamp = Date.now();
+    const holdingTokenParams: Record<string, string> = {
+      ownerObjectId: institutionId,
+      periodId: String(periodId),
+      page: String(page),
+      pageSize: String(pageSize),
+      _: String(holdingTimestamp),
+    };
+    const holdingQuoteToken = generateQuoteToken(holdingTokenParams);
+
     const response = await moomooProxy({
       path: '/quote-api/quote-v2/get-share-holding-list',
       params: {
@@ -278,9 +303,11 @@ export async function getInstitutionHoldings(
         periodId,
         page,
         pageSize,
+        _: holdingTimestamp,
       },
       cookies: getDefaultCookies(),
       csrfToken: getDefaultCsrfToken(),
+      quoteToken: holdingQuoteToken,
       referer: 'https://www.moomoo.com/hans/quote/institution-tracking',
       timeout: 10000,
     });
