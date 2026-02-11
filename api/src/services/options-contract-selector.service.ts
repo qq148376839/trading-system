@@ -137,7 +137,7 @@ async function is0DTEBuyBlocked(): Promise<boolean> {
   try {
     const closeWindow = await getMarketCloseWindow({
       market: 'US',
-      noNewEntryBeforeCloseMinutes: 120,
+      noNewEntryBeforeCloseMinutes: 210,
       forceCloseBeforeCloseMinutes: 30,
     });
     if (closeWindow && new Date() >= closeWindow.noNewEntryTimeUtc) {

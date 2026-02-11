@@ -387,7 +387,15 @@ class CapitalManager {
     if (strategy.allocation_type === 'PERCENTAGE') {
       allocatedAmount = totalCapital * parseFloat(strategy.allocation_value.toString());
     } else {
-      allocatedAmount = parseFloat(strategy.allocation_value.toString());
+      // 固定金额不得超过实际账户可用余额
+      const configuredAmount = parseFloat(strategy.allocation_value.toString());
+      allocatedAmount = Math.min(configuredAmount, totalCapital);
+      if (allocatedAmount < configuredAmount) {
+        logger.warn(
+          `[资金保护] 策略 ${strategy.name}: 配置金额 ${configuredAmount.toFixed(2)} > 账户可用 ${totalCapital.toFixed(2)}，` +
+          `实际分配上限降为 ${allocatedAmount.toFixed(2)}`
+        );
+      }
     }
 
     const currentUsage = parseFloat(strategy.current_usage || '0');

@@ -7,6 +7,22 @@
 
 ## 🆕 最近更新
 
+### 2026-02-11: 资金上限保护 + 0DTE交易时间前移
+
+**变更内容**:
+1. 资金分配 `FIXED_AMOUNT` 类型增加 `Math.min(配置值, 实际余额)` 封顶保护，避免分配金额超出账户可用余额
+2. 0DTE截止时间统一从收盘前 120 分钟前移至 210 分钟（12:30 PM ET / 北京时间冬令时 1:30 AM）
+3. 影响范围：强制平仓、买入拦截、无持仓跳过监控、默认策略配置
+
+**修改文件**:
+- 📝 `api/src/services/capital-manager.service.ts`（资金分配上限保护）
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（0DTE强制平仓时间）
+- 📝 `api/src/services/options-contract-selector.service.ts`（0DTE买入拦截时间）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（无持仓跳过监控时间）
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`（默认配置）
+
+---
+
 ### 2026-02-11: 更新3组Moomoo游客Cookie + Worker fallback同步更新
 
 **变更内容**:

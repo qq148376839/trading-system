@@ -2,6 +2,30 @@
 
 ## 2026-02-11
 
+### 资金上限保护 + 0DTE交易时间前移
+
+**修复**: 资金分配固定金额封顶保护 + 0DTE截止时间从收盘前120分钟前移至210分钟（12:30 PM ET）。
+
+**问题背景**:
+1. 策略配置固定金额 $4000，但账户因亏损实际可用不足 $4000，`requestAllocation()` 未与余额比较导致下单失败
+2. 0DTE期权在 12:30 PM ET 后时间价值加速衰减，造成显著亏损
+
+**实现内容**:
+1. `capital-manager.service.ts` — `FIXED_AMOUNT` 分配增加 `Math.min(配置值, 实际余额)` 封顶，超额时打印 `[资金保护]` 警告
+2. `option-dynamic-exit.service.ts` — 0DTE强制平仓阈值 120→210 分钟
+3. `options-contract-selector.service.ts` — 0DTE买入拦截 120→210 分钟
+4. `strategy-scheduler.service.ts` — 无持仓跳过监控 120→210 分钟
+5. `option-intraday-strategy.ts` — 默认策略配置 `noNewEntryBeforeCloseMinutes` 120→210
+
+**修改文件**:
+- 📝 `api/src/services/capital-manager.service.ts`（资金分配上限保护）
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（0DTE强制平仓时间）
+- 📝 `api/src/services/options-contract-selector.service.ts`（0DTE买入拦截时间）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（无持仓跳过监控时间）
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`（默认配置）
+
+---
+
 ### 更新3组Moomoo游客Cookie + Worker fallback同步更新
 
 **维护**: 更新3组 Moomoo 游客 Cookie（硬编码 fallback）并同步更新 Cloudflare Worker 中的 fallback Cookie，确保无 DB 配置时仍可正常代理。

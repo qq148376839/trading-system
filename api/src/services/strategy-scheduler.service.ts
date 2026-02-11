@@ -313,13 +313,13 @@ class StrategyScheduler {
       return;
     }
 
-    // 期权策略：收盘前120分钟且无持仓时，跳过本周期（避免资源浪费）
+    // 期权策略：收盘前210分钟（12:30 PM ET）且无持仓时，跳过本周期（避免资源浪费）
     const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy;
     if (isOptionStrategy) {
       try {
         const closeWindow = await getMarketCloseWindow({
           market: 'US',
-          noNewEntryBeforeCloseMinutes: 120,
+          noNewEntryBeforeCloseMinutes: 210,
           forceCloseBeforeCloseMinutes: 30,
         });
         if (closeWindow && new Date() >= closeWindow.noNewEntryTimeUtc) {

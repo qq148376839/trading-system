@@ -327,10 +327,10 @@ class OptionDynamicExitService {
     const pnl = this.calculatePnL(ctx);
     const now = new Date();
 
-    // 0. 0DTE 强制平仓：收盘前120分钟，末日期权不论盈亏全部市价平仓
+    // 0. 0DTE 强制平仓：收盘前210分钟（12:30 PM ET），末日期权不论盈亏全部市价平仓
     const msToClose = ctx.marketCloseTime.getTime() - now.getTime();
     const minutesToClose = msToClose / (1000 * 60);
-    if (ctx.is0DTE && minutesToClose <= 120 && minutesToClose > 0) {
+    if (ctx.is0DTE && minutesToClose <= 210 && minutesToClose > 0) {
       return {
         action: 'TIME_STOP',
         reason: `0DTE期权收盘前${minutesToClose.toFixed(0)}分钟，强制平仓 | 净盈亏=${pnl.netPnLPercent.toFixed(1)}%`,

@@ -159,7 +159,7 @@ export const DEFAULT_OPTION_STRATEGY_CONFIG: Partial<OptionIntradayStrategyConfi
   tradeWindow: {
     firstHourOnly: true,
     avoidLast30Minutes: true,
-    noNewEntryBeforeCloseMinutes: 120,
+    noNewEntryBeforeCloseMinutes: 210,
     forceCloseBeforeCloseMinutes: 30,
   },
   positionSizing: {
