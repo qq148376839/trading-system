@@ -147,39 +147,6 @@ class TradePushService {
           });
       }
 
-      // TSLPPCT 保护单成交检测
-      const isSellOrder = side === 'Sell' || side === 2 || side === 'SELL' || side === 'sell';
-      if (isSellOrder && normalizedStatus === 'FilledStatus') {
-        try {
-          const tslpMatch = await pool.query(
-            `SELECT si.strategy_id, si.symbol, si.context
-             FROM strategy_instances si
-             WHERE si.context->>'tslpOrderId' = $1
-               AND si.current_state = 'HOLDING'
-             LIMIT 1`,
-            [orderId],
-          );
-          if (tslpMatch.rows.length > 0) {
-            const row = tslpMatch.rows[0];
-            const ctx = typeof row.context === 'string' ? JSON.parse(row.context) : (row.context || {});
-            logger.log(
-              `[交易推送][TSLP] 检测到TSLPPCT保护单成交: 策略${row.strategy_id} 标的${row.symbol}, 订单ID=${orderId}`,
-              { dbWrite: true },
-            );
-            await stateManager.updateState(row.strategy_id, row.symbol, 'IDLE', {
-              ...ctx,
-              autoClosedReason: 'tslp_triggered_push',
-              autoClosedAt: new Date().toISOString(),
-              previousState: 'HOLDING',
-              tslpExecutedPrice: executedPrice ? parseFloat(String(executedPrice)) : undefined,
-              tslpExecutedQuantity: executedQuantity ? parseInt(String(executedQuantity)) : undefined,
-            });
-          }
-        } catch (tslpErr: any) {
-          logger.error('[交易推送][TSLP] TSLPPCT成交检测失败:', tslpErr);
-        }
-      }
-
       // ⚠️ 修复：标准化订单方向（区分开仓和平仓）
       const isSell = side === 'Sell' || side === 2 || side === 'SELL' || side === 'sell';
       const isBuy = side === 'Buy' || side === 1 || side === 'BUY' || side === 'buy';

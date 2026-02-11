@@ -28,7 +28,8 @@ import { estimateOptionOrderTotalCost } from './options-fee.service';
 import { getOptionDetail } from './futunn-option-chain.service';
 import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-limiter';
 import longportOptionQuoteService from './longport-option-quote.service';
-import trailingStopProtectionService, { DEFAULT_TRAILING_PERCENT, ADJUST_THRESHOLD } from './trailing-stop-protection.service';
+import marketDataCacheService from './market-data-cache.service';
+
 
 // 定义执行汇总接口
 interface ExecutionSummary {
@@ -45,7 +46,6 @@ interface ExecutionSummary {
 
 class StrategyScheduler {
   private runningStrategies: Map<number, NodeJS.Timeout> = new Map();
-  private positionMgmtIntervals: Map<number, NodeJS.Timeout> = new Map();
   private orderMonitorIntervals: Map<number, NodeJS.Timeout> = new Map();
   private isRunning: boolean = false;
   // 持仓缓存：避免频繁调用 stockPositions() API
@@ -88,14 +88,6 @@ class StrategyScheduler {
       this.runningStrategies.delete(strategyId);
     }
     
-    // 停止所有持仓管理定时器
-    if (this.positionMgmtIntervals) {
-      for (const [strategyId, mgmtId] of this.positionMgmtIntervals.entries()) {
-        clearInterval(mgmtId);
-        this.positionMgmtIntervals.delete(strategyId);
-      }
-    }
-
     // 停止所有订单监控
     if (this.orderMonitorIntervals) {
       for (const [strategyId, monitorId] of this.orderMonitorIntervals.entries()) {
@@ -112,9 +104,21 @@ class StrategyScheduler {
    */
   private async startAllRunningStrategies(): Promise<void> {
     const strategiesResult = await pool.query(
-      `SELECT id, name, type, config, symbol_pool_config, status 
+      `SELECT id, name, type, config, symbol_pool_config, status
        FROM strategies WHERE status = 'RUNNING'`
     );
+
+    // 预热市场数据缓存：在启动策略之前先获取一次市场数据
+    // 避免多个策略同时启动时并发请求导致 API 限流
+    if (strategiesResult.rows.length > 0) {
+      try {
+        logger.log('启动前预热市场数据缓存...');
+        await marketDataCacheService.getMarketData(100, true);
+        logger.log('市场数据缓存预热完成');
+      } catch (err: any) {
+        logger.warn(`市场数据缓存预热失败(不阻塞策略启动): ${err?.message}`);
+      }
+    }
 
     for (const strategy of strategiesResult.rows) {
       await this.startStrategy(strategy.id);
@@ -161,15 +165,16 @@ class StrategyScheduler {
     // 注意：期权链数据有缓存，不会每次都请求API
     const isOptionStrategy = strategy.type === 'OPTION_INTRADAY_V1';
 
-    // 期权策略：分离入场扫描(15s)与持仓管理(90s)
-    // 非期权策略：统一60s周期
-    const entryScanMs = isOptionStrategy ? 15 * 1000 : 60 * 1000;
-    const positionMgmtMs = isOptionStrategy ? 90 * 1000 : 60 * 1000;
+    // 根据策略类型确定执行间隔
+    // - 期权策略（OPTION_INTRADAY_V1）：5秒，期权市场需要快速响应
+    // - 其他策略：60秒（默认）
+    // 注意：期权链数据有缓存，不会每次都请求API
+    const intervalMs = isOptionStrategy ? 5 * 1000 : 60 * 1000;
+    const intervalDesc = isOptionStrategy ? '5秒' : '1分钟';
 
-    // 入场扫描定时器（快速扫描 IDLE 标的，寻找新机会）
     const intervalId = setInterval(async () => {
       try {
-        await this.runStrategyCycle(strategyInstance, strategyId, strategy.symbol_pool_config, isOptionStrategy ? 'entry' : 'all');
+        await this.runStrategyCycle(strategyInstance, strategyId, strategy.symbol_pool_config);
       } catch (error: any) {
         logger.error(`策略 ${strategyId} 运行出错:`, error);
         await pool.query(
@@ -178,24 +183,15 @@ class StrategyScheduler {
         );
         this.stopStrategy(strategyId);
       }
-    }, entryScanMs);
+    }, intervalMs);
 
     this.runningStrategies.set(strategyId, intervalId);
 
-    // 期权策略：独立的持仓管理定时器（HOLDING/SHORT/CLOSING 退出检查 + TSLPPCT调整）
-    if (isOptionStrategy) {
-      const positionMgmtId = setInterval(async () => {
-        try {
-          await this.runStrategyCycle(strategyInstance, strategyId, strategy.symbol_pool_config, 'position');
-        } catch (error: any) {
-          logger.error(`策略 ${strategyId} 持仓管理出错:`, error);
-        }
-      }, positionMgmtMs);
-      this.positionMgmtIntervals.set(strategyId, positionMgmtId);
-    }
-
-    // 订单监控
-    const orderMonitorIntervalMs = isOptionStrategy ? 30 * 1000 : 30 * 1000;
+    // 启动订单监控任务
+    // - 期权策略：5秒（与策略周期同步）
+    // - 其他策略：30秒
+    const orderMonitorIntervalMs = isOptionStrategy ? 5 * 1000 : 30 * 1000;
+    const orderMonitorDesc = isOptionStrategy ? '5秒' : '30秒';
     const orderMonitorId = setInterval(async () => {
       try {
         await this.trackPendingOrders(strategyId);
@@ -206,8 +202,7 @@ class StrategyScheduler {
 
     this.orderMonitorIntervals.set(strategyId, orderMonitorId);
 
-    const intervalDesc = isOptionStrategy ? `入场扫描${entryScanMs / 1000}秒，持仓管理${positionMgmtMs / 1000}秒` : `${entryScanMs / 1000}秒`;
-    logger.log(`策略 ${strategy.name} (ID: ${strategyId}) 已启动（${intervalDesc}，订单监控: ${orderMonitorIntervalMs / 1000}秒）`, { dbWrite: false });
+    logger.log(`策略 ${strategy.name} (ID: ${strategyId}) 已启动（策略周期: ${intervalDesc}，订单监控: ${orderMonitorDesc}）`, { dbWrite: false });
 
     // 立即执行一次策略周期
     try {
@@ -227,13 +222,6 @@ class StrategyScheduler {
       this.runningStrategies.delete(strategyId);
     }
     
-    // 停止持仓管理
-    const positionMgmtId = this.positionMgmtIntervals?.get(strategyId);
-    if (positionMgmtId) {
-      clearInterval(positionMgmtId);
-      this.positionMgmtIntervals.delete(strategyId);
-    }
-
     // 停止订单监控
     const orderMonitorId = this.orderMonitorIntervals?.get(strategyId);
     if (orderMonitorId) {
@@ -253,21 +241,19 @@ class StrategyScheduler {
   private async runStrategyCycle(
     strategyInstance: StrategyBase,
     strategyId: number,
-    symbolPoolConfig: any,
-    mode: 'all' | 'entry' | 'position' = 'all'
+    symbolPoolConfig: any
   ): Promise<void> {
-    // 🔒 执行锁检查：entry 和 position 使用独立锁，避免互相阻塞
-    const lockKey = mode === 'all' ? strategyId : strategyId + (mode === 'entry' ? 100000 : 200000);
-    if (this.strategyExecutionLocks.get(lockKey)) {
-      logger.debug(`策略 ${strategyId} [${mode}]: 上次执行尚未完成，跳过本次调度`);
+    // 🔒 执行锁检查：防止并发执行（当执行时间超过间隔时）
+    if (this.strategyExecutionLocks.get(strategyId)) {
+      logger.debug(`策略 ${strategyId}: 上次执行尚未完成，跳过本次调度`);
       return;
     }
-    this.strategyExecutionLocks.set(lockKey, true);
+    this.strategyExecutionLocks.set(strategyId, true);
 
     try {
-      await this.runStrategyCycleInternal(strategyInstance, strategyId, symbolPoolConfig, mode);
+      await this.runStrategyCycleInternal(strategyInstance, strategyId, symbolPoolConfig);
     } finally {
-      this.strategyExecutionLocks.set(lockKey, false);
+      this.strategyExecutionLocks.set(strategyId, false);
     }
   }
 
@@ -277,8 +263,7 @@ class StrategyScheduler {
   private async runStrategyCycleInternal(
     strategyInstance: StrategyBase,
     strategyId: number,
-    symbolPoolConfig: any,
-    mode: 'all' | 'entry' | 'position' = 'all'
+    symbolPoolConfig: any
   ): Promise<void> {
     // ✅ 交易日检查：非交易日不执行策略监控
     const today = new Date();
@@ -382,7 +367,7 @@ class StrategyScheduler {
     for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
       const batch = symbols.slice(i, i + BATCH_SIZE);
       await Promise.all(
-        batch.map((symbol) => this.processSymbol(strategyInstance, strategyId, symbol, summary, mode))
+        batch.map((symbol) => this.processSymbol(strategyInstance, strategyId, symbol, summary))
       );
       // 批次之间稍作延迟，避免数据库压力过大
       if (i + BATCH_SIZE < symbols.length) {
@@ -788,44 +773,6 @@ class StrategyScheduler {
                     });
 
                     logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol} 买入订单已成交，更新状态为HOLDING，订单ID: ${dbOrder.order_id}`);
-
-                    // 期权策略：订单监控检测到买入成交后，自动提交 TSLPPCT 保护单
-                    if (strategyType === 'OPTION_INTRADAY_V1' && filledQuantity > 0) {
-                      try {
-                        const tslpSymbol = context.tradedSymbol || dbOrder.symbol;
-                        const tslpMeta = context.optionMeta || context.intent?.metadata || {};
-                        const tslpExpireDate = trailingStopProtectionService.extractOptionExpireDate(tslpSymbol, tslpMeta);
-                        const tslpResult = await trailingStopProtectionService.submitProtection(
-                          tslpSymbol,
-                          filledQuantity,
-                          DEFAULT_TRAILING_PERCENT,
-                          0.10,
-                          tslpExpireDate,
-                          strategyId,
-                        );
-                        const tslpContext: Record<string, unknown> = {};
-                        if (tslpResult.success && tslpResult.orderId) {
-                          tslpContext.tslpOrderId = tslpResult.orderId;
-                          tslpContext.lastTrailingPercent = DEFAULT_TRAILING_PERCENT;
-                          tslpContext.lastTslpAdjustTime = new Date().toISOString();
-                        } else {
-                          tslpContext.tslpFallbackMode = true;
-                        }
-                        await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
-                          entryPrice: avgPrice,
-                          quantity: filledQuantity,
-                          stopLoss: context.stopLoss,
-                          takeProfit: context.takeProfit,
-                          orderId: dbOrder.order_id,
-                          tradedSymbol: context.tradedSymbol || (dbOrder.symbol !== instanceKeySymbol ? dbOrder.symbol : undefined),
-                          optionMeta: context.optionMeta || (context.intent?.metadata ? context.intent.metadata : undefined),
-                          allocationAmount,
-                          ...tslpContext,
-                        });
-                      } catch (tslpErr: any) {
-                        logger.warn(`[TSLP] 策略 ${strategyId} 标的 ${instanceKeySymbol}: 订单监控路径TSLPPCT提交异常: ${tslpErr?.message}`);
-                      }
-                    }
                   }
                 } else if (isSell) {
                   // 卖出订单成交：更新状态为IDLE，释放资金
@@ -1177,22 +1124,13 @@ class StrategyScheduler {
     strategyInstance: StrategyBase,
     strategyId: number,
     symbol: string,
-    summary: ExecutionSummary,
-    mode: 'all' | 'entry' | 'position' = 'all'
+    summary: ExecutionSummary
   ): Promise<void> {
     try {
       // 检查当前状态
       const currentState = await strategyInstance.getCurrentState(symbol);
       const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy;
       const strategyConfig: any = (strategyInstance as any)?.config || {};
-
-      // 模式过滤：entry模式只处理IDLE，position模式只处理非IDLE
-      if (mode === 'entry' && currentState !== 'IDLE') {
-        return;
-      }
-      if (mode === 'position' && currentState === 'IDLE') {
-        return;
-      }
 
       // 根据状态进行不同处理
       if (currentState === 'HOLDING') {
@@ -1541,44 +1479,6 @@ class StrategyScheduler {
           
           await strategyInstance.updateState(symbol, 'HOLDING', holdingContext);
           logger.log(`策略 ${strategyId} 标的 ${symbol} 买入成功，订单ID: ${executionResult.orderId}`);
-
-          // 期权策略：买入成功后自动提交 TSLPPCT 保护单
-          if (isOptionStrategy && executionResult.filledQuantity && executionResult.filledQuantity > 0) {
-            try {
-              const tslpSymbol = intent.symbol || symbol;
-              const tslpExpireDate = trailingStopProtectionService.extractOptionExpireDate(
-                tslpSymbol,
-                intent.metadata,
-              );
-              const tslpResult = await trailingStopProtectionService.submitProtection(
-                tslpSymbol,
-                executionResult.filledQuantity,
-                DEFAULT_TRAILING_PERCENT,
-                0.10,
-                tslpExpireDate,
-                strategyId,
-              );
-              if (tslpResult.success && tslpResult.orderId) {
-                await strategyInstance.updateState(symbol, 'HOLDING', {
-                  ...holdingContext,
-                  tslpOrderId: tslpResult.orderId,
-                  lastTrailingPercent: DEFAULT_TRAILING_PERCENT,
-                  lastTslpAdjustTime: new Date().toISOString(),
-                });
-              } else {
-                await strategyInstance.updateState(symbol, 'HOLDING', {
-                  ...holdingContext,
-                  tslpFallbackMode: true,
-                });
-              }
-            } catch (tslpErr: any) {
-              logger.warn(`[TSLP] 策略 ${strategyId} 标的 ${symbol}: TSLPPCT提交异常(不阻塞交易): ${tslpErr?.message}`);
-              await strategyInstance.updateState(symbol, 'HOLDING', {
-                ...holdingContext,
-                tslpFallbackMode: true,
-              });
-            }
-          }
 
           summary.actions.push(`${symbol}(BUY_FILLED)`);
         } else if (executionResult.submitted && executionResult.orderId) {
@@ -1990,14 +1890,14 @@ class StrategyScheduler {
         return { actionTaken: false };
       }
 
-      const entryPrice = context.entryPrice;
-      let stopLoss = context.stopLoss;
-      let takeProfit = context.takeProfit;
-      const quantity = context.quantity;
+      const entryPrice = typeof context.entryPrice === 'number' ? context.entryPrice : parseFloat(String(context.entryPrice));
+      let stopLoss = context.stopLoss ? (typeof context.stopLoss === 'number' ? context.stopLoss : parseFloat(String(context.stopLoss))) : undefined;
+      let takeProfit = context.takeProfit ? (typeof context.takeProfit === 'number' ? context.takeProfit : parseFloat(String(context.takeProfit))) : undefined;
+      const quantity = typeof context.quantity === 'number' ? context.quantity : parseInt(String(context.quantity), 10);
       const effectiveSymbol: string = context.tradedSymbol || symbol; // options are monitored/traded on the option symbol
 
-      if (!entryPrice || !quantity) {
-        logger.warn(`策略 ${strategyId} 标的 ${symbol}: 持仓状态但缺少入场价或数量`);
+      if (!entryPrice || isNaN(entryPrice) || !quantity || isNaN(quantity)) {
+        logger.warn(`策略 ${strategyId} 标的 ${symbol}: 持仓状态但缺少入场价或数量 (entryPrice=${context.entryPrice}, quantity=${context.quantity})`);
         return { actionTaken: false };
       }
 
@@ -2291,12 +2191,6 @@ class StrategyScheduler {
               logger.warn(
                 `策略 ${strategyId} 期权 ${effectiveSymbol}: 已过期+价格获取失败+券商无持仓，自动转为IDLE`
               );
-              // 取消 TSLPPCT 保护单（如果存在）
-              if (context.tslpOrderId) {
-                try {
-                  await trailingStopProtectionService.cancelProtection(context.tslpOrderId, strategyId, effectiveSymbol);
-                } catch { /* 忽略 */ }
-              }
               await strategyInstance.updateState(symbol, 'IDLE', {
                 ...context,
                 autoClosedReason: 'option_expired_no_price',
@@ -2535,64 +2429,6 @@ class StrategyScheduler {
       const multiplier = optionMeta.multiplier || 100;
       const entryTime = context.entryTime ? new Date(context.entryTime) : new Date();
 
-      // 1.5 TSLPPCT 保护单补挂 & 状态检查
-      if (!context.tslpOrderId && !context.tslpFallbackMode) {
-        // 无保护单且非降级模式 → 自动补提
-        try {
-          const tslpExpireDate = trailingStopProtectionService.extractOptionExpireDate(effectiveSymbol, optionMeta);
-          const tslpResult = await trailingStopProtectionService.submitProtection(
-            effectiveSymbol,
-            quantity,
-            DEFAULT_TRAILING_PERCENT,
-            0.10,
-            tslpExpireDate,
-            strategyId,
-          );
-          if (tslpResult.success && tslpResult.orderId) {
-            context.tslpOrderId = tslpResult.orderId;
-            context.lastTrailingPercent = DEFAULT_TRAILING_PERCENT;
-            context.lastTslpAdjustTime = new Date().toISOString();
-            logger.log(
-              `[TSLP] 策略 ${strategyId} 期权 ${effectiveSymbol}: 补提TSLPPCT保护单 orderId=${tslpResult.orderId}`,
-              { dbWrite: true },
-            );
-          } else {
-            context.tslpFallbackMode = true;
-          }
-          await strategyInstance.updateState(symbol, 'HOLDING', context);
-        } catch (tslpErr: any) {
-          logger.warn(`[TSLP] 策略 ${strategyId} 期权 ${effectiveSymbol}: 补提TSLPPCT异常: ${tslpErr?.message}`);
-          context.tslpFallbackMode = true;
-          await strategyInstance.updateState(symbol, 'HOLDING', context);
-        }
-      } else if (context.tslpOrderId) {
-        // 有保护单 → 检查状态
-        try {
-          const tslpStatus = await trailingStopProtectionService.checkProtectionStatus(context.tslpOrderId);
-          if (tslpStatus === 'filled') {
-            // TSLPPCT 已触发成交 → 转 IDLE
-            logger.log(
-              `[TSLP] 策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT已触发成交！成交价=unknown → 转为IDLE`,
-              { dbWrite: true },
-            );
-            await strategyInstance.updateState(symbol, 'IDLE', {
-              ...context,
-              autoClosedReason: 'tslp_triggered',
-              autoClosedAt: new Date().toISOString(),
-              previousState: 'HOLDING',
-            });
-            return { actionTaken: true };
-          }
-          if (tslpStatus === 'cancelled' || tslpStatus === 'expired') {
-            // 被取消或过期 → 清除 ID，下次循环补提
-            context.tslpOrderId = undefined;
-            await strategyInstance.updateState(symbol, 'HOLDING', context);
-          }
-        } catch {
-          // 查询失败不阻塞
-        }
-      }
-
       // 2. 获取手续费信息
       // 入场手续费：从 context 中获取（如果有），否则估算
       let entryFees = parseFloat(String(optionMeta.estimatedFees || optionMeta.entryFees || 0));
@@ -2814,33 +2650,6 @@ class StrategyScheduler {
           return { actionTaken: false };
         }
 
-        // 平仓前撤销 TSLPPCT 保护单（无论成功失败都继续执行市价卖出）
-        if (context.tslpOrderId) {
-          try {
-            const cancelResult = await trailingStopProtectionService.cancelProtection(
-              context.tslpOrderId,
-              strategyId,
-              effectiveSymbol,
-            );
-            logger.log(
-              `[TSLP] 策略 ${strategyId} 期权 ${effectiveSymbol}: 已取消TSLPPCT(${context.tslpOrderId})，准备执行${action}卖出`,
-              { dbWrite: true },
-            );
-            if (cancelResult.alreadyFilled) {
-              // TSLPPCT 已经触发成交，直接转 IDLE
-              await strategyInstance.updateState(symbol, 'IDLE', {
-                ...context,
-                autoClosedReason: 'tslp_triggered',
-                autoClosedAt: new Date().toISOString(),
-                previousState: 'HOLDING',
-              });
-              return { actionTaken: true };
-            }
-          } catch (cancelErr: any) {
-            logger.warn(`[TSLP] 策略 ${strategyId} 期权 ${effectiveSymbol}: 取消TSLPPCT失败(不阻塞卖出): ${cancelErr?.message}`);
-          }
-        }
-
         // 竞态保护：再次确认实例仍是 HOLDING（trade-push 可能已将状态设为 IDLE）
         const preCloseState = await strategyInstance.getCurrentState(symbol);
         if (preCloseState !== 'HOLDING') {
@@ -2929,67 +2738,6 @@ class StrategyScheduler {
         }
         // 更新核对时间
         context.lastBrokerCheckTime = new Date().toISOString();
-      }
-
-      // 7.5 TSLPPCT 动态调整 trailing percent
-      if (context.tslpOrderId && !context.tslpFallbackMode) {
-        try {
-          const lastAdjustTime = context.lastTslpAdjustTime
-            ? new Date(context.lastTslpAdjustTime).getTime() : 0;
-          const minAdjustInterval = 3 * 60 * 1000; // 最小调整间隔 3 分钟
-
-          if (Date.now() - lastAdjustTime > minAdjustInterval) {
-            const currentPhase = optionDynamicExitService.getPhaseForPosition();
-            const tslpPnL = optionDynamicExitService.calculatePnL(positionCtx);
-
-            let entryIVNorm = optionMeta.impliedVolatility || positionCtx.currentIV || 0;
-            if (entryIVNorm > 0 && entryIVNorm < 5) entryIVNorm = entryIVNorm * 100;
-
-            const targetTrailingPercent = trailingStopProtectionService.getTrailingPercentForPhase({
-              phase: currentPhase,
-              entryIV: entryIVNorm,
-              currentIV: positionCtx.currentIV,
-              netPnLPercent: tslpPnL.netPnLPercent,
-              is0DTE: positionCtx.is0DTE,
-            });
-
-            const lastTrailing = context.lastTrailingPercent || DEFAULT_TRAILING_PERCENT;
-            const diff = Math.abs(targetTrailingPercent - lastTrailing);
-
-            if (diff >= ADJUST_THRESHOLD) {
-              const tslpExpireDate = trailingStopProtectionService.extractOptionExpireDate(effectiveSymbol, optionMeta);
-              const adjustResult = await trailingStopProtectionService.adjustProtection(
-                context.tslpOrderId,
-                targetTrailingPercent,
-                0.10,
-                quantity,
-                strategyId,
-                effectiveSymbol,
-                tslpExpireDate,
-              );
-
-              if (adjustResult.success) {
-                logger.log(
-                  `[TSLP] 策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT调整 ${lastTrailing}% → ${targetTrailingPercent}% (时段=${currentPhase})`,
-                  { dbWrite: true },
-                );
-                context.lastTrailingPercent = targetTrailingPercent;
-                context.lastTslpAdjustTime = new Date().toISOString();
-                if (adjustResult.orderId && adjustResult.orderId !== context.tslpOrderId) {
-                  context.tslpOrderId = adjustResult.orderId; // fallback re-submit 可能产生新 orderId
-                }
-                await strategyInstance.updateState(symbol, 'HOLDING', context);
-              } else {
-                logger.log(
-                  `[TSLP] 策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT调整失败: ${adjustResult.error}`,
-                  { dbWrite: true },
-                );
-              }
-            }
-          }
-        } catch (tslpAdjErr: any) {
-          logger.warn(`[TSLP] 策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT调整异常: ${tslpAdjErr?.message}`);
-        }
       }
 
       // 8. 更新追踪信息

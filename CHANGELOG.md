@@ -1,36 +1,43 @@
 # 更新日志
 
-## 2026-02-10
+## 2026-02-11
 
-### TSLPPCT 跟踪止损保护 + 期权监控频率优化
+### 回滚 TSLPPCT + 恢复原始监控频率 + 启动预热
 
-**功能/修复**: 新增 TSLPPCT（Trailing Stop Loss Percentage）券商侧跟踪止损保护，作为期权持仓的安全网；同时将期权监控频率从 5 秒降至 90 秒，由券商侧保护替代高频轮询。
+**功能/修复**: 完全移除 TSLPPCT 券商侧跟踪止损逻辑（实际运行中 100% 失败且引入多处不稳定），恢复 9140d2c 之前的交易流程；修复 entryPrice 类型错误；新增启动时市场数据预热避免多策略并发限流。
 
-**实现内容**:
-1. ✅ **新增跟踪止损保护服务**（`trailing-stop-protection.service.ts`）：管理 TSLPPCT 券商侧跟踪止损单，作为期权持仓的安全网
-2. ✅ **买入成功后自动提交 TSLPPCT**：期权买入成交后自动提交跟踪止损单（默认 trailing=45%）
-3. ✅ **动态调整跟踪百分比**：按持仓阶段调整（EARLY 45%、MID 35%、LATE 25%、FINAL 15%），同时结合 IV、PnL、0DTE 因素
-4. ✅ **动态退出前取消 TSLPPCT**：`processOptionDynamicExit` 触发卖出时，先取消 TSLPPCT 订单再执行市价卖出
-5. ✅ **交易推送检测 TSLPPCT 成交**：`trade-push.service.ts` 检测 TSLPPCT 止损单成交，自动转 IDLE
-6. ✅ **竞态条件防护**：CLOSING 转换前重新检查状态，防止 TSLPPCT 成交与动态退出并发冲突
-7. ✅ **降级容错**：TSLPPCT 提交失败时降级为纯监控模式（无券商侧保护）
-8. ✅ **期权监控频率优化**：从 5 秒降至 90 秒（券商侧保护替代高频轮询）
+**回滚原因**:
+- TSLPPCT 提交 100% 失败（NaiveDate 类型不兼容）
+- 监控频率从 5s 降至 90s 导致止盈止损延迟严重
+- TSLPPCT API 调用阻塞核心退出逻辑（checkProtectionStatus/submitProtection 在 checkExitCondition 之前执行）
+- 双定时器分离（entry 15s / position 90s）增加复杂度，引入模式过滤 bug
+- 实际造成持仓亏损扩大（-45% 未触发止损）
 
-**新增文件**:
-- 📝 `api/src/services/trailing-stop-protection.service.ts`（TSLPPCT 跟踪止损保护服务）
+**移除内容**:
+1. ❌ 移除 `trailingStopProtectionService` 全部调用（import、买入提交、订单监控提交、补挂、状态检查、撤销、动态调整）
+2. ❌ 移除 `trade-push.service.ts` 中 TSLPPCT 成交检测逻辑
+3. ❌ 移除双定时器架构（`positionMgmtIntervals` Map + entry/position mode 过滤）
+4. ❌ 恢复监控频率：期权策略 5 秒、订单监控 5 秒（与 9140d2c 之前一致）
+
+**新增/保留的修复**:
+1. ✅ `entryPrice`/`quantity` 从 context 取值时增加 `parseFloat`/`parseInt` + `isNaN` 校验（修复 `toFixed is not a function`）
+2. ✅ 启动时市场数据预热（`startAllRunningStrategies` 先调用 `getMarketData` 填充缓存，避免多策略并发请求导致 API 限流）
+3. ✅ 保留此前的 bug 修复：JSON.parse JSONB 防御、冷启动重试、多仓资金预算、entryTime 保留、account-balance-sync 期权匹配、安全阀 40%
 
 **修改文件**:
-- 📝 `api/src/services/strategy-scheduler.service.ts`（5处变更：import、买入自动提交、订单成交自动提交、processOptionDynamicExit 补挂/检查/取消/调整、监控频率 5s→90s）
-- 📝 `api/src/services/option-dynamic-exit.service.ts`（新增 `getPhaseForPosition()` 辅助方法）
-- 📝 `api/src/services/trade-push.service.ts`（检测 TSLPPCT 成交，自动转 IDLE）
-
-**设计要点**:
-- 无数据库 schema 迁移：新字段存储在现有 JSONB `context` 列中
-- 券商侧执行：跟踪止损单由券商维护，系统宕机期间保护仍有效
-- 监控频率降低 18 倍（5s→90s）：减少 API 调用和系统负载
+- 📝 `api/src/services/strategy-scheduler.service.ts`（移除全部 TSLPPCT 代码 + 恢复 5s 单定时器 + entryPrice 类型修复 + 启动预热）
+- 📝 `api/src/services/trade-push.service.ts`（移除 TSLPPCT 成交检测）
 
 **验证结果**:
 - TypeScript 编译通过 ✅
+
+---
+
+## 2026-02-10
+
+### ~~TSLPPCT 跟踪止损保护 + 期权监控频率优化~~（已在 2026-02-11 回滚）
+
+**已回滚**: 此功能因实际运行不稳定（TSLPPCT 100% 提交失败、监控延迟导致止损失效）已在 2026-02-11 完全移除。
 
 ---
 

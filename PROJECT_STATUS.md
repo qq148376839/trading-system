@@ -1,33 +1,23 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-10
+**更新时间**: 2026-02-11
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
 
-### 2026-02-10: TSLPPCT 跟踪止损保护
+### 2026-02-11: 回滚 TSLPPCT + 恢复原始监控 + 启动预热
 
-**优化内容**：
-1. ✅ 新增 TSLPPCT 跟踪止损保护服务（`trailing-stop-protection.service.ts`）：券商侧跟踪止损单作为期权持仓安全网
-2. ✅ 期权买入成交后自动提交 TSLPPCT 跟踪止损单（默认 trailing=45%）
-3. ✅ 动态调整跟踪百分比：按阶段（EARLY 45%→MID 35%→LATE 25%→FINAL 15%）+ IV/PnL/0DTE 因素
-4. ✅ 动态退出触发时先取消 TSLPPCT，再执行市价卖出
-5. ✅ 交易推送检测 TSLPPCT 成交，自动转 IDLE
-6. ✅ 降级容错：TSLPPCT 提交失败时退化为纯监控模式
-7. ✅ 期权监控频率从 5 秒降至 90 秒（券商侧保护替代高频轮询）
+**变更内容**：
+1. ❌ 完全移除 TSLPPCT 券商侧跟踪止损逻辑（实际运行 100% 失败，引入止损延迟）
+2. ❌ 移除双定时器架构（entry 15s / position 90s），恢复单定时器 5 秒（期权策略）
+3. ✅ 修复 `entryPrice.toFixed is not a function`：context 取值增加 parseFloat/parseInt + isNaN 校验
+4. ✅ 启动市场数据预热：策略启动前先填充缓存，避免多策略并发请求导致 API 限流
 
 **修改文件**：
-- 📝 `api/src/services/trailing-stop-protection.service.ts`（新增）
-- 📝 `api/src/services/strategy-scheduler.service.ts`（5处变更）
-- 📝 `api/src/services/option-dynamic-exit.service.ts`（getPhaseForPosition）
-- 📝 `api/src/services/trade-push.service.ts`（TSLPPCT 成交检测）
-
-**预期效果**：
-- 系统宕机期间期权持仓仍有券商侧跟踪止损保护
-- 监控频率降低 18 倍（5s→90s），减少 API 调用和系统负载
-- 无数据库 schema 变更，新字段存储在现有 JSONB context 列中
+- 📝 `api/src/services/strategy-scheduler.service.ts`（TSLPPCT 全部移除 + 恢复 5s 监控 + 类型修复 + 启动预热）
+- 📝 `api/src/services/trade-push.service.ts`（移除 TSLPPCT 成交检测）
 
 ---
 
