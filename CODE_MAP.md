@@ -1354,6 +1354,45 @@ trading-system/
 
 ---
 
+## 边缘函数 (Edge Functions)
+
+#### `edge-functions/moomoo-proxy/`
+**作用**: Cloudflare Worker — Moomoo API 代理，部署在 `moomoo-api.riowang.win`
+
+**主要功能**:
+- 代理 Moomoo/富途 API 请求，解决大陆 IP 限制
+- 两种运行模式：纯转发（后端提供 cookies + quoteToken，CPU <1ms）/ 完整计算（缺少参数时自动补全 quoteToken，CPU ~10ms）
+- 3组游客 Cookie 轮转（round-robin），支持 KV 缓存最新 Cookie
+- quoteToken 生成（HMAC-SHA512 + SHA256）
+
+#### `edge-functions/moomoo-proxy/wrangler.jsonc`
+**作用**: Cloudflare Worker 部署配置（wrangler v4 格式）
+
+**主要配置**:
+- `name`: `moomoo-proxy`
+- `main`: `src/index.js`
+- KV namespace: `MOOMOO_CACHE`（cookie 缓存）
+- Routes: `moomoo-api.riowang.win/*`（自定义域名绑定）
+
+#### `edge-functions/moomoo-proxy/src/index.js`
+**作用**: Worker 入口文件 — 请求转发 + quoteToken 计算
+
+**主要功能**:
+- 接收后端转发的 Moomoo API 请求
+- 对需要 quoteToken 的接口（K线、行情、期权链等）自动计算并注入
+- Cookie 管理：优先使用 KV 缓存，fallback 到硬编码 3 组 Cookie（与后端 `futunn.ts` 同步）
+- CORS 头设置
+
+**调用关系**:
+- ✅ 无外部依赖（纯 Web Worker API）
+- ✅ 使用 Cloudflare KV（`MOOMOO_CACHE`）缓存 Cookie
+
+**被调用**:
+- 📌 `api/src/utils/moomoo-proxy.ts` — 后端通过 HTTP 请求调用
+- 📌 可通过 curl 直接调用（调试/测试模式）
+
+---
+
 ## 脚本工具
 
 #### `api/scripts/create-admin.js`
@@ -1932,6 +1971,16 @@ frontend/app/* (所有页面)
 ---
 
 ## 最新变更（2026-02-11）
+
+### 更新3组Moomoo游客Cookie + Worker fallback同步更新
+
+**修改文件**:
+- `api/src/config/futunn.ts` - 更新3组硬编码游客 Cookie（cipher_device_id / csrfToken / futu-offline-csrf-v2）
+- `edge-functions/moomoo-proxy/src/index.js` - 同步更新 FALLBACK_COOKIES 和 DEFAULT_CSRF_TOKEN
+
+**压力测试结果**: 3-Cookie 轮转 30 并发 100% 成功，avg 1.7s，max 2.8s（旧 1-Cookie: 20 并发 avg 6s）
+
+---
 
 ### Moomoo 多 Cookie 管理与边缘代理优化
 

@@ -2,6 +2,25 @@
 
 ## 2026-02-11
 
+### 更新3组Moomoo游客Cookie + Worker fallback同步更新
+
+**维护**: 更新3组 Moomoo 游客 Cookie（硬编码 fallback）并同步更新 Cloudflare Worker 中的 fallback Cookie，确保无 DB 配置时仍可正常代理。
+
+**实现内容**:
+1. 更新 `api/src/config/futunn.ts` 中3组硬编码游客 Cookie（cipher_device_id / csrfToken / futu-offline-csrf-v2）
+2. 同步更新 `edge-functions/moomoo-proxy/src/index.js` 的 `FALLBACK_COOKIES` 和 `DEFAULT_CSRF_TOKEN`
+3. 压力测试验证：30并发请求，100%成功，平均1.7秒，最大2.8秒（对比旧1-Cookie方案：20并发平均6秒）
+
+**修改文件**:
+- 📝 `api/src/config/futunn.ts`（3组Cookie更新）
+- 📝 `edge-functions/moomoo-proxy/src/index.js`（fallback Cookie同步更新）
+
+**压力测试结果**:
+- 3-Cookie轮转：30并发，100%成功率，avg 1.7s，max 2.8s
+- 旧1-Cookie方案：20并发，avg 6s（性能提升约3.5倍）
+
+---
+
 ### Moomoo 多 Cookie 管理与边缘代理优化
 
 **功能**: 实现 Moomoo Cookie 多账户管理 UI、后端 DB 驱动配置加载、Cookie 测试 API、边缘函数 URL DB 配置化，以及 Cloudflare Worker wrangler v4 迁移部署。

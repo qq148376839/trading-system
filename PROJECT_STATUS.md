@@ -7,14 +7,25 @@
 
 ## 🆕 最近更新
 
+### 2026-02-11: 更新3组Moomoo游客Cookie + Worker fallback同步更新
+
+**变更内容**:
+1. 更新 `api/src/config/futunn.ts` 中3组硬编码游客 Cookie（cipher_device_id / csrfToken / futu-offline-csrf-v2）
+2. 同步更新 `edge-functions/moomoo-proxy/src/index.js` 的 FALLBACK_COOKIES 和 DEFAULT_CSRF_TOKEN
+3. 压力测试验证：3-Cookie 轮转 30 并发请求，100% 成功率，avg 1.7s，max 2.8s
+4. 对比旧 1-Cookie 方案：20 并发 avg 6s，性能提升约 3.5 倍
+
+---
+
 ### 2026-02-11: Moomoo 多 Cookie 管理与边缘代理优化
 
 **变更内容**:
-1. 前端多 Cookie 管理 UI：逐行添加/删除/测试/保存，状态标签（unknown/testing/valid/expired）
+1. 前端多 Cookie 管理 UI（`/config` 页面）：逐行添加/删除/测试/保存，状态标签（unknown/testing/valid/expired）
 2. 后端 DB 驱动 Cookie 加载：`refreshDBConfigs()` 5 分钟 TTL 缓存，`getEffectiveConfigs()` 优先 DB 配置
 3. Cookie 测试 API：`POST /api/config/test-moomoo-cookie` 通过边缘代理验证 Cookie 有效性
-4. 边缘函数 URL 从 DB 加载：`moomoo_edge_function_url` + `use_moomoo_edge_function`，`getProxyMode()` 改为 async
-5. Cloudflare Worker 迁移到 `wrangler.jsonc`（v4）并部署到 `moomoo-api.riowang.win`
+4. 边缘函数 URL 从 DB 加载（不再依赖 .env）：`moomoo_edge_function_url` + `use_moomoo_edge_function`，`getProxyMode()` 改为 async
+5. Cloudflare Worker 部署到 `moomoo-api.riowang.win`（wrangler v4，KV namespace: MOOMOO_CACHE）
+6. 3组游客 Cookie 硬编码 fallback，DB 覆盖优先
 
 **修改文件**:
 - 📝 `frontend/app/config/page.tsx`（多 Cookie UI）
@@ -627,6 +638,6 @@
 
 ---
 
-**最后更新**: 2026-02-11（Moomoo 多 Cookie 管理与边缘代理优化）
+**最后更新**: 2026-02-11（更新3组Moomoo游客Cookie + 3-Cookie轮转压力测试30并发100%成功avg1.7s）
 **项目版本**: 1.0
 

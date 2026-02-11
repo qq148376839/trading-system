@@ -49,6 +49,7 @@
 - **架构**: 单容器部署（前端 + 后端在同一容器）
 - **网络优化**: 阿里云镜像源（apt + npm）
 - **公网访问**: Cloudflare Zero Trust Tunnel
+- **边缘代理**: Cloudflare Worker (`moomoo-api.riowang.win`) — 代理 Moomoo API 请求，3组 Cookie 轮转，30 并发 100% 成功率 avg 1.7s
 
 ## 📁 项目结构
 
@@ -84,6 +85,11 @@ trading-system/
 │   ├── components/               # React 组件
 │   ├── lib/                      # 工具函数
 │   └── package.json
+│
+├── edge-functions/              # 边缘函数 (Cloudflare Workers)
+│   └── moomoo-proxy/            # Moomoo API 代理 Worker
+│       ├── wrangler.jsonc       # Worker 部署配置 (wrangler v4)
+│       └── src/index.js         # Worker 入口 (转发 + quoteToken 计算)
 │
 └── docs/                        # 项目文档
     ├── ORDER_MANAGEMENT_REFACTOR_PLAN.md
@@ -477,16 +483,17 @@ const mappedOrder = mapOrderData(orderDetail);
 
 ## 📝 重要更新
 
-### 2026-02-11: Moomoo 多 Cookie 管理与边缘代理优化
+### 2026-02-11: Moomoo 多 Cookie 管理 + 边缘代理 + 压力测试
 
-**功能**: 实现 Moomoo Cookie 多账户管理 UI、DB 驱动配置加载、Cookie 测试 API、边缘函数 URL DB 配置化
+**功能**: 实现 Moomoo Cookie 多账户管理 UI、DB 驱动配置加载、Cookie 测试 API、Cloudflare Worker 边缘代理、3-Cookie 轮转压力测试
 
 **核心改进**:
-- 前端多 Cookie 管理 UI：逐行添加/删除/测试/保存，状态标签显示有效性
-- 后端 DB 驱动 Cookie 加载：5 分钟缓存 TTL，硬编码 fallback
+- 前端多 Cookie 管理 UI（`/config` 页面）：逐行添加/删除/测试/保存，状态标签显示有效性
+- 后端 DB 驱动 Cookie 加载：5 分钟缓存 TTL，3组硬编码 fallback
 - Cookie 测试 API：通过边缘代理验证 Cookie 有效性
-- 边缘函数 URL 从 DB 加载：`getProxyMode()` 改为 async
-- Cloudflare Worker 迁移到 wrangler v4 并部署到 `moomoo-api.riowang.win`
+- 边缘函数 URL 从 DB 配置（不再依赖 .env）：`getProxyMode()` 改为 async
+- Cloudflare Worker 部署到 `moomoo-api.riowang.win`（wrangler v4，KV namespace: MOOMOO_CACHE）
+- 压力测试：3-Cookie 轮转 30 并发 100% 成功率，avg 1.7s，max 2.8s（旧 1-Cookie: 20 并发 avg 6s）
 
 **详细内容**: 参考 [Moomoo 多 Cookie 管理与边缘代理优化](docs/features/260211-Moomoo多Cookie管理与边缘代理优化.md)
 
@@ -854,4 +861,4 @@ MIT License
 
 ---
 
-**最后更新**: 2026-02-11 (Moomoo 多 Cookie 管理与边缘代理优化)
+**最后更新**: 2026-02-11 (Moomoo 多Cookie管理 + 边缘代理 + 3-Cookie轮转压力测试)
