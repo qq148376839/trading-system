@@ -15,8 +15,8 @@ const COOKIES_KEY = 'latest_moomoo_cookies';
 const COOKIES_TTL_SECONDS = 3600;
 
 const FALLBACK_COOKIES =
-  'cipher_device_id=1763971814778021; ftreport-jssdk%40new_user=1; futu-csrf=niasJM1N1jtj3pyQh6JO4Nknn7c=; device_id=1763971814778021; csrfToken=f51O2KPxQvir0tU5zDCVQpMm; locale=zh-cn';
-const DEFAULT_CSRF_TOKEN = 'f51O2KPxQvir0tU5zDCVQpMm';
+  'cipher_device_id=1763971814778021; device_id=1763971814778021; csrfToken=4BBtlR29Ixmg4SWW_GR7VGgn; futu-offline-csrf-v2=u%2B8Ge3D8OD23piTUo1a6YA%3D%3D; FUTU_TIMEZONE=Asia%2FShanghai; locale=zh-cn';
+const DEFAULT_CSRF_TOKEN = '4BBtlR29Ixmg4SWW_GR7VGgn';
 
 // 需要 quote-token 的接口路径
 const QUOTE_TOKEN_REQUIRED_PATHS = [
