@@ -704,7 +704,8 @@ trading-system/
 - 时间衰减(Theta)管理
 - Delta对冲信号生成
 - 支持多种期权策略类型
-- **0DTE强制平仓**：`PositionContext` 包含 `is0DTE` 字段，收盘前120分钟触发 TIME_STOP 强制退出
+- **用户配置缩放**：`ExitRulesOverride` 接口支持用户自定义止盈止损比例，以 EARLY 阶段为基准按时间阶段比例递减
+- **0DTE强制平仓**：`PositionContext` 包含 `is0DTE` 字段，收盘前210分钟触发 TIME_STOP 强制退出
 
 **调用关系**:
 - ✅ 使用 `services/trading-recommendation.service.ts` - 获取市场状态

@@ -2596,8 +2596,12 @@ class StrategyScheduler {
         is0DTE,
       };
 
-      // 7. 检查是否应该平仓
-      const exitCondition = optionDynamicExitService.checkExitCondition(positionCtx);
+      // 7. 检查是否应该平仓（传入用户配置的止盈止损比例）
+      const exitRulesOverride = strategyConfig?.exitRules ? {
+        takeProfitPercent: parseFloat(String(strategyConfig.exitRules.takeProfitPercent || 0)) || undefined,
+        stopLossPercent: parseFloat(String(strategyConfig.exitRules.stopLossPercent || 0)) || undefined,
+      } : undefined;
+      const exitCondition = optionDynamicExitService.checkExitCondition(positionCtx, undefined, exitRulesOverride);
 
       if (exitCondition) {
         // 触发平仓条件
@@ -2743,7 +2747,7 @@ class StrategyScheduler {
       // 8. 更新追踪信息
       // 记录当前最高盈利（用于移动止损）
       const currentPnL = optionDynamicExitService.calculatePnL(positionCtx);
-      const dynamicParams = optionDynamicExitService.getDynamicExitParams(positionCtx);
+      const dynamicParams = optionDynamicExitService.getDynamicExitParams(positionCtx, exitRulesOverride);
       const peakPnLPercent = context.peakPnLPercent || 0;
 
       // 输出持仓监控状态日志（每次检查都输出，方便追踪）

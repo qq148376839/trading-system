@@ -37,6 +37,12 @@ export interface DynamicExitParams {
   adjustmentReason: string;     // 调整原因
 }
 
+/** 用户可配置的退出规则覆盖 */
+export interface ExitRulesOverride {
+  takeProfitPercent?: number;   // 用户配置的止盈%（作为 EARLY 阶段基准）
+  stopLossPercent?: number;     // 用户配置的止损%（作为 EARLY 阶段基准）
+}
+
 /** 持仓上下文（用于计算动态参数） */
 export interface PositionContext {
   entryPrice: number;           // 入场价格（期权premium）
@@ -235,7 +241,7 @@ class OptionDynamicExitService {
    * 3. 基于价格行为调整参数
    * 4. 应用移动止损逻辑
    */
-  getDynamicExitParams(ctx: PositionContext): DynamicExitParams {
+  getDynamicExitParams(ctx: PositionContext, exitRulesOverride?: ExitRulesOverride): DynamicExitParams {
     const now = new Date();
     const phase = this.getTradingPhase(now, ctx.marketCloseTime);
 
@@ -243,6 +249,19 @@ class OptionDynamicExitService {
     const baseParams = ctx.strategySide === 'BUYER'
       ? { ...BUYER_PARAMS[phase] }
       : { ...SELLER_PARAMS[phase] };
+
+    // 用户配置缩放：以 EARLY 阶段为基准，按时间阶段比例递减
+    if (exitRulesOverride) {
+      const refParams = ctx.strategySide === 'BUYER' ? BUYER_PARAMS.EARLY : SELLER_PARAMS.EARLY;
+      if (exitRulesOverride.takeProfitPercent && exitRulesOverride.takeProfitPercent > 0) {
+        const ratio = baseParams.takeProfitPercent / refParams.takeProfitPercent;
+        baseParams.takeProfitPercent = Math.round(exitRulesOverride.takeProfitPercent * ratio);
+      }
+      if (exitRulesOverride.stopLossPercent && exitRulesOverride.stopLossPercent > 0) {
+        const ratio = baseParams.stopLossPercent / refParams.stopLossPercent;
+        baseParams.stopLossPercent = Math.round(exitRulesOverride.stopLossPercent * ratio);
+      }
+    }
 
     const reasons: string[] = [`时段=${phase}`];
 
@@ -321,9 +340,10 @@ class OptionDynamicExitService {
    */
   checkExitCondition(
     ctx: PositionContext,
-    params?: DynamicExitParams
+    params?: DynamicExitParams,
+    exitRulesOverride?: ExitRulesOverride
   ): { action: 'TAKE_PROFIT' | 'STOP_LOSS' | 'TRAILING_STOP' | 'TIME_STOP'; reason: string; pnl: PnLResult } | null {
-    const dynamicParams = params || this.getDynamicExitParams(ctx);
+    const dynamicParams = params || this.getDynamicExitParams(ctx, exitRulesOverride);
     const pnl = this.calculatePnL(ctx);
     const now = new Date();
 

@@ -7,6 +7,19 @@
 
 ## 🆕 最近更新
 
+### 2026-02-12: 止盈止损用户配置生效修复
+
+**变更内容**:
+1. 修复 `takeProfitPercent` / `stopLossPercent` 用户配置未在退出逻辑中生效的问题
+2. 用户配置作为 EARLY 阶段基准值，按时间阶段比例递减，保留原有时间衰减逻辑
+3. 未配置 exitRules 的旧策略行为不变（向后兼容）
+
+**修改文件**:
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（新增 ExitRulesOverride + 缩放逻辑）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（提取 exitRules 传递给退出服务）
+
+---
+
 ### 2026-02-12: cookie_index 边缘函数优化 + Smart Placement + 市场数据诊断增强
 
 **变更内容**:

@@ -2,6 +2,25 @@
 
 ## 2026-02-12
 
+### 止盈止损用户配置生效修复
+
+**修复**: 用户在 UI 配置的 `takeProfitPercent` / `stopLossPercent` 未在实际退出逻辑中生效，始终使用硬编码参数表。
+
+**问题根因**:
+- `option-dynamic-exit.service.ts` 的 `getDynamicExitParams()` 仅读取硬编码 `BUYER_PARAMS[phase]`，从不读取策略配置的 `exitRules`
+- `strategy-scheduler.service.ts` 调用 `checkExitCondition()` 时未传入用户配置
+
+**修复方案**:
+- 用户配置作为 EARLY 阶段基准值，按时间阶段比例递减（保留时间衰减逻辑）
+- 公式：`actualTP = userTP × (phaseTP / EARLY_TP_DEFAULT)`
+- 未配置 exitRules 的旧策略行为不变（向后兼容）
+
+**修改文件**:
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（新增 `ExitRulesOverride` 接口 + 缩放逻辑）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（提取 exitRules 并传递给退出服务）
+
+---
+
 ### cookie_index 边缘函数优化 + Smart Placement + 市场数据诊断增强
 
 **修复**: 边缘函数代理全链路优化，解决大陆 Docker 容器通过 Cloudflare Worker 访问 Moomoo API 持续 403 的问题。
