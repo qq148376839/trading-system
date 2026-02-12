@@ -7,6 +7,7 @@
 
 import axios from 'axios';
 import { logger } from './logger';
+import { getEffectiveConfigs } from '../config/futunn';
 
 // ── DB 缓存（与 futunn.ts 同模式：异步加载，同步消费） ─────
 const DEFAULT_EDGE_URL = 'https://moomoo-api.riowang.win';
@@ -74,22 +75,38 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
 
   if (_useEdgeFunction) {
     // 使用边缘函数代理
-    // 注意：不传 cookies / csrf_token / quoteToken 给边缘函数
-    // 边缘函数内置了游客 cookies 和 quote-token 生成逻辑
-    // 超长 cookies 作为 URL query param 会导致 Cloudflare 530 (error 1016) 拒绝请求
+    // 不传完整 cookies 字符串（~2000 bytes 会导致 Cloudflare 530 error 1016）
+    // 改为传 cookie_index：边缘函数根据索引使用本地存储的对应 cookies
+    // 同时传 quoteToken 和 csrf_token，节省边缘函数 CPU 计算
     const proxyParams: Record<string, any> = {
       path,
       ...params,
       referer,
     };
 
+    // 通过 csrfToken 匹配确定 cookie_index
+    if (csrfToken) {
+      const configs = getEffectiveConfigs();
+      const idx = configs.findIndex((c) => c.csrfToken === csrfToken);
+      if (idx >= 0) {
+        // 已知的硬编码 cookie → 只传索引
+        proxyParams.cookie_index = idx;
+      }
+      // 未匹配到：不传 cookies 也不传 cookie_index，边缘函数用自己的默认 cookies
+      proxyParams.csrf_token = csrfToken;
+    }
+    if (quoteToken) {
+      proxyParams.quoteToken = quoteToken;
+    }
+
     try {
       if (process.env.NODE_ENV === 'development') {
         logger.debug(`[Moomoo代理] 请求参数:`, {
           path,
           params: Object.keys(proxyParams),
-          hasCookies: !!proxyParams.cookies,
+          cookieIndex: proxyParams.cookie_index,
           hasCsrfToken: !!proxyParams.csrf_token,
+          hasQuoteToken: !!proxyParams.quoteToken,
         });
       }
 

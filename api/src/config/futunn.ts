@@ -76,7 +76,7 @@ async function refreshDBConfigs(): Promise<void> {
 /**
  * 获取有效的配置列表（DB 优先，fallback 到硬编码）
  */
-function getEffectiveConfigs(): FutunnConfig[] {
+export function getEffectiveConfigs(): FutunnConfig[] {
   return (_dbConfigs && _dbConfigs.length > 0) ? _dbConfigs : HARDCODED_FALLBACK;
 }
 
