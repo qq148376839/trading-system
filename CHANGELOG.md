@@ -1,5 +1,33 @@
 # 更新日志
 
+## 2026-02-12
+
+### cookie_index 边缘函数优化 + Smart Placement + 市场数据诊断增强
+
+**修复**: 边缘函数代理全链路优化，解决大陆 Docker 容器通过 Cloudflare Worker 访问 Moomoo API 持续 403 的问题。
+
+**问题背景**:
+1. 完整 cookies（~2000 bytes）作为 URL query params 传递导致 Cloudflare 530 错误（URL 过长）
+2. Docker 容器在中国 → Cloudflare 亚洲 PoP → Moomoo 封锁亚洲 Cloudflare 出口 IP → 返回 HTML 403 页面
+3. `market-data-test` 诊断接口缺少直接 Moomoo 代理测试，无法区分是 edge function 问题还是 service 层问题
+
+**实现内容**:
+1. **cookie_index 替代完整 cookies** — 后端通过 csrfToken 匹配确定 cookie 索引（0/1/2），仅传 integer index，边缘函数查找本地 cookies
+2. **GUEST_CONFIGS 数组** — 边缘函数存储3组完整 cookie 配置，支持 `cookie_index` 参数查找
+3. **Smart Placement** — `wrangler.jsonc` 添加 `placement.mode: "smart"`，Worker 运行在靠近 Moomoo 美国服务器的节点
+4. **HTML 403 重试 + Cookie 轮转** — 检测到 Moomoo soft-403（HTTP 200 + HTML content）后自动切换下一组 cookie 重试，最多重试2次
+5. **market-data-test 新增 `moomoo-proxy` 模式** — 直接测试 moomooProxy() 原始 API 调用（SPX/USD/BTC 日K + SPX分时），绕过 MarketDataService
+
+**修改文件**:
+- 📝 `api/src/config/futunn.ts`（导出 `getEffectiveConfigs()`）
+- 📝 `api/src/utils/moomoo-proxy.ts`（cookie_index 逻辑替代完整 cookies）
+- 📝 `api/src/routes/quote.ts`（market-data-test 新增 moomoo-proxy 模式）
+- 📝 `edge-functions/moomoo-proxy/src/index.js`（GUEST_CONFIGS + cookie_index + 重试机制）
+- 📝 `edge-functions/moomoo-proxy/wrangler.jsonc`（Smart Placement）
+- 📝 `edge-functions/moomooapi.js`（GUEST_CONFIGS + cookie_index 同步）
+
+---
+
 ## 2026-02-11
 
 ### 资金上限保护 + 0DTE交易时间前移

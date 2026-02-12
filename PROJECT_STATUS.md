@@ -1,11 +1,29 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-11
+**更新时间**: 2026-02-12
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-02-12: cookie_index 边缘函数优化 + Smart Placement + 市场数据诊断增强
+
+**变更内容**:
+1. 边缘函数代理改用 `cookie_index`（整数索引）替代完整 cookies 字符串，修复 Cloudflare 530 URL 过长错误
+2. 边缘函数新增 `GUEST_CONFIGS` 数组，支持 `cookie_index` 查找本地 cookies + HTML 403 自动重试（cookie 轮转）
+3. `wrangler.jsonc` 启用 Smart Placement，Worker 运行在靠近 Moomoo 美国服务器的节点，避免亚洲 PoP 被封锁
+4. `market-data-test` 诊断接口新增 `moomoo-proxy` 模式，直接测试 moomooProxy() 原始 API 调用（SPX/USD/BTC 日K + SPX 分时）
+
+**修改文件**:
+- 📝 `api/src/config/futunn.ts`（导出 `getEffectiveConfigs()`）
+- 📝 `api/src/utils/moomoo-proxy.ts`（cookie_index 逻辑）
+- 📝 `api/src/routes/quote.ts`（moomoo-proxy 诊断模式）
+- 📝 `edge-functions/moomoo-proxy/src/index.js`（GUEST_CONFIGS + 重试）
+- 📝 `edge-functions/moomoo-proxy/wrangler.jsonc`（Smart Placement）
+- 📝 `edge-functions/moomooapi.js`（cookie_index 同步）
+
+---
 
 ### 2026-02-11: 资金上限保护 + 0DTE交易时间前移
 

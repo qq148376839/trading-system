@@ -10,6 +10,9 @@ import longportOptionQuoteService from '../services/longport-option-quote.servic
 import { getOptionDetail, getStockIdBySymbol } from '../services/futunn-option-chain.service';
 import { ErrorFactory, normalizeError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { moomooProxy, getProxyMode } from '../utils/moomoo-proxy';
+import { getFutunnConfig } from '../config/futunn';
+import { generateQuoteToken } from '../utils/moomoo-quote-token';
 
 export const quoteRouter = Router();
 
@@ -931,6 +934,7 @@ quoteRouter.get('/market-temperature', rateLimiter, async (req: Request, res: Re
  *         - Level 6: 富途三步流程 getFutunnOptionQuote()（仅需 symbol）
  *         - 综合: getOptionPrice() 完整 fallback 链
  *       - **market-kline**：测试 SPX/USD/BTC/VIX K线数据获取
+ *       - **moomoo-proxy**：直接测试 Moomoo 边缘函数代理（原始 API 调用）
  *       - **all**：同时测试以上所有
  *     security:
  *       - bearerAuth: []
@@ -945,7 +949,7 @@ quoteRouter.get('/market-temperature', rateLimiter, async (req: Request, res: Re
  *         name: mode
  *         schema:
  *           type: string
- *           enum: [option-price, market-kline, all]
+ *           enum: [option-price, market-kline, moomoo-proxy, all]
  *           default: option-price
  *         description: 测试模式
  *     responses:
@@ -1108,6 +1112,152 @@ quoteRouter.get('/market-data-test', async (req: Request, res: Response) => {
       const last = data[data.length - 1];
       return { count: data.length, latest: { close: last.close, timestamp: last.timestamp } };
     });
+  }
+
+  // ── moomoo-proxy 模式：直接测试边缘函数代理（原始 API 调用） ──
+  if (testMode === 'moomoo-proxy' || testMode === 'all') {
+    // 获取代理模式信息
+    const proxyMode = await getProxyMode();
+
+    // 获取当前 cookie 配置信息
+    const futunnConfig = getFutunnConfig();
+    const configSummary = {
+      proxyMode,
+      csrfToken: futunnConfig.csrfToken ? `${futunnConfig.csrfToken.substring(0, 8)}...` : 'N/A',
+    };
+
+    steps.push({
+      step: 'Moomoo Proxy 配置信息',
+      status: 'success',
+      duration_ms: 0,
+      data: configSummary as Record<string, unknown>,
+    });
+
+    // 测试用 K-line 配置（与 market-data.service.ts 保持一致）
+    const testTargets = [
+      {
+        name: 'SPX 日K',
+        stockId: '200003',
+        marketId: '2',
+        marketCode: '24',
+        instrumentType: '6',
+        subInstrumentType: '6001',
+        referer: 'https://www.moomoo.com/ja/index/.SPX-US',
+        apiPath: '/quote-api/quote-v2/get-kline',
+        type: 2,
+      },
+      {
+        name: 'USD Index 日K',
+        stockId: '72000025',
+        marketId: '11',
+        marketCode: '121',
+        instrumentType: '10',
+        subInstrumentType: '10001',
+        referer: 'https://www.moomoo.com/currency/USDINDEX-FX',
+        apiPath: '/quote-api/quote-v2/get-kline',
+        type: 2,
+      },
+      {
+        name: 'BTC 日K',
+        stockId: '12000015',
+        marketId: '17',
+        marketCode: '360',
+        instrumentType: '11',
+        subInstrumentType: '11002',
+        referer: 'https://www.moomoo.com/currency/BTC-FX',
+        apiPath: '/quote-api/quote-v2/get-kline',
+        type: 2,
+      },
+      {
+        name: 'SPX 分时',
+        stockId: '200003',
+        marketId: '2',
+        marketCode: '24',
+        instrumentType: '6',
+        subInstrumentType: '6001',
+        referer: 'https://www.moomoo.com/ja/index/.SPX-US',
+        apiPath: '/quote-api/quote-v2/get-quote-minute',
+        type: 1,
+      },
+    ];
+
+    for (const target of testTargets) {
+      await runStep(`Moomoo Proxy: ${target.name}`, async () => {
+        const timestamp = Date.now();
+
+        // 构建 token 参数（字符串格式，与 market-data.service.ts 一致）
+        const tokenParams: Record<string, string> = {
+          stockId: target.stockId,
+          marketType: target.marketId,
+          type: target.type.toString(),
+          marketCode: target.marketCode,
+          instrumentType: target.instrumentType,
+          subInstrumentType: target.subInstrumentType,
+          _: timestamp.toString(),
+        };
+
+        const quoteToken = generateQuoteToken(tokenParams);
+
+        // 构建请求参数（数字格式）
+        const requestParams: Record<string, number> = {
+          stockId: Number(target.stockId),
+          marketType: Number(target.marketId),
+          type: target.type,
+          marketCode: Number(target.marketCode),
+          instrumentType: Number(target.instrumentType),
+          subInstrumentType: Number(target.subInstrumentType),
+          _: timestamp,
+        };
+
+        const responseData = await moomooProxy({
+          path: target.apiPath,
+          params: requestParams,
+          cookies: futunnConfig.cookies,
+          csrfToken: futunnConfig.csrfToken,
+          quoteToken,
+          referer: target.referer,
+          timeout: 15000,
+        });
+
+        if (!responseData) return null;
+
+        // 解析响应结构
+        const result: Record<string, unknown> = {
+          responseType: typeof responseData,
+          hasCode: responseData?.code !== undefined,
+          code: responseData?.code,
+        };
+
+        // 提取 K-line 数据摘要
+        if (responseData?.data) {
+          const data = responseData.data;
+          if (data.list && Array.isArray(data.list)) {
+            result.dataPoints = data.list.length;
+            if (data.list.length > 0) {
+              const last = data.list[data.list.length - 1];
+              result.latestPoint = {
+                close: last.close || last.price,
+                timestamp: last.timestamp || last.time,
+              };
+            }
+          } else if (data.priceList && Array.isArray(data.priceList)) {
+            // get-quote-minute 返回 priceList
+            result.dataPoints = data.priceList.length;
+            if (data.priceList.length > 0) {
+              const last = data.priceList[data.priceList.length - 1];
+              result.latestPoint = {
+                price: last.price,
+                timestamp: last.timestamp || last.time,
+              };
+            }
+          } else {
+            result.dataKeys = Object.keys(data);
+          }
+        }
+
+        return result;
+      });
+    }
   }
 
   const successCount = steps.filter(s => s.status === 'success').length;
