@@ -343,6 +343,7 @@ trading-system/
 - `POST /api/quant/institutions/select-stocks` - 智能选股
 - `POST /api/quant/institutions/calculate-allocation` - 计算资金分配
 - `GET /api/quant/capital/usage` - 获取资金使用情况
+- `POST /api/quant/strategies/:id/simulate` - 模拟策略开盘流程（市场数据→信号→合约→入场→止盈止损，可选真实下单）
 
 **调用关系**:
 - ✅ 使用 `services/capital-manager.service.ts` - 资金管理
@@ -351,6 +352,11 @@ trading-system/
 - ✅ 使用 `services/state-manager.service.ts` - 状态管理
 - ✅ 使用 `services/account-balance-sync.service.ts` - 余额同步
 - ✅ 使用 `services/institution-stock-selector.service.ts` - 机构选股服务
+- ✅ 使用 `services/option-recommendation.service.ts` - 期权推荐（simulate 接口）
+- ✅ 使用 `services/options-contract-selector.service.ts` - 合约选择（simulate 接口）
+- ✅ 使用 `services/options-fee.service.ts` - 费用估算（simulate 接口）
+- ✅ 使用 `services/option-dynamic-exit.service.ts` - 动态止盈止损（simulate 接口）
+- ✅ 使用 `services/basic-execution.service.ts` - 订单执行（simulate 接口，可选）
 - ✅ 使用 `utils/moomoo-proxy.ts` - Moomoo API代理
 - ✅ 使用 `config/database.ts` - 数据库操作
 - ✅ 使用 `config/longport.ts` - 获取今日订单（Dashboard统计）

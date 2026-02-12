@@ -7,6 +7,19 @@
 
 ## 🆕 最近更新
 
+### 2026-02-12: 策略模拟运行 API
+
+**变更内容**:
+1. 新增 `POST /api/quant/strategies/:id/simulate` 接口，模拟策略完整开盘流程
+2. 调用真实服务链路（市场数据 → 信号评估 → 合约选择 → 入场计算 → 止盈止损参数），跳过交易时间窗口检查
+3. 支持可选真实下单（`executeOrder=true`），非0DTE 合约方便手工撤单
+4. 返回完整诊断报告，验证策略配置（riskPreference、exitRules 缩放）是否正确生效
+
+**修改文件**:
+- 📝 `api/src/routes/quant.ts`（新增 simulate 端点 + 服务层 import）
+
+---
+
 ### 2026-02-12: 止盈止损用户配置生效修复
 
 **变更内容**:

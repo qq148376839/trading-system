@@ -2,6 +2,33 @@
 
 ## 2026-02-12
 
+### 策略模拟运行 API
+
+**新增**: `POST /api/quant/strategies/:id/simulate` 接口，模拟策略完整开盘流程，调用真实服务链路，跳过交易时间窗口检查。
+
+**功能**:
+1. 获取实时市场数据 → 评分 + 方向推荐（`calculateOptionRecommendation`）
+2. 使用策略 `riskPreference` 阈值（`ENTRY_THRESHOLDS`）评估信号
+3. 选择期权合约（默认 NEAREST 模式，非0DTE，方便手工撤单）
+4. 计算入场价格、仓位大小、预估费用
+5. 计算动态止盈止损参数（验证 `exitRules` 用户配置缩放是否生效）
+6. 可选真实下单（`executeOrder=true`），返回 orderId
+
+**请求参数**:
+- `executeOrder?: boolean` — 是否真实下单，默认 false
+- `symbols?: string[]` — 指定标的，默认使用策略 symbol_pool
+- `overrideExpirationMode?: string` — 默认 'NEAREST'
+
+**设计要点**:
+- 不经过 `generateSignal()`（有 `isWithinTradeWindow()` 检查），直接调用底层推荐服务 + 合约选择服务
+- 每个 symbol 的每个步骤独立错误隔离，失败不影响其他步骤诊断数据
+- 返回完整诊断报告：marketData → signalEvaluation → contractSelection → entryCalculation → exitParams → orderExecution
+
+**修改文件**:
+- 📝 `api/src/routes/quant.ts`（+336 行，新增 simulate 端点 + 7 个新 import）
+
+---
+
 ### 止盈止损用户配置生效修复
 
 **修复**: 用户在 UI 配置的 `takeProfitPercent` / `stopLossPercent` 未在实际退出逻辑中生效，始终使用硬编码参数表。

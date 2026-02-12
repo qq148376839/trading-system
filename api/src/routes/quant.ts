@@ -20,6 +20,13 @@ import {
 } from '../services/institution-stock-selector.service';
 import { getTradeContext } from '../config/longport';
 import { logger } from '../utils/logger';
+import optionRecommendationService from '../services/option-recommendation.service';
+import { selectOptionContract } from '../services/options-contract-selector.service';
+import { estimateOptionOrderTotalCost } from '../services/options-fee.service';
+import { optionDynamicExitService, PositionContext, ExitRulesOverride } from '../services/option-dynamic-exit.service';
+import basicExecutionService from '../services/basic-execution.service';
+import { ENTRY_THRESHOLDS, OptionIntradayStrategyConfig } from '../services/strategies/option-intraday-strategy';
+import { TradingIntent } from '../services/strategies/strategy-base';
 
 export const quantRouter = Router();
 
@@ -2028,6 +2035,335 @@ quantRouter.post('/institutions/calculate-allocation', async (req: Request, res:
       },
     });
   } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+// ==================== 策略模拟运行 API ====================
+
+/**
+ * @openapi
+ * /quant/strategies/{id}/simulate:
+ *   post:
+ *     tags:
+ *       - 量化交易-策略模拟
+ *     summary: 模拟策略开盘流程
+ *     description: |
+ *       模拟策略的完整开盘流程：获取实时市场数据 → 生成信号 → 选择期权合约 → 计算入场参数。
+ *       调用真实服务链路，跳过交易时间窗口检查，可在非交易时间运行。
+ *       可选执行真实下单（用户可手工撤单）。
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: 策略ID
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               executeOrder:
+ *                 type: boolean
+ *                 description: 是否真实下单，默认 false
+ *               symbols:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: 指定标的，默认使用策略 symbol_pool
+ *               overrideExpirationMode:
+ *                 type: string
+ *                 enum: [NEAREST, 0DTE]
+ *                 description: 到期模式，默认 NEAREST（非0DTE）
+ *     responses:
+ *       200:
+ *         description: 模拟运行结果
+ */
+quantRouter.post('/strategies/:id/simulate', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const strategyId = parseInt(req.params.id, 10);
+    if (isNaN(strategyId)) {
+      return next(ErrorFactory.missingParameter('策略ID'));
+    }
+
+    const {
+      executeOrder = false,
+      symbols: requestSymbols,
+      overrideExpirationMode = 'NEAREST',
+    } = req.body || {};
+
+    // 1) 从 DB 加载策略配置
+    const strategyResult = await pool.query(
+      'SELECT id, name, type, config, symbol_pool_config, status FROM strategies WHERE id = $1',
+      [strategyId]
+    );
+
+    if (strategyResult.rows.length === 0) {
+      return next(ErrorFactory.notFound(`策略 ${strategyId}`));
+    }
+
+    const strategy = strategyResult.rows[0];
+    const config: OptionIntradayStrategyConfig = strategy.config || {};
+    const symbolPoolConfig = strategy.symbol_pool_config || {};
+    const riskPreference = config.riskPreference || 'CONSERVATIVE';
+    const exitRules = config.exitRules;
+    const entryPriceMode = config.entryPriceMode || 'ASK';
+    const positionSizing = config.positionSizing || { mode: 'FIXED_CONTRACTS', fixedContracts: 1 };
+
+    // 确定标的列表
+    const symbols: string[] = requestSymbols && requestSymbols.length > 0
+      ? requestSymbols
+      : (symbolPoolConfig.symbols || []);
+
+    if (symbols.length === 0) {
+      return next(ErrorFactory.missingParameter('symbols（策略无标的池且未指定symbols）'));
+    }
+
+    // 获取阈值配置
+    const thresholds = ENTRY_THRESHOLDS[riskPreference] || ENTRY_THRESHOLDS.CONSERVATIVE;
+
+    // 3) 对每个 symbol 执行模拟
+    const results = [];
+
+    for (const symbol of symbols) {
+      const result: Record<string, unknown> = { symbol };
+
+      // Step 1: 市场数据 — 调用推荐服务
+      try {
+        const recommendation = await optionRecommendationService.calculateOptionRecommendation(symbol);
+        result.marketData = {
+          direction: recommendation.direction,
+          confidence: recommendation.confidence,
+          marketScore: recommendation.marketScore,
+          intradayScore: recommendation.intradayScore,
+          finalScore: recommendation.finalScore,
+          riskLevel: recommendation.riskLevel,
+          reasoning: recommendation.reasoning,
+          dataCheck: recommendation.dataCheck,
+          riskMetrics: recommendation.riskMetrics,
+        };
+
+        // Step 2: 信号评估 — 用阈值判断是否入场
+        const absScore = Math.abs(recommendation.finalScore);
+        const directionFromScore = recommendation.finalScore >= 0 ? 'CALL' : 'PUT';
+        const passed = recommendation.direction !== 'HOLD' && absScore >= thresholds.directionalScoreMin;
+
+        let selectedStrategy: string | null = null;
+        let signalDirection: 'CALL' | 'PUT' | null = null;
+
+        if (passed) {
+          signalDirection = directionFromScore;
+          // 确定使用哪种策略类型
+          const buyerTypes = config.strategyTypes?.buyer || [];
+          if (signalDirection === 'CALL' && buyerTypes.includes('DIRECTIONAL_CALL')) {
+            selectedStrategy = 'DIRECTIONAL_CALL';
+          } else if (signalDirection === 'PUT' && buyerTypes.includes('DIRECTIONAL_PUT')) {
+            selectedStrategy = 'DIRECTIONAL_PUT';
+          } else if (buyerTypes.length > 0) {
+            selectedStrategy = buyerTypes[0];
+          }
+        }
+
+        result.signalEvaluation = {
+          thresholds: {
+            directionalScoreMin: thresholds.directionalScoreMin,
+            spreadScoreMin: thresholds.spreadScoreMin,
+          },
+          absScore,
+          selectedStrategy,
+          direction: signalDirection,
+          reason: passed
+            ? `得分 ${absScore} >= 阈值 ${thresholds.directionalScoreMin}，方向 ${signalDirection}`
+            : `得分 ${absScore} < 阈值 ${thresholds.directionalScoreMin} 或方向 HOLD，不入场`,
+          passed,
+        };
+
+        // Step 3+: 仅在信号通过时继续
+        if (passed && signalDirection) {
+          // Step 3: 合约选择
+          try {
+            const expirationMode = (overrideExpirationMode === '0DTE' ? '0DTE' : 'NEAREST') as '0DTE' | 'NEAREST';
+            const contract = await selectOptionContract({
+              underlyingSymbol: symbol,
+              expirationMode,
+              direction: signalDirection,
+              candidateStrikes: 8,
+              liquidityFilters: config.liquidityFilters,
+              greekFilters: config.greekFilters,
+            });
+
+            result.contractSelection = {
+              expirationMode,
+              selectedContract: contract ? {
+                optionSymbol: contract.optionSymbol,
+                strikePrice: contract.strikePrice,
+                strikeDate: contract.strikeDate,
+                optionType: contract.optionType,
+                bid: contract.bid,
+                ask: contract.ask,
+                mid: contract.mid,
+                last: contract.last,
+                openInterest: contract.openInterest,
+                impliedVolatility: contract.impliedVolatility,
+                delta: contract.delta,
+                theta: contract.theta,
+                timeValue: contract.timeValue,
+                multiplier: contract.multiplier,
+              } : null,
+              reason: contract ? '合约选择成功' : '未找到符合条件的合约',
+            };
+
+            // Step 4+: 仅在合约选择成功时继续
+            if (contract) {
+              // Step 4: 入场计算
+              const premium = entryPriceMode === 'MID' ? contract.mid : contract.ask;
+              const contracts = positionSizing.fixedContracts || 1;
+              const costEstimate = estimateOptionOrderTotalCost({
+                premium,
+                contracts,
+                multiplier: contract.multiplier || 100,
+                side: 'BUY',
+                feeModel: config.feeModel,
+              });
+
+              result.entryCalculation = {
+                entryPriceMode,
+                premium,
+                contracts,
+                multiplier: contract.multiplier || 100,
+                estimatedCost: costEstimate.totalCost,
+                estimatedFees: costEstimate.fees,
+              };
+
+              // Step 5: 止盈止损参数
+              const marketCloseTime = new Date();
+              marketCloseTime.setUTCHours(20, 0, 0, 0); // 美东16:00 = UTC 20:00
+
+              const positionCtx: PositionContext = {
+                entryPrice: premium,
+                currentPrice: premium,
+                quantity: contracts,
+                multiplier: contract.multiplier || 100,
+                entryTime: new Date(),
+                marketCloseTime,
+                strategySide: 'BUYER',
+                entryIV: contract.impliedVolatility || 0,
+                currentIV: contract.impliedVolatility || 0,
+                entryDelta: contract.delta,
+                currentDelta: contract.delta,
+                timeValue: contract.timeValue,
+                entryFees: costEstimate.fees.totalFees,
+                estimatedExitFees: costEstimate.fees.totalFees,
+              };
+
+              const exitRulesOverride: ExitRulesOverride | undefined = exitRules
+                ? { takeProfitPercent: exitRules.takeProfitPercent, stopLossPercent: exitRules.stopLossPercent }
+                : undefined;
+
+              const dynamicParams = optionDynamicExitService.getDynamicExitParams(positionCtx, exitRulesOverride);
+              const phase = optionDynamicExitService.getTradingPhase(new Date(), marketCloseTime);
+
+              // 缩放比例（BUYER EARLY 基准: TP=50, SL=35）
+              const earlyBaseTP = 50;
+              const earlyBaseSL = 35;
+
+              result.exitParams = {
+                userConfig: exitRules
+                  ? { takeProfitPercent: exitRules.takeProfitPercent, stopLossPercent: exitRules.stopLossPercent }
+                  : null,
+                dynamicParams: {
+                  phase,
+                  takeProfitPercent: dynamicParams.takeProfitPercent,
+                  stopLossPercent: dynamicParams.stopLossPercent,
+                  trailingStopTrigger: dynamicParams.trailingStopTrigger,
+                  trailingStopPercent: dynamicParams.trailingStopPercent,
+                  adjustmentReason: dynamicParams.adjustmentReason,
+                },
+                scaling: {
+                  earlyBaseTP,
+                  earlyBaseSL,
+                  currentRatioTP: Math.round((dynamicParams.takeProfitPercent / earlyBaseTP) * 100) / 100,
+                  currentRatioSL: Math.round((dynamicParams.stopLossPercent / earlyBaseSL) * 100) / 100,
+                },
+              };
+
+              // Step 6: 可选真实下单
+              if (executeOrder) {
+                try {
+                  const intent: TradingIntent = {
+                    action: 'BUY',
+                    symbol: contract.optionSymbol,
+                    entryPrice: premium,
+                    quantity: contracts,
+                    reason: `模拟下单 - 策略${strategyId} ${symbol} ${signalDirection}`,
+                    metadata: {
+                      strategyId,
+                      underlyingSymbol: symbol,
+                      optionType: contract.optionType,
+                      strikePrice: contract.strikePrice,
+                      expirationMode,
+                      simulate: true,
+                    },
+                  };
+
+                  const execResult = await basicExecutionService.executeBuyIntent(intent, strategyId);
+                  result.orderExecution = {
+                    executed: execResult.success,
+                    orderId: execResult.orderId,
+                    status: execResult.orderStatus,
+                    error: execResult.error,
+                    note: execResult.success ? '可在券商APP手工撤单' : undefined,
+                  };
+                } catch (execError: unknown) {
+                  const execErr = execError instanceof Error ? execError : new Error(String(execError));
+                  result.orderExecution = {
+                    executed: false,
+                    error: execErr.message,
+                  };
+                }
+              }
+            }
+          } catch (contractError: unknown) {
+            const contractErr = contractError instanceof Error ? contractError : new Error(String(contractError));
+            result.contractSelection = {
+              expirationMode: overrideExpirationMode,
+              selectedContract: null,
+              reason: `合约选择失败: ${contractErr.message}`,
+            };
+          }
+        }
+      } catch (marketError: unknown) {
+        const marketErr = marketError instanceof Error ? marketError : new Error(String(marketError));
+        result.marketData = { error: marketErr.message };
+      }
+
+      results.push(result);
+    }
+
+    // 4) 返回完整诊断报告
+    res.json({
+      success: true,
+      data: {
+        strategyId,
+        strategyName: strategy.name,
+        config: {
+          riskPreference,
+          exitRules: exitRules || null,
+          entryPriceMode,
+          positionSizing,
+          strategyTypes: config.strategyTypes || null,
+          expirationMode: config.expirationMode,
+        },
+        simulatedAt: new Date().toISOString(),
+        executeOrder,
+        symbolCount: symbols.length,
+        results,
+      },
+    });
+  } catch (error: unknown) {
     const appError = normalizeError(error);
     return next(appError);
   }
