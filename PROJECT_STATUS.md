@@ -7,6 +7,22 @@
 
 ## 🆕 最近更新
 
+### 2026-02-12: Vercel Edge Function 主代理 + CF Worker 备选
+
+**变更内容**:
+1. 新增 Vercel Edge Function (`vercel-moomoo.riowang.win`) 作为 Moomoo API 主代理，部署在美东 iad1 节点
+2. 后端 `moomooProxy()` 改为三级 fallback：Vercel → CF Worker → 直连 moomoo.com
+3. 提取 `callEdgeFunction()` 通用函数，Vercel 和 CF 共享响应解析逻辑
+4. 新增 `moomoo_vercel_proxy_url` DB 配置项（环境变量 `MOOMOO_VERCEL_PROXY_URL`）
+
+**新增文件**:
+- 📝 `edge-functions/vercel-moomoo-proxy/` — Vercel Edge Function 项目（从 CF Worker 移植，去掉 KV 缓存）
+
+**修改文件**:
+- 📝 `api/src/utils/moomoo-proxy.ts`（三级 fallback + callEdgeFunction 提取）
+
+---
+
 ### 2026-02-12: 策略模拟运行 API
 
 **变更内容**:

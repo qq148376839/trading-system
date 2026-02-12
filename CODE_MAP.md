@@ -2,7 +2,7 @@
 
 本文档详细说明了项目中每个文件的作用以及文件之间的调用和关联关系。
 
-**最后更新**: 2026-02-11（Moomoo 多 Cookie 管理与边缘代理优化）
+**最后更新**: 2026-02-12（Vercel Edge Function 主代理 + CF Worker 备选）
 
 ---
 
@@ -894,19 +894,19 @@ trading-system/
 - 📌 `services/log.service.ts` - 日志服务
 
 #### `api/src/utils/moomoo-proxy.ts`
-**作用**: Moomoo API 代理工具（边缘函数 URL 从 DB 加载）
+**作用**: Moomoo API 代理工具 — 三级 fallback：Vercel Edge → CF Worker → 直连
 
 **主要功能**:
-- 代理富途/Moomoo API 请求
-- 处理 quote-token 计算
-- 错误处理和重试
-- 从 DB 读取 `moomoo_edge_function_url` 和 `use_moomoo_edge_function`（5 分钟缓存 TTL，环境变量 fallback）
-- `getProxyMode()` 为 async 方法
+- 代理富途/Moomoo API 请求，三级降级链路
+- `callEdgeFunction()` — Vercel / CF 通用的边缘函数调用 + 响应解析
+- 从 DB 读取 `moomoo_edge_function_url`、`moomoo_vercel_proxy_url`、`use_moomoo_edge_function`（5 分钟缓存 TTL，环境变量 fallback）
+- `getProxyMode()` 返回完整链路信息（如 `Vercel (url) → CF (url) → 直连`）
 
 **调用关系**:
 - ✅ 使用 `config/futunn.ts` - 富途配置
 - ✅ 使用 `services/config.service.ts` - 读取边缘函数 URL 配置
-- ✅ 调用边缘函数（URL 从 DB 配置读取，默认 `moomoo-api.riowang.win`）
+- ✅ 调用 Vercel Edge Function（主，默认 `vercel-moomoo.riowang.win`）
+- ✅ 调用 CF Worker（备，默认 `moomoo-api.riowang.win`）
 
 **被调用**:
 - 📌 `services/market-data.service.ts` - 市场数据服务
@@ -1363,8 +1363,26 @@ trading-system/
 
 ## 边缘函数 (Edge Functions)
 
+#### `edge-functions/vercel-moomoo-proxy/`
+**作用**: Vercel Edge Function — Moomoo API 主代理，部署在 `vercel-moomoo.riowang.win`（美东 iad1）
+
+**主要功能**:
+- 从 CF Worker 移植核心逻辑（GUEST_CONFIGS、quoteToken 计算、cookie_index 查表、403 重试 + cookie 轮转）
+- 去掉 KV 缓存和动态 cookie 获取（Vercel 无 KV），只用 GUEST_CONFIGS 硬编码
+- Edge Runtime 格式，`export const config = { runtime: 'edge' }`
+
+**文件结构**:
+- `api/moomooapi.js` — Edge Runtime handler（GET + POST）
+- `vercel.json` — 部署配置（region: iad1，CORS headers）
+- `package.json` — 最小 package
+
+**被调用**:
+- 📌 `api/src/utils/moomoo-proxy.ts` — 后端通过 HTTP 请求调用（主代理）
+
+---
+
 #### `edge-functions/moomoo-proxy/`
-**作用**: Cloudflare Worker — Moomoo API 代理，部署在 `moomoo-api.riowang.win`
+**作用**: Cloudflare Worker — Moomoo API 备选代理，部署在 `moomoo-api.riowang.win`
 
 **主要功能**:
 - 代理 Moomoo/富途 API 请求，解决大陆 IP 限制
@@ -1382,7 +1400,7 @@ trading-system/
 - Routes: `moomoo-api.riowang.win/*`（自定义域名绑定）
 
 #### `edge-functions/moomoo-proxy/src/index.js`
-**作用**: Worker 入口文件 — 请求转发 + quoteToken 计算
+**作用**: Worker 入口文件 — 请求转发 + quoteToken 计算（备选代理）
 
 **主要功能**:
 - 接收后端转发的 Moomoo API 请求
@@ -1395,7 +1413,7 @@ trading-system/
 - ✅ 使用 Cloudflare KV（`MOOMOO_CACHE`）缓存 Cookie
 
 **被调用**:
-- 📌 `api/src/utils/moomoo-proxy.ts` — 后端通过 HTTP 请求调用
+- 📌 `api/src/utils/moomoo-proxy.ts` — 后端通过 HTTP 请求调用（备选代理，Vercel 失败后降级）
 - 📌 可通过 curl 直接调用（调试/测试模式）
 
 ---

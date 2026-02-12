@@ -1,5 +1,5 @@
 {
-  "regions": ["iad1", "sfo1"],
+  "regions": ["iad1"],
   "headers": [
     {
       "source": "/api/(.*)",

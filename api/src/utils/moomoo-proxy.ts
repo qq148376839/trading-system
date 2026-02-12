@@ -11,7 +11,7 @@ import { getEffectiveConfigs } from '../config/futunn';
 
 // ── DB 缓存（与 futunn.ts 同模式：异步加载，同步消费） ─────
 const DEFAULT_EDGE_URL = 'https://moomoo-api.riowang.win';
-const DEFAULT_VERCEL_URL = '';  // 部署后填入或通过 MOOMOO_VERCEL_PROXY_URL / DB 配置
+const DEFAULT_VERCEL_URL = 'https://vercel-moomoo.riowang.win';
 
 let _edgeFunctionUrl: string = process.env.MOOMOO_EDGE_FUNCTION_URL || DEFAULT_EDGE_URL;
 let _vercelProxyUrl: string = process.env.MOOMOO_VERCEL_PROXY_URL || DEFAULT_VERCEL_URL;

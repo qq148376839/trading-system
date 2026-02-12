@@ -2,6 +2,32 @@
 
 ## 2026-02-12
 
+### Vercel Edge Function 主代理 + CF Worker 备选
+
+**新增**: Vercel Edge Function 作为 Moomoo API 主代理，CF Worker 降为备选，实现三级 fallback 链路。
+
+**背景**: CF 亚洲 PoP 节点有较大概率被 Moomoo 地区封锁（403），新增 Vercel Edge Function 部署在美东 (`iad1`)，靠近 Moomoo 美国服务器。
+
+**架构**:
+```
+后端 moomooProxy()
+  ├─ 1) Vercel Edge Function（主）  vercel-moomoo.riowang.win
+  │     失败 ↓
+  ├─ 2) Cloudflare Worker（备）     moomoo-api.riowang.win
+  │     失败 ↓
+  └─ 3) 直接访问 moomoo.com（兜底）
+```
+
+**新增文件**:
+- 📝 `edge-functions/vercel-moomoo-proxy/api/moomooapi.js` — Vercel Edge Runtime handler，从 CF Worker 移植核心逻辑（去掉 KV 缓存和动态 cookie 获取）
+- 📝 `edge-functions/vercel-moomoo-proxy/vercel.json` — 部署配置（region: iad1）
+- 📝 `edge-functions/vercel-moomoo-proxy/package.json` — 最小 package
+
+**修改文件**:
+- 📝 `api/src/utils/moomoo-proxy.ts` — 提取 `callEdgeFunction()` 通用函数，新增 `_vercelProxyUrl` 配置变量，`moomooProxy()` 改为三级 fallback，`getProxyMode()` 返回完整链路信息
+
+---
+
 ### 策略模拟运行 API
 
 **新增**: `POST /api/quant/strategies/:id/simulate` 接口，模拟策略完整开盘流程，调用真实服务链路，跳过交易时间窗口检查。
