@@ -74,21 +74,14 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
 
   if (_useEdgeFunction) {
     // 使用边缘函数代理
+    // 注意：不传 cookies / csrf_token / quoteToken 给边缘函数
+    // 边缘函数内置了游客 cookies 和 quote-token 生成逻辑
+    // 超长 cookies 作为 URL query param 会导致 Cloudflare 530 (error 1016) 拒绝请求
     const proxyParams: Record<string, any> = {
       path,
       ...params,
       referer,
     };
-
-    if (cookies) {
-      proxyParams.cookies = cookies;
-    }
-    if (csrfToken) {
-      proxyParams.csrf_token = csrfToken;
-    }
-    if (quoteToken) {
-      proxyParams.quoteToken = quoteToken;
-    }
 
     try {
       if (process.env.NODE_ENV === 'development') {
