@@ -117,10 +117,33 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
         });
       }
 
+      // 检查 HTTP 状态码（403 = Moomoo 限频）
+      if (response.status === 403) {
+        throw new Error(`Moomoo API 403 限频: ${path} (cookie 可能已过期或请求过于频繁)`);
+      }
+
+      // 检查响应是否为 HTML（非 JSON）— Moomoo 403/5xx 错误页面
+      const rawData = response.data;
+      if (typeof rawData === 'string') {
+        if (rawData.includes('<!DOCTYPE') || rawData.includes('<html') || rawData.includes('Operations too frequent')) {
+          throw new Error(`Moomoo API 返回 HTML 错误页面: ${path} (可能是 403 限频或 cookie 过期)`);
+        }
+        // 其他非 JSON 字符串也不是有效响应
+        throw new Error(`Moomoo API 返回非 JSON 响应: ${path} (类型: string, 长度: ${rawData.length})`);
+      }
+
       // 检查响应格式
-      if (response.data && typeof response.data === 'object') {
-        if (response.data.success === true) {
-          const moomooResponse = response.data.data;
+      if (rawData && typeof rawData === 'object') {
+        if (rawData.success === true) {
+          const moomooResponse = rawData.data;
+
+          // 检查 edge function 包装的 data 是否为 HTML 字符串（Moomoo 403 穿透）
+          if (typeof moomooResponse === 'string') {
+            if (moomooResponse.includes('<!DOCTYPE') || moomooResponse.includes('Operations too frequent')) {
+              throw new Error(`Moomoo API 403 限频（穿透 edge function）: ${path}`);
+            }
+            throw new Error(`Moomoo API 返回非 JSON data: ${path} (类型: string, 长度: ${moomooResponse.length})`);
+          }
 
           if (process.env.NODE_ENV === 'development') {
             logger.debug(`[Moomoo代理] Moomoo API响应:`, {
@@ -144,21 +167,21 @@ export async function moomooProxy(options: MoomooProxyOptions): Promise<any> {
           }
 
           return moomooResponse;
-        } else if (response.data.success === false) {
-          const errorMsg = response.data.error || response.data.message || 'Edge function request failed';
-          const details = response.data.details ? `: ${response.data.details}` : '';
+        } else if (rawData.success === false) {
+          const errorMsg = rawData.error || rawData.message || 'Edge function request failed';
+          const details = rawData.details ? `: ${rawData.details}` : '';
           throw new Error(`${errorMsg}${details}`);
-        } else if (response.data.code !== undefined) {
-          if (response.data.code === 0) {
-            return response.data;
+        } else if (rawData.code !== undefined) {
+          if (rawData.code === 0) {
+            return rawData;
           } else {
-            throw new Error(response.data.message || `Moomoo API error: code=${response.data.code}`);
+            throw new Error(rawData.message || `Moomoo API error: code=${rawData.code}`);
           }
         } else {
-          return response.data;
+          return rawData;
         }
       } else {
-        return response.data;
+        throw new Error(`Moomoo API 响应格式异常: ${path} (类型: ${typeof rawData})`);
       }
     } catch (error: unknown) {
       const err = error as any;
