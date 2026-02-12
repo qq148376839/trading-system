@@ -32,6 +32,7 @@ export interface SelectOptionContractParams {
   candidateStrikes?: number; // how many closest strikes to evaluate
   liquidityFilters?: OptionLiquidityFilters;
   greekFilters?: OptionGreekFilters;
+  noNewEntryBeforeCloseMinutes?: number; // 外部传入的收盘前截止分钟数（覆盖默认值180）
 }
 
 export interface SelectedOptionContract {
@@ -132,12 +133,13 @@ function ymdToStrikeDate(dateStr: string): number {
 /**
  * 0DTE 买入截止时间检查
  * 如果当前已过收盘前 noNewEntryBeforeCloseMinutes 分钟，返回 true（应拦截买入）
+ * @param minutesBefore 收盘前截止分钟数（默认180，即 1:00 PM ET）
  */
-async function is0DTEBuyBlocked(): Promise<boolean> {
+async function is0DTEBuyBlocked(minutesBefore: number = 180): Promise<boolean> {
   try {
     const closeWindow = await getMarketCloseWindow({
       market: 'US',
-      noNewEntryBeforeCloseMinutes: 210,
+      noNewEntryBeforeCloseMinutes: minutesBefore,
       forceCloseBeforeCloseMinutes: 30,
     });
     if (closeWindow && new Date() >= closeWindow.noNewEntryTimeUtc) {
@@ -153,14 +155,15 @@ export async function selectOptionContract(params: SelectOptionContractParams): 
   const candidateStrikes = params.candidateStrikes ?? 8;
   const liquidity = params.liquidityFilters ?? {};
   const greek = params.greekFilters ?? {};
+  const cutoffMinutes = params.noNewEntryBeforeCloseMinutes ?? 180;
 
   // ===== 主源：LongPort =====
-  const lbResult = await selectOptionContractViaLongPort(params, candidateStrikes, liquidity, greek);
+  const lbResult = await selectOptionContractViaLongPort(params, candidateStrikes, liquidity, greek, cutoffMinutes);
   if (lbResult !== undefined) return lbResult; // null = 找到但没合适的, undefined = LongPort 失败需 fallback
 
   // ===== 备用：Moomoo =====
   logger.info(`[${params.underlyingSymbol}] LongPort期权链失败，降级到Moomoo`);
-  return selectOptionContractViaMoomoo(params, candidateStrikes, liquidity, greek);
+  return selectOptionContractViaMoomoo(params, candidateStrikes, liquidity, greek, cutoffMinutes);
 }
 
 /**
@@ -170,7 +173,8 @@ async function selectOptionContractViaLongPort(
   params: SelectOptionContractParams,
   candidateStrikes: number,
   liquidity: OptionLiquidityFilters,
-  greek: OptionGreekFilters
+  greek: OptionGreekFilters,
+  cutoffMinutes: number = 180
 ): Promise<SelectedOptionContract | null | undefined> {
   try {
     // 1. 获取到期日列表
@@ -214,9 +218,9 @@ async function selectOptionContractViaLongPort(
 
     // 3. 0DTE 买入截止时间检查
     if (is0DTE) {
-      const blocked = await is0DTEBuyBlocked();
+      const blocked = await is0DTEBuyBlocked(cutoffMinutes);
       if (blocked) {
-        logger.warn(`⚠️ [${params.underlyingSymbol}] 0DTE期权已过截止时间(收盘前120分钟)，跳过`);
+        logger.warn(`⚠️ [${params.underlyingSymbol}] 0DTE期权已过截止时间(收盘前${cutoffMinutes}分钟)，跳过`);
         return null;
       }
     }
@@ -427,7 +431,8 @@ async function selectOptionContractViaMoomoo(
   params: SelectOptionContractParams,
   candidateStrikes: number,
   liquidity: OptionLiquidityFilters,
-  greek: OptionGreekFilters
+  greek: OptionGreekFilters,
+  cutoffMinutes: number = 180
 ): Promise<SelectedOptionContract | null> {
   const underlyingStockId = await resolveUnderlyingStockId(params.underlyingSymbol);
   if (!underlyingStockId) return null;
@@ -477,9 +482,9 @@ async function selectOptionContractViaMoomoo(
 
   // 0DTE 买入截止时间检查
   if (is0DTE) {
-    const blocked = await is0DTEBuyBlocked();
+    const blocked = await is0DTEBuyBlocked(cutoffMinutes);
     if (blocked) {
-      logger.warn(`⚠️ [${params.underlyingSymbol}] 0DTE期权已过截止时间(收盘前120分钟)，跳过`);
+      logger.warn(`⚠️ [${params.underlyingSymbol}] 0DTE期权已过截止时间(收盘前${cutoffMinutes}分钟)，跳过`);
       return null;
     }
   }

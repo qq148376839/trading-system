@@ -1,5 +1,71 @@
 # 更新日志
 
+## 2026-02-13
+
+### 交易策略优化 — 基于 260212 分析报告（9项修复）
+
+**优化**: 基于 2月12日实盘交易分析报告，修复配置合并、统一截止时间、新增方向确认窗口、资金自动排除/重分配、LATE冷却期、NaN 盈亏、资金自动重置、市场温度降级、合约选择器可配置化等9项问题。
+
+**修复内容**:
+
+#### 1. 配置深度合并（修复 tradeWindow 被覆盖）
+- **问题**: 浅合并 `{ ...DEFAULT, ...config }` 导致 DB config 中只要存在 `tradeWindow` 字段就完全覆盖默认的 `firstHourOnly: true` 等设置
+- **修复**: 改为深度合并 `tradeWindow`、`exitRules`、`positionSizing`、`latePeriod` 嵌套对象
+
+#### 2. 统一 0DTE 截止时间为 180 分钟（1:00 PM ET）
+- **问题**: 210 分钟过早截止，12:00~13:00 时段盈利 +$476 被截断；fallback 值为 60（与默认 210 不一致）；日志消息"收盘前120分钟"与实际不符
+- **修复**: 全部统一为 180 分钟（5个文件），fallback `?? 60` → `?? 180`，日志消息改为动态值
+
+#### 3. 开盘方向确认窗口（30分钟）
+- **新增**: 开盘后30分钟内（9:30~10:00 ET）增加方向一致性检查
+  - 大盘得分 > 5 → 仅允许 CALL/BULL_SPREAD
+  - 大盘得分 < -5 → 仅允许 PUT/BEAR_SPREAD
+  - 得分在 [-5, 5] → 不开仓（趋势不明确）
+- 配置项: `tradeWindow.directionConfirmMinutes: 30`
+
+#### 4. 资金不足标的自动排除 + 资金重新分配
+- **新增**: `capitalManager.getEffectiveSymbolPool()` 方法
+  - 最低期权门槛 $300（$3 权利金 × 100 乘数）
+  - 排除资金不足的标的，将资金自动分配到可交易标的
+  - 已有持仓的标的即使被排除也继续监控
+- 排除标的记录 WARNING 日志（节流：每5分钟一次）
+
+#### 5. LATE 时段冷却期 + 最小利润阈值
+- **新增**: `latePeriod` 配置
+  - `cooldownMinutes: 3` — 同一标的平仓后3分钟内不重新开仓
+  - `minProfitThreshold: 0.10` — LATE 时段入场阈值提高 10%
+- LATE 时段判定：收盘前 30min~2hr
+
+#### 6. 持仓监控日志改用毛盈亏（修复 NaN）
+- **问题**: `netPnLPercent` 在手续费数据不完整（T+1结算未到）时传播 NaN
+- **修复**: 止盈/止损/移动止损判断统一使用 `grossPnLPercent`；监控日志标签从"净盈亏"改为"盈亏"
+
+#### 7. 资金差异警告自动修复
+- **新增**: `capitalManager.resetUsedAmount()` 方法
+- 策略所有持仓平仓后（`active_positions = 0`），自动重置 `used_amount` 为 0
+- 日志: `[资金同步] 策略X所有持仓已平仓，重置已用资金为0`
+
+#### 8. 市场温度 API 降级处理
+- **新增**: `getMarketTemperature()` 添加缓存降级机制
+  - 成功时更新缓存（5分钟 TTL）
+  - 失败时使用缓存值（最长15分钟）
+  - 日志: `[市场温度] API调用失败，使用缓存值 X（Y秒前）`
+
+#### 9. 合约选择器读取策略配置
+- **新增**: `SelectOptionContractParams.noNewEntryBeforeCloseMinutes` 可选参数
+- `is0DTEBuyBlocked()` 接收外部传入的分钟数，不再硬编码
+- 调用方（`option-intraday-strategy.ts`）传递策略配置中的值
+
+**修改文件**:
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`（Task 1,2,3,5,9: 深度合并+180分钟+方向确认+LATE冷却+传递配置）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（Task 2,4,5,6,7: 180分钟默认值+有效池过滤+冷却期+毛盈亏日志+资金重置）
+- 📝 `api/src/services/capital-manager.service.ts`（Task 4,7: 有效标的池+resetUsedAmount）
+- 📝 `api/src/services/options-contract-selector.service.ts`（Task 2,9: 180分钟+可配置截止时间）
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（Task 2,6: 180分钟+grossPnL决策）
+- 📝 `api/src/services/market-data.service.ts`（Task 8: 温度API缓存降级）
+
+---
+
 ## 2026-02-12
 
 ### Vercel Edge Function 主代理 + CF Worker 备选

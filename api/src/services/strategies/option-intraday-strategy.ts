@@ -68,6 +68,7 @@ export interface TradeWindowConfig {
   avoidLast30Minutes?: boolean;       // 避免最后30分钟（默认true）
   noNewEntryBeforeCloseMinutes?: number;  // 收盘前N分钟不开新仓
   forceCloseBeforeCloseMinutes?: number;  // 收盘前N分钟强制平仓
+  directionConfirmMinutes?: number;   // 开盘后N分钟内方向确认窗口（默认30）
 }
 
 // ============================================
@@ -108,6 +109,12 @@ export interface OptionIntradayStrategyConfig {
   // ===== 新增：价差和跨式配置 =====
   spreadConfig?: SpreadConfig;
   straddleConfig?: StraddleConfig;
+
+  // ===== LATE时段配置 =====
+  latePeriod?: {
+    cooldownMinutes?: number;        // 同一标的平仓后N分钟内不重新开仓（默认3）
+    minProfitThreshold?: number;     // LATE时段最低信号得分阈值提高比例（默认0.10=10%）
+  };
 
   // ===== 旧配置（保留兼容性） =====
   directionMode?: DirectionMode;        // 已弃用，使用 strategyTypes.buyer
@@ -159,12 +166,17 @@ export const DEFAULT_OPTION_STRATEGY_CONFIG: Partial<OptionIntradayStrategyConfi
   tradeWindow: {
     firstHourOnly: true,
     avoidLast30Minutes: true,
-    noNewEntryBeforeCloseMinutes: 210,
+    noNewEntryBeforeCloseMinutes: 180,
     forceCloseBeforeCloseMinutes: 30,
+    directionConfirmMinutes: 30,
   },
   positionSizing: {
     mode: 'FIXED_CONTRACTS',
     fixedContracts: 1,
+  },
+  latePeriod: {
+    cooldownMinutes: 3,
+    minProfitThreshold: 0.10,
   },
   entryPriceMode: 'ASK',
 };
@@ -218,8 +230,15 @@ export class OptionIntradayStrategy extends StrategyBase {
 
   constructor(strategyId: number, config: OptionIntradayStrategyConfig = {}) {
     super(strategyId, config as any);
-    // 合并默认配置
-    this.cfg = { ...DEFAULT_OPTION_STRATEGY_CONFIG, ...config };
+    // 深度合并默认配置：确保嵌套对象也正确继承默认值
+    this.cfg = {
+      ...DEFAULT_OPTION_STRATEGY_CONFIG,
+      ...config,
+      tradeWindow: { ...DEFAULT_OPTION_STRATEGY_CONFIG.tradeWindow, ...config.tradeWindow },
+      exitRules: { ...DEFAULT_OPTION_STRATEGY_CONFIG.exitRules, ...config.exitRules },
+      positionSizing: { ...DEFAULT_OPTION_STRATEGY_CONFIG.positionSizing, ...config.positionSizing },
+      latePeriod: { ...DEFAULT_OPTION_STRATEGY_CONFIG.latePeriod, ...config.latePeriod },
+    };
   }
 
   /**
@@ -235,11 +254,40 @@ export class OptionIntradayStrategy extends StrategyBase {
   }
 
   /**
-   * 获取入场阈值（根据风险偏好）
+   * 获取入场阈值（根据风险偏好 + LATE时段提高）
    */
-  private getThresholds() {
+  private getThresholds(isLatePeriod: boolean = false) {
     const pref = this.cfg.riskPreference || 'CONSERVATIVE';
-    return ENTRY_THRESHOLDS[pref];
+    const base = ENTRY_THRESHOLDS[pref];
+    if (!isLatePeriod) return base;
+
+    // LATE时段：提高入场阈值
+    const boost = 1 + (this.cfg.latePeriod?.minProfitThreshold ?? 0.10);
+    return {
+      directionalScoreMin: Math.round(base.directionalScoreMin * boost),
+      spreadScoreMin: Math.round(base.spreadScoreMin * boost),
+      straddleIvThreshold: base.straddleIvThreshold,
+    };
+  }
+
+  /**
+   * 判断当前是否为 LATE 交易时段（收盘前0.5~2小时）
+   */
+  private isLatePeriod(): boolean {
+    const now = new Date();
+    const etFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false,
+    });
+    const etParts = etFormatter.formatToParts(now);
+    const etHour = parseInt(etParts.find(p => p.type === 'hour')?.value || '0');
+    const etMinute = parseInt(etParts.find(p => p.type === 'minute')?.value || '0');
+    const etMinutes = etHour * 60 + etMinute;
+    const marketClose = 16 * 60; // 16:00
+    const minutesToClose = marketClose - etMinutes;
+    return minutesToClose > 30 && minutesToClose <= 120; // 30min~2h before close
   }
 
   /**
@@ -298,9 +346,10 @@ export class OptionIntradayStrategy extends StrategyBase {
    */
   private evaluateDirectionalBuyer(
     optionRec: any,
-    strategyType: 'DIRECTIONAL_CALL' | 'DIRECTIONAL_PUT'
+    strategyType: 'DIRECTIONAL_CALL' | 'DIRECTIONAL_PUT',
+    isLate: boolean = false
   ): { shouldTrade: boolean; direction: 'CALL' | 'PUT'; reason: string } {
-    const thresholds = this.getThresholds();
+    const thresholds = this.getThresholds(isLate);
     const score = optionRec.finalScore;
 
     if (strategyType === 'DIRECTIONAL_CALL') {
@@ -343,9 +392,10 @@ export class OptionIntradayStrategy extends StrategyBase {
    */
   private evaluateSpreadStrategy(
     optionRec: any,
-    strategyType: 'BULL_SPREAD' | 'BEAR_SPREAD'
+    strategyType: 'BULL_SPREAD' | 'BEAR_SPREAD',
+    isLate: boolean = false
   ): { shouldTrade: boolean; direction: 'CALL' | 'PUT'; reason: string } {
-    const thresholds = this.getThresholds();
+    const thresholds = this.getThresholds(isLate);
     const score = optionRec.finalScore;
 
     if (strategyType === 'BULL_SPREAD') {
@@ -434,6 +484,23 @@ export class OptionIntradayStrategy extends StrategyBase {
         return null;
       }
 
+      // 1.5) 开盘方向确认窗口检查（开盘后N分钟内限制交易方向）
+      const directionConfirmMinutes = this.cfg.tradeWindow?.directionConfirmMinutes ?? 30;
+      const nowForConfirm = new Date();
+      const etFormatterConfirm = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        hour: 'numeric',
+        minute: 'numeric',
+        hour12: false,
+      });
+      const etPartsConfirm = etFormatterConfirm.formatToParts(nowForConfirm);
+      const etHourConfirm = parseInt(etPartsConfirm.find(p => p.type === 'hour')?.value || '0');
+      const etMinuteConfirm = parseInt(etPartsConfirm.find(p => p.type === 'minute')?.value || '0');
+      const etMinutesConfirm = etHourConfirm * 60 + etMinuteConfirm;
+      const marketOpenMinutes = 9 * 60 + 30; // 9:30 ET
+      const minutesSinceOpen = etMinutesConfirm - marketOpenMinutes;
+      const isInDirectionConfirmWindow = minutesSinceOpen >= 0 && minutesSinceOpen < directionConfirmMinutes;
+
       // 2) 获取市场推荐
       const optionRec = await optionRecommendationService.calculateOptionRecommendation(symbol);
 
@@ -463,7 +530,24 @@ export class OptionIntradayStrategy extends StrategyBase {
         return null;
       }
 
+      // 3.5) 开盘方向确认窗口：前30分钟只允许与大盘方向一致的交易
+      if (isInDirectionConfirmWindow) {
+        const marketScore = optionRec.marketScore;
+        if (marketScore > -5 && marketScore < 5) {
+          logger.info(`[方向确认] ${symbol} 开盘${minutesSinceOpen}分钟内，大盘得分${marketScore.toFixed(1)}在[-5,5]区间，趋势不明确，不开仓`);
+          logData.finalResult = 'NO_SIGNAL';
+          logData.rejectionReason = `开盘方向确认窗口：大盘得分${marketScore.toFixed(1)}趋势不明确`;
+          logData.rejectionCheckpoint = 'direction_confirm';
+          this.logDecision(logData);
+          return null;
+        }
+        // 大盘偏多只允许 CALL/BULL_SPREAD，偏空只允许 PUT/BEAR_SPREAD
+        const allowedDirection = marketScore > 0 ? 'BULLISH' : 'BEARISH';
+        logger.info(`[方向确认] ${symbol} 开盘${minutesSinceOpen}分钟内，大盘得分${marketScore.toFixed(1)}，仅允许${allowedDirection === 'BULLISH' ? 'CALL/BULL_SPREAD' : 'PUT/BEAR_SPREAD'}方向`);
+      }
+
       // 4) 遍历启用的策略，找到第一个满足条件的
+      const isLate = this.isLatePeriod();
       let selectedStrategy: OptionStrategyType | null = null;
       let direction: 'CALL' | 'PUT' = 'CALL';
       let strategyReason = '';
@@ -474,7 +558,7 @@ export class OptionIntradayStrategy extends StrategyBase {
         switch (strategy) {
           case 'DIRECTIONAL_CALL':
           case 'DIRECTIONAL_PUT':
-            evaluation = this.evaluateDirectionalBuyer(optionRec, strategy);
+            evaluation = this.evaluateDirectionalBuyer(optionRec, strategy, isLate);
             break;
 
           case 'STRADDLE_BUY':
@@ -488,7 +572,7 @@ export class OptionIntradayStrategy extends StrategyBase {
 
           case 'BULL_SPREAD':
           case 'BEAR_SPREAD':
-            evaluation = this.evaluateSpreadStrategy(optionRec, strategy);
+            evaluation = this.evaluateSpreadStrategy(optionRec, strategy, isLate);
             break;
 
           // TODO: 实现卖方策略
@@ -507,6 +591,19 @@ export class OptionIntradayStrategy extends StrategyBase {
         logger.debug(`[${symbol}/${strategy}] ${evaluation.reason}`);
 
         if (evaluation.shouldTrade && evaluation.direction) {
+          // 方向确认窗口过滤：开盘30分钟内只允许与大盘方向一致的交易
+          if (isInDirectionConfirmWindow) {
+            const marketScore = optionRec.marketScore;
+            const isBullish = marketScore > 0;
+            const dirAllowed = isBullish
+              ? (evaluation.direction === 'CALL' || strategy === 'BULL_SPREAD')
+              : (evaluation.direction === 'PUT' || strategy === 'BEAR_SPREAD');
+            if (!dirAllowed) {
+              logger.debug(`[${symbol}/${strategy}] 方向确认窗口过滤：大盘${isBullish ? '偏多' : '偏空'}，${evaluation.direction}方向不允许`);
+              continue; // 跳过此策略，尝试下一个
+            }
+          }
+
           selectedStrategy = strategy;
           direction = evaluation.direction;
           strategyReason = evaluation.reason;
@@ -535,6 +632,7 @@ export class OptionIntradayStrategy extends StrategyBase {
         candidateStrikes: 8,
         liquidityFilters: this.cfg.liquidityFilters,
         greekFilters: this.cfg.greekFilters,
+        noNewEntryBeforeCloseMinutes: this.cfg.tradeWindow?.noNewEntryBeforeCloseMinutes,
       });
 
       if (!selected) {

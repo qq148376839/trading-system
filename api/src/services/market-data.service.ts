@@ -33,6 +33,10 @@ class MarketDataService {
   private readonly CIRCUIT_FAILURE_THRESHOLD = 5; // 连续失败5次后熔断
   private readonly CIRCUIT_COOLDOWN_MS = 60000; // 熔断冷却60秒
 
+  // 市场温度缓存（API降级用）
+  private temperatureCache: { value: number; timestamp: number } | null = null;
+  private readonly TEMPERATURE_CACHE_TTL = 5 * 60 * 1000; // 5分钟 TTL
+
   /**
    * 检查熔断器状态
    * @returns true 表示可以请求, false 表示熔断中
@@ -600,14 +604,30 @@ class MarketDataService {
       
       // 确保温度值在合理范围内（0-100）
       temperature = Math.max(0, Math.min(100, temperature));
-      
+
+      // 更新缓存
+      this.temperatureCache = { value: temperature, timestamp: Date.now() };
+
       logger.info(`[市场温度] 获取成功: ${temperature}`);
       return temperature;
     } catch (error: any) {
       logger.error(`[市场温度] 获取失败:`, error.message);
-      logger.error(`[市场温度] 错误详情:`, error);
-      logger.error(`[市场温度] 错误堆栈:`, error.stack);
-      // 失败时返回null，不使用默认值
+
+      // 降级：使用缓存值（带 TTL 检查）
+      if (this.temperatureCache) {
+        const cacheAge = Date.now() - this.temperatureCache.timestamp;
+        if (cacheAge < this.TEMPERATURE_CACHE_TTL) {
+          logger.warn(`[市场温度] API调用失败，使用缓存值 ${this.temperatureCache.value}（${Math.round(cacheAge / 1000)}秒前）`);
+          return this.temperatureCache.value;
+        }
+        // 缓存过期但仍比没有好（扩展到 15 分钟）
+        if (cacheAge < this.TEMPERATURE_CACHE_TTL * 3) {
+          logger.warn(`[市场温度] API调用失败，使用过期缓存值 ${this.temperatureCache.value}（${Math.round(cacheAge / 1000)}秒前，已过期）`);
+          return this.temperatureCache.value;
+        }
+      }
+
+      // 无缓存可用
       return null;
     }
   }

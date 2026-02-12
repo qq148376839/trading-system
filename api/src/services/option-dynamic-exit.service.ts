@@ -304,25 +304,25 @@ class OptionDynamicExitService {
       }
     }
 
-    // 4. 价格行为调整（突破检测）
+    // 4. 价格行为调整（突破检测，使用 grossPnLPercent 避免 NaN）
     const pnl = this.calculatePnL(ctx);
-    if (pnl.netPnLPercent > 0 && ctx.dayHigh && ctx.dayLow) {
+    if (pnl.grossPnLPercent > 0 && ctx.dayHigh && ctx.dayLow) {
       const priceRange = ctx.dayHigh - ctx.dayLow;
       const currentRelativePosition = priceRange > 0
         ? (ctx.currentPrice - ctx.dayLow) / priceRange
         : 0.5;
 
       // 如果当前价格在日内高位（>80%）且盈利
-      if (currentRelativePosition > 0.8 && pnl.netPnLPercent > 20) {
+      if (currentRelativePosition > 0.8 && pnl.grossPnLPercent > 20) {
         baseParams.takeProfitPercent = Math.min(baseParams.takeProfitPercent + 15, 80);
         reasons.push(`突破日高,扩大目标`);
       }
     }
 
     // 5. 移动止损逻辑（已盈利时）
-    if (pnl.netPnLPercent >= baseParams.trailingStopTrigger) {
+    if (pnl.grossPnLPercent >= baseParams.trailingStopTrigger) {
       // 触发移动止损：止损价上移至保本
-      reasons.push(`盈利${pnl.netPnLPercent.toFixed(1)}%≥${baseParams.trailingStopTrigger}%,启用移动止损`);
+      reasons.push(`盈利${pnl.grossPnLPercent.toFixed(1)}%≥${baseParams.trailingStopTrigger}%,启用移动止损`);
     }
 
     return {
@@ -347,13 +347,13 @@ class OptionDynamicExitService {
     const pnl = this.calculatePnL(ctx);
     const now = new Date();
 
-    // 0. 0DTE 强制平仓：收盘前210分钟（12:30 PM ET），末日期权不论盈亏全部市价平仓
+    // 0. 0DTE 强制平仓：收盘前180分钟（1:00 PM ET），末日期权不论盈亏全部市价平仓
     const msToClose = ctx.marketCloseTime.getTime() - now.getTime();
     const minutesToClose = msToClose / (1000 * 60);
-    if (ctx.is0DTE && minutesToClose <= 210 && minutesToClose > 0) {
+    if (ctx.is0DTE && minutesToClose <= 180 && minutesToClose > 0) {
       return {
         action: 'TIME_STOP',
-        reason: `0DTE期权收盘前${minutesToClose.toFixed(0)}分钟，强制平仓 | 净盈亏=${pnl.netPnLPercent.toFixed(1)}%`,
+        reason: `0DTE期权收盘前${minutesToClose.toFixed(0)}分钟，强制平仓 | 盈亏=${pnl.grossPnLPercent.toFixed(1)}%`,
         pnl,
       };
     }
@@ -362,30 +362,30 @@ class OptionDynamicExitService {
     if (minutesToClose <= 10 && minutesToClose > 0) {
       return {
         action: 'TIME_STOP',
-        reason: `收盘前${minutesToClose.toFixed(0)}分钟，时间止损 | 净盈亏=${pnl.netPnLPercent.toFixed(1)}%`,
+        reason: `收盘前${minutesToClose.toFixed(0)}分钟，时间止损 | 盈亏=${pnl.grossPnLPercent.toFixed(1)}%`,
         pnl,
       };
     }
 
-    // 2. 止盈检查
-    if (pnl.netPnLPercent >= dynamicParams.takeProfitPercent) {
+    // 2. 止盈检查（使用 grossPnLPercent：美股T+1结算，手续费数据不可靠）
+    if (pnl.grossPnLPercent >= dynamicParams.takeProfitPercent) {
       return {
         action: 'TAKE_PROFIT',
-        reason: `净盈利${pnl.netPnLPercent.toFixed(1)}% ≥ 目标${dynamicParams.takeProfitPercent}% | ${dynamicParams.adjustmentReason}`,
+        reason: `盈利${pnl.grossPnLPercent.toFixed(1)}% ≥ 目标${dynamicParams.takeProfitPercent}% | ${dynamicParams.adjustmentReason}`,
         pnl,
       };
     }
 
     // 3. 移动止损检查
-    if (pnl.netPnLPercent >= dynamicParams.trailingStopTrigger) {
+    if (pnl.grossPnLPercent >= dynamicParams.trailingStopTrigger) {
       // 已触发移动止损，检查回撤
       // 注意：这里需要追踪历史最高盈利，简化实现使用当前检查
       // 实际应该在context中记录peakPnLPercent
       const peakPnLPercent = ctx.currentPrice > ctx.entryPrice
-        ? pnl.netPnLPercent * 1.1  // 假设当前接近峰值（实际应追踪）
-        : pnl.netPnLPercent;
+        ? pnl.grossPnLPercent * 1.1  // 假设当前接近峰值（实际应追踪）
+        : pnl.grossPnLPercent;
 
-      const drawdown = peakPnLPercent - pnl.netPnLPercent;
+      const drawdown = peakPnLPercent - pnl.grossPnLPercent;
       if (drawdown >= dynamicParams.trailingStopPercent) {
         return {
           action: 'TRAILING_STOP',
@@ -395,7 +395,7 @@ class OptionDynamicExitService {
       }
     }
 
-    // 4. 止损检查（持仓时间感知冷静期）
+    // 4. 止损检查（持仓时间感知冷静期，使用 grossPnLPercent）
     const holdingMinutes = (now.getTime() - (ctx.entryTime || now).getTime()) / 60000;
 
     if (holdingMinutes < 3) {
@@ -404,19 +404,19 @@ class OptionDynamicExitService {
     } else if (holdingMinutes < 10) {
       // 3-10分钟: 止损线放宽1.5倍
       const widenedSL = dynamicParams.stopLossPercent * 1.5;
-      if (pnl.netPnLPercent <= -widenedSL) {
+      if (pnl.grossPnLPercent <= -widenedSL) {
         return {
           action: 'STOP_LOSS',
-          reason: `净亏损${pnl.netPnLPercent.toFixed(1)}% ≤ -${widenedSL.toFixed(1)}%(冷静期1.5x, 持仓${holdingMinutes.toFixed(0)}min) | ${dynamicParams.adjustmentReason}`,
+          reason: `亏损${pnl.grossPnLPercent.toFixed(1)}% ≤ -${widenedSL.toFixed(1)}%(冷静期1.5x, 持仓${holdingMinutes.toFixed(0)}min) | ${dynamicParams.adjustmentReason}`,
           pnl,
         };
       }
     } else {
       // 10+分钟: 标准止损（原逻辑）
-      if (pnl.netPnLPercent <= -dynamicParams.stopLossPercent) {
+      if (pnl.grossPnLPercent <= -dynamicParams.stopLossPercent) {
         return {
           action: 'STOP_LOSS',
-          reason: `净亏损${pnl.netPnLPercent.toFixed(1)}% ≤ -${dynamicParams.stopLossPercent}% | ${dynamicParams.adjustmentReason}`,
+          reason: `亏损${pnl.grossPnLPercent.toFixed(1)}% ≤ -${dynamicParams.stopLossPercent}% | ${dynamicParams.adjustmentReason}`,
           pnl,
         };
       }
@@ -424,10 +424,10 @@ class OptionDynamicExitService {
 
     // 5. 强制止损：单笔最大亏损限制（安全阀）
     const maxLossPercent = 40; // 单笔最大亏损40%（硬上限，无视冷静期）
-    if (pnl.netPnLPercent <= -maxLossPercent) {
+    if (pnl.grossPnLPercent <= -maxLossPercent) {
       return {
         action: 'STOP_LOSS',
-        reason: `强制止损：净亏损${pnl.netPnLPercent.toFixed(1)}%超过安全阈值${maxLossPercent}%`,
+        reason: `强制止损：亏损${pnl.grossPnLPercent.toFixed(1)}%超过安全阈值${maxLossPercent}%`,
         pnl,
       };
     }

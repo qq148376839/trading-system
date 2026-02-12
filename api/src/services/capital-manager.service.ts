@@ -718,6 +718,101 @@ class CapitalManager {
       return { valid: false, issues };
     }
   }
+
+  /**
+   * 获取有效标的池（排除资金不足的标的，重新分配资金）
+   * @param strategyId 策略ID
+   * @param symbols 全量标的池
+   * @param allocatedAmount 策略分配的总资金
+   * @returns 有效标的、排除标的、每标的最大额度
+   */
+  async getEffectiveSymbolPool(
+    strategyId: number,
+    symbols: string[],
+    allocatedAmount: number
+  ): Promise<{ effectiveSymbols: string[]; excludedSymbols: string[]; maxPerSymbol: number }> {
+    if (symbols.length === 0 || allocatedAmount <= 0) {
+      return { effectiveSymbols: [], excludedSymbols: symbols, maxPerSymbol: 0 };
+    }
+
+    // 最低期权门槛：$3 权利金 × 100 乘数 = $300（加手续费约 $302）
+    const MIN_OPTION_COST = 300;
+
+    // 第一轮：按全池计算初始 per-symbol 上限
+    let perSymbol = allocatedAmount / symbols.length;
+
+    const excluded: string[] = [];
+    const effective: string[] = [];
+
+    for (const symbol of symbols) {
+      // 如果每标的分配额小于最低期权成本，排除该标的
+      if (perSymbol < MIN_OPTION_COST) {
+        excluded.push(symbol);
+        continue;
+      }
+      effective.push(symbol);
+    }
+
+    // 如果所有标的都被排除（资金极度不足），尝试用最少标的数重新分配
+    if (effective.length === 0 && symbols.length > 0) {
+      // 计算最多能支持多少个标的
+      const maxSymbols = Math.floor(allocatedAmount / MIN_OPTION_COST);
+      if (maxSymbols > 0) {
+        // 取前 N 个标的（假设按优先级排序）
+        const selected = symbols.slice(0, maxSymbols);
+        return {
+          effectiveSymbols: selected,
+          excludedSymbols: symbols.slice(maxSymbols),
+          maxPerSymbol: allocatedAmount / maxSymbols,
+        };
+      }
+      return { effectiveSymbols: [], excludedSymbols: symbols, maxPerSymbol: 0 };
+    }
+
+    // 第二轮：用有效标的数重新计算 per-symbol 上限（排除的标的资金重新分配）
+    const finalPerSymbol = effective.length > 0 ? allocatedAmount / effective.length : 0;
+
+    return {
+      effectiveSymbols: effective,
+      excludedSymbols: excluded,
+      maxPerSymbol: finalPerSymbol,
+    };
+  }
+
+  /**
+   * 重置策略已用资金为0（当所有持仓已平仓时调用）
+   * @param strategyId 策略ID
+   */
+  async resetUsedAmount(strategyId: number): Promise<void> {
+    try {
+      const strategyResult = await pool.query(
+        `SELECT ca.id as allocation_id, ca.current_usage, ca.name as allocation_name
+         FROM strategies s
+         LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
+         WHERE s.id = $1`,
+        [strategyId]
+      );
+
+      if (strategyResult.rows.length === 0 || !strategyResult.rows[0].allocation_id) {
+        return;
+      }
+
+      const { allocation_id, current_usage, allocation_name } = strategyResult.rows[0];
+      const currentUsage = parseFloat(current_usage?.toString() || '0');
+
+      if (currentUsage > 0) {
+        await pool.query(
+          `UPDATE capital_allocations SET current_usage = 0, updated_at = NOW() WHERE id = $1`,
+          [allocation_id]
+        );
+        logger.info(
+          `[资金同步] 策略${strategyId} (${allocation_name}) 所有持仓已平仓，重置已用资金为0（原值=${currentUsage.toFixed(2)}）`
+        );
+      }
+    } catch (error: any) {
+      logger.error(`[资金同步] 策略${strategyId} 重置已用资金失败: ${error.message}`);
+    }
+  }
 }
 
 // 导出单例

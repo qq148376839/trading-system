@@ -313,13 +313,13 @@ class StrategyScheduler {
       return;
     }
 
-    // 期权策略：收盘前210分钟（12:30 PM ET）且无持仓时，跳过本周期（避免资源浪费）
+    // 期权策略：收盘前180分钟（1:00 PM ET）且无持仓时，跳过本周期（避免资源浪费）
     const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy;
     if (isOptionStrategy) {
       try {
         const closeWindow = await getMarketCloseWindow({
           market: 'US',
-          noNewEntryBeforeCloseMinutes: 210,
+          noNewEntryBeforeCloseMinutes: 180,
           forceCloseBeforeCloseMinutes: 30,
         });
         if (closeWindow && new Date() >= closeWindow.noNewEntryTimeUtc) {
@@ -334,7 +334,7 @@ class StrategyScheduler {
             const lastLogKey = `0dte_idle_skip_${strategyId}`;
             const lastLogTime = (this as any)[lastLogKey] || 0;
             if (now - lastLogTime > 5 * 60 * 1000) {
-              logger.debug(`策略 ${strategyId}: 收盘前120分钟，已无持仓，跳过监控`);
+              logger.debug(`策略 ${strategyId}: 收盘前180分钟，已无持仓，跳过监控`);
               (this as any)[lastLogKey] = now;
             }
             return;
@@ -343,6 +343,55 @@ class StrategyScheduler {
         }
       } catch {
         // 获取失败不阻塞
+      }
+    }
+
+    // 期权策略：过滤资金不足的标的，将资金重新分配到可交易标的
+    let effectiveSymbols = symbols;
+    if (isOptionStrategy) {
+      try {
+        const availableCapital = await capitalManager.getAvailableCapital(strategyId);
+        const totalCapital = await capitalManager.getTotalCapital();
+
+        // 获取策略分配金额
+        const stratResult = await pool.query(
+          `SELECT ca.allocation_type, ca.allocation_value
+           FROM strategies s LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
+           WHERE s.id = $1`,
+          [strategyId]
+        );
+        if (stratResult.rows.length > 0 && stratResult.rows[0].allocation_type) {
+          const row = stratResult.rows[0];
+          const allocatedAmount = row.allocation_type === 'PERCENTAGE'
+            ? totalCapital * parseFloat(row.allocation_value.toString())
+            : parseFloat(row.allocation_value.toString());
+
+          const { effectiveSymbols: eff, excludedSymbols: exc } =
+            await capitalManager.getEffectiveSymbolPool(strategyId, symbols, allocatedAmount);
+
+          if (exc.length > 0) {
+            // 节流日志：每5分钟记录一次
+            const now = Date.now();
+            const logKey = `excluded_symbols_${strategyId}`;
+            const lastLog = (this as any)[logKey] || 0;
+            if (now - lastLog > 5 * 60 * 1000) {
+              logger.warn(`[资金过滤] 策略${strategyId}: 排除${exc.length}个资金不足标的: ${exc.join(', ')}，有效标的${eff.length}个`);
+              (this as any)[logKey] = now;
+            }
+          }
+
+          // 保留已有持仓的标的（即使被排除也要继续监控）
+          const holdingResult = await pool.query(
+            `SELECT DISTINCT symbol FROM strategy_instances
+             WHERE strategy_id = $1 AND current_state IN ('HOLDING','OPENING','CLOSING')`,
+            [strategyId]
+          );
+          const holdingSymbols = new Set(holdingResult.rows.map((r: any) => r.symbol));
+          const excludedButHolding = exc.filter(s => holdingSymbols.has(s));
+          effectiveSymbols = [...eff, ...excludedButHolding];
+        }
+      } catch {
+        // 过滤失败不阻塞，使用全量标的池
       }
     }
 
@@ -359,18 +408,18 @@ class StrategyScheduler {
       other: []
     };
 
-    summary.totalTargets = symbols.length;
+    summary.totalTargets = effectiveSymbols.length;
 
     // 3. 分批并行处理多个股票（避免连接池耗尽）
     // 每批处理10个标的，避免一次性占用过多数据库连接
     const BATCH_SIZE = 10;
-    for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
-      const batch = symbols.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < effectiveSymbols.length; i += BATCH_SIZE) {
+      const batch = effectiveSymbols.slice(i, i + BATCH_SIZE);
       await Promise.all(
         batch.map((symbol) => this.processSymbol(strategyInstance, strategyId, symbol, summary))
       );
       // 批次之间稍作延迟，避免数据库压力过大
-      if (i + BATCH_SIZE < symbols.length) {
+      if (i + BATCH_SIZE < effectiveSymbols.length) {
         await new Promise(resolve => setTimeout(resolve, 100)); // 100ms延迟
       }
     }
@@ -799,10 +848,12 @@ class StrategyScheduler {
                     }
                   }
                   
-                  await strategyInstance.updateState(instanceKeySymbol, 'IDLE');
-                  
+                  await strategyInstance.updateState(instanceKeySymbol, 'IDLE', {
+                    lastExitTime: new Date().toISOString(),
+                  });
+
                   // 释放资金：
-                  // - 对股票策略：历史实现使用“成交金额”释放（可能与allocatedAmount不一致，但沿用）
+                  // - 对股票策略：历史实现使用"成交金额"释放（可能与allocatedAmount不一致，但沿用）
                   // - 对期权策略：必须优先用 allocationAmount（含 multiplier & fees），否则会少乘 multiplier
                   let releaseAmount = 0;
                   
@@ -883,10 +934,24 @@ class StrategyScheduler {
                       instanceKeySymbol
                     );
                   }
-                  
+
+                  // 检查是否所有持仓已平仓，自动重置已用资金（修复资金差异漂移）
+                  try {
+                    const activeCheck = await pool.query(
+                      `SELECT COUNT(*) as cnt FROM strategy_instances
+                       WHERE strategy_id = $1 AND current_state IN ('HOLDING','OPENING','CLOSING')`,
+                      [strategyId]
+                    );
+                    if (parseInt(activeCheck.rows[0].cnt) === 0) {
+                      await capitalManager.resetUsedAmount(strategyId);
+                    }
+                  } catch {
+                    // 非关键操作，失败不阻塞
+                  }
+
                   // 立即更新数据库状态为FILLED，防止重复处理
                   await pool.query(
-                    `UPDATE execution_orders 
+                    `UPDATE execution_orders
                      SET current_status = 'FILLED', updated_at = NOW()
                      WHERE order_id = $1 AND current_status != 'FILLED'`,
                     [dbOrder.order_id]
@@ -1177,9 +1242,9 @@ class StrategyScheduler {
       }
 
       // IDLE 状态：处理买入逻辑
-      // 期权策略：收盘前N分钟不再开新仓（默认60分钟，可配置）
+      // 期权策略：收盘前N分钟不再开新仓（默认180分钟，可配置）
       if (isOptionStrategy) {
-        const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 60), 10) || 60);
+        const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 180), 10) || 180);
         const window = await getMarketCloseWindow({
           market: 'US',
           noNewEntryBeforeCloseMinutes: noNewEntryMins,
@@ -1205,6 +1270,16 @@ class StrategyScheduler {
           // cancelCount=1 → 5min, =2 → 10min, =3 → 20min, ≥4 → 30min(上限)
           if (elapsed < backoffMs) {
             summary.idle.push(`${symbol}(CANCEL_BACKOFF)`);
+            return;
+          }
+        }
+
+        // LATE时段冷却期：同一标的平仓后N分钟内不重新开仓
+        const cooldownMinutes = strategyConfig?.latePeriod?.cooldownMinutes ?? 3;
+        if (cancelCtx?.lastExitTime && cooldownMinutes > 0) {
+          const exitElapsed = Date.now() - new Date(cancelCtx.lastExitTime).getTime();
+          if (exitElapsed < cooldownMinutes * 60000) {
+            summary.idle.push(`${symbol}(COOLDOWN_${Math.ceil((cooldownMinutes * 60000 - exitElapsed) / 60000)}m)`);
             return;
           }
         }
@@ -2745,26 +2820,26 @@ class StrategyScheduler {
       }
 
       // 8. 更新追踪信息
-      // 记录当前最高盈利（用于移动止损）
+      // 记录当前最高盈利（用于移动止损，使用 grossPnLPercent 避免 NaN）
       const currentPnL = optionDynamicExitService.calculatePnL(positionCtx);
       const dynamicParams = optionDynamicExitService.getDynamicExitParams(positionCtx, exitRulesOverride);
       const peakPnLPercent = context.peakPnLPercent || 0;
 
-      // 输出持仓监控状态日志（每次检查都输出，方便追踪）
-      const pnlSign = currentPnL.netPnLPercent >= 0 ? '+' : '';
+      // 输出持仓监控状态日志（使用毛盈亏避免 T+1 手续费数据不完整导致 NaN）
+      const pnlSign = currentPnL.grossPnLPercent >= 0 ? '+' : '';
       logger.log(
         `📊 [${strategyId}] ${effectiveSymbol} 持仓监控: ` +
         `入场$${entryPrice.toFixed(2)} → 当前$${currentPrice.toFixed(2)} | ` +
-        `净盈亏 ${pnlSign}${currentPnL.netPnLPercent.toFixed(1)}% ($${currentPnL.netPnL.toFixed(2)}) | ` +
+        `盈亏 ${pnlSign}${currentPnL.grossPnLPercent.toFixed(1)}% ($${currentPnL.grossPnL.toFixed(2)}) | ` +
         `止盈=${dynamicParams.takeProfitPercent}% 止损=${dynamicParams.stopLossPercent}% | ` +
         `${dynamicParams.adjustmentReason}`
       );
 
-      if (currentPnL.netPnLPercent > peakPnLPercent) {
+      if (currentPnL.grossPnLPercent > peakPnLPercent) {
         // 更新峰值盈利
         await strategyInstance.updateState(symbol, 'HOLDING', {
           ...context,
-          peakPnLPercent: currentPnL.netPnLPercent,
+          peakPnLPercent: currentPnL.grossPnLPercent,
           peakPrice: currentPrice,
           lastCheckTime: new Date().toISOString(),
         });
@@ -2791,7 +2866,7 @@ class StrategyScheduler {
   ): Promise<void> {
     try {
       // 1. 检查是否在交易窗口内
-      const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 60), 10) || 60);
+      const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 180), 10) || 180);
       const window = await getMarketCloseWindow({
         market: 'US',
         noNewEntryBeforeCloseMinutes: noNewEntryMins,

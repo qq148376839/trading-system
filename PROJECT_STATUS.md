@@ -1,11 +1,34 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-12
+**更新时间**: 2026-02-13
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-02-13: 交易策略优化 — 9项修复（基于260212分析报告）
+
+**变更内容**:
+1. 修复策略配置浅合并导致 `tradeWindow` 子字段被覆盖的问题（改为深度合并）
+2. 统一 0DTE 截止时间为 180 分钟（1:00 PM ET），从210分钟下调，修复 fallback 值不一致
+3. 新增开盘方向确认窗口（30分钟），开盘初期仅允许与大盘方向一致的交易
+4. 新增资金不足标的自动排除 + 资金重分配（最低门槛 $300）
+5. 新增 LATE 时段冷却期（3分钟）+ 入场阈值提高 10%
+6. 止盈止损判断从 `netPnLPercent` 改为 `grossPnLPercent`，修复手续费未到账时 NaN 问题
+7. 策略全部平仓后自动重置 `used_amount` 为 0，修复资金差异漂移
+8. 市场温度 API 添加缓存降级（5分钟 TTL，最长15分钟）
+9. 合约选择器支持外部传入截止时间参数，不再硬编码
+
+**修改文件**:
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`（深度合并+方向确认+LATE冷却）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（180分钟+有效池+冷却期+毛盈亏+资金重置）
+- 📝 `api/src/services/capital-manager.service.ts`（有效标的池+resetUsedAmount）
+- 📝 `api/src/services/options-contract-selector.service.ts`（180分钟+可配置截止）
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（180分钟+grossPnL决策）
+- 📝 `api/src/services/market-data.service.ts`（温度API缓存降级）
+
+---
 
 ### 2026-02-12: Vercel Edge Function 主代理 + CF Worker 备选
 
