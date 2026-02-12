@@ -8,14 +8,16 @@
  * 1. 缓存（optionPriceCacheService）
  * 2. LongPort optionQuote() → lastDone + IV
  * 3. LongPort depth() → bid/ask 中间价（当 lastDone=0 时）
- * 4. 富途 getOptionDetail()（备用）
+ * 4. 富途 getOptionDetail()（备用，需 optionId + underlyingStockId）
  * 5. LongPort quote()（最终备用）
+ * 6. 富途 getFutunnOptionQuote()（终极兜底，仅需 symbol 字符串）
  */
 
 import { getQuoteContext } from '../config/longport';
 import { logger } from '../utils/logger';
 import optionPriceCacheService from './option-price-cache.service';
 import { getOptionDetail } from './futunn-option-chain.service';
+import { getFutunnOptionQuote } from './futunn-option-quote.service';
 
 export interface OptionQuoteResult {
   price: number;
@@ -450,6 +452,30 @@ class LongPortOptionQuoteService {
       }
     } catch (error: any) {
       logger.warn(`${symbol} LongPort quote 失败: ${error.message}`);
+    }
+
+    // 6. 富途 getFutunnOptionQuote()（终极兜底，仅需 symbol 字符串）
+    // 当 optionMeta 缺失导致 level 4 跳过，且 LongPort 全部失败时，
+    // 使用三步流程（searchStock → getOptionFromChain → getOptionQuote）作为最终手段
+    try {
+      const futunnQuote = await getFutunnOptionQuote(symbol);
+      if (futunnQuote && futunnQuote.last_done > 0) {
+        const price = futunnQuote.last_done;
+        optionPriceCacheService.set(symbol, {
+          price,
+          bid: price,
+          ask: price,
+          mid: price,
+          timestamp: Date.now(),
+          underlyingPrice: 0,
+          source: 'futunn-quote',
+        });
+        logger.info(`${symbol} 富途三步流程兜底成功: ${price.toFixed(4)} (source: futunn-quote-fallback)`);
+        return { price, bid: 0, ask: 0, iv: 0, source: 'futunn-quote-fallback' };
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.warn(`${symbol} 富途三步流程兜底失败: ${msg}`);
     }
 
     return null;

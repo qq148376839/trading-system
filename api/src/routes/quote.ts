@@ -3,8 +3,11 @@ import { getQuoteContext } from '../config/longport';
 import { rateLimiter } from '../middleware/rateLimiter';
 import { Market, SecurityListCategory } from 'longport';
 import {
-  getFutunnOptionQuotes
+  getFutunnOptionQuotes,
+  getFutunnOptionQuote
 } from '../services/futunn-option-quote.service';
+import longportOptionQuoteService from '../services/longport-option-quote.service';
+import { getOptionDetail, getStockIdBySymbol } from '../services/futunn-option-chain.service';
 import { ErrorFactory, normalizeError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
@@ -909,3 +912,220 @@ quoteRouter.get('/market-temperature', rateLimiter, async (req: Request, res: Re
   }
 });
 
+/**
+ * @openapi
+ * /quote/market-data-test:
+ *   get:
+ *     tags:
+ *       - 市场行情
+ *     summary: 市场数据获取诊断（逐步测试）
+ *     description: |
+ *       逐步测试市场数据获取的每个环节，用于排查策略运行时获取市场数据报错的问题。
+ *
+ *       测试模式（通过 mode 参数选择）：
+ *       - **option-price**（默认）：测试期权价格获取的完整 fallback 链
+ *         - Level 2: LongPort optionQuote()
+ *         - Level 3: LongPort depth()
+ *         - Level 4: 富途 getOptionDetail()（需 optionId + underlyingStockId）
+ *         - Level 5: LongPort quote()
+ *         - Level 6: 富途三步流程 getFutunnOptionQuote()（仅需 symbol）
+ *         - 综合: getOptionPrice() 完整 fallback 链
+ *       - **market-kline**：测试 SPX/USD/BTC/VIX K线数据获取
+ *       - **all**：同时测试以上所有
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: symbol
+ *         schema:
+ *           type: string
+ *           default: TSLA260213C400000.US
+ *         description: 期权代码（用于 option-price 模式）
+ *       - in: query
+ *         name: mode
+ *         schema:
+ *           type: string
+ *           enum: [option-price, market-kline, all]
+ *           default: option-price
+ *         description: 测试模式
+ *     responses:
+ *       200:
+ *         description: 诊断结果
+ */
+quoteRouter.get('/market-data-test', async (req: Request, res: Response) => {
+  const { symbol = 'TSLA260213C400000.US', mode = 'option-price' } = req.query;
+  const sym = String(symbol);
+  const testMode = String(mode);
+
+  interface StepResult {
+    step: string;
+    status: 'success' | 'fail' | 'skip';
+    duration_ms: number;
+    data?: Record<string, unknown>;
+    error?: string;
+  }
+
+  const steps: StepResult[] = [];
+
+  async function runStep(
+    name: string,
+    fn: () => Promise<Record<string, unknown> | null>
+  ): Promise<Record<string, unknown> | null> {
+    const start = Date.now();
+    try {
+      const result = await fn();
+      steps.push({
+        step: name,
+        status: result ? 'success' : 'fail',
+        duration_ms: Date.now() - start,
+        data: result || undefined,
+        error: result ? undefined : '返回 null',
+      });
+      return result;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      steps.push({
+        step: name,
+        status: 'fail',
+        duration_ms: Date.now() - start,
+        error: msg,
+      });
+      return null;
+    }
+  }
+
+  // ── option-price 模式 ──
+  if (testMode === 'option-price' || testMode === 'all') {
+    // Level 2: LongPort optionQuote
+    await runStep('Level 2: LongPort optionQuote()', async () => {
+      const quoteCtx = await getQuoteContext();
+      const quotes = await quoteCtx.optionQuote([sym]);
+      if (!quotes || quotes.length === 0) return null;
+      const q = quotes[0];
+      return {
+        symbol: q.symbol,
+        lastDone: q.lastDone,
+        impliedVolatility: q.impliedVolatility,
+        openInterest: q.openInterest,
+        strikePrice: q.strikePrice,
+      };
+    });
+
+    // Level 3: LongPort depth
+    await runStep('Level 3: LongPort depth()', async () => {
+      const result = await longportOptionQuoteService.getOptionDepth(sym);
+      if (!result) return null;
+      return { bestBid: result.bestBid, bestAsk: result.bestAsk, midPrice: result.midPrice };
+    });
+
+    // Level 4: 富途 getOptionDetail (需要 optionId + underlyingStockId)
+    const stockIdResult = await runStep('Level 4a: 富途 searchStock (获取 underlyingStockId)', async () => {
+      const underlying = sym.replace(/\.US$/, '').replace(/\d{6}[CP]\d+$/, '');
+      const id = await getStockIdBySymbol(underlying + '.US');
+      if (!id) return null;
+      return { underlyingSymbol: underlying, underlyingStockId: id };
+    });
+
+    if (stockIdResult && stockIdResult.underlyingStockId) {
+      steps.push({
+        step: 'Level 4b: 富途 getOptionDetail() (需完整 optionMeta)',
+        status: 'skip',
+        duration_ms: 0,
+        error: '此步骤需要 optionId（从期权链获取），在策略中由 selectOptionContract 提供。如果 optionMeta 缺失则此步骤被跳过——这是常见失败原因',
+      });
+    }
+
+    // Level 5: LongPort quote
+    await runStep('Level 5: LongPort quote()', async () => {
+      const quoteCtx = await getQuoteContext();
+      const quotes = await quoteCtx.quote([sym]);
+      if (!quotes || quotes.length === 0) return null;
+      const q = quotes[0];
+      return {
+        symbol: q.symbol,
+        lastDone: q.lastDone,
+        volume: q.volume,
+      };
+    });
+
+    // Level 6: 富途三步流程 (终极兜底)
+    await runStep('Level 6: 富途三步流程 getFutunnOptionQuote(symbol)', async () => {
+      const result = await getFutunnOptionQuote(sym);
+      if (!result) return null;
+      return {
+        symbol: result.symbol,
+        last_done: result.last_done,
+        prev_close: result.prev_close,
+        open: result.open,
+        high: result.high,
+        low: result.low,
+        volume: result.volume,
+      };
+    });
+
+    // 综合结果
+    await runStep('综合: getOptionPrice() 完整 fallback 链', async () => {
+      const result = await longportOptionQuoteService.getOptionPrice(sym);
+      if (!result) return null;
+      return {
+        price: result.price,
+        bid: result.bid,
+        ask: result.ask,
+        iv: result.iv,
+        source: result.source,
+      };
+    });
+  }
+
+  // ── market-kline 模式 ──
+  if (testMode === 'market-kline' || testMode === 'all') {
+    const MarketDataService = (await import('../services/market-data.service')).default;
+
+    await runStep('SPX 日K (Moomoo Proxy)', async () => {
+      const data = await MarketDataService.getSPXCandlesticks(5);
+      if (!data || data.length === 0) return null;
+      const last = data[data.length - 1];
+      return { count: data.length, latest: { close: last.close, timestamp: last.timestamp } };
+    });
+
+    await runStep('USD Index 日K (Moomoo Proxy)', async () => {
+      const data = await MarketDataService.getUSDIndexCandlesticks(5);
+      if (!data || data.length === 0) return null;
+      const last = data[data.length - 1];
+      return { count: data.length, latest: { close: last.close, timestamp: last.timestamp } };
+    });
+
+    await runStep('BTC 日K (Moomoo Proxy)', async () => {
+      const data = await MarketDataService.getBTCCandlesticks(5);
+      if (!data || data.length === 0) return null;
+      const last = data[data.length - 1];
+      return { count: data.length, latest: { close: last.close, timestamp: last.timestamp } };
+    });
+
+    await runStep('VIX (LongPort)', async () => {
+      const data = await MarketDataService.getVIXCandlesticks(5);
+      if (!data || data.length === 0) return null;
+      const last = data[data.length - 1];
+      return { count: data.length, latest: { close: last.close, timestamp: last.timestamp } };
+    });
+  }
+
+  const successCount = steps.filter(s => s.status === 'success').length;
+  const failCount = steps.filter(s => s.status === 'fail').length;
+  const totalDuration = steps.reduce((sum, s) => sum + s.duration_ms, 0);
+
+  res.json({
+    success: true,
+    data: {
+      mode: testMode,
+      symbol: sym,
+      summary: {
+        total_steps: steps.length,
+        success: successCount,
+        fail: failCount,
+        total_duration_ms: totalDuration,
+      },
+      steps,
+    },
+  });
+});

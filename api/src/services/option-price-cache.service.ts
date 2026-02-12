@@ -24,7 +24,7 @@ export interface OptionPriceCacheEntry {
   mid: number;
   timestamp: number;
   underlyingPrice: number;
-  source: 'longport' | 'futunn' | 'position_cache';
+  source: 'longport' | 'futunn' | 'futunn-quote' | 'position_cache';
 }
 
 class OptionPriceCacheService {
