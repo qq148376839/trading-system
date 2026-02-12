@@ -3,6 +3,12 @@
   "main": "src/index.js",
   "compatibility_date": "2024-01-01",
 
+  // Smart Placement：Worker 在靠近后端（Moomoo 美国服务器）的节点运行
+  // 避免亚洲 Cloudflare PoP 出口 IP 被 Moomoo 限流
+  "placement": {
+    "mode": "smart"
+  },
+
   // KV 绑定（cookie 缓存，向后兼容直接 curl 调用）
   "kv_namespaces": [
     {

@@ -302,32 +302,79 @@ async function handleGet(queryParams, request, env) {
   }
 
   try {
-    const response = await fetch(fullUrl, {
-      method: 'GET',
-      headers,
-      signal: AbortSignal.timeout(25000),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[Worker] Moomoo ${response.status} for ${apiPath}`);
-      return Response.json(
-        {
-          success: false,
-          error: `Moomoo API returned ${response.status} ${response.statusText}`,
-          status: response.status,
-          details: errorText.substring(0, 500),
-        },
-        { status: response.status, headers: CORS_HEADERS },
-      );
-    }
-
-    const contentType = response.headers.get('content-type');
+    // 带重试的 fetch：当 Moomoo 返回 HTTP 200 + HTML 限流页面时，换 cookie 重试
+    const MAX_RETRIES = 2;
     let responseData;
-    if (contentType && contentType.includes('application/json')) {
-      responseData = await response.json();
-    } else {
-      responseData = await response.text();
+    let lastStatus = 0;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      // 重试时切换到下一个 cookie（轮询 GUEST_CONFIGS）
+      if (attempt > 0) {
+        const nextIdx = (cookieIndex >= 0 ? cookieIndex + attempt : attempt) % GUEST_CONFIGS.length;
+        headers['Cookie'] = GUEST_CONFIGS[nextIdx].cookies;
+        headers['futu-x-csrf-token'] = GUEST_CONFIGS[nextIdx].csrfToken;
+        console.log(`[Worker] Retry ${attempt}/${MAX_RETRIES} with cookie #${nextIdx} for ${apiPath}`);
+        // 短暂等待避免连续触发限流
+        await new Promise((r) => setTimeout(r, 800 * attempt));
+      }
+
+      const response = await fetch(fullUrl, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(25000),
+      });
+
+      lastStatus = response.status;
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        // HTTP 403：尝试重试
+        if (response.status === 403 && attempt < MAX_RETRIES) {
+          console.warn(`[Worker] Moomoo 403 for ${apiPath}, will retry (${attempt + 1}/${MAX_RETRIES})`);
+          continue;
+        }
+        console.error(`[Worker] Moomoo ${response.status} for ${apiPath}`);
+        return Response.json(
+          {
+            success: false,
+            error: `Moomoo API returned ${response.status} ${response.statusText}`,
+            status: response.status,
+            details: errorText.substring(0, 500),
+          },
+          { status: response.status, headers: CORS_HEADERS },
+        );
+      }
+
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        responseData = await response.json();
+      } else {
+        responseData = await response.text();
+      }
+
+      // 检测 HTTP 200 但内容是 HTML 限流页（Moomoo 的 soft-403）
+      if (
+        typeof responseData === 'string' &&
+        (responseData.includes('<!DOCTYPE') || responseData.includes('Operations too frequent'))
+      ) {
+        if (attempt < MAX_RETRIES) {
+          console.warn(`[Worker] Moomoo HTML 403 (soft) for ${apiPath}, will retry (${attempt + 1}/${MAX_RETRIES})`);
+          continue;
+        }
+        // 所有重试都失败，返回明确的错误
+        return Response.json(
+          {
+            success: false,
+            error: 'Moomoo API rate limited (HTML 403)',
+            status: 403,
+            details: responseData.substring(0, 200),
+          },
+          { status: 403, headers: CORS_HEADERS },
+        );
+      }
+
+      // 成功获取 JSON 数据，跳出重试循环
+      break;
     }
 
     // 记录业务错误
@@ -341,7 +388,7 @@ async function handleGet(queryParams, request, env) {
     }
 
     return Response.json(
-      { success: true, status: response.status, data: responseData },
+      { success: true, status: lastStatus, data: responseData },
       { status: 200, headers: { 'Content-Type': 'application/json', ...CORS_HEADERS } },
     );
   } catch (error) {
