@@ -26,4 +26,32 @@ body {
   }
 }
 
+/* 移动端适配基础样式 */
+@media (max-width: 767px) {
+  .ant-table-wrapper {
+    font-size: 13px;
+  }
+
+  .ant-card {
+    margin-bottom: 8px !important;
+  }
+
+  .ant-statistic-title {
+    font-size: 12px !important;
+  }
+
+  .ant-statistic-content {
+    font-size: 18px !important;
+  }
+
+  .ant-modal {
+    max-width: calc(100vw - 16px) !important;
+    margin: 8px auto !important;
+  }
+
+  .ant-modal .ant-modal-body {
+    padding: 12px !important;
+  }
+}
+
 

@@ -6,6 +6,7 @@ import { backtestApi, quantApi } from '@/lib/api';
 import Link from 'next/link';
 import AppLayout from '@/components/AppLayout';
 import { DatePicker, Button, Table, Card, Space, Modal, message, Alert, Tag, Spin, Select, Checkbox, Row, Col } from 'antd';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import type { Dayjs } from 'dayjs';
 import dayjs from 'dayjs';
 import {
@@ -53,6 +54,7 @@ interface BacktestResult {
 }
 
 export default function BacktestPage() {
+  const isMobile = useIsMobile();
   const router = useRouter();
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [backtestResults, setBacktestResults] = useState<BacktestResult[]>([]);
@@ -471,9 +473,9 @@ export default function BacktestPage() {
   return (
     <AppLayout>
       <Card>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h1 style={{ fontSize: 24, fontWeight: 600, margin: 0 }}>回测管理</h1>
-          <Space>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <h1 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 600, margin: 0 }}>回测管理</h1>
+          <Space wrap>
             {selectedForCompare.length > 0 && (
               <>
                 <Button

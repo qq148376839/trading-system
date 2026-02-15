@@ -7,6 +7,7 @@ import Link from 'next/link';
 import AppLayout from '@/components/AppLayout';
 import InstitutionStockSelector from '@/components/InstitutionStockSelector';
 import EditStrategyModal from '@/components/EditStrategyModal';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { Button, Input, Table, Tag, Card, Space, Modal, message, Alert, Radio, Spin, Select } from 'antd';
 
 interface Strategy {
@@ -24,6 +25,7 @@ interface Strategy {
 
 export default function StrategiesPage() {
   const router = useRouter();
+  const isMobile = useIsMobile();
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -128,26 +130,27 @@ export default function StrategiesPage() {
         </Link>
       ),
     },
-    {
+    ...(isMobile ? [] : [{
       title: '类型',
       key: 'type',
       dataIndex: 'type',
-    },
+    }]),
     {
       title: '状态',
       key: 'status',
       dataIndex: 'status',
       render: (_: any, record: Strategy) => getStatusTag(record.status),
     },
-    {
+    ...(isMobile ? [] : [{
       title: '资金分配',
       key: 'allocationName',
       dataIndex: 'allocationName',
       render: (text: string) => text || '-',
-    },
+    }]),
     {
       title: '操作',
       key: 'actions',
+      width: isMobile ? 100 : undefined,
       render: (_: any, record: Strategy) => (
         <Space>
           {record.status === 'STOPPED' && (
@@ -214,6 +217,8 @@ export default function StrategiesPage() {
           columns={columns}
           rowKey="id"
           loading={loading}
+          size={isMobile ? 'small' : 'middle'}
+          scroll={isMobile ? { x: 400 } : { x: 'max-content' }}
           locale={{
             emptyText: filteredStrategies.length === 0 && !loading ? '暂无策略' : undefined,
           }}

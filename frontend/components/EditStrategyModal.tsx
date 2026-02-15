@@ -206,8 +206,8 @@ export default function EditStrategyModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] flex flex-col">
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-2 md:p-0">
+      <div className="bg-white rounded-lg max-w-2xl w-full mx-2 md:mx-0 max-h-[90vh] flex flex-col">
         <div className="p-6 border-b">
           <h2 className="text-2xl font-bold">编辑策略</h2>
         </div>
@@ -577,7 +577,7 @@ export default function EditStrategyModal({
                   </div>
 
                   {/* 风险偏好和止盈止损配置 */}
-                  <div className="grid grid-cols-3 gap-4 mb-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                     <div>
                       <label className="block text-xs text-gray-700 mb-1 font-medium">风险偏好</label>
                       <select
@@ -661,7 +661,7 @@ export default function EditStrategyModal({
                     <p className="text-xs text-gray-500 mt-1 ml-6">末日期权建议开启，避免时间衰减风险</p>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
                       <label className="block text-xs text-gray-700 mb-1 font-medium">到期选择</label>
                       <select
@@ -687,7 +687,7 @@ export default function EditStrategyModal({
                     <div></div>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-4 mt-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
                     <div>
                       <label className="block text-xs text-gray-700 mb-1 font-medium">禁止开仓窗口（分钟）</label>
                       <input
@@ -794,7 +794,7 @@ export default function EditStrategyModal({
                       <strong>计算公式：</strong>止损价 = 入场价 - (ATR × ATR倍数)，止盈价 = 入场价 + (止损距离 × 风险收益比)
                     </p>
                   </div>
-                  <div className="grid grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
                       <label className="block text-xs text-gray-700 mb-1 font-medium">
                         ATR周期

@@ -1,7 +1,7 @@
 'use client'
 
-import { useState } from 'react'
-import { Layout, Menu, Breadcrumb } from 'antd'
+import { useState, useEffect } from 'react'
+import { Layout, Menu, Breadcrumb, Drawer, Button } from 'antd'
 import {
   HomeOutlined,
   ShoppingCartOutlined,
@@ -15,9 +15,11 @@ import {
   StockOutlined,
   FileSearchOutlined,
   ApiOutlined,
+  MenuOutlined,
 } from '@ant-design/icons'
 import { usePathname, useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { useIsMobile } from '@/hooks/useIsMobile'
 
 const { Header, Sider, Content } = Layout
 
@@ -28,11 +30,21 @@ interface AppLayoutProps {
 /**
  * 应用主布局组件 - 侧边布局方案
  * 统一使用 Ant Design Layout，提升导航体验和页面一致性
+ * 移动端使用 Drawer 抽屉导航，桌面端保持固定侧边栏
  */
 export default function AppLayout({ children }: AppLayoutProps) {
   const [collapsed, setCollapsed] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const pathname = usePathname()
   const router = useRouter()
+  const isMobile = useIsMobile()
+
+  // 路由变化时关闭移动端抽屉
+  useEffect(() => {
+    if (isMobile) {
+      setDrawerOpen(false)
+    }
+  }, [pathname, isMobile])
 
   // 菜单项配置
   const menuItems = [
@@ -144,7 +156,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
   // 生成面包屑
   const getBreadcrumbItems = () => {
     const items: Array<{ title: React.ReactNode }> = [{ title: <Link href="/">首页</Link> }]
-    
+
     if (pathname === '/') {
       return items
     }
@@ -155,7 +167,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
     paths.forEach((path, index) => {
       currentPath += `/${path}`
       const isLast = index === paths.length - 1
-      
+
       if (path === 'quant') {
         items.push({ title: isLast ? '量化交易' : <Link href={currentPath}>量化交易</Link> })
       } else if (path === 'strategies') {
@@ -194,6 +206,91 @@ export default function AppLayout({ children }: AppLayoutProps) {
     return items
   }
 
+  // 菜单内容（桌面端 Sider 和移动端 Drawer 共用）
+  const menuContent = (
+    <>
+      <div
+        style={{
+          height: 64,
+          margin: 16,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'rgba(255, 255, 255, 0.85)',
+          fontSize: 16,
+          fontWeight: 500,
+          transition: 'all 0.2s',
+          gap: 8,
+        }}
+      >
+        <StockOutlined style={{ fontSize: 20 }} />
+        <span style={{ fontSize: 16 }}>长桥交易系统</span>
+      </div>
+      <Menu
+        theme="dark"
+        mode="inline"
+        selectedKeys={getSelectedKeys()}
+        defaultOpenKeys={getOpenKeys()}
+        items={menuItems}
+      />
+    </>
+  )
+
+  // 移动端布局
+  if (isMobile) {
+    return (
+      <Layout style={{ minHeight: '100vh' }}>
+        <Drawer
+          placement="left"
+          open={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          width={240}
+          styles={{
+            body: { padding: 0, background: '#001529' },
+            header: { display: 'none' },
+          }}
+        >
+          {menuContent}
+        </Drawer>
+        <Layout>
+          <Header
+            style={{
+              padding: '0 16px',
+              background: '#fff',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+            }}
+          >
+            <Button
+              type="text"
+              icon={<MenuOutlined />}
+              onClick={() => setDrawerOpen(true)}
+              style={{ fontSize: 18 }}
+            />
+            <Breadcrumb
+              items={getBreadcrumbItems()}
+              style={{ lineHeight: '64px', flex: 1, minWidth: 0 }}
+            />
+          </Header>
+          <Content
+            style={{
+              margin: '12px 8px',
+              padding: 12,
+              minHeight: 280,
+              background: '#fff',
+              borderRadius: 6,
+            }}
+          >
+            {children}
+          </Content>
+        </Layout>
+      </Layout>
+    )
+  }
+
+  // 桌面端布局（保持原有逻辑不变）
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Sider
@@ -264,4 +361,3 @@ export default function AppLayout({ children }: AppLayoutProps) {
     </Layout>
   )
 }
-

@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { ordersApi } from '@/lib/api'
 import AppLayout from '@/components/AppLayout'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import { DatePicker, Button, Input, Select, Table, Tag, Card, Tabs, Switch, Space, Alert, Modal, message } from 'antd'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
@@ -42,6 +43,7 @@ interface Order {
 type TabType = 'today' | 'history'
 
 export default function OrdersPage() {
+  const isMobile = useIsMobile()
   const [activeTab, setActiveTab] = useState<TabType>('today')
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(false)
@@ -521,7 +523,8 @@ export default function OrdersPage() {
           loading={loading}
           rowKey="orderId"
           pagination={false}
-          scroll={{ x: 'max-content' }}
+          size={isMobile ? 'small' : 'middle'}
+          scroll={isMobile ? { x: 500 } : { x: 'max-content' }}
           locale={{
             emptyText: filteredOrders.length === 0 && !loading ? '暂无订单' : undefined
           }}
@@ -529,7 +532,7 @@ export default function OrdersPage() {
             {
               title: '标的代码',
               key: 'symbol',
-              width: 150,
+              width: isMobile ? 100 : 150,
               render: (_, order: Order) => (
                 <div>
                   <div>{order.symbol}</div>
@@ -542,24 +545,24 @@ export default function OrdersPage() {
             {
               title: '方向',
               key: 'side',
-              width: 80,
+              width: isMobile ? 60 : 80,
               render: (_, order: Order) => (
                 <span style={{ color: order.side === 'Buy' ? '#ff4d4f' : '#52c41a', fontWeight: 600 }}>
                   {order.side === 'Buy' ? '买入' : '卖出'}
                 </span>
               )
             },
-            {
+            ...(isMobile ? [] : [{
               title: '订单类型',
               key: 'orderType',
               width: 120,
-              render: (_, order: Order) => order.orderTypeText || order.orderType
-            },
-            {
+              render: (_: any, order: Order) => order.orderTypeText || order.orderType
+            }]),
+            ...(isMobile ? [] : [{
               title: '数量',
               key: 'quantity',
               width: 120,
-              render: (_, order: Order) => (
+              render: (_: any, order: Order) => (
                 order.executedQuantity !== '0' ? (
                   <span>
                     {order.executedQuantity} / {order.quantity}
@@ -568,15 +571,15 @@ export default function OrdersPage() {
                   order.quantity
                 )
               )
-            },
+            }]),
             {
               title: '价格',
               key: 'price',
-              width: 150,
+              width: isMobile ? 100 : 150,
               render: (_, order: Order) => (
                 order.executedPrice !== '0' ? (
                   <span>
-                    {order.executedPrice} <span style={{ color: '#999' }}>({order.price})</span>
+                    {order.executedPrice} {!isMobile && <span style={{ color: '#999' }}>({order.price})</span>}
                   </span>
                 ) : (
                   order.price || '-'
@@ -586,7 +589,7 @@ export default function OrdersPage() {
             {
               title: '状态',
               key: 'status',
-              width: 120,
+              width: isMobile ? 80 : 120,
               render: (_, order: Order) => {
                 const statusStr = order.status?.toString() || ''
                 let color = 'default'
@@ -602,16 +605,16 @@ export default function OrdersPage() {
                 return <Tag color={color}>{getStatusText(order.status)}</Tag>
               }
             },
-            {
+            ...(isMobile ? [] : [{
               title: '下单时间',
               key: 'submittedAt',
               width: 180,
-              render: (_, order: Order) => order.submittedAt ? new Date(order.submittedAt).toLocaleString('zh-CN') : '-'
-            },
+              render: (_: any, order: Order) => order.submittedAt ? new Date(order.submittedAt).toLocaleString('zh-CN') : '-'
+            }]),
             {
               title: '操作',
               key: 'actions',
-              width: 120,
+              width: isMobile ? 80 : 120,
               render: (_, order: Order) => (
                 <Space>
                   <Button type="link" onClick={() => setSelectedOrder(order)}>

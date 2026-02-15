@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { logsApi } from '@/lib/api'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import AppLayout from '@/components/AppLayout'
 import { 
   Card, 
@@ -52,6 +53,7 @@ interface ModuleInfo {
 }
 
 export default function LogsPage() {
+  const isMobile = useIsMobile()
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -321,15 +323,15 @@ export default function LogsPage() {
       title: '时间',
       dataIndex: 'timestamp',
       key: 'timestamp',
-      width: 180,
-      render: (timestamp: string) => dayjs(timestamp).format('YYYY-MM-DD HH:mm:ss'),
+      width: isMobile ? 130 : 180,
+      render: (timestamp: string) => dayjs(timestamp).format(isMobile ? 'MM-DD HH:mm:ss' : 'YYYY-MM-DD HH:mm:ss'),
       sorter: true,
     },
     {
       title: '级别',
       dataIndex: 'level',
       key: 'level',
-      width: 100,
+      width: isMobile ? 70 : 100,
       render: (level: string) => (
         <Tag color={getLevelColor(level)}>{level}</Tag>
       ),
@@ -340,21 +342,22 @@ export default function LogsPage() {
         { text: 'DEBUG', value: 'DEBUG' },
       ],
     },
-    {
+    ...(isMobile ? [] : [{
       title: '模块',
       dataIndex: 'module',
       key: 'module',
       width: 200,
       render: (module: string) => getModuleDisplayName(module),
       ellipsis: true,
-    },
+    }] as ColumnsType<LogEntry>),
     {
       title: '消息',
       dataIndex: 'message',
       key: 'message',
       render: (message: string, record: LogEntry) => {
         const isExpanded = expandedMessages.has(record.id)
-        const shouldTruncate = message.length > 100
+        const truncateLength = isMobile ? 60 : 100
+        const shouldTruncate = message.length > truncateLength
 
         if (!shouldTruncate || isExpanded) {
           return (
@@ -376,7 +379,7 @@ export default function LogsPage() {
 
         return (
           <div>
-            <Text>{message.substring(0, 100)}...</Text>
+            <Text>{message.substring(0, truncateLength)}...</Text>
             <Button
               type="link"
               size="small"
@@ -389,7 +392,7 @@ export default function LogsPage() {
         )
       },
     },
-    {
+    ...(isMobile ? [] : [{
       title: 'TraceID',
       dataIndex: 'traceId',
       key: 'traceId',
@@ -405,12 +408,12 @@ export default function LogsPage() {
           <Text type="secondary">-</Text>
         )
       ),
-    },
-    {
+    }] as ColumnsType<LogEntry>),
+    ...(isMobile ? [] : [{
       title: '文件位置',
       key: 'location',
       width: 200,
-      render: (_: any, record: LogEntry) => (
+      render: (_: unknown, record: LogEntry) => (
         record.filePath ? (
           <Tooltip title={`${record.filePath}:${record.lineNo}`}>
             <Text type="secondary" style={{ fontSize: 11 }} ellipsis>
@@ -421,12 +424,12 @@ export default function LogsPage() {
           <Text type="secondary">-</Text>
         )
       ),
-    },
+    }] as ColumnsType<LogEntry>),
     {
       title: '操作',
       key: 'actions',
-      width: 100,
-      render: (_: any, record: LogEntry) => {
+      width: isMobile ? 60 : 100,
+      render: (_: unknown, record: LogEntry) => {
         const moduleDisplayName = getModuleDisplayName(record.module)
         return (
           <Button
@@ -435,7 +438,7 @@ export default function LogsPage() {
             onClick={() => {
               Modal.info({
                 title: '日志详情',
-                width: 800,
+                width: isMobile ? '95vw' : 800,
                 content: (
                   <div style={{ marginTop: 16 }}>
                     <p><strong>时间:</strong> {dayjs(record.timestamp).format('YYYY-MM-DD HH:mm:ss.SSS')}</p>
@@ -645,18 +648,19 @@ export default function LogsPage() {
           dataSource={logs}
           rowKey="id"
           loading={loading}
+          size={isMobile ? 'small' : 'middle'}
           pagination={{
             current: currentPage,
             pageSize: pageSize,
             total: total,
-            showSizeChanger: true,
-            showTotal: (total) => `共 ${total} 条`,
+            showSizeChanger: !isMobile,
+            showTotal: isMobile ? undefined : (total) => `共 ${total} 条`,
             onChange: (page, size) => {
               setCurrentPage(page)
               setPageSize(size)
             },
           }}
-          scroll={{ x: 1200 }}
+          scroll={{ x: isMobile ? 500 : 1200 }}
         />
       </Card>
     </AppLayout>

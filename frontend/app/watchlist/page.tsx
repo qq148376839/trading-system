@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { watchlistApi } from '@/lib/api'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import AppLayout from '@/components/AppLayout'
 import { Card, Input, Button, Table, Alert, Space, Switch, message, Modal } from 'antd'
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons'
@@ -15,6 +16,7 @@ interface WatchlistItem {
 }
 
 export default function WatchlistPage() {
+  const isMobile = useIsMobile()
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([])
   const [newSymbol, setNewSymbol] = useState('')
   const [loading, setLoading] = useState(false)
@@ -109,6 +111,7 @@ export default function WatchlistPage() {
       title: '状态',
       key: 'enabled',
       dataIndex: 'enabled',
+      width: isMobile ? 80 : undefined,
       render: (enabled: boolean, record: WatchlistItem) => (
         <Switch
           checked={enabled}
@@ -118,23 +121,24 @@ export default function WatchlistPage() {
         />
       ),
     },
-    {
+    ...(isMobile ? [] : [{
       title: '添加时间',
       key: 'created_at',
       dataIndex: 'created_at',
       render: (text: string) => new Date(text).toLocaleString('zh-CN'),
-    },
+    }]),
     {
       title: '操作',
       key: 'actions',
-      render: (_: any, record: WatchlistItem) => (
+      width: isMobile ? 70 : undefined,
+      render: (_: unknown, record: WatchlistItem) => (
         <Button
           type="link"
           danger
           icon={<DeleteOutlined />}
           onClick={() => handleRemove(record.symbol)}
         >
-          移除
+          {isMobile ? '' : '移除'}
         </Button>
       ),
     },
@@ -188,7 +192,9 @@ export default function WatchlistPage() {
               dataSource={watchlist}
               columns={columns}
               rowKey="id"
+              size={isMobile ? 'small' : 'middle'}
               pagination={{ pageSize: 20 }}
+              scroll={isMobile ? { x: 350 } : undefined}
             />
           </Card>
         ) : (

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { quoteApi } from '@/lib/api'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import AppLayout from '@/components/AppLayout'
 import { Card, Input, Button, Table, Alert, Space } from 'antd'
 import { SearchOutlined } from '@ant-design/icons'
@@ -19,6 +20,7 @@ interface Quote {
 }
 
 export default function QuotePage() {
+  const isMobile = useIsMobile()
   const [symbols, setSymbols] = useState<string>('AAPL.US,TSLA.US,MSFT.US')
   const [quotes, setQuotes] = useState<Quote[]>([])
   const [loading, setLoading] = useState(false)
@@ -69,12 +71,14 @@ export default function QuotePage() {
       title: '标的代码',
       key: 'symbol',
       dataIndex: 'symbol',
+      width: isMobile ? 90 : undefined,
       render: (text: string) => <span style={{ fontFamily: 'monospace', fontWeight: 500 }}>{text}</span>,
     },
     {
       title: '最新价',
       key: 'last_done',
       dataIndex: 'last_done',
+      width: isMobile ? 80 : undefined,
       render: (text: string, record: Quote) => {
         const { change } = calculateChange(record.last_done, record.prev_close)
         const isPositive = change >= 0
@@ -88,7 +92,8 @@ export default function QuotePage() {
     {
       title: '涨跌',
       key: 'change',
-      render: (_: any, record: Quote) => {
+      width: isMobile ? 70 : undefined,
+      render: (_: unknown, record: Quote) => {
         const { change } = calculateChange(record.last_done, record.prev_close)
         const isPositive = change >= 0
         return (
@@ -101,7 +106,8 @@ export default function QuotePage() {
     {
       title: '涨跌幅',
       key: 'changePercent',
-      render: (_: any, record: Quote) => {
+      width: isMobile ? 80 : undefined,
+      render: (_: unknown, record: Quote) => {
         const { changePercent } = calculateChange(record.last_done, record.prev_close)
         const isPositive = parseFloat(changePercent) >= 0
         return (
@@ -111,32 +117,32 @@ export default function QuotePage() {
         )
       },
     },
-    {
+    ...(isMobile ? [] : [{
       title: '开盘价',
       key: 'open',
       dataIndex: 'open',
-    },
-    {
+    }]),
+    ...(isMobile ? [] : [{
       title: '最高价',
       key: 'high',
       dataIndex: 'high',
-    },
-    {
+    }]),
+    ...(isMobile ? [] : [{
       title: '最低价',
       key: 'low',
       dataIndex: 'low',
-    },
-    {
+    }]),
+    ...(isMobile ? [] : [{
       title: '成交量',
       key: 'volume',
       dataIndex: 'volume',
       render: (volume: number) => volume.toLocaleString(),
-    },
-    {
+    }]),
+    ...(isMobile ? [] : [{
       title: '成交额',
       key: 'turnover',
       dataIndex: 'turnover',
-    },
+    }]),
   ]
 
   return (
@@ -184,7 +190,9 @@ export default function QuotePage() {
               dataSource={quotes}
               columns={columns}
               rowKey="symbol"
+              size={isMobile ? 'small' : 'middle'}
               pagination={{ pageSize: 20 }}
+              scroll={isMobile ? { x: 350 } : undefined}
             />
           </Card>
         )}

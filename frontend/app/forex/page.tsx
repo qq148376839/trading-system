@@ -7,6 +7,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsi
 import AppLayout from '@/components/AppLayout'
 import { Card, Select, Button, Alert, Spin, Checkbox, Row, Col, Space, Statistic, Collapse, Input } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
+import { useIsMobile } from '@/hooks/useIsMobile'
 
 interface ForexProduct {
   code: string
@@ -24,6 +25,7 @@ interface ForexQuote {
 }
 
 export default function ForexPage() {
+  const isMobile = useIsMobile()
   const [products, setProducts] = useState<ForexProduct[]>([])
   const [selectedProduct, setSelectedProduct] = useState<string>('USDINDEX')
   const [quoteType, setQuoteType] = useState<string>('minute')
@@ -301,7 +303,7 @@ export default function ForexPage() {
                 </span>
               )}
             </h2>
-            <ResponsiveContainer width="100%" height={400}>
+            <ResponsiveContainer width="100%" height={isMobile ? 200 : 400}>
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis 

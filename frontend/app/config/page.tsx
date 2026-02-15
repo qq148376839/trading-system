@@ -664,14 +664,14 @@ export default function ConfigPage() {
   return (
     <AppLayout>
       <Card>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <Link href="/" style={{ color: '#1890ff' }}>
               &larr; 返回主页
             </Link>
             <h1 style={{ fontSize: 24, fontWeight: 600, margin: 0 }}>系统配置管理</h1>
           </div>
-          <Space>
+          <Space wrap>
             <Button
               onClick={async () => {
                 const newValue = !showAdminManagement

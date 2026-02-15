@@ -6,6 +6,7 @@ import { optionsApi, quoteApi } from '@/lib/api'
 import AppLayout from '@/components/AppLayout'
 import { Card, Input, Button, Table, Tag, Space, Alert, Spin, AutoComplete, message } from 'antd'
 import { SearchOutlined } from '@ant-design/icons'
+import { useIsMobile } from '@/hooks/useIsMobile'
 
 interface StrikeDate {
   strikeDate: number
@@ -31,6 +32,7 @@ interface OptionChainRow {
 function OptionChainContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const isMobile = useIsMobile()
   const [symbol, setSymbol] = useState<string>(searchParams.get('symbol') || 'TSLA.US')
   const [stockId, setStockId] = useState<string | null>(null)
   const [strikeDates, setStrikeDates] = useState<StrikeDate[]>([])
@@ -350,7 +352,7 @@ function OptionChainContent() {
   return (
     <AppLayout>
       <Card>
-        <h1 style={{ fontSize: 24, fontWeight: 600, marginBottom: 16 }}>期权链</h1>
+        <h1 style={{ fontSize: isMobile ? 18 : 24, fontWeight: 600, marginBottom: isMobile ? 12 : 16 }}>期权链</h1>
         
         {/* 股票搜索框 */}
         <Card style={{ marginBottom: 16 }}>
@@ -479,34 +481,34 @@ function OptionChainContent() {
         {/* 期权链表格 */}
         {optionChain.length > 0 && (
           <Card>
-            <div style={{ position: 'relative', maxHeight: '70vh', overflow: 'auto' }}>
-              <table ref={tableRef} style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <div style={{ position: 'relative', maxHeight: '70vh', overflow: 'auto', fontSize: isMobile ? 13 : 14, overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+              <table ref={tableRef} style={{ width: '100%', borderCollapse: 'collapse', minWidth: isMobile ? 800 : undefined }}>
                 <thead style={{ position: 'sticky', top: 0, zIndex: 20, background: '#fff' }}>
                   <tr>
-                    <th colSpan={6} style={{ padding: '12px', textAlign: 'center', background: '#fff1f0', border: '1px solid #d9d9d9' }}>
+                    <th colSpan={6} style={{ padding: isMobile ? '6px 4px' : '12px', textAlign: 'center', background: '#fff1f0', border: '1px solid #d9d9d9', fontSize: isMobile ? 12 : undefined }}>
                       看涨期权 (Call)
                     </th>
-                    <th style={{ padding: '12px', textAlign: 'center', background: '#fafafa', border: '1px solid #d9d9d9' }}>
+                    <th style={{ padding: isMobile ? '6px 4px' : '12px', textAlign: 'center', background: '#fafafa', border: '1px solid #d9d9d9', fontSize: isMobile ? 12 : undefined }}>
                       行权价
                     </th>
-                    <th colSpan={6} style={{ padding: '12px', textAlign: 'center', background: '#f6ffed', border: '1px solid #d9d9d9' }}>
+                    <th colSpan={6} style={{ padding: isMobile ? '6px 4px' : '12px', textAlign: 'center', background: '#f6ffed', border: '1px solid #d9d9d9', fontSize: isMobile ? 12 : undefined }}>
                       看跌期权 (Put)
                     </th>
                   </tr>
                   <tr>
-                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>成交量</th>
-                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>涨跌额</th>
-                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>涨跌幅</th>
-                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>最新价</th>
-                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>卖盘</th>
-                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>买盘</th>
-                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9', background: '#fafafa' }}>行权价</th>
-                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>买盘</th>
-                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>卖盘</th>
-                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>最新价</th>
-                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>涨跌幅</th>
-                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>涨跌额</th>
-                    <th style={{ padding: '8px', fontSize: 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>成交量</th>
+                    <th style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>成交量</th>
+                    <th style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>涨跌额</th>
+                    <th style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>涨跌幅</th>
+                    <th style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>最新价</th>
+                    <th style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>卖盘</th>
+                    <th style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>买盘</th>
+                    <th style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, fontWeight: 500, border: '1px solid #d9d9d9', background: '#fafafa' }}>行权价</th>
+                    <th style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>买盘</th>
+                    <th style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>卖盘</th>
+                    <th style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>最新价</th>
+                    <th style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>涨跌幅</th>
+                    <th style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>涨跌额</th>
+                    <th style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, fontWeight: 500, border: '1px solid #d9d9d9' }}>成交量</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -534,50 +536,50 @@ function OptionChainContent() {
                         {/* 看涨期权数据 */}
                         {row.callOption ? (
                           <>
-                            <td style={{ padding: '8px', fontSize: 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>
+                            <td style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>
                               {row.callOption.openInterest || '--'}
                             </td>
-                            <td style={{ padding: '8px', fontSize: 12, color: '#ff4d4f', border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
-                            <td style={{ padding: '8px', fontSize: 12, color: '#ff4d4f', border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, color: '#ff4d4f', border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, color: '#ff4d4f', border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
                             <td
-                              style={{ padding: '8px', fontSize: 12, color: '#ff4d4f', fontWeight: 600, cursor: 'pointer', border: '1px solid #d9d9d9', textAlign: 'center' }}
+                              style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, color: '#ff4d4f', fontWeight: 600, cursor: 'pointer', border: '1px solid #d9d9d9', textAlign: 'center' }}
                               onClick={() => handleOptionClick(row.callOption!.optionId, row.callOption!.code)}
                               title="点击查看详情"
                             >
                               {row.callOption.code}
                             </td>
-                            <td style={{ padding: '8px', fontSize: 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
-                            <td style={{ padding: '8px', fontSize: 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
                           </>
                         ) : (
-                          <td colSpan={6} style={{ padding: '8px', fontSize: 12, color: '#999', textAlign: 'center', border: '1px solid #d9d9d9' }}>--</td>
+                          <td colSpan={6} style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, color: '#999', textAlign: 'center', border: '1px solid #d9d9d9' }}>--</td>
                         )}
                         
                         {/* 行权价 */}
-                        <td style={{ padding: '8px', fontSize: 14, fontWeight: 500, background: '#fafafa', textAlign: 'center', border: '1px solid #d9d9d9' }}>
+                        <td style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 12 : 14, fontWeight: 500, background: '#fafafa', textAlign: 'center', border: '1px solid #d9d9d9' }}>
                           {formatPrice(strikePrice)}
                         </td>
-                        
+
                         {/* 看跌期权数据 */}
                         {row.putOption ? (
                           <>
-                            <td style={{ padding: '8px', fontSize: 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
-                            <td style={{ padding: '8px', fontSize: 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
                             <td
-                              style={{ padding: '8px', fontSize: 12, color: '#52c41a', fontWeight: 600, cursor: 'pointer', border: '1px solid #d9d9d9', textAlign: 'center' }}
+                              style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, color: '#52c41a', fontWeight: 600, cursor: 'pointer', border: '1px solid #d9d9d9', textAlign: 'center' }}
                               onClick={() => handleOptionClick(row.putOption!.optionId, row.putOption!.code)}
                               title="点击查看详情"
                             >
                               {row.putOption.code}
                             </td>
-                            <td style={{ padding: '8px', fontSize: 12, color: '#52c41a', border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
-                            <td style={{ padding: '8px', fontSize: 12, color: '#52c41a', border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
-                            <td style={{ padding: '8px', fontSize: 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>
+                            <td style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, color: '#52c41a', border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, color: '#52c41a', border: '1px solid #d9d9d9', textAlign: 'right' }}>--</td>
+                            <td style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, border: '1px solid #d9d9d9', textAlign: 'right' }}>
                               {row.putOption.openInterest || '--'}
                             </td>
                           </>
                         ) : (
-                          <td colSpan={6} style={{ padding: '8px', fontSize: 12, color: '#999', textAlign: 'center', border: '1px solid #d9d9d9' }}>--</td>
+                          <td colSpan={6} style={{ padding: isMobile ? '4px 2px' : '8px', fontSize: isMobile ? 11 : 12, color: '#999', textAlign: 'center', border: '1px solid #d9d9d9' }}>--</td>
                         )}
                       </tr>
                     )

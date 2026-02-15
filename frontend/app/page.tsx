@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from 'react'
 import React from 'react'
 import Link from 'next/link'
 import { quoteApi, watchlistApi, positionsApi, tradingRulesApi, ordersApi, tradingRecommendationApi } from '@/lib/api'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import TradeModal from '@/components/TradeModal'
 import AppLayout from '@/components/AppLayout'
 import { Button, Input, Card, Table, Tag, Badge, Spin, message, Space, AutoComplete, Switch, Select, Skeleton, Modal, Alert } from 'antd'
@@ -120,7 +121,8 @@ export default function Home() {
     veto_reason?: string
   } | null>(null)
   const [marketRegimeLoading, setMarketRegimeLoading] = useState(false)
-  
+  const isMobile = useIsMobile()
+
   // 辅助函数：获取市场环境的样式
   const getMarketEnvironmentStyle = (env: '良好' | '较差' | '中性' | '中性利好' | '中性利空') => {
     switch (env) {
@@ -1302,16 +1304,119 @@ export default function Home() {
           loading={loading && stocks.length === 0}
           rowKey="symbol"
           pagination={false}
-          scroll={{ x: 'max-content' }}
+          size={isMobile ? 'small' : 'middle'}
+          scroll={isMobile ? { x: 500 } : { x: 'max-content' }}
           locale={{
             emptyText: stocks.length === 0 && !loading ? '暂无持仓或关注股票，请添加关注股票开始使用' : undefined
           }}
+          expandable={isMobile ? {
+            expandedRowRender: (stock: StockRow) => {
+              if (stock._error) return null
+              const currentPriceInfo = getCurrentPrice(stock)
+              const rec = stock.tradingRecommendation
+              const isExpanded = expandedRecommendations.has(stock.symbol)
+              const isRefreshing = refreshingRecommendations.has(stock.symbol)
+              return (
+                <div style={{ fontSize: 13 }}>
+                  {/* 持仓详情 */}
+                  {stock.position && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
+                      <div>
+                        <span style={{ color: '#999' }}>持仓: </span>
+                        <span>{stock.position.quantity}</span>
+                        {isOptionSymbol(stock.symbol) && stock.position.contract_multiplier && (
+                          <span style={{ fontSize: 12, color: '#999' }}> ({stock.position.quantity > 0 ? '多' : '空'}{Math.abs(stock.position.quantity)}张)</span>
+                        )}
+                      </div>
+                      <div>
+                        <span style={{ color: '#999' }}>成本: </span>
+                        <span>{parseFloat(stock.position.cost_price).toFixed(2)}</span>
+                      </div>
+                      <div>
+                        <span style={{ color: '#999' }}>市值: </span>
+                        <span>{parseFloat(stock.position.market_value).toFixed(2)}</span>
+                      </div>
+                      <div>
+                        <span style={{ color: '#999' }}>盈亏: </span>
+                        {(() => {
+                          const pl = parseFloat(stock.position!.unrealized_pl)
+                          return (
+                            <span style={{ fontWeight: 600, color: pl >= 0 ? '#ff4d4f' : '#52c41a' }}>
+                              {pl >= 0 ? '+' : ''}{pl.toFixed(2)}
+                              {stock.position!.unrealized_pl_ratio && (
+                                <span> ({pl >= 0 ? '+' : ''}{parseFloat(stock.position!.unrealized_pl_ratio).toFixed(2)}%)</span>
+                              )}
+                            </span>
+                          )
+                        })()}
+                      </div>
+                    </div>
+                  )}
+                  {/* 交易推荐 */}
+                  {rec && (
+                    <Card
+                      size="small"
+                      style={{
+                        marginBottom: 12,
+                        opacity: isRefreshing ? 0.75 : 1,
+                        borderColor: rec.action === 'BUY' ? '#52c41a' : rec.action === 'SELL' ? '#ff4d4f' : '#d9d9d9',
+                        backgroundColor: rec.action === 'BUY' ? '#f6ffed' : rec.action === 'SELL' ? '#fff1f0' : '#fafafa',
+                      }}
+                    >
+                      {isRefreshing && <Spin size="small" style={{ position: 'absolute', top: 8, right: 8 }} />}
+                      <div style={{ fontWeight: 600, marginBottom: 4, color: rec.action === 'BUY' ? '#52c41a' : rec.action === 'SELL' ? '#ff4d4f' : '#666' }}>
+                        {rec.action === 'BUY' ? '买入' : rec.action === 'SELL' ? '卖出（做空）' : '持有'}
+                        <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400 }}>
+                          {getMarketEnvironmentStyle(rec.market_environment).icon} {rec.market_environment}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+                        <div><span style={{ color: '#666' }}>入场: </span><span style={{ fontWeight: 600 }}>${rec.entry_price_range.min.toFixed(2)}-${rec.entry_price_range.max.toFixed(2)}</span></div>
+                        <div><span style={{ color: '#666' }}>R/R: </span><span style={{ fontWeight: 600, color: rec.risk_reward_ratio >= 1.5 ? '#52c41a' : '#faad14' }}>{rec.risk_reward_ratio.toFixed(2)}</span></div>
+                        <div><span style={{ color: '#ff4d4f' }}>止损: </span><span style={{ fontWeight: 600 }}>${rec.stop_loss.toFixed(2)}</span></div>
+                        <div><span style={{ color: '#52c41a' }}>止盈: </span><span style={{ fontWeight: 600 }}>${rec.take_profit.toFixed(2)}</span></div>
+                      </div>
+                      {rec.risk_note && rec.risk_note !== '无特别风险提示' && (
+                        <div style={{ fontSize: 12, color: '#faad14', marginTop: 4 }}>⚠ {rec.risk_note}</div>
+                      )}
+                      <Button type="link" size="small" onClick={() => toggleRecommendationDetails(stock.symbol)}
+                        style={{ padding: 0, marginTop: 4, fontSize: 12 }}>
+                        {expandedRecommendations.has(stock.symbol) ? '收起 ▲' : '详情 ▼'}
+                      </Button>
+                      {expandedRecommendations.has(stock.symbol) && (
+                        <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #e5e7eb', fontSize: 12, lineHeight: 1.6 }}>
+                          {rec.analysis_summary}
+                          {rec.spx_usd_relationship_analysis && (
+                            <div style={{ marginTop: 4, color: '#666' }}><strong>SPX-USD:</strong> {rec.spx_usd_relationship_analysis}</div>
+                          )}
+                        </div>
+                      )}
+                    </Card>
+                  )}
+                  {/* 操作按钮 */}
+                  <Space wrap>
+                    <Button type="primary" size="small" onClick={() => { setTradeSymbol(stock.symbol); setTradePrice(currentPriceInfo.price) }}>
+                      {stock.isHeld ? '卖出' : '买入'}
+                    </Button>
+                    <Button size="small" onClick={() => setSelectedSymbol(stock.symbol)}>规则</Button>
+                    <Link href={`/candles?symbol=${stock.symbol}`} style={{ color: '#52c41a', fontSize: 13 }}>K线</Link>
+                    {stock.symbol.endsWith('.US') && !isOptionSymbol(stock.symbol) && (
+                      <Link href={`/options/chain?symbol=${stock.symbol}`} style={{ color: '#722ed1', fontSize: 13 }}>期权</Link>
+                    )}
+                    {stock.isWatched && (
+                      <Button type="link" danger size="small" onClick={() => handleRemoveWatchlist(stock.symbol)} style={{ padding: 0 }}>取消关注</Button>
+                    )}
+                  </Space>
+                </div>
+              )
+            },
+          } : undefined}
           columns={[
                 {
                   title: '标的代码',
                   key: 'symbol',
-                  width: 200,
-                  fixed: 'left',
+                  width: isMobile ? 130 : 200,
+                  fixed: isMobile ? undefined : ('left' as const),
                   render: (_, stock: StockRow) => {
                     if (stock._error) {
                       return (
@@ -1335,11 +1440,11 @@ export default function Home() {
                     )
                   }
                 },
-                {
+                ...(isMobile ? [] : [{
                   title: '持仓数量',
                   key: 'quantity',
                   width: 120,
-                  render: (_, stock: StockRow) => {
+                  render: (_: unknown, stock: StockRow) => {
                     if (stock._error) return null
                     if (!stock.position) return '-'
                     return (
@@ -1353,24 +1458,24 @@ export default function Home() {
                       </div>
                     )
                   }
-                },
+                }]),
                 {
                   title: '价格',
                   key: 'price',
-                  width: 150,
+                  width: isMobile ? 100 : 150,
                   render: (_, stock: StockRow) => {
                     if (stock._error) return null
                     const currentPriceInfo = getCurrentPrice(stock)
                     const { change } = calculateChange(currentPriceInfo.price, currentPriceInfo.prevClose)
                     const isPositive = change >= 0
                     const priceColor = currentPriceInfo.priceClass || (isPositive ? '#ff4d4f' : '#52c41a')
-                    
+
                     if (stock.position) {
                       return (
                         <div>
                           <div style={{ fontWeight: 600, color: priceColor }}>
                             {currentPriceInfo.price}
-                            {currentPriceInfo.label !== '盘中' && (
+                            {!isMobile && currentPriceInfo.label !== '盘中' && (
                               <span style={{ fontSize: 12, marginLeft: 4 }}>({currentPriceInfo.label})</span>
                             )}
                           </div>
@@ -1383,18 +1488,18 @@ export default function Home() {
                     return (
                       <div style={{ fontWeight: 600, color: priceColor }}>
                         {currentPriceInfo.price}
-                        {currentPriceInfo.label !== '盘中' && (
+                        {!isMobile && currentPriceInfo.label !== '盘中' && (
                           <span style={{ fontSize: 12, marginLeft: 4 }}>({currentPriceInfo.label})</span>
                         )}
                       </div>
                     )
                   }
                 },
-                {
+                ...(isMobile ? [] : [{
                   title: '涨跌',
                   key: 'change',
                   width: 100,
-                  render: (_, stock: StockRow) => {
+                  render: (_: unknown, stock: StockRow) => {
                     if (stock._error) return null
                     const currentPriceInfo = getCurrentPrice(stock)
                     const { change } = calculateChange(currentPriceInfo.price, currentPriceInfo.prevClose)
@@ -1405,11 +1510,11 @@ export default function Home() {
                       </span>
                     )
                   }
-                },
+                }]),
                 {
                   title: '涨跌幅',
                   key: 'changePercent',
-                  width: 100,
+                  width: isMobile ? 80 : 100,
                   render: (_, stock: StockRow) => {
                     if (stock._error) return null
                     const currentPriceInfo = getCurrentPrice(stock)
@@ -1422,11 +1527,26 @@ export default function Home() {
                     )
                   }
                 },
+                ...(isMobile ? [{
+                  title: '盈亏',
+                  key: 'unrealizedPl',
+                  width: 90,
+                  render: (_: unknown, stock: StockRow) => {
+                    if (stock._error) return null
+                    if (!stock.position) return '-'
+                    const unrealizedPl = parseFloat(stock.position.unrealized_pl)
+                    return (
+                      <span style={{ fontWeight: 600, color: unrealizedPl >= 0 ? '#ff4d4f' : '#52c41a', fontSize: 13 }}>
+                        {unrealizedPl >= 0 ? '+' : ''}{unrealizedPl.toFixed(2)}
+                      </span>
+                    )
+                  }
+                }] : [
                 {
                   title: '盈亏',
                   key: 'unrealizedPl',
                   width: 120,
-                  render: (_, stock: StockRow) => {
+                  render: (_: unknown, stock: StockRow) => {
                     if (stock._error) return null
                     if (!stock.position) return '-'
                     const unrealizedPl = parseFloat(stock.position.unrealized_pl)
@@ -1448,7 +1568,7 @@ export default function Home() {
                   title: '市值/数量',
                   key: 'marketValue',
                   width: 120,
-                  render: (_, stock: StockRow) => {
+                  render: (_: unknown, stock: StockRow) => {
                     if (stock._error) return null
                     if (!stock.position) return '-'
                     return (
@@ -1465,7 +1585,7 @@ export default function Home() {
                   title: '交易推荐',
                   key: 'recommendation',
                   width: 320,
-                  render: (_, stock: StockRow) => {
+                  render: (_: unknown, stock: StockRow) => {
                     if (stock._error) return null
                     if (!stock.tradingRecommendation) {
                       if (stock.symbol.endsWith('.US') && !isOptionSymbol(stock.symbol)) {
@@ -1473,26 +1593,26 @@ export default function Home() {
                       }
                       return <span style={{ color: '#999' }}>-</span>
                     }
-                    
+
                     const rec = stock.tradingRecommendation
                     const envStyle = getMarketEnvironmentStyle(rec.market_environment)
                     const trendStyle = getTrendConsistencyStyle(rec.trend_consistency)
                     const strengthStyle = getMarketStrengthStyle(rec.comprehensive_market_strength)
                     const isExpanded = expandedRecommendations.has(stock.symbol)
                     const isRefreshing = refreshingRecommendations.has(stock.symbol)
-                    
+
                     const getBgColor = () => {
                       if (rec.action === 'BUY') return '#f6ffed'
                       if (rec.action === 'SELL') return '#fff1f0'
                       return '#fafafa'
                     }
-                    
+
                     const getBorderColor = () => {
                       if (rec.action === 'BUY') return '#52c41a'
                       if (rec.action === 'SELL') return '#ff4d4f'
                       return '#d9d9d9'
                     }
-                    
+
                     return (
                       <Card
                         size="small"
@@ -1592,8 +1712,8 @@ export default function Home() {
                   title: '操作',
                   key: 'actions',
                   width: 200,
-                  fixed: 'right',
-                  render: (_, stock: StockRow) => {
+                  fixed: 'right' as const,
+                  render: (_: unknown, stock: StockRow) => {
                     if (stock._error) {
                       return (
                         <div>
@@ -1613,7 +1733,7 @@ export default function Home() {
                         </div>
                       )
                     }
-                    
+
                     const currentPriceInfo = getCurrentPrice(stock)
                     return (
                       <Space wrap>
@@ -1658,6 +1778,7 @@ export default function Home() {
                     )
                   }
                 }
+                ]),
           ]}
         />
       </Card>
@@ -1717,6 +1838,7 @@ function TradingRuleModal({ symbol, onClose, onSuccess }: { symbol: string; onCl
   const [config, setConfig] = useState<Record<string, any>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const isMobile = useIsMobile()
 
   const handleSubmit = async () => {
     if (!ruleName.trim()) {
@@ -1761,7 +1883,7 @@ function TradingRuleModal({ symbol, onClose, onSuccess }: { symbol: string; onCl
           确认设置
         </Button>,
       ]}
-      width={500}
+      width={isMobile ? '95vw' : 500}
     >
       {error && (
         <Alert

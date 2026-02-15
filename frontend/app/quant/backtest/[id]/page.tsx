@@ -6,6 +6,7 @@ import { backtestApi, quantApi } from '@/lib/api';
 import AppLayout from '@/components/AppLayout';
 import { Card, Table, Tag, Space, Button, Alert, Spin, Row, Col, Statistic, message } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import {
   LineChart,
   Line,
@@ -74,6 +75,7 @@ interface Strategy {
 }
 
 export default function BacktestDetailPage() {
+  const isMobile = useIsMobile();
   const params = useParams();
   const router = useRouter();
   const backtestId = parseInt(params.id as string);
@@ -236,9 +238,9 @@ export default function BacktestDetailPage() {
   return (
     <AppLayout>
       <Card>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 24 }}>
           <div>
-            <h1 style={{ fontSize: 24, fontWeight: 600, marginBottom: 8 }}>回测结果详情</h1>
+            <h1 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 600, marginBottom: 8 }}>回测结果详情</h1>
             {strategy && (
               <div style={{ color: '#666', marginBottom: 4 }}>
                 策略: {strategy.name} ({strategy.type})
@@ -390,25 +392,25 @@ export default function BacktestDetailPage() {
             <div style={{ marginBottom: 16 }}>
               <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>信号生成统计</h3>
               <Row gutter={16}>
-                <Col span={6}>
+                <Col xs={12} sm={6}>
                   <Statistic
                     title="总日期数"
                     value={result.diagnosticLog.summary.totalDates}
                   />
                 </Col>
-                <Col span={6}>
+                <Col xs={12} sm={6}>
                   <Statistic
                     title="生成信号数"
                     value={result.diagnosticLog.summary.totalSignals}
                   />
                 </Col>
-                <Col span={6}>
+                <Col xs={12} sm={6}>
                   <Statistic
                     title="买入尝试数"
                     value={result.diagnosticLog.summary.totalBuyAttempts}
                   />
                 </Col>
-                <Col span={6}>
+                <Col xs={12} sm={6}>
                   <Statistic
                     title="成功买入数"
                     value={result.diagnosticLog.summary.totalBuySuccess}
@@ -523,7 +525,7 @@ export default function BacktestDetailPage() {
         {result.dailyReturns && result.dailyReturns.length > 0 && (
           <Card style={{ marginBottom: 24 }}>
             <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>每日权益变化</h2>
-            <ResponsiveContainer width="100%" height={400}>
+            <ResponsiveContainer width="100%" height={isMobile ? 200 : 400}>
               <AreaChart data={result.dailyReturns}>
                 <defs>
                   <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
@@ -564,7 +566,7 @@ export default function BacktestDetailPage() {
         {result.dailyReturns && result.dailyReturns.length > 0 && (
           <Card style={{ marginBottom: 24 }}>
             <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>每日收益率</h2>
-            <ResponsiveContainer width="100%" height={300}>
+            <ResponsiveContainer width="100%" height={isMobile ? 200 : 300}>
               <BarChart data={result.dailyReturns}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis 
@@ -605,7 +607,7 @@ export default function BacktestDetailPage() {
         {result.dailyReturns && result.dailyReturns.length > 0 && (
           <Card>
             <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>累计收益率</h2>
-            <ResponsiveContainer width="100%" height={300}>
+            <ResponsiveContainer width="100%" height={isMobile ? 200 : 300}>
               <LineChart data={result.dailyReturns.map((day) => {
                 const initialEquity = result.dailyReturns[0].equity;
                 const cumulativeReturn = ((day.equity - initialEquity) / initialEquity) * 100;

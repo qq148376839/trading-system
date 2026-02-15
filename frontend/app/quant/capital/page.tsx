@@ -5,6 +5,7 @@ import { quantApi } from '@/lib/api';
 import AppLayout from '@/components/AppLayout';
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from 'recharts';
 import { Button, Table, Card, Space, Modal, message, Alert, Tag, Spin, Input, Select, Progress } from 'antd';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 interface Allocation {
   id: number;
@@ -36,6 +37,7 @@ interface Alert {
 }
 
 export default function CapitalPage() {
+  const isMobile = useIsMobile();
   const [capitalUsage, setCapitalUsage] = useState<CapitalUsage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -310,9 +312,9 @@ export default function CapitalPage() {
   return (
     <AppLayout>
       <Card>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h1 style={{ fontSize: 24, fontWeight: 600, margin: 0 }}>资金管理</h1>
-          <Space>
+        <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: isMobile ? 'flex-start' : 'center', gap: isMobile ? 12 : 0, marginBottom: 16 }}>
+          <h1 style={{ fontSize: isMobile ? 18 : 24, fontWeight: 600, margin: 0 }}>资金管理</h1>
+          <Space wrap>
             <Button type="primary" onClick={handleSyncBalance} style={{ background: '#52c41a', borderColor: '#52c41a' }}>
               同步余额
             </Button>
@@ -469,8 +471,8 @@ export default function CapitalPage() {
 
         {/* 总资金卡片 */}
         <Card style={{ marginBottom: 16 }}>
-          <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>总资金</h2>
-          <div style={{ fontSize: 32, fontWeight: 600, color: '#1890ff' }}>
+          <h2 style={{ fontSize: isMobile ? 16 : 18, fontWeight: 600, marginBottom: 8 }}>总资金</h2>
+          <div style={{ fontSize: isMobile ? 24 : 32, fontWeight: 600, color: '#1890ff' }}>
             ${capitalUsage.totalCapital.toFixed(2)}
           </div>
         </Card>
@@ -478,16 +480,16 @@ export default function CapitalPage() {
         {/* 资金分配饼图 */}
         {chartData.length > 0 && (
           <Card style={{ marginBottom: 16 }}>
-            <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>资金分配</h2>
-            <ResponsiveContainer width="100%" height={400}>
+            <h2 style={{ fontSize: isMobile ? 16 : 18, fontWeight: 600, marginBottom: 16 }}>资金分配</h2>
+            <ResponsiveContainer width="100%" height={isMobile ? 280 : 400}>
               <PieChart>
                 <Pie
                   data={chartData}
                   cx="50%"
                   cy="50%"
-                  labelLine={false}
-                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                  outerRadius={80}
+                  labelLine={!isMobile}
+                  label={isMobile ? false : ({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                  outerRadius={isMobile ? 60 : 80}
                   fill="#8884d8"
                   dataKey="value"
                 >
@@ -508,6 +510,8 @@ export default function CapitalPage() {
           columns={columns}
           rowKey="id"
           pagination={false}
+          size={isMobile ? 'small' : 'middle'}
+          scroll={isMobile ? { x: 900 } : undefined}
         />
 
       {showCreateModal && (

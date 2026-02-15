@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { quantApi } from '@/lib/api';
 import AppLayout from '@/components/AppLayout';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { Card, Table, Tag, Space, Input, Select, Alert, Spin, Row, Col } from 'antd';
 
 interface Signal {
@@ -18,6 +19,7 @@ interface Signal {
 }
 
 export default function SignalsPage() {
+  const isMobile = useIsMobile();
   const [signals, setSignals] = useState<Signal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -56,13 +58,15 @@ export default function SignalsPage() {
       title: '时间',
       key: 'created_at',
       dataIndex: 'created_at',
-      render: (text: string) => new Date(text).toLocaleString('zh-CN'),
+      render: (text: string) => isMobile
+        ? new Date(text).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+        : new Date(text).toLocaleString('zh-CN'),
     },
-    {
+    ...(isMobile ? [] : [{
       title: '策略ID',
       key: 'strategy_id',
       dataIndex: 'strategy_id',
-    },
+    }]),
     {
       title: '标的',
       key: 'symbol',
@@ -77,13 +81,13 @@ export default function SignalsPage() {
         <Tag color={text === 'BUY' ? 'success' : 'error'}>{text}</Tag>
       ),
     },
-    {
+    ...(isMobile ? [] : [{
       title: '价格',
       key: 'price',
       dataIndex: 'price',
       render: (price: number | null) =>
         price != null ? `$${parseFloat(String(price)).toFixed(2)}` : '-',
-    },
+    }]),
     {
       title: '状态',
       key: 'status',
@@ -99,13 +103,13 @@ export default function SignalsPage() {
         return <Tag color={config.color}>{config.text}</Tag>;
       },
     },
-    {
+    ...(isMobile ? [] : [{
       title: '原因',
       key: 'reason',
       dataIndex: 'reason',
       ellipsis: true,
       render: (text: string) => text || '-',
-    },
+    }]),
   ];
 
   return (
@@ -168,6 +172,8 @@ export default function SignalsPage() {
           columns={columns}
           rowKey="id"
           loading={loading}
+          size={isMobile ? 'small' : 'middle'}
+          scroll={isMobile ? { x: 400 } : { x: 'max-content' }}
           locale={{
             emptyText: signals.length === 0 && !loading ? '暂无信号' : undefined,
           }}

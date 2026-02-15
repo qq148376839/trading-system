@@ -281,8 +281,8 @@ export default function TradeModal({ symbol, currentPrice, onClose, onSuccess }:
   const { basic, conditional, trailing } = getOrderTypeOptions()
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
-      <div className="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 my-8">
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto p-2 md:p-0">
+      <div className="bg-white rounded-lg p-4 md:p-6 max-w-2xl w-full mx-2 md:mx-4 my-4 md:my-8">
         <h2 className="text-xl font-bold mb-4">
           {side === 'Buy' ? '买入' : '卖出'} - {symbol}
         </h2>

@@ -8,6 +8,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsi
 import AppLayout from '@/components/AppLayout'
 import { Card, Input, Select, Button, Table, Alert, Spin, Checkbox, Row, Col, Space, Tag } from 'antd'
 import { SearchOutlined } from '@ant-design/icons'
+import { useIsMobile } from '@/hooks/useIsMobile'
 
 interface Candlestick {
   timestamp: string // ISO字符串格式
@@ -21,6 +22,7 @@ interface Candlestick {
 }
 
 function CandlesContent() {
+  const isMobile = useIsMobile()
   const searchParams = useSearchParams()
   const [symbol, setSymbol] = useState(searchParams.get('symbol') || 'AAPL.US')
   const [period, setPeriod] = useState('day')
@@ -296,7 +298,7 @@ function CandlesContent() {
                 </span>
               )}
             </h2>
-            <ResponsiveContainer width="100%" height={400}>
+            <ResponsiveContainer width="100%" height={isMobile ? 200 : 400}>
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="time" />
