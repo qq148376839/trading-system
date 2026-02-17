@@ -2,6 +2,50 @@
 
 ## 2026-02-17
 
+### 日志输出优化 — 消除非交易时段 ~75% 冗余日志
+
+**优化**: 1.7MB 日志中约 75% 是非交易时段策略循环的冗余输出，通过 8 项优化大幅减少控制台日志量。
+
+**改动内容**:
+
+#### 1. 期权决策 NO_SIGNAL 非交易时间不打印（占 ~60%）
+- **优化**: `logDecision()` 中当 `rejectionCheckpoint === 'trade_window'` 时直接 return，不再打印完整决策对象
+- 上层 scheduler 已有限频的"非交易时段跳过"日志，无需重复输出
+
+#### 2. "非交易时间，跳过信号生成" debug 日志添加限频
+- **优化**: 添加 `tradeWindowSkipLogTimes` Map，每标的每 5 分钟最多打印一次
+- 原来 4 标的 × 347 次/天 = 1388 行 → 降至约 48 行
+
+#### 3. "策略执行完成" 无活动时降级为 debug
+- **优化**: `logExecutionSummary()` 的空转分支从 `logger.info` 改为 `logger.debug`，不再输出到控制台
+
+#### 4. "监控 N 个未成交订单" 添加限频
+- **优化**: 添加 5 分钟限频，复用 scheduler 已有的 `(this as any)[lastLogKey]` 模式
+
+#### 5. "实际持仓数据为空或格式异常" 降级
+- **优化**: 从 `logger.warn` 改为 `logger.debug`，非交易时段持仓为空是预期行为
+
+#### 6. "Database connected" 只打印首次
+- **优化**: 添加 `dbFirstConnect` 标志，首次连接打印 info，后续用 debug
+
+#### 7. "LogService 队列缩容" 降级为 debug
+- **优化**: 从 `infraLogger.info` 改为 `infraLogger.debug`，队列缩容是常规运维行为
+
+#### 8. "恢复策略实例" 合并为单条日志
+- **优化**: 从每个实例单独一条 info 日志合并为一条汇总行
+
+**修改文件**:
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`（#1 logDecision 跳过 + #2 debug 限频）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（#3 空转降级 + #4 未成交订单限频）
+- 📝 `api/src/services/account-balance-sync.service.ts`（#5 持仓为空降级）
+- 📝 `api/src/config/database.ts`（#6 首次连接标志）
+- 📝 `api/src/services/log.service.ts`（#7 缩容降级）
+- 📝 `api/src/services/state-manager.service.ts`（#8 合并恢复日志）
+
+**验证**: 279 个测试全部通过
+
+---
+
 ### 0DTE 单腿动态风控 Phase 2（VWAP 结构确认 + 时间止损 + 追踪止盈动态化）
 
 **新增**: 基于 VWAP 的结构确认入场/退出、波动率分桶时间止损、追踪止盈动态化。Phase 1 + Phase 2 全部完成。

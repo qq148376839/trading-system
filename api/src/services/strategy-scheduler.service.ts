@@ -464,7 +464,7 @@ class StrategyScheduler {
       );
     } else {
       // 纯净模式（全无事）：只记录基本统计，不写入数据库
-      logger.info(
+      logger.debug(
         `策略 ${summary.strategyId} 执行完成: 耗时 ${duration}ms, ` +
         `扫描 ${summary.totalTargets} 个标的 (IDLE: ${summary.idle.length}, HOLDING: ${summary.holding.length})`,
         {
@@ -974,7 +974,15 @@ class StrategyScheduler {
         return;
       }
 
-      logger.log(`策略 ${strategyId}: 监控 ${pendingOrders.length} 个未成交订单`, { dbWrite: false });
+      {
+        const now = Date.now();
+        const lastLogKey = `pending_orders_log_${strategyId}`;
+        const lastLogTime = (this as any)[lastLogKey] || 0;
+        if (now - lastLogTime > 5 * 60 * 1000) {
+          logger.log(`策略 ${strategyId}: 监控 ${pendingOrders.length} 个未成交订单`, { dbWrite: false });
+          (this as any)[lastLogKey] = now;
+        }
+      }
 
       // 7. 获取当前行情并评估是否需要调整订单价格
       const { getQuoteContext } = await import('../config/longport');

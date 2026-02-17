@@ -490,7 +490,7 @@ class LogService {
       );
       if (newSize < this.queueSize) {
         this.queueSize = newSize;
-        infraLogger.info(`[LogService] 队列缩容: ${this.queue.length}/${this.queueSize} (使用率: ${usage.toFixed(1)}%)`);
+        infraLogger.debug(`[LogService] 队列缩容: ${this.queue.length}/${this.queueSize} (使用率: ${usage.toFixed(1)}%)`);
       }
     }
   }

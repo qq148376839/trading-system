@@ -244,6 +244,8 @@ export class OptionIntradayStrategy extends StrategyBase {
   private cfg: OptionIntradayStrategyConfig;
   // 连续确认状态（内存级别，策略重启自动重置）
   private consecutiveStates: Map<string, { direction: string; count: number; lastTime: number }> = new Map();
+  // 非交易时间日志限频（每标的每5分钟最多打印一次）
+  private tradeWindowSkipLogTimes: Map<string, number> = new Map();
 
   constructor(strategyId: number, config: OptionIntradayStrategyConfig = {}) {
     super(strategyId, config as any);
@@ -444,6 +446,11 @@ export class OptionIntradayStrategy extends StrategyBase {
    * 记录决策日志到 system_logs
    */
   private logDecision(data: OptionDecisionLogData): void {
+    // 非交易时间的 NO_SIGNAL 决策不打印，避免大量冗余日志
+    if (data.rejectionCheckpoint === 'trade_window') {
+      return;
+    }
+
     // 市场数据不可用是基础设施问题，降级为 warn 而非 error
     const isDataError = data.rejectionReason && (
       data.rejectionReason.includes('数据不足') ||
@@ -506,7 +513,12 @@ export class OptionIntradayStrategy extends StrategyBase {
       // 1) 检查交易时间窗口
       const windowCheck = this.isWithinTradeWindow();
       if (!windowCheck.canTrade) {
-        logger.debug(`[${symbol}] ${windowCheck.reason}，跳过信号生成`);
+        const now = Date.now();
+        const lastLogTime = this.tradeWindowSkipLogTimes.get(symbol) || 0;
+        if (now - lastLogTime > 5 * 60 * 1000) {
+          logger.debug(`[${symbol}] ${windowCheck.reason}，跳过信号生成`);
+          this.tradeWindowSkipLogTimes.set(symbol, now);
+        }
         logData.finalResult = 'NO_SIGNAL';
         logData.rejectionReason = windowCheck.reason;
         logData.rejectionCheckpoint = 'trade_window';

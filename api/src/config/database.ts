@@ -13,10 +13,16 @@ const pool = new Pool({
 });
 
 // 测试数据库连接
+let dbFirstConnect = true;
 pool.on('connect', () => {
   // 只在非测试环境输出日志，避免测试完成后输出日志
   if (process.env.NODE_ENV !== 'test') {
-    infraLogger.info('Database connected');
+    if (dbFirstConnect) {
+      infraLogger.info('Database connected');
+      dbFirstConnect = false;
+    } else {
+      infraLogger.debug('Database new connection established');
+    }
   }
 });
 

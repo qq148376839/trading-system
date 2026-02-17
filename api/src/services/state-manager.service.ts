@@ -69,17 +69,14 @@ class StateManager {
       WHERE s.status = 'RUNNING'
     `);
 
-    logger.info(`恢复 ${strategiesResult.rows.length} 个策略实例状态`, { dbWrite: false });
-
-    for (const row of strategiesResult.rows) {
-      if (row.symbol && row.current_state) {
-        logger.info(
-          `恢复策略 ${row.name} (ID: ${row.strategy_id}) 的实例 ` +
-          `${row.symbol}: 状态 ${row.current_state}`,
-          { dbWrite: false }
-        );
-      }
-    }
+    const restoredInstances = strategiesResult.rows
+      .filter((row: any) => row.symbol && row.current_state)
+      .map((row: any) => `${row.name}(${row.strategy_id})/${row.symbol}:${row.current_state}`);
+    logger.info(
+      `恢复 ${strategiesResult.rows.length} 个策略实例状态` +
+      (restoredInstances.length > 0 ? ` [${restoredInstances.join(', ')}]` : ''),
+      { dbWrite: false }
+    );
 
     // 返回恢复的状态信息（供调用方使用）
     return;

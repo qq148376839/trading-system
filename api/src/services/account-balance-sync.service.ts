@@ -284,7 +284,7 @@ class AccountBalanceSyncService {
           logger.debug(`[账户余额同步] positionMap keys: ${Array.from(positionMap.keys()).slice(0, 20).join(', ')}${positionMap.size > 20 ? '...' : ''}`);
         }
       } else {
-        logger.warn('[账户余额同步] 实际持仓数据为空或格式异常');
+        logger.debug('[账户余额同步] 实际持仓数据为空或格式异常');
         logger.debug(`[账户余额同步] positions数据结构: ${JSON.stringify(positions, null, 2)}`);
       }
 
