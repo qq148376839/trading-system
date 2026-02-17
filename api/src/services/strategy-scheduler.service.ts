@@ -29,6 +29,7 @@ import { getOptionDetail } from './futunn-option-chain.service';
 import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-limiter';
 import longportOptionQuoteService from './longport-option-quote.service';
 import marketDataCacheService from './market-data-cache.service';
+import marketDataService from './market-data.service';
 
 
 // 定义执行汇总接口
@@ -2304,7 +2305,8 @@ class StrategyScheduler {
           currentPrice,
           entryPrice,
           quantity,
-          strategyConfig
+          strategyConfig,
+          optionMidPrice
         );
       }
 
@@ -2499,7 +2501,8 @@ class StrategyScheduler {
     currentPrice: number,
     entryPrice: number,
     quantity: number,
-    strategyConfig: any
+    strategyConfig: any,
+    optionMidPrice: number = 0
   ): Promise<{ actionTaken: boolean }> {
     try {
       const optionDynamicExitService = (await import('./option-dynamic-exit.service')).default;
@@ -2652,7 +2655,63 @@ class StrategyScheduler {
         );
       }
 
-      // 6. 构建持仓上下文
+      // 6. 解析期权方向 & 标的，获取 VWAP 数据（Phase 2 结构确认/时间止损）
+      let optionDirection: 'CALL' | 'PUT' | undefined;
+      let resolvedUnderlyingSymbol: string | undefined;
+      let entryUnderlyingPrice: number | undefined;
+      let vwapData: { vwap: number; rangePct: number; recentKlines: { open: number; high: number; low: number; close: number; volume: number; timestamp: number }[] } | null = null;
+      let timeStopMinutes: number | undefined;
+
+      try {
+        // 6a. 解析期权方向
+        const metaOptionType = optionMeta.optionType || optionMeta.option_type;
+        if (metaOptionType === 'CALL' || metaOptionType === 'PUT') {
+          optionDirection = metaOptionType;
+        } else if (effectiveSymbol) {
+          // 从 symbol 解析：AAPL260210C100000.US → C = CALL
+          const core = effectiveSymbol.replace(/\.(US|HK)$/i, '');
+          const cpMatch = core.match(/[A-Z]+\d{6}([CP])/);
+          if (cpMatch) {
+            optionDirection = cpMatch[1] === 'C' ? 'CALL' : 'PUT';
+          }
+        }
+
+        // 6b. 解析标的 symbol
+        resolvedUnderlyingSymbol = context.underlyingSymbol || optionMeta.underlyingSymbol;
+        if (!resolvedUnderlyingSymbol && effectiveSymbol) {
+          const core = effectiveSymbol.replace(/\.(US|HK)$/i, '');
+          const ulMatch = core.match(/^([A-Z]+)\d{6}[CP]/);
+          const market = effectiveSymbol.endsWith('.HK') ? 'HK' : 'US';
+          if (ulMatch) {
+            resolvedUnderlyingSymbol = `${ulMatch[1]}.${market}`;
+          }
+        }
+
+        // 6c. 入场时标的价格（从 optionMeta 或 context）
+        entryUnderlyingPrice = parseFloat(String(optionMeta.underlyingPrice || context.entryUnderlyingPrice || 0)) || undefined;
+
+        // 6d. 获取 VWAP 数据（仅在有标的 symbol 时）
+        if (resolvedUnderlyingSymbol) {
+          vwapData = await marketDataService.getIntradayVWAP(resolvedUnderlyingSymbol);
+          if (vwapData) {
+            // 波动率分桶确定 timeStopMinutes
+            const { rangePct } = vwapData;
+            if (rangePct >= 0.0065) {
+              timeStopMinutes = 3;   // 高波动：3 分钟
+            } else if (rangePct >= 0.0045) {
+              timeStopMinutes = 5;   // 中波动：5 分钟
+            } else {
+              timeStopMinutes = 8;   // 低波动：8 分钟
+            }
+          }
+        }
+      } catch (vwapErr: unknown) {
+        // VWAP 获取失败不影响核心止盈止损逻辑
+        const errMsg = vwapErr instanceof Error ? vwapErr.message : String(vwapErr);
+        logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: VWAP数据获取失败，跳过结构退出: ${errMsg}`);
+      }
+
+      // 7. 构建持仓上下文
       const marketCloseTime = optionDynamicExitService.getMarketCloseTime();
       const positionCtx = {
         entryPrice,
@@ -2675,6 +2734,14 @@ class StrategyScheduler {
         estimatedExitFees,
         is0DTE,
         midPrice: optionMidPrice > 0 ? optionMidPrice : undefined,
+        // Phase 2: 结构确认 & 时间止损数据
+        optionDirection,
+        vwap: vwapData?.vwap,
+        recentKlines: vwapData?.recentKlines,
+        entryUnderlyingPrice,
+        timeStopMinutes,
+        rangePct: vwapData?.rangePct,
+        peakPnLPercent: context.peakPnLPercent || 0,
       };
 
       // 7. 检查是否应该平仓（传入用户配置的止盈止损比例）
@@ -2686,11 +2753,15 @@ class StrategyScheduler {
 
       if (exitCondition) {
         // 触发平仓条件
-        const { action, reason, pnl } = exitCondition;
+        const { action, reason, pnl, exitTag } = exitCondition;
 
         logger.log(
           `策略 ${strategyId} 期权 ${effectiveSymbol}: 动态止盈止损触发 ` +
-          `[${action}] ${reason} | ${optionDynamicExitService.formatPnLInfo(pnl, positionCtx)}`
+          `[${action}]${exitTag ? `[${exitTag}]` : ''} ${reason} | ${optionDynamicExitService.formatPnLInfo(pnl, positionCtx)}` +
+          (is0DTE ? ` | midPrice=${optionMidPrice > 0 ? optionMidPrice.toFixed(4) : 'N/A'}` : '') +
+          (vwapData ? ` | vwap=${vwapData.vwap.toFixed(2)} rangePct=${(vwapData.rangePct * 100).toFixed(2)}%` : '') +
+          (timeStopMinutes ? ` | T=${timeStopMinutes}min` : '') +
+          (optionDirection ? ` | dir=${optionDirection}` : '')
         );
 
         // 检查可用持仓

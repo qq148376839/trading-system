@@ -1,5 +1,99 @@
 # 更新日志
 
+## 2026-02-17
+
+### 0DTE 单腿动态风控 Phase 2（VWAP 结构确认 + 时间止损 + 追踪止盈动态化）
+
+**新增**: 基于 VWAP 的结构确认入场/退出、波动率分桶时间止损、追踪止盈动态化。Phase 1 + Phase 2 全部完成。
+
+**改动内容**:
+
+#### 1. VWAP 计算服务
+- **新增**: `MarketDataService.getIntradayVWAP()` 方法
+- 数据源：LongPort SDK 1m K 线，计算 VWAP = Σ(TP×V)/Σ(V)
+- 同时返回 `rangePct`（30 分钟开盘波动率）和最近 5 根 K 线
+- 60s 缓存 TTL + 5min 旧缓存降级
+
+#### 2. VWAP 结构确认入场
+- **新增**: 连续确认通过后，检查标的是否满足 VWAP 结构条件
+- PUT：最近 2 根 1m 收盘价 < VWAP + 无强反转阳线
+- CALL：最近 2 根 1m 收盘价 > VWAP + 无强反转阴线
+- VWAP 不可用时自动跳过（降级策略）
+
+#### 3. 结构失效止损（Level A）
+- **新增**: 退出检查中止盈之后新增结构失效止损
+- PUT 持仓：2 根 close > VWAP → 做空结构失效 → 平仓
+- CALL 持仓：2 根 close < VWAP → 做多结构失效 → 平仓
+- exitTag: `structure_invalidation`
+
+#### 4. 时间止损（Level B）
+- **新增**: 入场后 T 分钟无"最小顺风延续"则退出
+- T 值按波动率分桶：高(≥0.65%)→3min / 中(0.45~0.65%)→5min / 低(<0.45%)→8min
+- 顺风判定：标的创新低(PUT)/新高(CALL) 或 期权 mid 盈利 ≥ +5%
+- exitTag: `time_stop_no_tailwind`
+
+#### 5. 追踪止盈动态化
+- **改进**: 0DTE 追踪止盈参数按波动率分桶动态调整
+  - 高波动：trigger=15%, trail=15%
+  - 中波动：trigger=15%, trail=12%
+  - 低波动：trigger=15%, trail=10%
+- **改进**: 移动止损使用 scheduler 精确追踪的 `peakPnLPercent` 替代旧的启发式估算
+- exitTag: `trailing_stop`
+
+#### 6. Scheduler 集成
+- **新增**: `import marketDataService` 到策略调度器
+- 在持仓监控中解析期权方向(CALL/PUT)、标的 symbol、入场标的价格
+- 获取 VWAP 数据并传递到退出服务的 `positionCtx`
+- 退出日志增加 VWAP、rangePct、timeStopMinutes、optionDirection 信息
+
+**修改文件**:
+- 📝 `api/src/services/market-data.service.ts`（VWAP 计算 + 缓存 + 波动率）
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`（VWAP 结构确认入场）
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（结构失效 + 时间止损 + 追踪止盈动态化）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（VWAP 数据获取 + positionCtx 传递）
+
+**开发文档**: `docs/features/260216-0DTE单腿动态风控开发文档.md`
+**方案文档**: `docs/analysis/260216-0DTE-single-leg-dynamic-risk-playbook.md`
+
+---
+
+## 2026-02-16
+
+### 0DTE 单腿动态风控 Phase 1（禁入窗口/阈值/连续确认/退出兜底mid价）
+
+**新增**: 基于 02-13 交易分析（-$485 0DTE 亏损），实现四层核心风控改进。
+
+**改动内容**:
+
+#### 1. 0DTE 开盘禁入窗口
+- 09:30-10:00 ET 禁止 0DTE 新开仓（`zdteCooldownMinutes: 30`）
+- 合约选择器支持 `skip0DTE` 参数，禁入期选择 1DTE/2DTE
+
+#### 2. 入场阈值提升
+- 0DTE 入场阈值从 -10 提升到 -12（`zdteEntryThreshold: 12`）
+- `evaluateDirectionalBuyer()` / `evaluateSpreadStrategy()` 支持 `is0DTE` 参数
+
+#### 3. 连续确认（Consecutive Confirm）
+- 入场信号需连续 N 次（默认 2）同向达标才触发
+- 15 秒容忍窗口，方向翻转或超时自动重置
+
+#### 4. 0DTE 止损收紧
+- PnL 兜底收紧到 -25%（使用 mid 价格计算）
+- 禁用 3-10 分钟冷却期放宽（不再从 -35% 放宽到 -52.5%）
+- scheduler 传递 midPrice = (bid+ask)/2 到退出服务
+
+#### 5. 日志增强
+- 入场日志新增 `zdteFlags` 结构化字段
+- 退出日志新增 `exitTag` 标签（`0dte_time_stop` / `0dte_pnl_floor` / `0dte_stop_loss_no_widen`）
+
+**修改文件**:
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`（禁入窗口 + 阈值 + 连续确认）
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（PnL 兜底 + mid 价格 + 禁用冷却放宽）
+- 📝 `api/src/services/options-contract-selector.service.ts`（skip0DTE 支持）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（midPrice 传递）
+
+---
+
 ## 2026-02-13
 
 ### 交易策略优化 — 基于 260212 分析报告（9项修复）

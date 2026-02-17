@@ -68,6 +68,14 @@ export interface PositionContext {
   // 0DTE 标记
   is0DTE?: boolean;             // 是否为当日到期（末日期权）
   midPrice?: number;            // (bid+ask)/2 中间价，0DTE优先使用（更稳定）
+  // Phase 2 结构数据
+  optionDirection?: 'CALL' | 'PUT';   // 期权方向
+  vwap?: number;                // 标的当日 VWAP
+  recentKlines?: { open: number; high: number; low: number; close: number; volume: number; timestamp: number }[];
+  entryUnderlyingPrice?: number;  // 入场时标的价格（时间止损用）
+  timeStopMinutes?: number;       // 该仓位的时间止损 T（波动率分桶）
+  rangePct?: number;               // 标的30分钟开盘波动率（VWAP服务返回），用于追踪止盈动态化
+  peakPnLPercent?: number;         // 历史最高盈亏百分比（scheduler 追踪），用于精确移动止损
 }
 
 /** 盈亏计算结果 */
@@ -324,6 +332,26 @@ class OptionDynamicExitService {
     }
 
     // 5. 移动止损逻辑（已盈利时）
+    // 0DTE 波动率分桶：根据 rangePct 动态调整 trigger / trail
+    if (ctx.is0DTE && ctx.rangePct !== undefined && ctx.rangePct > 0) {
+      if (ctx.rangePct >= 0.0065) {
+        // 高波动：提前锁利，宽松回撤
+        baseParams.trailingStopTrigger = 15;
+        baseParams.trailingStopPercent = 15;
+        reasons.push(`0DTE高波(${(ctx.rangePct * 100).toFixed(2)}%),trail=15/15`);
+      } else if (ctx.rangePct >= 0.0045) {
+        // 中波动
+        baseParams.trailingStopTrigger = 15;
+        baseParams.trailingStopPercent = 12;
+        reasons.push(`0DTE中波(${(ctx.rangePct * 100).toFixed(2)}%),trail=15/12`);
+      } else {
+        // 低波动：更紧的回撤保护
+        baseParams.trailingStopTrigger = 15;
+        baseParams.trailingStopPercent = 10;
+        reasons.push(`0DTE低波(${(ctx.rangePct * 100).toFixed(2)}%),trail=15/10`);
+      }
+    }
+
     if (pnl.grossPnLPercent >= baseParams.trailingStopTrigger) {
       // 触发移动止损：止损价上移至保本
       reasons.push(`盈利${pnl.grossPnLPercent.toFixed(1)}%≥${baseParams.trailingStopTrigger}%,启用移动止损`);
@@ -346,7 +374,7 @@ class OptionDynamicExitService {
     ctx: PositionContext,
     params?: DynamicExitParams,
     exitRulesOverride?: ExitRulesOverride
-  ): { action: 'TAKE_PROFIT' | 'STOP_LOSS' | 'TRAILING_STOP' | 'TIME_STOP'; reason: string; pnl: PnLResult } | null {
+  ): { action: 'TAKE_PROFIT' | 'STOP_LOSS' | 'TRAILING_STOP' | 'TIME_STOP'; reason: string; pnl: PnLResult; exitTag?: string } | null {
     const dynamicParams = params || this.getDynamicExitParams(ctx, exitRulesOverride);
     const pnl = this.calculatePnL(ctx);
     const now = new Date();
@@ -359,6 +387,7 @@ class OptionDynamicExitService {
         action: 'TIME_STOP',
         reason: `0DTE期权收盘前${minutesToClose.toFixed(0)}分钟，强制平仓 | 盈亏=${pnl.grossPnLPercent.toFixed(1)}%`,
         pnl,
+        exitTag: '0dte_time_stop',
       };
     }
 
@@ -380,21 +409,86 @@ class OptionDynamicExitService {
       };
     }
 
+    // 2.5 结构失效止损（Level A）：标的价格反转回 VWAP 另一侧
+    if (ctx.vwap && ctx.vwap > 0 && ctx.recentKlines && ctx.recentKlines.length >= 2 && ctx.optionDirection) {
+      const last2 = ctx.recentKlines.slice(-2);
+      const vwap = ctx.vwap;
+
+      if (ctx.optionDirection === 'PUT') {
+        // PUT持仓：标的连续2根1m收盘站回VWAP上方 → 做空结构失效
+        const allAbove = last2.every(k => k.close > vwap);
+        if (allAbove) {
+          return {
+            action: 'STOP_LOSS',
+            reason: `结构失效：PUT持仓但标的连续2根1m收盘(${last2.map(k => k.close.toFixed(2)).join(',')})站回VWAP(${vwap.toFixed(2)})上方`,
+            pnl,
+            exitTag: 'structure_invalidation',
+          };
+        }
+      } else if (ctx.optionDirection === 'CALL') {
+        // CALL持仓：标的连续2根1m收盘跌破VWAP → 做多结构失效
+        const allBelow = last2.every(k => k.close < vwap);
+        if (allBelow) {
+          return {
+            action: 'STOP_LOSS',
+            reason: `结构失效：CALL持仓但标的连续2根1m收盘(${last2.map(k => k.close.toFixed(2)).join(',')})跌破VWAP(${vwap.toFixed(2)})`,
+            pnl,
+            exitTag: 'structure_invalidation',
+          };
+        }
+      }
+    }
+
+    // 2.6 时间止损（Level B）：入场后T分钟内未出现顺风延续
+    if (ctx.timeStopMinutes && ctx.timeStopMinutes > 0 && ctx.entryUnderlyingPrice && ctx.entryUnderlyingPrice > 0) {
+      const holdingMs = now.getTime() - (ctx.entryTime || now).getTime();
+      const holdingMin = holdingMs / 60000;
+      if (holdingMin >= ctx.timeStopMinutes) {
+        // 检查是否有顺风延续
+        let hasTailwind = false;
+
+        // 方式A：标的创新低(PUT)/新高(CALL)
+        if (ctx.recentKlines && ctx.recentKlines.length > 0) {
+          const latestClose = ctx.recentKlines[ctx.recentKlines.length - 1].close;
+          if (ctx.optionDirection === 'PUT' && latestClose < ctx.entryUnderlyingPrice) {
+            hasTailwind = true; // 标的创新低，PUT有利
+          } else if (ctx.optionDirection === 'CALL' && latestClose > ctx.entryUnderlyingPrice) {
+            hasTailwind = true; // 标的创新高，CALL有利
+          }
+        }
+
+        // 方式B：期权mid盈利 >= +5%
+        if (pnl.grossPnLPercent >= 5) {
+          hasTailwind = true;
+        }
+
+        if (!hasTailwind) {
+          return {
+            action: 'STOP_LOSS',
+            reason: `时间止损：持仓${holdingMin.toFixed(0)}min ≥ T=${ctx.timeStopMinutes}min，无顺风延续 | 盈亏=${pnl.grossPnLPercent.toFixed(1)}%`,
+            pnl,
+            exitTag: 'time_stop_no_tailwind',
+          };
+        }
+      }
+    }
+
     // 3. 移动止损检查
-    if (pnl.grossPnLPercent >= dynamicParams.trailingStopTrigger) {
-      // 已触发移动止损，检查回撤
-      // 注意：这里需要追踪历史最高盈利，简化实现使用当前检查
-      // 实际应该在context中记录peakPnLPercent
-      const peakPnLPercent = ctx.currentPrice > ctx.entryPrice
-        ? pnl.grossPnLPercent * 1.1  // 假设当前接近峰值（实际应追踪）
-        : pnl.grossPnLPercent;
+    if (pnl.grossPnLPercent >= dynamicParams.trailingStopTrigger ||
+        (ctx.peakPnLPercent !== undefined && ctx.peakPnLPercent >= dynamicParams.trailingStopTrigger)) {
+      // 使用 scheduler 追踪的 peakPnLPercent（更精确），否则用当前值
+      const peakPnLPercent = Math.max(
+        ctx.peakPnLPercent ?? 0,
+        pnl.grossPnLPercent
+      );
 
       const drawdown = peakPnLPercent - pnl.grossPnLPercent;
       if (drawdown >= dynamicParams.trailingStopPercent) {
         return {
           action: 'TRAILING_STOP',
-          reason: `移动止损触发：从峰值回撤${drawdown.toFixed(1)}% ≥ ${dynamicParams.trailingStopPercent}%`,
+          reason: `移动止损触发：峰值${peakPnLPercent.toFixed(1)}% → 当前${pnl.grossPnLPercent.toFixed(1)}%，回撤${drawdown.toFixed(1)}% ≥ ${dynamicParams.trailingStopPercent}%`,
           pnl,
+          exitTag: 'trailing_stop',
         };
       }
     }
@@ -407,6 +501,7 @@ class OptionDynamicExitService {
           action: 'STOP_LOSS',
           reason: `0DTE兜底止损：亏损${pnl.grossPnLPercent.toFixed(1)}% ≤ -${zdtePnlFloor}%(0DTE收紧)`,
           pnl,
+          exitTag: '0dte_pnl_floor',
         };
       }
     }
@@ -421,6 +516,7 @@ class OptionDynamicExitService {
           action: 'STOP_LOSS',
           reason: `亏损${pnl.grossPnLPercent.toFixed(1)}% ≤ -${dynamicParams.stopLossPercent}%(0DTE不放宽, 持仓${holdingMinutes.toFixed(0)}min) | ${dynamicParams.adjustmentReason}`,
           pnl,
+          exitTag: '0dte_stop_loss_no_widen',
         };
       }
     } else if (holdingMinutes < 3) {

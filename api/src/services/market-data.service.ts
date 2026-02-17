@@ -1070,6 +1070,135 @@ class MarketDataService {
       throw new Error(`市场数据获取失败，无法提供交易建议: ${error.message}`);
     }
   }
+
+  // ============================================
+  // VWAP 计算（Phase 2 — 结构确认用）
+  // ============================================
+
+  // VWAP 缓存：symbol → { vwap, dataPoints, rangePct, timestamp }
+  private vwapCache: Map<string, {
+    vwap: number;
+    dataPoints: number;
+    rangePct: number;
+    recentKlines: { open: number; high: number; low: number; close: number; volume: number; timestamp: number }[];
+    timestamp: number;
+  }> = new Map();
+  private readonly VWAP_CACHE_TTL = 60_000; // 60 秒
+
+  /**
+   * 获取标的当日 VWAP + 开盘波动率 + 最近 K 线
+   *
+   * 数据源优先级：
+   * 1. LongPort candlesticks(symbol, Period.Min_1)
+   * 2. 缓存降级（过期缓存最长 5 分钟）
+   *
+   * VWAP = Σ(TypicalPrice_i × Volume_i) / Σ(Volume_i)
+   * TypicalPrice = (High + Low + Close) / 3
+   *
+   * @param symbol 标的代码，如 "SPY.US"
+   * @returns VWAP 数据或 null（获取失败时）
+   */
+  async getIntradayVWAP(symbol: string): Promise<{
+    vwap: number;
+    dataPoints: number;
+    rangePct: number;         // 开盘30分钟波动率 (High-Low)/Open * 100%
+    recentKlines: { open: number; high: number; low: number; close: number; volume: number; timestamp: number }[];
+  } | null> {
+    // 1. 检查缓存
+    const cached = this.vwapCache.get(symbol);
+    const now = Date.now();
+    if (cached && (now - cached.timestamp) < this.VWAP_CACHE_TTL) {
+      return {
+        vwap: cached.vwap,
+        dataPoints: cached.dataPoints,
+        rangePct: cached.rangePct,
+        recentKlines: cached.recentKlines,
+      };
+    }
+
+    // 2. 从 LongPort 获取 1m K 线
+    try {
+      const longport = await import('longport');
+      const { Period, AdjustType } = longport;
+      const quoteCtx = await getQuoteContext();
+
+      const candles = await quoteCtx.candlesticks(
+        symbol,
+        Period.Min_1,
+        240,                  // 最多 240 根（一个交易日 6.5 小时 = 390 分钟，取最近 240 根足够）
+        AdjustType.NoAdjust
+      );
+
+      if (!candles || candles.length === 0) {
+        logger.debug(`[VWAP] ${symbol} LongPort 返回空 1m K 线`);
+        // 降级到过期缓存
+        if (cached && (now - cached.timestamp) < 5 * 60_000) {
+          logger.debug(`[VWAP] ${symbol} 使用过期缓存 (${((now - cached.timestamp) / 1000).toFixed(0)}s ago)`);
+          return { vwap: cached.vwap, dataPoints: cached.dataPoints, rangePct: cached.rangePct, recentKlines: cached.recentKlines };
+        }
+        return null;
+      }
+
+      // 3. 解析 K 线数据
+      const klines = candles.map((c: any) => ({
+        open: parseFloat(c.open?.toString() || c.o?.toString() || '0'),
+        high: parseFloat(c.high?.toString() || c.h?.toString() || '0'),
+        low: parseFloat(c.low?.toString() || c.l?.toString() || '0'),
+        close: parseFloat(c.close?.toString() || c.c?.toString() || '0'),
+        volume: parseInt(c.volume?.toString() || c.v?.toString() || '0', 10),
+        timestamp: c.timestamp ? new Date(c.timestamp).getTime() : 0,
+      })).filter((k: any) => k.volume > 0 && k.close > 0);
+
+      if (klines.length === 0) {
+        logger.debug(`[VWAP] ${symbol} 无有效 K 线数据（volume=0 或 close=0）`);
+        return null;
+      }
+
+      // 4. 计算 VWAP
+      let sumTPV = 0; // Σ(TypicalPrice × Volume)
+      let sumV = 0;   // Σ(Volume)
+      for (const k of klines) {
+        const tp = (k.high + k.low + k.close) / 3;
+        sumTPV += tp * k.volume;
+        sumV += k.volume;
+      }
+      const vwap = sumV > 0 ? sumTPV / sumV : 0;
+
+      // 5. 计算开盘 30 分钟波动率
+      // 取前 30 根 1m K 线（约 09:30-10:00 ET）
+      const first30 = klines.slice(0, 30);
+      let rangeHigh = 0;
+      let rangeLow = Infinity;
+      const openPrice = first30[0]?.open || 0;
+      for (const k of first30) {
+        if (k.high > rangeHigh) rangeHigh = k.high;
+        if (k.low < rangeLow) rangeLow = k.low;
+      }
+      const rangePct = openPrice > 0 ? ((rangeHigh - rangeLow) / openPrice) * 100 : 0;
+
+      // 6. 最近 5 根 K 线（供结构确认使用）
+      const recentKlines = klines.slice(-5);
+
+      // 7. 写入缓存
+      const result = { vwap, dataPoints: klines.length, rangePct, recentKlines, timestamp: now };
+      this.vwapCache.set(symbol, result);
+
+      logger.debug(
+        `[VWAP] ${symbol}: vwap=${vwap.toFixed(2)}, points=${klines.length}, ` +
+        `rangePct=${rangePct.toFixed(3)}%, recent=${recentKlines.length}根`
+      );
+
+      return { vwap, dataPoints: klines.length, rangePct, recentKlines };
+    } catch (error: any) {
+      logger.warn(`[VWAP] ${symbol} 获取失败: ${error.message}`);
+      // 降级到过期缓存（最长 5 分钟）
+      if (cached && (now - cached.timestamp) < 5 * 60_000) {
+        logger.debug(`[VWAP] ${symbol} 降级到过期缓存 (${((now - cached.timestamp) / 1000).toFixed(0)}s ago)`);
+        return { vwap: cached.vwap, dataPoints: cached.dataPoints, rangePct: cached.rangePct, recentKlines: cached.recentKlines };
+      }
+      return null;
+    }
+  }
 }
 
 /**

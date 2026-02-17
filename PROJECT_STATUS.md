@@ -1,11 +1,48 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-13
+**更新时间**: 2026-02-17
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-02-17: 0DTE 单腿动态风控 Phase 2（VWAP + 时间止损 + 追踪动态化）
+
+**变更内容**:
+1. 新增 `getIntradayVWAP()` VWAP 计算服务（LongPort 1m K 线，60s 缓存 + 5min 降级）
+2. 新增 VWAP 结构确认入场：连续 2 根 1m 收盘在 VWAP 同侧 + 无反转形态
+3. 新增结构失效止损（Level A）：标的价格连续 2 根穿回 VWAP → 平仓
+4. 新增时间止损（Level B）：入场后 T 分钟无顺风 → 退出（T = 3/5/8 按波动率分桶）
+5. 追踪止盈动态化：0DTE 按波动率分桶设置 trail（10%/12%/15%），使用精确 peakPnLPercent 追踪
+6. Scheduler 集成：解析期权方向、获取 VWAP 数据、传递到退出服务 positionCtx
+
+**修改文件**:
+- 📝 `api/src/services/market-data.service.ts`（VWAP 计算 + 缓存 + 波动率）
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`（VWAP 结构确认入场）
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（结构失效 + 时间止损 + 追踪动态化）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（VWAP 数据获取 + positionCtx 传递）
+
+**开发文档**: `docs/features/260216-0DTE单腿动态风控开发文档.md`
+
+---
+
+### 2026-02-16: 0DTE 单腿动态风控 Phase 1（禁入窗口/阈值/连续确认/退出兜底）
+
+**变更内容**:
+1. 09:30-10:00 ET 禁止 0DTE 新开仓（`zdteCooldownMinutes: 30`），禁入期选 1DTE/2DTE
+2. 0DTE 入场阈值从 -10 提升到 -12（`zdteEntryThreshold: 12`）
+3. 连续确认：入场信号需连续 2 次同向达标（15s 容忍窗口）
+4. 0DTE 止损收紧：PnL 兜底 -25%（mid 价格）+ 禁用冷却期放宽
+5. 日志增强：`zdteFlags` 结构化入场日志 + `exitTag` 退出标签
+
+**修改文件**:
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`（禁入窗口 + 阈值 + 连续确认）
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（PnL 兜底 + mid 价格 + 禁用冷却放宽）
+- 📝 `api/src/services/options-contract-selector.service.ts`（skip0DTE 支持）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（midPrice 传递）
+
+---
 
 ### 2026-02-13: 交易策略优化 — 9项修复（基于260212分析报告）
 

@@ -15,6 +15,7 @@ import { selectOptionContract } from '../options-contract-selector.service';
 import { estimateOptionOrderTotalCost } from '../options-fee.service';
 import { logger } from '../../utils/logger';
 import capitalManager from '../capital-manager.service';
+import marketDataService from '../market-data.service';
 
 // ============================================
 // 策略类型定义
@@ -228,6 +229,15 @@ interface OptionDecisionLogData {
   finalResult: 'SIGNAL_GENERATED' | 'NO_SIGNAL' | 'ERROR';
   rejectionReason?: string;
   rejectionCheckpoint?: string;
+  // Phase 1 风控标签
+  zdteFlags?: {
+    is0DTEEntry: boolean;          // 是否为0DTE入场
+    skip0DTE: boolean;             // 是否降级到非0DTE
+    inCooldown: boolean;           // 是否在0DTE禁入期
+    entryThreshold: number;        // 实际使用的入场阈值
+    consecutiveCount?: number;     // 连续确认当前计数
+    consecutiveRequired?: number;  // 连续确认要求次数
+  };
 }
 
 export class OptionIntradayStrategy extends StrategyBase {
@@ -468,6 +478,7 @@ export class OptionIntradayStrategy extends StrategyBase {
         reason: data.rejectionReason,
         checkpoint: data.rejectionCheckpoint,
       } : undefined,
+      zdteFlags: data.zdteFlags,
     });
   }
 
@@ -528,6 +539,21 @@ export class OptionIntradayStrategy extends StrategyBase {
       const skip0DTE = expirationMode === '0DTE' && isInZdteCooldown;
       // 如果配置为0DTE模式且不在禁入期，预判为0DTE入场（用于加严阈值）
       const is0DTEEntry = expirationMode === '0DTE' && !isInZdteCooldown;
+
+      // 记录0DTE风控标签到决策日志
+      const effectiveThreshold = is0DTEEntry
+        ? Math.max(
+            (ENTRY_THRESHOLDS[this.cfg.riskPreference || 'CONSERVATIVE']?.spreadScoreMin || 10),
+            this.cfg.zdteEntryThreshold ?? 12
+          )
+        : (ENTRY_THRESHOLDS[this.cfg.riskPreference || 'CONSERVATIVE']?.spreadScoreMin || 10);
+      logData.zdteFlags = {
+        is0DTEEntry,
+        skip0DTE,
+        inCooldown: isInZdteCooldown,
+        entryThreshold: effectiveThreshold,
+        consecutiveRequired: this.cfg.consecutiveConfirmCycles ?? 2,
+      };
 
       if (skip0DTE) {
         logger.info(`[0DTE禁入] ${symbol} 开盘${minutesSinceOpen}分钟内禁止0DTE新仓，将降级选择非0DTE合约`);
@@ -671,6 +697,7 @@ export class OptionIntradayStrategy extends StrategyBase {
             logData.finalResult = 'NO_SIGNAL';
             logData.rejectionReason = `连续确认 ${state.count}/${requiredCycles}`;
             logData.rejectionCheckpoint = 'consecutive_confirm';
+            if (logData.zdteFlags) logData.zdteFlags.consecutiveCount = state.count;
             this.logDecision(logData);
             return null;
           }
@@ -684,9 +711,81 @@ export class OptionIntradayStrategy extends StrategyBase {
           logData.finalResult = 'NO_SIGNAL';
           logData.rejectionReason = `连续确认 1/${requiredCycles}`;
           logData.rejectionCheckpoint = 'consecutive_confirm';
+          if (logData.zdteFlags) logData.zdteFlags.consecutiveCount = 1;
           this.logDecision(logData);
           return null;
         }
+      }
+
+      // 5.8) 结构确认：检查标的价格与 VWAP 关系 + 反转形态检测
+      try {
+        const vwapData = await marketDataService.getIntradayVWAP(symbol);
+        if (vwapData && vwapData.vwap > 0 && vwapData.recentKlines.length >= 2) {
+          const recent = vwapData.recentKlines;
+          const last2 = recent.slice(-2);
+          const vwap = vwapData.vwap;
+
+          if (direction === 'PUT') {
+            // PUT入场结构确认：最近2根1m收盘应在VWAP下方
+            const allBelowVwap = last2.every(k => k.close < vwap);
+            if (!allBelowVwap) {
+              logger.info(
+                `[结构确认] ${symbol} PUT 拒绝：最近2根1mK线收盘未全部在VWAP(${vwap.toFixed(2)})下方 ` +
+                `[${last2.map(k => k.close.toFixed(2)).join(', ')}]`
+              );
+              logData.finalResult = 'NO_SIGNAL';
+              logData.rejectionReason = `结构确认失败：收盘价未在VWAP下方`;
+              logData.rejectionCheckpoint = 'structure_confirm';
+              this.logDecision(logData);
+              return null;
+            }
+            // 检测强反转形态（大阳线拉回VWAP上方）
+            const lastK = recent[recent.length - 1];
+            const bodyRatio = lastK.high > lastK.low ? (lastK.close - lastK.open) / (lastK.high - lastK.low) : 0;
+            if (bodyRatio > 0.7 && lastK.close > vwap) {
+              logger.info(
+                `[结构确认] ${symbol} PUT 拒绝：检测到强反转阳线(body=${(bodyRatio * 100).toFixed(0)}%, close=${lastK.close.toFixed(2)} > VWAP=${vwap.toFixed(2)})`
+              );
+              logData.finalResult = 'NO_SIGNAL';
+              logData.rejectionReason = `结构确认失败：强反转阳线`;
+              logData.rejectionCheckpoint = 'structure_confirm';
+              this.logDecision(logData);
+              return null;
+            }
+          } else {
+            // CALL入场结构确认：最近2根1m收盘应在VWAP上方
+            const allAboveVwap = last2.every(k => k.close > vwap);
+            if (!allAboveVwap) {
+              logger.info(
+                `[结构确认] ${symbol} CALL 拒绝：最近2根1mK线收盘未全部在VWAP(${vwap.toFixed(2)})上方 ` +
+                `[${last2.map(k => k.close.toFixed(2)).join(', ')}]`
+              );
+              logData.finalResult = 'NO_SIGNAL';
+              logData.rejectionReason = `结构确认失败：收盘价未在VWAP上方`;
+              logData.rejectionCheckpoint = 'structure_confirm';
+              this.logDecision(logData);
+              return null;
+            }
+            // 检测强下砸形态（大阴线跌破VWAP）
+            const lastK = recent[recent.length - 1];
+            const bodyRatio = lastK.high > lastK.low ? (lastK.open - lastK.close) / (lastK.high - lastK.low) : 0;
+            if (bodyRatio > 0.7 && lastK.close < vwap) {
+              logger.info(
+                `[结构确认] ${symbol} CALL 拒绝：检测到强下砸阴线(body=${(bodyRatio * 100).toFixed(0)}%, close=${lastK.close.toFixed(2)} < VWAP=${vwap.toFixed(2)})`
+              );
+              logData.finalResult = 'NO_SIGNAL';
+              logData.rejectionReason = `结构确认失败：强下砸阴线`;
+              logData.rejectionCheckpoint = 'structure_confirm';
+              this.logDecision(logData);
+              return null;
+            }
+          }
+          logger.info(`[结构确认] ${symbol} ${direction} 通过 | VWAP=${vwap.toFixed(2)}, last2=[${last2.map(k => k.close.toFixed(2)).join(', ')}]`);
+        } else {
+          logger.debug(`[结构确认] ${symbol} VWAP数据不可用，跳过结构确认（降级放行）`);
+        }
+      } catch (structErr: any) {
+        logger.warn(`[结构确认] ${symbol} 异常: ${structErr.message}，跳过结构确认（降级放行）`);
       }
 
       // 6) 选择合约

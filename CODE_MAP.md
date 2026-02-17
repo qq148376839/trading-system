@@ -2,7 +2,7 @@
 
 本文档详细说明了项目中每个文件的作用以及文件之间的调用和关联关系。
 
-**最后更新**: 2026-02-13（交易策略优化 — 9项修复）
+**最后更新**: 2026-02-17（0DTE 单腿动态风控 Phase 1 + Phase 2）
 
 ---
 
@@ -404,11 +404,12 @@ trading-system/
 - 获取分时数据
 - 获取市场温度（LongPort SDK `marketTemperature`方法）
 - 获取历史市场温度（LongPort SDK `historyMarketTemperature`方法）
+- **VWAP 计算**：`getIntradayVWAP()` 从 LongPort 1m K 线计算当日 VWAP + 波动率 + 最近 K 线（60s 缓存，5min 降级）
 - 重试机制和错误处理
 
 **调用关系**:
 - ✅ 使用 `config/futunn.ts` - 富途配置
-- ✅ 使用 `config/longport.ts` - LongPort配置（市场温度）
+- ✅ 使用 `config/longport.ts` - LongPort配置（市场温度 + 1m K 线）
 - ✅ 使用 `utils/moomoo-proxy.ts` - Moomoo API 代理
 
 **主要方法**:
@@ -416,10 +417,13 @@ trading-system/
 - `getHistoricalMarketTemperature()` - 获取历史市场温度（用于回测）
 - `getVIXCandlesticks()` - 获取VIX恐慌指数K线数据（使用TradeSessions参数）
 - `getBTCCandlesticks()` - 获取BTC K线数据
+- `getIntradayVWAP(symbol)` - 计算标的当日 VWAP（返回 vwap/rangePct/recentKlines）
 
 **被调用**:
 - 📌 `services/market-data-cache.service.ts` - 市场数据缓存
 - 📌 `services/trading-recommendation.service.ts` - 交易推荐
+- 📌 `services/strategy-scheduler.service.ts` - 策略调度器（VWAP 数据获取）
+- 📌 `services/strategies/option-intraday-strategy.ts` - 期权日内策略（VWAP 结构确认入场）
 - 📌 `routes/futunn-test.ts` - 测试端点
 
 #### `api/src/services/market-data-cache.service.ts`
@@ -711,7 +715,11 @@ trading-system/
 - Delta对冲信号生成
 - 支持多种期权策略类型
 - **用户配置缩放**：`ExitRulesOverride` 接口支持用户自定义止盈止损比例，以 EARLY 阶段为基准按时间阶段比例递减
-- **0DTE强制平仓**：`PositionContext` 包含 `is0DTE` 字段，收盘前210分钟触发 TIME_STOP 强制退出
+- **0DTE强制平仓**：`PositionContext` 包含 `is0DTE` 字段，收盘前180分钟触发 TIME_STOP 强制退出
+- **0DTE 止损收紧**：PnL 兜底 -25%（mid 价格）+ 禁用冷却期放宽 + exitTag 标签
+- **VWAP 结构失效止损**：标的连续 2 根 1m K 线穿回 VWAP → 平仓（`structure_invalidation`）
+- **时间止损**：入场后 T 分钟无顺风延续 → 退出（T 按波动率分桶 3/5/8min）
+- **追踪止盈动态化**：0DTE 按波动率分桶设置 trail（10%/12%/15%），使用精确 peakPnLPercent
 
 **调用关系**:
 - ✅ 使用 `services/trading-recommendation.service.ts` - 获取市场状态
@@ -845,11 +853,16 @@ trading-system/
 - 通过富途/Moomoo 期权链与详情选择流动性更好的合约（0DTE/最近到期）
 - 生成期权下单意图（symbol=期权合约、quantity=contracts、entryPrice=期权权利金）
 - 计算资金占用：`premium * multiplier * contracts + fees` 并通过 `metadata.allocationAmountOverride` 传递给调度器
+- **0DTE 禁入窗口**：09:30-10:00 ET 禁止 0DTE 新开仓，禁入期自动选 1DTE/2DTE
+- **0DTE 入场阈值**：0DTE 入场阈值提升到 -12（`zdteEntryThreshold`），非 0DTE 使用标准阈值
+- **连续确认**：入场信号需连续 N 次（默认 2）同向达标，15s 容忍窗口
+- **VWAP 结构确认**：连续确认后检查标的是否满足 VWAP 结构条件（2 根 1m 收盘在 VWAP 同侧）
 
 **调用关系**:
 - ✅ 使用 `services/trading-recommendation.service.ts` - underlying 方向信号
 - ✅ 使用 `services/options-contract-selector.service.ts` - 合约选择（LongPort主源 + 富途备用，含0DTE买入截止）
 - ✅ 使用 `services/options-fee.service.ts` - 费用与资金占用估算
+- ✅ 使用 `services/market-data.service.ts` - VWAP 数据获取（结构确认）
 
 **被调用**:
 - 📌 `services/strategy-scheduler.service.ts` - 策略调度器（`OPTION_INTRADAY_V1`）
