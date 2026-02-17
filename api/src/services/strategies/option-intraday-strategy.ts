@@ -69,6 +69,7 @@ export interface TradeWindowConfig {
   noNewEntryBeforeCloseMinutes?: number;  // 收盘前N分钟不开新仓
   forceCloseBeforeCloseMinutes?: number;  // 收盘前N分钟强制平仓
   directionConfirmMinutes?: number;   // 开盘后N分钟内方向确认窗口（默认30）
+  zdteCooldownMinutes?: number;       // 0DTE开盘禁入时长，分钟（默认30，即09:30-10:00禁止0DTE新仓）
 }
 
 // ============================================
@@ -115,6 +116,10 @@ export interface OptionIntradayStrategyConfig {
     cooldownMinutes?: number;        // 同一标的平仓后N分钟内不重新开仓（默认3）
     minProfitThreshold?: number;     // LATE时段最低信号得分阈值提高比例（默认0.10=10%）
   };
+
+  // ===== 0DTE 风控配置 =====
+  zdteEntryThreshold?: number;           // 0DTE入场得分阈值（默认12，非0DTE使用ENTRY_THRESHOLDS）
+  consecutiveConfirmCycles?: number;     // 连续确认次数（默认2，设为1禁用连续确认）
 
   // ===== 旧配置（保留兼容性） =====
   directionMode?: DirectionMode;        // 已弃用，使用 strategyTypes.buyer
@@ -227,6 +232,8 @@ interface OptionDecisionLogData {
 
 export class OptionIntradayStrategy extends StrategyBase {
   private cfg: OptionIntradayStrategyConfig;
+  // 连续确认状态（内存级别，策略重启自动重置）
+  private consecutiveStates: Map<string, { direction: string; count: number; lastTime: number }> = new Map();
 
   constructor(strategyId: number, config: OptionIntradayStrategyConfig = {}) {
     super(strategyId, config as any);
@@ -347,24 +354,29 @@ export class OptionIntradayStrategy extends StrategyBase {
   private evaluateDirectionalBuyer(
     optionRec: any,
     strategyType: 'DIRECTIONAL_CALL' | 'DIRECTIONAL_PUT',
-    isLate: boolean = false
+    isLate: boolean = false,
+    is0DTE: boolean = false
   ): { shouldTrade: boolean; direction: 'CALL' | 'PUT'; reason: string } {
     const thresholds = this.getThresholds(isLate);
     const score = optionRec.finalScore;
 
+    // 0DTE使用更严格阈值：取 ENTRY_THRESHOLDS 与 zdteEntryThreshold 的较大值
+    const effectiveMin = is0DTE
+      ? Math.max(thresholds.directionalScoreMin, this.cfg.zdteEntryThreshold ?? 12)
+      : thresholds.directionalScoreMin;
+    const tag = is0DTE && effectiveMin > thresholds.directionalScoreMin ? '(0DTE加严)' : '';
+
     if (strategyType === 'DIRECTIONAL_CALL') {
-      // CALL: 需要正分数超过阈值
-      if (score >= thresholds.directionalScoreMin) {
-        return { shouldTrade: true, direction: 'CALL', reason: `看涨信号得分${score.toFixed(1)}≥${thresholds.directionalScoreMin}` };
+      if (score >= effectiveMin) {
+        return { shouldTrade: true, direction: 'CALL', reason: `看涨信号得分${score.toFixed(1)}≥${effectiveMin}${tag}` };
       }
     } else {
-      // PUT: 需要负分数超过阈值（绝对值）
-      if (score <= -thresholds.directionalScoreMin) {
-        return { shouldTrade: true, direction: 'PUT', reason: `看跌信号得分${score.toFixed(1)}≤-${thresholds.directionalScoreMin}` };
+      if (score <= -effectiveMin) {
+        return { shouldTrade: true, direction: 'PUT', reason: `看跌信号得分${score.toFixed(1)}≤-${effectiveMin}${tag}` };
       }
     }
 
-    return { shouldTrade: false, direction: strategyType === 'DIRECTIONAL_CALL' ? 'CALL' : 'PUT', reason: `得分${score.toFixed(1)}未达阈值±${thresholds.directionalScoreMin}` };
+    return { shouldTrade: false, direction: strategyType === 'DIRECTIONAL_CALL' ? 'CALL' : 'PUT', reason: `得分${score.toFixed(1)}未达阈值±${effectiveMin}` };
   }
 
   /**
@@ -393,22 +405,29 @@ export class OptionIntradayStrategy extends StrategyBase {
   private evaluateSpreadStrategy(
     optionRec: any,
     strategyType: 'BULL_SPREAD' | 'BEAR_SPREAD',
-    isLate: boolean = false
+    isLate: boolean = false,
+    is0DTE: boolean = false
   ): { shouldTrade: boolean; direction: 'CALL' | 'PUT'; reason: string } {
     const thresholds = this.getThresholds(isLate);
     const score = optionRec.finalScore;
 
+    // 0DTE使用更严格阈值
+    const effectiveMin = is0DTE
+      ? Math.max(thresholds.spreadScoreMin, this.cfg.zdteEntryThreshold ?? 12)
+      : thresholds.spreadScoreMin;
+    const tag = is0DTE && effectiveMin > thresholds.spreadScoreMin ? '(0DTE加严)' : '';
+
     if (strategyType === 'BULL_SPREAD') {
-      if (score >= thresholds.spreadScoreMin) {
-        return { shouldTrade: true, direction: 'CALL', reason: `综合得分${score.toFixed(1)}≥${thresholds.spreadScoreMin}，适合牛市价差` };
+      if (score >= effectiveMin) {
+        return { shouldTrade: true, direction: 'CALL', reason: `综合得分${score.toFixed(1)}≥${effectiveMin}${tag}，适合牛市价差` };
       }
     } else {
-      if (score <= -thresholds.spreadScoreMin) {
-        return { shouldTrade: true, direction: 'PUT', reason: `综合得分${score.toFixed(1)}≤-${thresholds.spreadScoreMin}，适合熊市价差` };
+      if (score <= -effectiveMin) {
+        return { shouldTrade: true, direction: 'PUT', reason: `综合得分${score.toFixed(1)}≤-${effectiveMin}${tag}，适合熊市价差` };
       }
     }
 
-    return { shouldTrade: false, direction: strategyType === 'BULL_SPREAD' ? 'CALL' : 'PUT', reason: `综合得分${score.toFixed(1)}未达阈值±${thresholds.spreadScoreMin}` };
+    return { shouldTrade: false, direction: strategyType === 'BULL_SPREAD' ? 'CALL' : 'PUT', reason: `综合得分${score.toFixed(1)}未达阈值±${effectiveMin}` };
   }
 
   /**
@@ -501,6 +520,19 @@ export class OptionIntradayStrategy extends StrategyBase {
       const minutesSinceOpen = etMinutesConfirm - marketOpenMinutes;
       const isInDirectionConfirmWindow = minutesSinceOpen >= 0 && minutesSinceOpen < directionConfirmMinutes;
 
+      // 1.6) 0DTE 开盘禁入窗口：开盘后 N 分钟内禁止 0DTE 合约，可降级到 1DTE/2DTE
+      const zdteCooldownMinutes = this.cfg.tradeWindow?.zdteCooldownMinutes ?? 30;
+      const isInZdteCooldown = minutesSinceOpen >= 0 && minutesSinceOpen < zdteCooldownMinutes;
+      const expirationMode = this.cfg.expirationMode || '0DTE';
+      // 在禁入期内，0DTE模式跳过当日到期合约
+      const skip0DTE = expirationMode === '0DTE' && isInZdteCooldown;
+      // 如果配置为0DTE模式且不在禁入期，预判为0DTE入场（用于加严阈值）
+      const is0DTEEntry = expirationMode === '0DTE' && !isInZdteCooldown;
+
+      if (skip0DTE) {
+        logger.info(`[0DTE禁入] ${symbol} 开盘${minutesSinceOpen}分钟内禁止0DTE新仓，将降级选择非0DTE合约`);
+      }
+
       // 2) 获取市场推荐
       const optionRec = await optionRecommendationService.calculateOptionRecommendation(symbol);
 
@@ -558,7 +590,7 @@ export class OptionIntradayStrategy extends StrategyBase {
         switch (strategy) {
           case 'DIRECTIONAL_CALL':
           case 'DIRECTIONAL_PUT':
-            evaluation = this.evaluateDirectionalBuyer(optionRec, strategy, isLate);
+            evaluation = this.evaluateDirectionalBuyer(optionRec, strategy, isLate, is0DTEEntry);
             break;
 
           case 'STRADDLE_BUY':
@@ -572,7 +604,7 @@ export class OptionIntradayStrategy extends StrategyBase {
 
           case 'BULL_SPREAD':
           case 'BEAR_SPREAD':
-            evaluation = this.evaluateSpreadStrategy(optionRec, strategy, isLate);
+            evaluation = this.evaluateSpreadStrategy(optionRec, strategy, isLate, is0DTEEntry);
             break;
 
           // TODO: 实现卖方策略
@@ -623,8 +655,41 @@ export class OptionIntradayStrategy extends StrategyBase {
 
       logData.selectedStrategy = selectedStrategy;
 
+      // 5.5) 连续确认：信号需连续N个评估周期同向达标才允许入场
+      const requiredCycles = this.cfg.consecutiveConfirmCycles ?? 2;
+      if (requiredCycles > 1) {
+        const state = this.consecutiveStates.get(symbol);
+        const nowMs = Date.now();
+        const expectedDir = direction === 'CALL' ? 'BULLISH' : 'BEARISH';
+
+        if (state && state.direction === expectedDir && (nowMs - state.lastTime) < 15000) {
+          // 同方向且在15秒（3个评估周期）容忍窗口内
+          state.count++;
+          state.lastTime = nowMs;
+          if (state.count < requiredCycles) {
+            logger.info(`[连续确认] ${symbol} ${expectedDir} ${state.count}/${requiredCycles}，等待下次确认`);
+            logData.finalResult = 'NO_SIGNAL';
+            logData.rejectionReason = `连续确认 ${state.count}/${requiredCycles}`;
+            logData.rejectionCheckpoint = 'consecutive_confirm';
+            this.logDecision(logData);
+            return null;
+          }
+          // 达到要求，清除状态并继续
+          this.consecutiveStates.delete(symbol);
+          logger.info(`[连续确认] ${symbol} ${expectedDir} ${state.count}/${requiredCycles} 通过，允许入场`);
+        } else {
+          // 首次达标、方向变化或超时 → 重新计数
+          this.consecutiveStates.set(symbol, { direction: expectedDir, count: 1, lastTime: nowMs });
+          logger.info(`[连续确认] ${symbol} ${expectedDir} 1/${requiredCycles}，等待下次确认`);
+          logData.finalResult = 'NO_SIGNAL';
+          logData.rejectionReason = `连续确认 1/${requiredCycles}`;
+          logData.rejectionCheckpoint = 'consecutive_confirm';
+          this.logDecision(logData);
+          return null;
+        }
+      }
+
       // 6) 选择合约
-      const expirationMode = this.cfg.expirationMode || '0DTE';
       const selected = await selectOptionContract({
         underlyingSymbol: symbol,
         expirationMode,
@@ -633,6 +698,7 @@ export class OptionIntradayStrategy extends StrategyBase {
         liquidityFilters: this.cfg.liquidityFilters,
         greekFilters: this.cfg.greekFilters,
         noNewEntryBeforeCloseMinutes: this.cfg.tradeWindow?.noNewEntryBeforeCloseMinutes,
+        skip0DTE,
       });
 
       if (!selected) {

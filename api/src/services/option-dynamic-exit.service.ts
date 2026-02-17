@@ -67,6 +67,7 @@ export interface PositionContext {
   pivotLow?: number;            // 关键支撑位
   // 0DTE 标记
   is0DTE?: boolean;             // 是否为当日到期（末日期权）
+  midPrice?: number;            // (bid+ask)/2 中间价，0DTE优先使用（更稳定）
 }
 
 /** 盈亏计算结果 */
@@ -184,10 +185,13 @@ class OptionDynamicExitService {
   calculatePnL(ctx: PositionContext): PnLResult {
     const { entryPrice, currentPrice, quantity, multiplier, entryFees, estimatedExitFees } = ctx;
 
+    // 0DTE优先使用mid价格（bid/ask中间价更稳定，避免lastDone跳动放大PnL波动）
+    const effectivePrice = (ctx.is0DTE && ctx.midPrice && ctx.midPrice > 0) ? ctx.midPrice : currentPrice;
+
     // 毛盈亏 = (当前价 - 入场价) * 数量 * 乘数
     // 注意：买方做多期权，卖方做空期权（此处统一按买方计算，卖方需反向）
     const isBuyer = ctx.strategySide === 'BUYER';
-    const priceDiff = isBuyer ? (currentPrice - entryPrice) : (entryPrice - currentPrice);
+    const priceDiff = isBuyer ? (effectivePrice - entryPrice) : (entryPrice - effectivePrice);
     const grossPnL = priceDiff * quantity * multiplier;
 
     // 净盈亏 = 毛盈亏 - 入场手续费 - 出场手续费
@@ -395,14 +399,35 @@ class OptionDynamicExitService {
       }
     }
 
-    // 4. 止损检查（持仓时间感知冷静期，使用 grossPnLPercent）
+    // 4. 0DTE PnL 兜底止损（比标准止损更紧，在冷却期逻辑之前检查）
+    if (ctx.is0DTE) {
+      const zdtePnlFloor = 25; // 0DTE 兜底止损 -25%
+      if (pnl.grossPnLPercent <= -zdtePnlFloor) {
+        return {
+          action: 'STOP_LOSS',
+          reason: `0DTE兜底止损：亏损${pnl.grossPnLPercent.toFixed(1)}% ≤ -${zdtePnlFloor}%(0DTE收紧)`,
+          pnl,
+        };
+      }
+    }
+
+    // 5. 止损检查（持仓时间感知冷静期，使用 grossPnLPercent）
     const holdingMinutes = (now.getTime() - (ctx.entryTime || now).getTime()) / 60000;
 
-    if (holdingMinutes < 3) {
-      // 0-3分钟: 仅安全阀(50%)生效，跳过常规止损
+    if (ctx.is0DTE) {
+      // 0DTE：禁用冷却期放宽，全程使用标准止损阈值
+      if (pnl.grossPnLPercent <= -dynamicParams.stopLossPercent) {
+        return {
+          action: 'STOP_LOSS',
+          reason: `亏损${pnl.grossPnLPercent.toFixed(1)}% ≤ -${dynamicParams.stopLossPercent}%(0DTE不放宽, 持仓${holdingMinutes.toFixed(0)}min) | ${dynamicParams.adjustmentReason}`,
+          pnl,
+        };
+      }
+    } else if (holdingMinutes < 3) {
+      // 非0DTE 0-3分钟: 仅安全阀生效，跳过常规止损
       // fall through 到下面的安全阀检查
     } else if (holdingMinutes < 10) {
-      // 3-10分钟: 止损线放宽1.5倍
+      // 非0DTE 3-10分钟: 止损线放宽1.5倍
       const widenedSL = dynamicParams.stopLossPercent * 1.5;
       if (pnl.grossPnLPercent <= -widenedSL) {
         return {
@@ -412,7 +437,7 @@ class OptionDynamicExitService {
         };
       }
     } else {
-      // 10+分钟: 标准止损（原逻辑）
+      // 非0DTE 10+分钟: 标准止损
       if (pnl.grossPnLPercent <= -dynamicParams.stopLossPercent) {
         return {
           action: 'STOP_LOSS',
@@ -422,7 +447,7 @@ class OptionDynamicExitService {
       }
     }
 
-    // 5. 强制止损：单笔最大亏损限制（安全阀）
+    // 6. 强制止损：单笔最大亏损限制（安全阀）
     const maxLossPercent = 40; // 单笔最大亏损40%（硬上限，无视冷静期）
     if (pnl.grossPnLPercent <= -maxLossPercent) {
       return {

@@ -33,6 +33,7 @@ export interface SelectOptionContractParams {
   liquidityFilters?: OptionLiquidityFilters;
   greekFilters?: OptionGreekFilters;
   noNewEntryBeforeCloseMinutes?: number; // 外部传入的收盘前截止分钟数（覆盖默认值180）
+  skip0DTE?: boolean;                    // 为true时跳过当日到期合约，选择最近的非0DTE（0DTE禁入期使用）
 }
 
 export interface SelectedOptionContract {
@@ -199,17 +200,19 @@ async function selectOptionContractViaLongPort(
     let pickedExpiryDate: string;
     let is0DTE = false;
     if (params.expirationMode === '0DTE') {
-      if (todayExpiry) {
+      if (params.skip0DTE || !todayExpiry) {
+        // 0DTE禁入期或当日无0DTE：选择最近的非当日到期合约
+        const futureDate = sorted.find((d) => d > todayStr);
+        pickedExpiryDate = futureDate || sorted[0];
+        if (params.skip0DTE) {
+          logger.info(`📍 [${params.underlyingSymbol}选择-LB] 0DTE禁入期，降级到非0DTE | 到期=${pickedExpiryDate}`);
+        } else {
+          logger.warn(`⚠️ [${params.underlyingSymbol}降级-LB] 0DTE不可用，使用最近期权 | 最近=${pickedExpiryDate}`);
+        }
+      } else {
         pickedExpiryDate = todayExpiry;
         is0DTE = true;
         logger.debug(`📍 [${params.underlyingSymbol}选择-LB] 0DTE期权 | 到期=${todayExpiry}`);
-      } else {
-        // 降级到最近的到期日（未来最近）
-        const futureDate = sorted.find((d) => d >= todayStr);
-        pickedExpiryDate = futureDate || sorted[0];
-        logger.warn(
-          `⚠️ [${params.underlyingSymbol}降级-LB] 0DTE不可用，使用最近期权 | 最近=${pickedExpiryDate}`
-        );
       }
     } else {
       const futureDate = sorted.find((d) => d >= todayStr);
@@ -464,16 +467,24 @@ async function selectOptionContractViaMoomoo(
   let pickedExpiry;
   let is0DTE = false;
   if (params.expirationMode === '0DTE') {
-    if (todayExpiry) {
+    if (params.skip0DTE || !todayExpiry) {
+      // 0DTE禁入期或当日无0DTE：选择最近的非当日到期合约
+      const nonTodayExpiry = sorted.find((d) => d.leftDay > 0);
+      pickedExpiry = nonTodayExpiry || sorted[0];
+      if (params.skip0DTE) {
+        logger.info(
+          `📍 [${params.underlyingSymbol}选择-Moomoo] 0DTE禁入期，降级到非0DTE | 到期=${pickedExpiry?.strikeDate}, 剩余=${pickedExpiry?.leftDay}天`
+        );
+      } else {
+        logger.warn(
+          `⚠️ [${params.underlyingSymbol}降级-Moomoo] 0DTE不可用，使用最近期权 | 最近=${sorted[0]?.strikeDate}, 剩余=${sorted[0]?.leftDay}天`
+        );
+      }
+    } else {
       pickedExpiry = todayExpiry;
       is0DTE = true;
       logger.debug(
         `📍 [${params.underlyingSymbol}选择-Moomoo] 0DTE期权 | 到期=${todayExpiry.strikeDate}, 剩余=${todayExpiry.leftDay}天`
-      );
-    } else {
-      pickedExpiry = sorted[0];
-      logger.warn(
-        `⚠️ [${params.underlyingSymbol}降级-Moomoo] 0DTE不可用，使用最近期权 | 最近=${sorted[0]?.strikeDate}, 剩余=${sorted[0]?.leftDay}天`
       );
     }
   } else {

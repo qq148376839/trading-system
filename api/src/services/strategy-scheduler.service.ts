@@ -1990,6 +1990,7 @@ class StrategyScheduler {
       // 2. 获取当前价格
       let currentPrice = 0;
       let priceSource = '';
+      let optionMidPrice = 0; // bid/ask中间价，0DTE退出服务使用
 
       // 期权策略：使用统一的长桥期权行情服务（含缓存 + fallback）
       if (isOptionStrategy) {
@@ -2002,6 +2003,10 @@ class StrategyScheduler {
         if (priceResult && priceResult.price > 0) {
           currentPrice = priceResult.price;
           priceSource = priceResult.source;
+          // 捕获mid价格供0DTE退出使用
+          if (priceResult.bid > 0 && priceResult.ask > 0) {
+            optionMidPrice = (priceResult.bid + priceResult.ask) / 2;
+          }
         }
       }
 
@@ -2669,6 +2674,7 @@ class StrategyScheduler {
         entryFees,
         estimatedExitFees,
         is0DTE,
+        midPrice: optionMidPrice > 0 ? optionMidPrice : undefined,
       };
 
       // 7. 检查是否应该平仓（传入用户配置的止盈止损比例）
