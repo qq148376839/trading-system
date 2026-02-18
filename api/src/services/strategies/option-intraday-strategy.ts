@@ -70,7 +70,7 @@ export interface TradeWindowConfig {
   noNewEntryBeforeCloseMinutes?: number;  // 收盘前N分钟不开新仓
   forceCloseBeforeCloseMinutes?: number;  // 收盘前N分钟强制平仓
   directionConfirmMinutes?: number;   // 开盘后N分钟内方向确认窗口（默认30）
-  zdteCooldownMinutes?: number;       // 0DTE开盘禁入时长，分钟（默认30，即09:30-10:00禁止0DTE新仓）
+  zdteCooldownMinutes?: number;       // 0DTE开盘禁入时长，分钟（默认0，可通过DB配置设置禁入窗口）
 }
 
 // ============================================
@@ -120,7 +120,14 @@ export interface OptionIntradayStrategyConfig {
 
   // ===== 0DTE 风控配置 =====
   zdteEntryThreshold?: number;           // 0DTE入场得分阈值（默认12，非0DTE使用ENTRY_THRESHOLDS）
-  consecutiveConfirmCycles?: number;     // 连续确认次数（默认2，设为1禁用连续确认）
+  consecutiveConfirmCycles?: number;     // 连续确认次数（默认2，设为1禁用价格确认）
+
+  // ===== RSI 过滤配置 =====
+  rsiFilter?: {
+    enabled?: boolean;                    // 是否启用RSI过滤（默认true）
+    oversoldThreshold?: number;           // 超卖阈值（默认25，PUT+RSI<此值→拒绝）
+    overboughtThreshold?: number;         // 超买阈值（默认75，CALL+RSI>此值→拒绝）
+  };
 
   // ===== 旧配置（保留兼容性） =====
   directionMode?: DirectionMode;        // 已弃用，使用 strategyTypes.buyer
@@ -172,7 +179,7 @@ export const DEFAULT_OPTION_STRATEGY_CONFIG: Partial<OptionIntradayStrategyConfi
   tradeWindow: {
     firstHourOnly: true,
     avoidLast30Minutes: true,
-    noNewEntryBeforeCloseMinutes: 180,
+    noNewEntryBeforeCloseMinutes: 120,
     forceCloseBeforeCloseMinutes: 30,
     directionConfirmMinutes: 30,
   },
@@ -242,8 +249,15 @@ interface OptionDecisionLogData {
 
 export class OptionIntradayStrategy extends StrategyBase {
   private cfg: OptionIntradayStrategyConfig;
-  // 连续确认状态（内存级别，策略重启自动重置）
-  private consecutiveStates: Map<string, { direction: string; count: number; lastTime: number }> = new Map();
+  // 价格确认状态（内存级别，策略重启自动重置）
+  private consecutiveStates: Map<string, {
+    direction: string;
+    count: number;
+    lastTime: number;
+    baselinePrice?: number;
+    signalStartTime?: number;
+    peakDeviation?: number;
+  }> = new Map();
   // 非交易时间日志限频（每标的每5分钟最多打印一次）
   private tradeWindowSkipLogTimes: Map<string, number> = new Map();
 
@@ -544,7 +558,7 @@ export class OptionIntradayStrategy extends StrategyBase {
       const isInDirectionConfirmWindow = minutesSinceOpen >= 0 && minutesSinceOpen < directionConfirmMinutes;
 
       // 1.6) 0DTE 开盘禁入窗口：开盘后 N 分钟内禁止 0DTE 合约，可降级到 1DTE/2DTE
-      const zdteCooldownMinutes = this.cfg.tradeWindow?.zdteCooldownMinutes ?? 30;
+      const zdteCooldownMinutes = this.cfg.tradeWindow?.zdteCooldownMinutes ?? 0;
       const isInZdteCooldown = minutesSinceOpen >= 0 && minutesSinceOpen < zdteCooldownMinutes;
       const expirationMode = this.cfg.expirationMode || '0DTE';
       // 在禁入期内，0DTE模式跳过当日到期合约
@@ -693,36 +707,136 @@ export class OptionIntradayStrategy extends StrategyBase {
 
       logData.selectedStrategy = selectedStrategy;
 
-      // 5.5) 连续确认：信号需连续N个评估周期同向达标才允许入场
+      // 5.4) RSI 过滤门：防止追涨杀跌（在超买区做多/超卖区做空）
+      const rsiFilterCfg = this.cfg.rsiFilter;
+      const rsiEnabled = rsiFilterCfg?.enabled !== false; // 默认启用
+      if (rsiEnabled) {
+        try {
+          const vwapForRsi = await marketDataService.getIntradayVWAP(symbol);
+          if (vwapForRsi && vwapForRsi.recentKlines.length >= 15) {
+            const rsiValue = optionRecommendationService.calculateRSI14(vwapForRsi.recentKlines);
+            if (rsiValue !== undefined) {
+              const oversoldThreshold = rsiFilterCfg?.oversoldThreshold ?? 25;
+              const overboughtThreshold = rsiFilterCfg?.overboughtThreshold ?? 75;
+
+              if (direction === 'PUT' && rsiValue < oversoldThreshold) {
+                logger.info(`[RSI过滤] ${symbol} PUT 拒绝：RSI=${rsiValue.toFixed(1)} < ${oversoldThreshold}（已超卖，不做空）`);
+                logData.finalResult = 'NO_SIGNAL';
+                logData.rejectionReason = `RSI过滤：RSI=${rsiValue.toFixed(1)}已超卖，不做空`;
+                logData.rejectionCheckpoint = 'rsi_filter';
+                this.logDecision(logData);
+                return null;
+              }
+              if (direction === 'CALL' && rsiValue > overboughtThreshold) {
+                logger.info(`[RSI过滤] ${symbol} CALL 拒绝：RSI=${rsiValue.toFixed(1)} > ${overboughtThreshold}（已超买，不做多）`);
+                logData.finalResult = 'NO_SIGNAL';
+                logData.rejectionReason = `RSI过滤：RSI=${rsiValue.toFixed(1)}已超买，不做多`;
+                logData.rejectionCheckpoint = 'rsi_filter';
+                this.logDecision(logData);
+                return null;
+              }
+              logger.debug(`[RSI过滤] ${symbol} ${direction} 通过 | RSI=${rsiValue.toFixed(1)}`);
+            } else {
+              logger.debug(`[RSI过滤] ${symbol} RSI数据不足，降级放行`);
+            }
+          } else {
+            logger.debug(`[RSI过滤] ${symbol} VWAP K线不足(${vwapForRsi?.recentKlines.length || 0}根)，降级放行`);
+          }
+        } catch (rsiErr: any) {
+          logger.debug(`[RSI过滤] ${symbol} 计算异常，降级放行: ${rsiErr?.message}`);
+        }
+      }
+
+      // 5.5) 价格确认：信号方向需在60s内由标的价格移动≥0.03%确认
       const requiredCycles = this.cfg.consecutiveConfirmCycles ?? 2;
       if (requiredCycles > 1) {
         const state = this.consecutiveStates.get(symbol);
         const nowMs = Date.now();
         const expectedDir = direction === 'CALL' ? 'BULLISH' : 'BEARISH';
+        const CONFIRM_WINDOW_MS = 60_000; // 60s 确认窗口
+        const PRICE_CONFIRM_PCT = 0.03;   // 0.03% 最小价格移动
 
-        if (state && state.direction === expectedDir && (nowMs - state.lastTime) < 15000) {
-          // 同方向且在15秒（3个评估周期）容忍窗口内
+        // 获取当前标的价格
+        let currentUnderlyingPrice: number | undefined;
+        try {
+          const vwapForPrice = await marketDataService.getIntradayVWAP(symbol);
+          if (vwapForPrice && vwapForPrice.recentKlines.length > 0) {
+            currentUnderlyingPrice = vwapForPrice.recentKlines[vwapForPrice.recentKlines.length - 1].close;
+          }
+        } catch {
+          // 价格获取失败，降级放行
+        }
+
+        if (currentUnderlyingPrice === undefined || currentUnderlyingPrice <= 0) {
+          // 无法获取价格，降级放行
+          logger.debug(`[价格确认] ${symbol} 无法获取标的价格，降级放行`);
+          this.consecutiveStates.delete(symbol);
+        } else if (
+          state &&
+          state.direction === expectedDir &&
+          state.baselinePrice !== undefined &&
+          state.signalStartTime !== undefined &&
+          (nowMs - state.signalStartTime) < CONFIRM_WINDOW_MS
+        ) {
+          // 在确认窗口内：检查价格是否已移动足够
+          const priceMove = expectedDir === 'BEARISH'
+            ? ((state.baselinePrice - currentUnderlyingPrice) / state.baselinePrice) * 100
+            : ((currentUnderlyingPrice - state.baselinePrice) / state.baselinePrice) * 100;
+
+          state.peakDeviation = Math.max(state.peakDeviation || 0, priceMove);
           state.count++;
           state.lastTime = nowMs;
-          if (state.count < requiredCycles) {
-            logger.info(`[连续确认] ${symbol} ${expectedDir} ${state.count}/${requiredCycles}，等待下次确认`);
+
+          if (priceMove >= PRICE_CONFIRM_PCT) {
+            // 价格确认通过
+            this.consecutiveStates.delete(symbol);
+            logger.info(`[价格确认] ${symbol} ${expectedDir} 通过 | 基准=${state.baselinePrice.toFixed(2)}, 当前=${currentUnderlyingPrice.toFixed(2)}, 移动=${priceMove.toFixed(3)}%`);
+          } else {
+            // 未达到确认阈值
+            logger.info(`[价格确认] ${symbol} ${expectedDir} 等待 | 基准=${state.baselinePrice.toFixed(2)}, 当前=${currentUnderlyingPrice.toFixed(2)}, 移动=${priceMove.toFixed(3)}% < ${PRICE_CONFIRM_PCT}%`);
             logData.finalResult = 'NO_SIGNAL';
-            logData.rejectionReason = `连续确认 ${state.count}/${requiredCycles}`;
-            logData.rejectionCheckpoint = 'consecutive_confirm';
+            logData.rejectionReason = `价格确认等待：移动${priceMove.toFixed(3)}% < ${PRICE_CONFIRM_PCT}%`;
+            logData.rejectionCheckpoint = 'price_confirm';
             if (logData.zdteFlags) logData.zdteFlags.consecutiveCount = state.count;
             this.logDecision(logData);
             return null;
           }
-          // 达到要求，清除状态并继续
-          this.consecutiveStates.delete(symbol);
-          logger.info(`[连续确认] ${symbol} ${expectedDir} ${state.count}/${requiredCycles} 通过，允许入场`);
-        } else {
-          // 首次达标、方向变化或超时 → 重新计数
-          this.consecutiveStates.set(symbol, { direction: expectedDir, count: 1, lastTime: nowMs });
-          logger.info(`[连续确认] ${symbol} ${expectedDir} 1/${requiredCycles}，等待下次确认`);
+        } else if (
+          state &&
+          state.direction === expectedDir &&
+          state.signalStartTime !== undefined &&
+          (nowMs - state.signalStartTime) >= CONFIRM_WINDOW_MS
+        ) {
+          // 60s 超时未确认 → 重置
+          logger.info(`[价格确认] ${symbol} ${expectedDir} 超时重置（60s内未确认）`);
+          this.consecutiveStates.set(symbol, {
+            direction: expectedDir,
+            count: 1,
+            lastTime: nowMs,
+            baselinePrice: currentUnderlyingPrice,
+            signalStartTime: nowMs,
+            peakDeviation: 0,
+          });
           logData.finalResult = 'NO_SIGNAL';
-          logData.rejectionReason = `连续确认 1/${requiredCycles}`;
-          logData.rejectionCheckpoint = 'consecutive_confirm';
+          logData.rejectionReason = `价格确认超时重置`;
+          logData.rejectionCheckpoint = 'price_confirm';
+          if (logData.zdteFlags) logData.zdteFlags.consecutiveCount = 1;
+          this.logDecision(logData);
+          return null;
+        } else {
+          // 首次信号 / 方向变化 → 记录基准价格
+          this.consecutiveStates.set(symbol, {
+            direction: expectedDir,
+            count: 1,
+            lastTime: nowMs,
+            baselinePrice: currentUnderlyingPrice,
+            signalStartTime: nowMs,
+            peakDeviation: 0,
+          });
+          logger.info(`[价格确认] ${symbol} ${expectedDir} 首次信号 | 基准价格=${currentUnderlyingPrice.toFixed(2)}，等待价格确认`);
+          logData.finalResult = 'NO_SIGNAL';
+          logData.rejectionReason = `价格确认首次记录，等待确认`;
+          logData.rejectionCheckpoint = 'price_confirm';
           if (logData.zdteFlags) logData.zdteFlags.consecutiveCount = 1;
           this.logDecision(logData);
           return null;

@@ -57,6 +57,7 @@ interface OptionRecommendation {
     temperatureValue?: number;
     riskScore?: number;
   };
+  rsi?: number;
 }
 
 class OptionRecommendationService {
@@ -361,16 +362,13 @@ class OptionRecommendationService {
     // SPX偏离0.5% → 15分, 1% → 30分, 2% → 60分
     let trendStrength = ((currentPrice - avg20) / avg20) * 100 * 30;
 
-    // 均线多头/空头排列加成
-    if (currentPrice > avg5 && avg5 > avg10 && avg10 > avg20) {
-      trendStrength += 25; // 完美多头排列
-    } else if (currentPrice > avg10 && avg10 > avg20) {
-      trendStrength += 15; // 较强多头
-    } else if (currentPrice < avg5 && avg5 < avg10 && avg10 < avg20) {
-      trendStrength -= 25; // 完美空头排列
-    } else if (currentPrice < avg10 && avg10 < avg20) {
-      trendStrength -= 15; // 较强空头
-    }
+    // 均线偏离度线性加成（替代二元判断，平滑输出）
+    // ma5Dev / ma10Dev 为相对 MA20 的百分比偏离
+    const ma5Dev = avg20 > 0 ? ((avg5 - avg20) / avg20) * 100 : 0;
+    const ma10Dev = avg20 > 0 ? ((avg10 - avg20) / avg20) * 100 : 0;
+    // 加权线性：MA5 权重 0.7，MA10 权重 0.3，放大 30 倍后 clamp [-30, +30]
+    const maBonus = Math.max(-30, Math.min(30, (ma5Dev * 30 * 0.7) + (ma10Dev * 30 * 0.3)));
+    trendStrength += maBonus;
 
     trendStrength = Math.max(-100, Math.min(100, trendStrength));
 
@@ -696,6 +694,39 @@ class OptionRecommendationService {
     parts.push(`综合得分${finalScore.toFixed(1)}分，建议${direction}`);
 
     return parts.join('；');
+  }
+  /**
+   * 计算 RSI-14（Wilder's Smoothed RSI）
+   * @param klines 至少 15 根 K 线（含 close 字段）
+   * @returns RSI 值 (0-100)，数据不足返回 undefined
+   */
+  calculateRSI14(klines: { close: number }[]): number | undefined {
+    const period = 14;
+    if (!klines || klines.length < period + 1) return undefined;
+
+    // 计算逐根涨跌幅
+    let avgGain = 0;
+    let avgLoss = 0;
+    for (let i = 1; i <= period; i++) {
+      const change = klines[i].close - klines[i - 1].close;
+      if (change > 0) avgGain += change;
+      else avgLoss += Math.abs(change);
+    }
+    avgGain /= period;
+    avgLoss /= period;
+
+    // Wilder's smoothing for remaining bars
+    for (let i = period + 1; i < klines.length; i++) {
+      const change = klines[i].close - klines[i - 1].close;
+      const gain = change > 0 ? change : 0;
+      const loss = change < 0 ? Math.abs(change) : 0;
+      avgGain = (avgGain * (period - 1) + gain) / period;
+      avgLoss = (avgLoss * (period - 1) + loss) / period;
+    }
+
+    if (avgLoss === 0) return 100;
+    const rs = avgGain / avgLoss;
+    return 100 - (100 / (1 + rs));
   }
 }
 

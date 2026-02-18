@@ -30,6 +30,7 @@ import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-li
 import longportOptionQuoteService from './longport-option-quote.service';
 import marketDataCacheService from './market-data-cache.service';
 import marketDataService from './market-data.service';
+import trailingStopProtectionService from './trailing-stop-protection.service';
 
 
 // 定义执行汇总接口
@@ -823,6 +824,45 @@ class StrategyScheduler {
                     });
 
                     logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol} 买入订单已成交，更新状态为HOLDING，订单ID: ${dbOrder.order_id}`);
+
+                    // === TSLPPCT 保护单提交 ===
+                    // 期权买入成交后自动挂出跟踪止损保护单
+                    const optMeta = context.optionMeta || context.intent?.metadata;
+                    const isOptionAsset = optMeta?.assetClass === 'OPTION' || optMeta?.optionType;
+                    if (isOptionAsset) {
+                      try {
+                        const tradedSym = context.tradedSymbol || dbOrder.symbol;
+                        const expDate = trailingStopProtectionService.extractOptionExpireDate(tradedSym, optMeta);
+                        const is0DTE = (() => {
+                          const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+                          return expDate === today;
+                        })();
+                        const trailingPct = trailingStopProtectionService.getTrailingPercentForPhase({
+                          phase: 'EARLY',
+                          is0DTE,
+                        });
+                        const tslpResult = await trailingStopProtectionService.submitProtection(
+                          tradedSym,
+                          filledQuantity,
+                          trailingPct,
+                          0.10,
+                          expDate,
+                          strategyId,
+                        );
+                        if (tslpResult.success && tslpResult.orderId) {
+                          // 保存 protectionOrderId 到 context
+                          await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
+                            protectionOrderId: tslpResult.orderId,
+                            protectionTrailingPct: trailingPct,
+                          });
+                          logger.log(`策略 ${strategyId} 期权 ${tradedSym}: TSLPPCT保护单已提交 orderId=${tslpResult.orderId}, trailing=${trailingPct}%`);
+                        } else {
+                          logger.warn(`策略 ${strategyId} 期权 ${tradedSym}: TSLPPCT提交失败(${tslpResult.error})，降级到纯监控模式`);
+                        }
+                      } catch (tslpErr: any) {
+                        logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: TSLPPCT提交异常(${tslpErr?.message})，降级到纯监控模式`);
+                      }
+                    }
                   }
                 } else if (isSell) {
                   // 卖出订单成交：更新状态为IDLE，释放资金
@@ -849,8 +889,15 @@ class StrategyScheduler {
                     }
                   }
                   
+                  // 检测是否为 TSLPPCT 自动成交
+                  const isTslpFill = dbOrder.execution_stage === 1 || dbOrder.remark === 'TSLP_AUTO';
+                  if (isTslpFill) {
+                    logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol}: 卖出订单为TSLPPCT自动触发成交 (orderId=${dbOrder.order_id})`);
+                  }
+
                   await strategyInstance.updateState(instanceKeySymbol, 'IDLE', {
                     lastExitTime: new Date().toISOString(),
+                    ...(isTslpFill ? { exitReason: 'TSLPPCT_FILLED', protectionOrderId: undefined, protectionTrailingPct: undefined } : {}),
                   });
 
                   // 释放资金：
@@ -2513,6 +2560,44 @@ class StrategyScheduler {
     optionMidPrice: number = 0
   ): Promise<{ actionTaken: boolean }> {
     try {
+      // 0. TSLPPCT 保护单状态检查：如果券商保护单已触发成交，直接转 IDLE
+      if (context.protectionOrderId) {
+        try {
+          const tslpStatus = await trailingStopProtectionService.checkProtectionStatus(context.protectionOrderId);
+          if (tslpStatus === 'filled') {
+            logger.log(
+              `策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT保护单已触发成交(${context.protectionOrderId})，券商已平仓，更新状态为IDLE`
+            );
+            await strategyInstance.updateState(symbol, 'IDLE', {
+              ...context,
+              lastExitTime: new Date().toISOString(),
+              exitReason: 'TSLPPCT_FILLED',
+              exitReasonDetail: `TSLPPCT保护单${context.protectionOrderId}已触发`,
+              protectionOrderId: undefined,
+              protectionTrailingPct: undefined,
+            });
+            // 释放资金
+            if (context.allocationAmount) {
+              await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
+            }
+            return { actionTaken: true };
+          }
+          if (tslpStatus === 'cancelled' || tslpStatus === 'expired') {
+            logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT已${tslpStatus}，清除protectionOrderId`);
+            await strategyInstance.updateState(symbol, 'HOLDING', {
+              ...context,
+              protectionOrderId: undefined,
+              protectionTrailingPct: undefined,
+            });
+            // 更新 local context 以供后续逻辑使用
+            context.protectionOrderId = undefined;
+            context.protectionTrailingPct = undefined;
+          }
+        } catch (tslpCheckErr: any) {
+          logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT状态查询异常(${tslpCheckErr?.message})，继续软件监控`);
+        }
+      }
+
       const optionDynamicExitService = (await import('./option-dynamic-exit.service')).default;
 
       // 1. 从 context 获取期权元数据
@@ -2819,6 +2904,40 @@ class StrategyScheduler {
         if (preCloseState !== 'HOLDING') {
           logger.log(`策略 ${strategyId} 期权 ${effectiveSymbol}: 平仓前检测到状态已变为 ${preCloseState}，跳过卖出`);
           return { actionTaken: true };
+        }
+
+        // === TSLPPCT 取消：软件退出前先取消券商保护单 ===
+        if (context.protectionOrderId) {
+          try {
+            const cancelResult = await trailingStopProtectionService.cancelProtection(
+              context.protectionOrderId,
+              strategyId,
+              effectiveSymbol,
+            );
+            if (cancelResult.alreadyFilled) {
+              // 券商保护单已触发成交！跳过软件卖出，直接转 IDLE
+              logger.log(
+                `策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT已触发成交，跳过软件卖出`
+              );
+              await strategyInstance.updateState(symbol, 'IDLE', {
+                ...context,
+                lastExitTime: new Date().toISOString(),
+                exitReason: 'TSLPPCT_FILLED',
+                exitReasonDetail: `软件退出时发现TSLPPCT(${context.protectionOrderId})已成交`,
+                protectionOrderId: undefined,
+                protectionTrailingPct: undefined,
+              });
+              if (context.allocationAmount) {
+                await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
+              }
+              return { actionTaken: true };
+            }
+            // 取消成功或失败都继续软件卖出（broker position check at checkAvailablePosition provides safety）
+          } catch (cancelErr: any) {
+            logger.warn(
+              `策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT取消异常(${cancelErr?.message})，继续软件卖出`
+            );
+          }
         }
 
         // 更新状态为 CLOSING

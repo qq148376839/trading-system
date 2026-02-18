@@ -1,11 +1,33 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-17
+**更新时间**: 2026-02-18
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-02-18: 期权信号系统动态化改造 + TSLPPCT 券商保护单集成
+
+**变更内容**:
+1. **VWAP 数据修复**：补上 `TradeSessions` 第 5 参数，修复所有标的 VWAP 获取 100% 失败的 napi 错误
+2. **RSI-14 过滤器**：新增 Wilder's Smoothed RSI 计算 + 入场过滤（PUT+RSI<25 拒绝超卖追空 / CALL+RSI>75 拒绝超买追多）
+3. **MA 排列加成线性化**：二值跳变 ±25/±15 改为偏离度加权线性（MA5×0.7 + MA10×0.3，clamp ±30），消除评分突变
+4. **60s 价格确认**：替代旧 15s 连续确认，要求标的价格在 60s 内移动 ≥0.03% 确认信号方向
+5. **TSLPPCT 券商保护单集成**：期权买入成交后自动挂出跟踪止损保护单（submit/monitor/cancel 全流程 + 竞态安全处理）
+6. **0DTE 禁入默认值**：从 30 分钟改为 0（可通过 DB 配置恢复）
+7. **LATE 时段截止**：从 13:00 ET 后移到 14:00 ET（`noNewEntryBeforeCloseMinutes: 180→120`）
+8. **recentKlines 扩展**：从 5 根扩展到 20 根，支持 RSI-14 计算
+
+**修改文件**:
+- 📝 `api/src/services/market-data.service.ts`（VWAP TradeSessions 修复 + recentKlines 扩展）
+- 📝 `api/src/services/option-recommendation.service.ts`（RSI-14 计算 + MA 线性化 + rsi 字段）
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`（RSI 过滤 + 价格确认 + 配置默认值）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（TSLPPCT submit/monitor/cancel 集成）
+
+**开发文档**: `docs/features/260218-期权信号系统动态化改造开发文档.md`
+
+---
 
 ### 2026-02-17: 日志输出优化 — 消除非交易时段 ~75% 冗余日志
 

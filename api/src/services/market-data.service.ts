@@ -1120,13 +1120,15 @@ class MarketDataService {
     try {
       const longport = await import('longport');
       const { Period, AdjustType } = longport;
+      const TradeSessions = (longport as any).TradeSessions;
       const quoteCtx = await getQuoteContext();
 
       const candles = await quoteCtx.candlesticks(
         symbol,
         Period.Min_1,
         240,                  // 最多 240 根（一个交易日 6.5 小时 = 390 分钟，取最近 240 根足够）
-        AdjustType.NoAdjust
+        AdjustType.NoAdjust,
+        TradeSessions?.All || 100 // 使用All获取所有交易时段的数据
       );
 
       if (!candles || candles.length === 0) {
@@ -1176,8 +1178,8 @@ class MarketDataService {
       }
       const rangePct = openPrice > 0 ? ((rangeHigh - rangeLow) / openPrice) * 100 : 0;
 
-      // 6. 最近 5 根 K 线（供结构确认使用）
-      const recentKlines = klines.slice(-5);
+      // 6. 最近 20 根 K 线（供结构确认 + RSI-14 计算使用）
+      const recentKlines = klines.slice(-20);
 
       // 7. 写入缓存
       const result = { vwap, dataPoints: klines.length, rangePct, recentKlines, timestamp: now };
