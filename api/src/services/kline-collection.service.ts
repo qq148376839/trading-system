@@ -180,6 +180,18 @@ class KlineCollectionService {
         20000 // 20s timeout
       );
 
+      // 调试：输出前3条原始数据样本（确认 timestamp 解析是否正确）
+      if (candles.length > 0) {
+        const samples = candles.slice(0, 3).map((c, i) => ({
+          idx: i,
+          ts: c.timestamp,
+          tsDate: c.timestamp > 0 ? new Date(c.timestamp).toISOString() : 'N/A',
+          close: c.close,
+          open: c.open,
+        }));
+        logger.info(`[K线采集] ${source.name} 数据样本(共${candles.length}条):`, JSON.stringify(samples));
+      }
+
       // 过滤无效数据
       const validCandles = candles.filter(c => c.timestamp > 0 && c.close > 0);
       result.fetched = validCandles.length;
