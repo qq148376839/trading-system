@@ -372,12 +372,15 @@ class MarketDataService {
             low = close;
           }
 
-          // 时间戳：优先使用k字段（K线时间戳），否则使用t字段
+          // 时间戳：优先使用k字段（K线时间戳），否则t字段，最后time字段（分时数据）
           let timestamp: number = 0;
           if (item.k !== undefined && item.k !== null && item.k !== 0) {
             timestamp = typeof item.k === 'number' ? item.k : parseInt(String(item.k));
           } else if (item.t !== undefined && item.t !== null && item.t !== 0) {
             timestamp = typeof item.t === 'number' ? item.t : parseInt(String(item.t));
+          } else if (item.time !== undefined && item.time !== null && item.time !== 0) {
+            // get-quote-minute 分时数据使用 time 字段（秒级时间戳）
+            timestamp = typeof item.time === 'number' ? item.time : parseInt(String(item.time));
           } else {
             timestamp = Math.floor(Date.now() / 1000);
           }
