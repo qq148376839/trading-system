@@ -542,10 +542,10 @@ class AccountBalanceSyncService {
         const difference = Math.abs(actualUsage - recordedUsage);
 
         // 设置多级告警阈值
-        // 警告阈值：差异超过 5%（或 $100）
-        const warningThreshold = Math.max(expectedAllocation * 0.05, 100);
-        // 错误阈值：差异超过 10%（或 $500）
-        const errorThreshold = Math.max(expectedAllocation * 0.10, 500);
+        // 警告阈值：差异超过 5%（或 $50）
+        const warningThreshold = Math.max(expectedAllocation * 0.05, 50);
+        // 错误阈值：差异超过 10%（或 $100）
+        const errorThreshold = Math.max(expectedAllocation * 0.10, 100);
         // 基础阈值：差异超过 1%（或 $10），用于记录差异
         const baseThreshold = Math.max(expectedAllocation * 0.01, 10);
 
@@ -634,7 +634,9 @@ class AccountBalanceSyncService {
           );
           
           // 自动修复：如果差异超过错误阈值，且实际值更可靠，则更新current_usage
-          if (difference > errorThreshold && actualUsage > 0) {
+          // 允许 actualUsage=0 的修复：当无 HOLDING 标的时，说明持仓已全部平仓，应释放资金
+          const hasHoldingPositions = holdingSymbols.length > 0;
+          if (difference > errorThreshold && (actualUsage > 0 || (!hasHoldingPositions && recordedUsage > 0))) {
             try {
               // 更新current_usage为实际使用值
               const updateResult = await pool.query(
