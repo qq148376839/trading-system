@@ -332,23 +332,23 @@ class OptionDynamicExitService {
     }
 
     // 5. 移动止损逻辑（已盈利时）
-    // 0DTE 波动率分桶：根据 rangePct 动态调整 trigger / trail
+    // 0DTE 波动率分桶：根据 rangePct 动态调整 trigger / trail（rangePct 为百分比，如 0.65 表示 0.65%）
     if (ctx.is0DTE && ctx.rangePct !== undefined && ctx.rangePct > 0) {
-      if (ctx.rangePct >= 0.0065) {
+      if (ctx.rangePct >= 0.65) {
         // 高波动：提前锁利，宽松回撤
         baseParams.trailingStopTrigger = 15;
         baseParams.trailingStopPercent = 15;
-        reasons.push(`0DTE高波(${(ctx.rangePct * 100).toFixed(2)}%),trail=15/15`);
-      } else if (ctx.rangePct >= 0.0045) {
+        reasons.push(`0DTE高波(${ctx.rangePct.toFixed(2)}%),trail=15/15`);
+      } else if (ctx.rangePct >= 0.45) {
         // 中波动
         baseParams.trailingStopTrigger = 15;
         baseParams.trailingStopPercent = 12;
-        reasons.push(`0DTE中波(${(ctx.rangePct * 100).toFixed(2)}%),trail=15/12`);
+        reasons.push(`0DTE中波(${ctx.rangePct.toFixed(2)}%),trail=15/12`);
       } else {
         // 低波动：更紧的回撤保护
         baseParams.trailingStopTrigger = 15;
         baseParams.trailingStopPercent = 10;
-        reasons.push(`0DTE低波(${(ctx.rangePct * 100).toFixed(2)}%),trail=15/10`);
+        reasons.push(`0DTE低波(${ctx.rangePct.toFixed(2)}%),trail=15/10`);
       }
     }
 

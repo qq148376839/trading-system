@@ -7,6 +7,13 @@
 
 ## 🆕 最近更新
 
+### 2026-02-18: 修复 VWAP rangePct 单位不匹配导致波动率分桶失效
+
+**问题**: rangePct 百分比值（0.65）与消费侧小数阈值（0.0065）不匹配，波动率分桶永远走高波动分支。
+**修复**: `strategy-scheduler.service.ts` + `option-dynamic-exit.service.ts` 阈值和日志对齐为百分比单位。
+
+---
+
 ### 2026-02-18: SPX/USD/BTC 分时K线数据持久化存储
 
 **变更内容**:

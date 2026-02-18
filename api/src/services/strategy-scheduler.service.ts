@@ -2787,11 +2787,11 @@ class StrategyScheduler {
         if (resolvedUnderlyingSymbol) {
           vwapData = await marketDataService.getIntradayVWAP(resolvedUnderlyingSymbol);
           if (vwapData) {
-            // 波动率分桶确定 timeStopMinutes
+            // 波动率分桶确定 timeStopMinutes（rangePct 为百分比，如 0.65 表示 0.65%）
             const { rangePct } = vwapData;
-            if (rangePct >= 0.0065) {
+            if (rangePct >= 0.65) {
               timeStopMinutes = 3;   // 高波动：3 分钟
-            } else if (rangePct >= 0.0045) {
+            } else if (rangePct >= 0.45) {
               timeStopMinutes = 5;   // 中波动：5 分钟
             } else {
               timeStopMinutes = 8;   // 低波动：8 分钟
@@ -2852,7 +2852,7 @@ class StrategyScheduler {
           `策略 ${strategyId} 期权 ${effectiveSymbol}: 动态止盈止损触发 ` +
           `[${action}]${exitTag ? `[${exitTag}]` : ''} ${reason} | ${optionDynamicExitService.formatPnLInfo(pnl, positionCtx)}` +
           (is0DTE ? ` | midPrice=${optionMidPrice > 0 ? optionMidPrice.toFixed(4) : 'N/A'}` : '') +
-          (vwapData ? ` | vwap=${vwapData.vwap.toFixed(2)} rangePct=${(vwapData.rangePct * 100).toFixed(2)}%` : '') +
+          (vwapData ? ` | vwap=${vwapData.vwap.toFixed(2)} rangePct=${vwapData.rangePct.toFixed(2)}%` : '') +
           (timeStopMinutes ? ` | T=${timeStopMinutes}min` : '') +
           (optionDirection ? ` | dir=${optionDirection}` : '')
         );
