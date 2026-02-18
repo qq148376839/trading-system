@@ -7,6 +7,30 @@
 
 ## 🆕 最近更新
 
+### 2026-02-18: SPX/USD/BTC 分时K线数据持久化存储
+
+**变更内容**:
+1. 新建 `market_kline_history` 表存储 1m K 线数据 + `kline_collection_status` 表监控采集状态
+2. 新建 K 线采集服务：定时从 Moomoo API 获取 SPX/USD_INDEX/BTC 1m K 线，批量 upsert 到 PostgreSQL
+3. 自适应采集间隔：交易时段 60min / 非交易时段 240min，启动延迟 7s
+4. 新建 K 线查询服务：`getIntradayData`/`checkAvailability`/`getCompleteness` 等方法
+5. 新建 REST API：`GET /:source`、`GET /status`、`GET /health`、`GET /completeness/:source/:date`、`POST /collect`
+6. `market-data-cache.service.ts` 回测场景优先从 DB 读取分时数据，DB 无数据时 fallback API
+7. `server.ts` 注册路由 + 服务启动/关闭
+
+**新增文件**:
+- `api/migrations/013_add_market_kline_history.sql`
+- `api/src/services/kline-collection.service.ts`
+- `api/src/services/kline-history.service.ts`
+- `api/src/routes/kline-history.ts`
+
+**修改文件**:
+- `api/migrations/000_init_schema.sql`（追加 DDL）
+- `api/src/server.ts`（路由 + 服务集成）
+- `api/src/services/market-data-cache.service.ts`（DB 优先读取）
+
+---
+
 ### 2026-02-18: 期权信号系统动态化改造 + TSLPPCT 券商保护单集成
 
 **变更内容**:
@@ -818,6 +842,6 @@
 
 ---
 
-**最后更新**: 2026-02-11（更新3组Moomoo游客Cookie + 3-Cookie轮转压力测试30并发100%成功avg1.7s）
+**最后更新**: 2026-02-18（SPX/USD/BTC 分时K线数据持久化存储 — 采集+查询+REST API+回测DB优先读取）
 **项目版本**: 1.0
 

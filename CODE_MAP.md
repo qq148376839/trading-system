@@ -2,7 +2,7 @@
 
 本文档详细说明了项目中每个文件的作用以及文件之间的调用和关联关系。
 
-**最后更新**: 2026-02-17（0DTE 单腿动态风控 Phase 1 + Phase 2）
+**最后更新**: 2026-02-18（SPX/USD/BTC 分时K线数据持久化存储）
 
 ---
 
@@ -290,6 +290,23 @@ trading-system/
 - 📌 `server.ts` - 注册路由
 - 📌 `frontend/lib/api.ts` - 前端调用
 
+#### `api/src/routes/kline-history.ts`
+**作用**: K 线历史数据 REST API
+
+**API**:
+- `GET /api/kline-history/:source` - 查询 K 线数据
+- `GET /api/kline-history/status` - 采集状态总览
+- `GET /api/kline-history/health` - 健康检查
+- `GET /api/kline-history/completeness/:source/:date` - 数据完整度查询
+- `POST /api/kline-history/collect` - 手动触发采集
+
+**调用关系**:
+- ✅ 使用 `services/kline-history.service.ts` - K 线查询服务
+- ✅ 使用 `services/kline-collection.service.ts` - K 线采集服务（手动触发）
+
+**被调用**:
+- 📌 `server.ts` - 注册路由
+
 #### `api/src/routes/config.ts`
 **作用**: 系统配置管理 API（需要管理员认证）
 
@@ -438,6 +455,42 @@ trading-system/
 
 **被调用**:
 - 📌 `services/trading-recommendation.service.ts` - 交易推荐
+
+#### `api/src/services/kline-collection.service.ts`
+**作用**: K 线数据定时采集服务
+
+**主要功能**:
+- 定时从 Moomoo API 获取 SPX/USD_INDEX/BTC 的 1m K 线数据
+- 批量 upsert 到 PostgreSQL（`ON CONFLICT DO NOTHING`）
+- 自适应采集间隔：交易时段 60min / 非交易时段 240min
+- 健康监控：记录采集状态到 `kline_collection_status` 表
+- 数据清理：自动清理超过保留天数的旧数据
+
+**调用关系**:
+- ✅ 使用 `config/database.ts` - 数据库写入
+- ✅ 使用 `utils/moomoo-proxy.ts` - Moomoo API 获取 K 线数据
+- ✅ 使用 `services/config.service.ts` - 读取采集配置
+
+**被调用**:
+- 📌 `server.ts` - 启动时延迟 7s 启动，graceful shutdown 停止
+- 📌 `routes/kline-history.ts` - 手动触发采集
+
+#### `api/src/services/kline-history.service.ts`
+**作用**: K 线历史数据查询服务
+
+**主要功能**:
+- 从 DB 读取历史 1m K 线数据
+- `getIntradayData(source, date?)` - 获取指定日期分时数据
+- `getIntradayByDate(source, date)` - 按日期精确查询
+- `checkAvailability(source, date)` - 检查数据可用性
+- `getCompleteness(source, date)` - 数据完整度（记录数、覆盖率）
+
+**调用关系**:
+- ✅ 使用 `config/database.ts` - 数据库查询
+
+**被调用**:
+- 📌 `routes/kline-history.ts` - REST API
+- 📌 `services/market-data-cache.service.ts` - 回测场景 DB 优先读取
 
 #### `api/src/services/trading-recommendation.service.ts`
 **作用**: 交易推荐算法服务
@@ -2054,6 +2107,36 @@ frontend/app/* (所有页面)
   - `api/src/services/market-data.service.ts`
 - `routes/config.ts` 新增依赖：`utils/moomoo-proxy.ts`（Cookie 测试）
 - `utils/moomoo-proxy.ts` 新增依赖：`services/config.service.ts`（读取边缘函数 URL）
+
+---
+
+## 最新变更（2026-02-18）
+
+### SPX/USD/BTC 分时K线数据持久化存储
+
+**新增文件**:
+- `api/migrations/013_add_market_kline_history.sql` - K 线数据迁移脚本
+  - 创建 `market_kline_history` 表（1m K 线数据，主键 source+symbol+timestamp）
+  - 创建 `kline_collection_status` 表（采集监控）
+  - 插入 `system_config` 种子数据（采集开关/间隔/标的列表）
+- `api/src/services/kline-collection.service.ts` - K 线数据采集服务
+  - 调用关系：使用 `config/database.ts`（DB 写入）、`utils/moomoo-proxy.ts`（Moomoo API 获取 K 线）、`services/config.service.ts`（读取采集配置）
+  - 被调用：`server.ts`（启动时 7s 延迟启动，graceful shutdown 停止）
+- `api/src/services/kline-history.service.ts` - K 线数据查询服务
+  - 调用关系：使用 `config/database.ts`（DB 查询）
+  - 被调用：`routes/kline-history.ts`（REST API）、`services/market-data-cache.service.ts`（回测数据源）
+- `api/src/routes/kline-history.ts` - K 线历史数据 REST API
+  - API：`GET /api/kline-history/:source`、`GET /status`、`GET /health`、`GET /completeness/:source/:date`、`POST /collect`
+  - 调用关系：使用 `services/kline-history.service.ts`、`services/kline-collection.service.ts`
+  - 被调用：`server.ts`（路由注册）
+
+**修改文件**:
+- `api/migrations/000_init_schema.sql` - 追加 `market_kline_history` + `kline_collection_status` DDL
+- `api/src/server.ts` - 注册 `kline-history` 路由，启动/停止 kline-collection 服务
+  - 新增依赖：`services/kline-collection.service.ts`、`routes/kline-history.ts`
+- `api/src/services/market-data-cache.service.ts` - 新增 `getHistoricalIntradayFromDB()` 方法
+  - 变更内容：`getHistoricalMarketData()` 回测场景优先从 DB 读取分时数据
+  - 新增依赖：`services/kline-history.service.ts`
 
 ---
 

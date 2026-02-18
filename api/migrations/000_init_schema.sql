@@ -838,14 +838,69 @@ ON CONFLICT DO NOTHING;
 UPDATE capital_allocations SET is_system = TRUE WHERE name = 'GLOBAL' AND (is_system IS NULL OR is_system = FALSE);
 
 -- ============================================================================
+-- 第十一部分：市场K线历史数据表（013_add_market_kline_history.sql）
+-- ============================================================================
+
+-- K线数据主表
+CREATE TABLE IF NOT EXISTS market_kline_history (
+    id BIGSERIAL PRIMARY KEY,
+    source VARCHAR(20) NOT NULL,              -- 'SPX', 'USD_INDEX', 'BTC'
+    period VARCHAR(10) NOT NULL DEFAULT '1m',
+    timestamp BIGINT NOT NULL,                -- 毫秒时间戳（与 CandlestickData.timestamp 一致）
+    open DECIMAL(20, 6) NOT NULL,
+    high DECIMAL(20, 6) NOT NULL,
+    low DECIMAL(20, 6) NOT NULL,
+    close DECIMAL(20, 6) NOT NULL,
+    volume DECIMAL(20, 4) NOT NULL DEFAULT 0,
+    turnover DECIMAL(20, 4) NOT NULL DEFAULT 0,
+    collected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_kline_source_period_ts UNIQUE (source, period, timestamp)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kline_source_period_ts ON market_kline_history (source, period, timestamp);
+CREATE INDEX IF NOT EXISTS idx_kline_timestamp_brin ON market_kline_history USING BRIN (timestamp);
+
+-- 采集监控表
+CREATE TABLE IF NOT EXISTS kline_collection_status (
+    id SERIAL PRIMARY KEY,
+    source VARCHAR(20) NOT NULL,
+    period VARCHAR(10) NOT NULL DEFAULT '1m',
+    collection_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    data_points_fetched INTEGER NOT NULL DEFAULT 0,
+    data_points_inserted INTEGER NOT NULL DEFAULT 0,
+    data_points_skipped INTEGER NOT NULL DEFAULT 0,
+    earliest_timestamp BIGINT,
+    latest_timestamp BIGINT,
+    success BOOLEAN NOT NULL DEFAULT true,
+    error_message TEXT,
+    duration_ms INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_collection_status_source_time ON kline_collection_status (source, collection_time DESC);
+
+-- K线采集相关配置项
+INSERT INTO system_config (config_key, config_value, encrypted, description) VALUES
+    ('kline_collection_enabled', 'true', false, 'K线历史数据采集总开关'),
+    ('kline_collection_trading_interval_min', '60', false, 'K线采集间隔：交易时段（分钟）'),
+    ('kline_collection_off_hours_interval_min', '240', false, 'K线采集间隔：非交易时段（分钟）'),
+    ('kline_data_retention_days', '365', false, 'K线1m数据保留天数')
+ON CONFLICT (config_key) DO UPDATE SET
+    description = EXCLUDED.description,
+    config_value = CASE
+        WHEN system_config.config_value = '' OR system_config.config_value IS NULL THEN EXCLUDED.config_value
+        ELSE system_config.config_value
+    END,
+    updated_at = CURRENT_TIMESTAMP;
+
+-- ============================================================================
 -- 完成
 -- ============================================================================
 -- 脚本执行完成！
--- 
+--
 -- 下一步：
 --   1. 创建管理员账户：
 --      node scripts/create-admin.js admin your_password
---   
+--
 --   2. 配置API密钥（通过前端配置管理界面或直接更新数据库）：
 --      - longport_app_key
 --      - longport_app_secret

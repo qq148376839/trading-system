@@ -5,6 +5,7 @@
  */
 
 import marketDataService from './market-data.service';
+import klineHistoryService from './kline-history.service';
 import { getCacheDuration, isTradingHours } from '../utils/trading-hours';
 import { logger } from '../utils/logger';
 
@@ -107,14 +108,42 @@ class MarketDataCacheService {
       timestamp: targetDate.getTime(), // 使用目标日期作为时间戳
     };
 
-    // 如果包含分时数据，添加分时数据
+    // 如果包含分时数据，优先从 DB 读取（DB 有数据则跳过 API 调用）
     if (includeIntraday) {
-      result.usdIndexHourly = marketData.usdIndexHourly || [];
-      result.btcHourly = marketData.btcHourly || [];
+      const [dbUsd, dbBtc] = await Promise.all([
+        this.getHistoricalIntradayFromDB('USD_INDEX', targetDate),
+        this.getHistoricalIntradayFromDB('BTC', targetDate),
+      ]);
+
+      result.usdIndexHourly = dbUsd.length >= 50 ? dbUsd : (marketData.usdIndexHourly || []);
+      result.btcHourly = dbBtc.length >= 50 ? dbBtc : (marketData.btcHourly || []);
       result.hourlyTimestamp = targetDate.getTime();
     }
 
     return result;
+  }
+
+  /**
+   * 从数据库获取历史分时数据（用于回测）
+   * 优先 DB，数据不足（<50 bars）时降级到 API
+   */
+  async getHistoricalIntradayFromDB(
+    source: string,
+    targetDate: Date
+  ): Promise<CandlestickData[]> {
+    try {
+      // 按美东时间 04:00-20:00 范围查询
+      const dateStr = targetDate.toISOString().split('T')[0];
+      const data = await klineHistoryService.getIntradayByDate(source, dateStr);
+      if (data.length >= 50) {
+        logger.debug(`[KlineDB] ${source} ${dateStr}: ${data.length} bars from DB`);
+        return data;
+      }
+      logger.debug(`[KlineDB] ${source} ${dateStr}: DB 仅 ${data.length} bars，降级到 API`);
+    } catch (error: any) {
+      logger.debug(`[KlineDB] ${source} DB 查询失败: ${error.message}，降级到 API`);
+    }
+    return []; // 空数组表示需要降级
   }
 
   /**

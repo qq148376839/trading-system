@@ -1,5 +1,61 @@
 # 更新日志
 
+## 2026-02-18
+
+### SPX/USD/BTC 分时K线数据持久化存储
+
+**新增**: 实现 SPX、USD_INDEX、BTC 三大市场标的的 1 分钟 K 线数据持久化存储，支持从 DB 优先读取历史分时数据用于回测。
+
+**改动内容**:
+
+#### 1. 数据库迁移（两张新表 + 配置项）
+- **新增**: `market_kline_history` 表 — 存储 1m K 线数据（source/symbol/timestamp/open/high/low/close/volume/turnover），主键 `(source, symbol, timestamp)` 自动去重
+- **新增**: `kline_collection_status` 表 — 采集监控（每个 source 的最后采集时间、记录数、错误计数）
+- **新增**: `system_config` 种子数据 — `kline_collection_enabled`（启用采集）、`kline_collection_interval_minutes`（采集间隔，默认 60）、`kline_collection_sources`（采集标的列表）
+- 同步追加到 `000_init_schema.sql` 确保新部署包含完整 DDL
+
+#### 2. K线采集服务（`kline-collection.service.ts`）
+- **新增**: 定时从 Moomoo API 获取 SPX/USD_INDEX/BTC 的 1m K 线数据并批量 upsert 到 PostgreSQL
+- 自适应采集间隔：交易时段 60 分钟 / 非交易时段 240 分钟
+- 批量 upsert（`ON CONFLICT DO NOTHING`），避免重复插入
+- 健康监控：记录每次采集状态（成功/失败/记录数/错误信息）
+- 数据清理：自动清理超过保留天数的旧数据
+- 启动延迟 7 秒，等待其他服务就绪
+
+#### 3. K线查询服务（`kline-history.service.ts`）
+- **新增**: 从 DB 读取历史 K 线数据的查询服务
+- `getIntradayData(source, date?)` — 获取指定日期的分时数据
+- `getIntradayByDate(source, date)` — 按日期精确查询
+- `checkAvailability(source, date)` — 检查某日数据是否可用
+- `getCompleteness(source, date)` — 返回数据完整度（记录数、时间跨度、覆盖率）
+
+#### 4. REST API 路由（`kline-history.ts`）
+- `GET /api/kline-history/:source` — 查询 K 线数据
+- `GET /api/kline-history/status` — 采集状态总览
+- `GET /api/kline-history/health` — 健康检查
+- `GET /api/kline-history/completeness/:source/:date` — 数据完整度查询
+- `POST /api/kline-history/collect` — 手动触发采集
+
+#### 5. Server 集成
+- `server.ts` 注册 `kline-history` 路由、启动 kline-collection 服务（7s 延迟）、graceful shutdown 时停止采集
+
+#### 6. 回测数据源优化
+- `market-data-cache.service.ts` 新增 `getHistoricalIntradayFromDB()` 方法
+- `getHistoricalMarketData()` 修改为优先从 DB 读取分时数据（回测场景），DB 无数据时 fallback 到原有 API
+
+**新增文件**:
+- `api/migrations/013_add_market_kline_history.sql`（迁移脚本）
+- `api/src/services/kline-collection.service.ts`（采集服务）
+- `api/src/services/kline-history.service.ts`（查询服务）
+- `api/src/routes/kline-history.ts`（REST API）
+
+**修改文件**:
+- `api/migrations/000_init_schema.sql`（追加 DDL）
+- `api/src/server.ts`（路由注册 + 服务启动/关闭）
+- `api/src/services/market-data-cache.service.ts`（DB 优先读取分时数据）
+
+---
+
 ## 2026-02-17
 
 ### 日志输出优化 — 消除非交易时段 ~75% 冗余日志

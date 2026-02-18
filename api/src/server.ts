@@ -22,6 +22,7 @@ import backtestRouter from './routes/backtest';
 import { orderPreventionMetricsRouter } from './routes/order-prevention-metrics';
 import { logsRouter } from './routes/logs';
 import { tradingDaysRouter } from './routes/trading-days';
+import { klineHistoryRouter } from './routes/kline-history';
 import { errorHandler } from './middleware/errorHandler';
 
 // Swagger 文档配置
@@ -76,6 +77,7 @@ app.use('/api/quant/backtest', backtestRouter);
 app.use('/api/order-prevention-metrics', orderPreventionMetricsRouter);
 app.use('/api/logs', logsRouter);
 app.use('/api/trading-days', tradingDaysRouter);
+app.use('/api/kline-history', klineHistoryRouter);
 app.use('/api/health', healthRouter);
 
 // 前端代理 - 将所有非 API 请求代理到前端服务
@@ -168,6 +170,16 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     }
   }, 6000);
 
+  // 启动K线数据采集服务
+  setTimeout(async () => {
+    try {
+      const klineCollectionService = (await import('./services/kline-collection.service')).default;
+      await klineCollectionService.init();
+    } catch (error: any) {
+      console.warn('启动K线数据采集服务失败:', error.message);
+    }
+  }, 7000);
+
   // 启动日志系统
   setTimeout(async () => {
     try {
@@ -223,6 +235,15 @@ const gracefulShutdown = async (signal: string) => {
     console.log('策略调度器已停止');
   } catch (error: any) {
     console.error('停止策略调度器失败:', error.message);
+  }
+
+  // 3.5 停止K线数据采集服务
+  try {
+    const klineCollectionService = (await import('./services/kline-collection.service')).default;
+    klineCollectionService.stop();
+    console.log('K线数据采集服务已停止');
+  } catch (error: any) {
+    console.error('停止K线数据采集服务失败:', error.message);
   }
 
   // 4. 停止日志摘要服务
