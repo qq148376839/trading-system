@@ -35,7 +35,6 @@ class MarketDataService {
 
   // 市场温度缓存（API降级用）
   private temperatureCache: { value: number; timestamp: number } | null = null;
-  private _loggedRawSample = false; // 调试用，仅输出一次原始数据样本
   private readonly TEMPERATURE_CACHE_TTL = 5 * 60 * 1000; // 5分钟 TTL
 
   /**
@@ -318,12 +317,6 @@ class MarketDataService {
     //    - k: 时间戳（秒）
     // 2. 分时数据（get-quote-minute）：可能使用 cc_price, cc_open 等字段
     // 3. 其他格式：price/100, open/100 等
-    // 调试：输出第一条原始数据的所有字段（仅首次）
-    if (dataArray.length > 0 && !this._loggedRawSample) {
-      this._loggedRawSample = true;
-      const sample = dataArray[0];
-      logger.info(`[parseCandlestickData] 原始数据样本 keys=${Object.keys(sample).join(',')}, 值=`, JSON.stringify(sample).substring(0, 500));
-    }
     return dataArray.map((item: any) => {
           // 价格字段解析：支持多种格式
           // 优先级：小写字母字段（o,c,h,l） > cc_*字段 > price/100 > 其他
