@@ -884,7 +884,7 @@ export default function EditStrategyModal({
                     </div>
                     <div className="mt-3 p-3 bg-gray-100 border border-gray-200 rounded text-xs text-gray-600">
                       <p><strong>动态缩放：</strong>上方数值为EARLY阶段基准，MID约80%，LATE约60%，FINAL约40%。</p>
-                      <p className="mt-1"><strong>强平规则：</strong>0DTE 收盘前180分钟（约1:00 PM ET）强制平仓；非0DTE 收盘前10分钟强制平仓。</p>
+                      <p className="mt-1"><strong>强平规则：</strong>0DTE 收盘前120分钟（约2:00 PM ET）强制平仓；非0DTE 收盘前10分钟强制平仓。</p>
                     </div>
                   </div>
 
@@ -933,7 +933,7 @@ export default function EditStrategyModal({
                       </div>
                     </div>
                     <div className="mt-3 p-2 bg-yellow-100 rounded text-xs text-yellow-800">
-                      <strong>强平规则（不可配置）：</strong>0DTE 收盘前180分钟强平 | 非0DTE 收盘前10分钟强平 | 绝对止损 -40%
+                      <strong>强平规则（不可配置）：</strong>0DTE 收盘前120分钟强平 | 非0DTE 收盘前10分钟强平 | 绝对止损 -40%
                     </div>
                   </div>
 

@@ -23,6 +23,15 @@
 - 📝 `api/src/routes/quant.ts`（simulate 端点适配 `entryThresholdOverride`）
 - 📝 `frontend/components/EditStrategyModal.tsx`（重写 OPTION_INTRADAY_V1 配置区块：预设系统 + 数字输入UX + 6区块布局）
 
+### 2026-02-19: 0DTE 强平时间调整 180→120 分钟
+
+**变更内容**: 0DTE 期权强制平仓时间从收盘前 180 分钟（1:00 PM ET）调整为收盘前 120 分钟（2:00 PM ET），多出 1 小时交易窗口。同步调整禁入窗口默认值和前端文案。
+
+**修改文件**:
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（0DTE TIME_STOP 阈值 180→120）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（空闲跳过 + 禁入窗口默认值 180→120，共3处）
+- 📝 `frontend/components/EditStrategyModal.tsx`（强平规则文案 180→120，共2处）
+
 ---
 
 ### 2026-02-18: 修复 VWAP rangePct 单位不匹配导致波动率分桶失效

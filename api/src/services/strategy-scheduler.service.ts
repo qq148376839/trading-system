@@ -315,13 +315,13 @@ class StrategyScheduler {
       return;
     }
 
-    // 期权策略：收盘前180分钟（1:00 PM ET）且无持仓时，跳过本周期（避免资源浪费）
+    // 期权策略：收盘前120分钟（2:00 PM ET）且无持仓时，跳过本周期（避免资源浪费）
     const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy;
     if (isOptionStrategy) {
       try {
         const closeWindow = await getMarketCloseWindow({
           market: 'US',
-          noNewEntryBeforeCloseMinutes: 180,
+          noNewEntryBeforeCloseMinutes: 120,
           forceCloseBeforeCloseMinutes: 30,
         });
         if (closeWindow && new Date() >= closeWindow.noNewEntryTimeUtc) {
@@ -336,7 +336,7 @@ class StrategyScheduler {
             const lastLogKey = `0dte_idle_skip_${strategyId}`;
             const lastLogTime = (this as any)[lastLogKey] || 0;
             if (now - lastLogTime > 5 * 60 * 1000) {
-              logger.debug(`策略 ${strategyId}: 收盘前180分钟，已无持仓，跳过监控`);
+              logger.debug(`策略 ${strategyId}: 收盘前120分钟，已无持仓，跳过监控`);
               (this as any)[lastLogKey] = now;
             }
             return;
@@ -1355,9 +1355,9 @@ class StrategyScheduler {
       }
 
       // IDLE 状态：处理买入逻辑
-      // 期权策略：收盘前N分钟不再开新仓（默认180分钟，可配置）
+      // 期权策略：收盘前N分钟不再开新仓（默认120分钟，可配置）
       if (isOptionStrategy) {
-        const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 180), 10) || 180);
+        const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 120), 10) || 120);
         const window = await getMarketCloseWindow({
           market: 'US',
           noNewEntryBeforeCloseMinutes: noNewEntryMins,
@@ -3144,7 +3144,7 @@ class StrategyScheduler {
   ): Promise<void> {
     try {
       // 1. 检查是否在交易窗口内
-      const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 180), 10) || 180);
+      const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 120), 10) || 120);
       const window = await getMarketCloseWindow({
         market: 'US',
         noNewEntryBeforeCloseMinutes: noNewEntryMins,

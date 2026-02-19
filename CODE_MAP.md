@@ -768,7 +768,7 @@ trading-system/
 - Delta对冲信号生成
 - 支持多种期权策略类型
 - **用户配置缩放**：`ExitRulesOverride` 接口支持用户自定义止盈止损比例，以 EARLY 阶段为基准按时间阶段比例递减
-- **0DTE强制平仓**：`PositionContext` 包含 `is0DTE` 字段，收盘前180分钟触发 TIME_STOP 强制退出
+- **0DTE强制平仓**：`PositionContext` 包含 `is0DTE` 字段，收盘前120分钟触发 TIME_STOP 强制退出
 - **0DTE 止损收紧**：PnL 兜底 -25%（mid 价格）+ 禁用冷却期放宽 + exitTag 标签
 - **VWAP 结构失效止损**：标的连续 2 根 1m K 线穿回 VWAP → 平仓（`structure_invalidation`）
 - **时间止损**：入场后 T 分钟无顺风延续 → 退出（T 按波动率分桶 3/5/8min）
