@@ -687,7 +687,148 @@ export default function EditStrategyModal({
                     <div></div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                  {/* 0DTE 风控参数 */}
+                  <div className="mb-4 mt-4 p-4 border rounded bg-orange-50 border-orange-200">
+                    <label className="block text-xs text-gray-700 mb-3 font-semibold">0DTE 风控参数</label>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-xs text-gray-700 mb-1 font-medium">开盘禁入时长（分钟）</label>
+                        <input
+                          type="number"
+                          value={formData.config.tradeWindow?.zdteCooldownMinutes ?? 0}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              config: {
+                                ...formData.config,
+                                tradeWindow: {
+                                  ...(formData.config.tradeWindow || {}),
+                                  zdteCooldownMinutes: parseInt(e.target.value) || 0,
+                                },
+                              },
+                            })
+                          }
+                          className="border rounded px-3 py-2 w-full"
+                          min="0"
+                          max="60"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">开盘后N分钟内禁止0DTE，极端信号可豁免</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-700 mb-1 font-medium">0DTE入场得分阈值</label>
+                        <input
+                          type="number"
+                          value={formData.config.zdteEntryThreshold ?? 12}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              config: {
+                                ...formData.config,
+                                zdteEntryThreshold: parseInt(e.target.value) || 12,
+                              },
+                            })
+                          }
+                          className="border rounded px-3 py-2 w-full"
+                          min="5"
+                          max="30"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">0DTE比普通入场更严格的得分阈值</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-700 mb-1 font-medium">平仓后冷却期（分钟）</label>
+                        <input
+                          type="number"
+                          value={formData.config.latePeriod?.cooldownMinutes ?? 3}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              config: {
+                                ...formData.config,
+                                latePeriod: {
+                                  ...(formData.config.latePeriod || {}),
+                                  cooldownMinutes: parseInt(e.target.value) || 0,
+                                },
+                              },
+                            })
+                          }
+                          className="border rounded px-3 py-2 w-full"
+                          min="0"
+                          max="30"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">非0DTE固定冷却；0DTE按交易次数动态调整</p>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3">
+                      <div>
+                        <label className="block text-xs text-gray-700 mb-1 font-medium">价格确认次数</label>
+                        <input
+                          type="number"
+                          value={formData.config.consecutiveConfirmCycles ?? 1}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              config: {
+                                ...formData.config,
+                                consecutiveConfirmCycles: parseInt(e.target.value) || 1,
+                              },
+                            })
+                          }
+                          className="border rounded px-3 py-2 w-full"
+                          min="1"
+                          max="5"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">设为1跳过价格确认，2+启用确认等待</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-700 mb-1 font-medium">RSI超卖阈值</label>
+                        <input
+                          type="number"
+                          value={formData.config.rsiFilter?.oversoldThreshold ?? 5}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              config: {
+                                ...formData.config,
+                                rsiFilter: {
+                                  ...(formData.config.rsiFilter || {}),
+                                  oversoldThreshold: parseInt(e.target.value) || 5,
+                                },
+                              },
+                            })
+                          }
+                          className="border rounded px-3 py-2 w-full"
+                          min="1"
+                          max="50"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">RSI低于此值时拒绝做空（默认5）</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-700 mb-1 font-medium">RSI超买阈值</label>
+                        <input
+                          type="number"
+                          value={formData.config.rsiFilter?.overboughtThreshold ?? 95}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              config: {
+                                ...formData.config,
+                                rsiFilter: {
+                                  ...(formData.config.rsiFilter || {}),
+                                  overboughtThreshold: parseInt(e.target.value) || 95,
+                                },
+                              },
+                            })
+                          }
+                          className="border rounded px-3 py-2 w-full"
+                          min="50"
+                          max="99"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">RSI高于此值时拒绝做多（默认95）</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
                       <label className="block text-xs text-gray-700 mb-1 font-medium">禁止开仓窗口（分钟）</label>
                       <input
