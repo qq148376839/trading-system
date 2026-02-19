@@ -803,6 +803,26 @@ class StrategyScheduler {
                     }
                   }
 
+                  // Fix 10: 资金差异修复 — 用实际成交价更新 allocationAmount
+                  if (isOption && allocationAmount !== undefined && avgPrice > 0 && filledQuantity > 0) {
+                    const multiplier = context.optionMeta?.multiplier || context.intent?.metadata?.multiplier || 100;
+                    const actualCost = avgPrice * filledQuantity * multiplier;
+                    // 仅当差异 > $1 时调整（避免浮点噪声）
+                    if (Math.abs(actualCost - allocationAmount) > 1) {
+                      const diff = actualCost - allocationAmount;
+                      logger.info(
+                        `[资金修正] ${instanceKeySymbol} 预估分配$${allocationAmount.toFixed(2)} -> ` +
+                        `实际成本$${actualCost.toFixed(2)}，差额$${diff.toFixed(2)}`
+                      );
+                      if (diff < 0) {
+                        // 实际成本更低，释放多余分配
+                        await capitalManager.releaseAllocation(strategyId, Math.abs(diff), instanceKeySymbol);
+                      }
+                      // diff > 0 时不额外分配（requestAllocation 已预留，多出部分在卖出时自然平衡）
+                      allocationAmount = actualCost;
+                    }
+                  }
+
                   // 检查是否已经是HOLDING状态（避免重复更新和日志）
                   const currentInstanceState = await strategyInstance.getCurrentState(instanceKeySymbol);
                   if (currentInstanceState === 'HOLDING') {
@@ -837,10 +857,32 @@ class StrategyScheduler {
                           const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
                           return expDate === today;
                         })();
-                        const trailingPct = trailingStopProtectionService.getTrailingPercentForPhase({
+                        let trailingPct = trailingStopProtectionService.getTrailingPercentForPhase({
                           phase: 'EARLY',
                           is0DTE,
                         });
+
+                        // Fix 6: 动态调整 — 实际成交价与信号价偏差大时收紧 trailing
+                        if (is0DTE && context.intent?.entryPrice) {
+                          const signalPrice = parseFloat(String(context.intent.entryPrice));
+                          const filledPrice = avgPrice;
+                          if (filledPrice > 0 && signalPrice > 0) {
+                            const actualDeviation = Math.abs((filledPrice - signalPrice) / signalPrice);
+                            if (actualDeviation > 0.02) {
+                              const adjustment = Math.min(actualDeviation * 50, trailingPct - 8);
+                              if (adjustment > 0) {
+                                const adjustedTrailing = Math.max(trailingPct - adjustment, 8);
+                                logger.info(
+                                  `[动态调整] ${tradedSym} 0DTE 成交偏差${(actualDeviation * 100).toFixed(2)}%` +
+                                  `(信号${signalPrice.toFixed(2)} vs 成交${filledPrice.toFixed(2)})，` +
+                                  `trailing从${trailingPct}%调整为${adjustedTrailing.toFixed(1)}%`
+                                );
+                                trailingPct = adjustedTrailing;
+                              }
+                            }
+                          }
+                        }
+
                         const tslpResult = await trailingStopProtectionService.submitProtection(
                           tradedSym,
                           filledQuantity,
@@ -895,10 +937,25 @@ class StrategyScheduler {
                     logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol}: 卖出订单为TSLPPCT自动触发成交 (orderId=${dbOrder.order_id})`);
                   }
 
+                  // Fix 11: 递增 dailyTradeCount 供动态冷却期使用
+                  const prevDailyTradeCount = context.dailyTradeCount ?? 0;
                   await strategyInstance.updateState(instanceKeySymbol, 'IDLE', {
                     lastExitTime: new Date().toISOString(),
+                    dailyTradeCount: prevDailyTradeCount + 1,
                     ...(isTslpFill ? { exitReason: 'TSLPPCT_FILLED', protectionOrderId: undefined, protectionTrailingPct: undefined } : {}),
                   });
+
+                  // Fix 8b 联动: 卖出成交后更新反向策略 kill switch
+                  if (context.entryPrice && avgPrice > 0) {
+                    const sellEntryPrice = parseFloat(String(context.entryPrice));
+                    if (sellEntryPrice > 0) {
+                      const pnlPct = ((avgPrice - sellEntryPrice) / sellEntryPrice) * 100;
+                      const si = strategyInstance as any;
+                      if (typeof si.updateReverseStrategyKillSwitch === 'function') {
+                        si.updateReverseStrategyKillSwitch(pnlPct);
+                      }
+                    }
+                  }
 
                   // 释放资金：
                   // - 对股票策略：历史实现使用"成交金额"释放（可能与allocatedAmount不一致，但沿用）
@@ -1330,12 +1387,29 @@ class StrategyScheduler {
           }
         }
 
-        // LATE时段冷却期：同一标的平仓后N分钟内不重新开仓
-        const cooldownMinutes = strategyConfig?.latePeriod?.cooldownMinutes ?? 3;
+        // Fix 11: LATE时段冷却期 — 0DTE根据当日交易次数动态调整
+        const dailyTradeCount = cancelCtx?.dailyTradeCount ?? 0;
+        const is0DTEContext = cancelCtx?.optionMeta?.expirationMode === '0DTE'
+          || cancelCtx?.is0DTE === true;
+
+        let cooldownMinutes: number;
+        if (is0DTEContext) {
+          // 0DTE 动态冷却：前2笔无冷却，3-4笔1分钟，5笔起3分钟
+          if (dailyTradeCount <= 1) {
+            cooldownMinutes = 0;
+          } else if (dailyTradeCount <= 3) {
+            cooldownMinutes = 1;
+          } else {
+            cooldownMinutes = 3;
+          }
+        } else {
+          cooldownMinutes = strategyConfig?.latePeriod?.cooldownMinutes ?? 3;
+        }
+
         if (cancelCtx?.lastExitTime && cooldownMinutes > 0) {
           const exitElapsed = Date.now() - new Date(cancelCtx.lastExitTime).getTime();
           if (exitElapsed < cooldownMinutes * 60000) {
-            summary.idle.push(`${symbol}(COOLDOWN_${Math.ceil((cooldownMinutes * 60000 - exitElapsed) / 60000)}m)`);
+            summary.idle.push(`${symbol}(COOLDOWN_${Math.ceil((cooldownMinutes * 60000 - exitElapsed) / 60000)}m_trade#${dailyTradeCount})`);
             return;
           }
         }
@@ -2947,7 +3021,7 @@ class StrategyScheduler {
           exitReasonDetail: reason,
           exitPrice: currentPrice,
           exitPnL: pnl.netPnL,
-          exitPnLPercent: pnl.netPnLPercent,
+          exitPnLPercent: pnl.grossPnLPercent, // Fix 9: 使用 grossPnLPercent 避免 NaN
           totalFees: pnl.totalFees,
         });
 
@@ -2963,7 +3037,7 @@ class StrategyScheduler {
             assetClass: 'OPTION',
             exitAction: action,
             netPnL: pnl.netPnL,
-            netPnLPercent: pnl.netPnLPercent,
+            netPnLPercent: pnl.grossPnLPercent, // Fix 9: 使用 grossPnLPercent 避免 NaN
             totalFees: pnl.totalFees,
           }
         );
@@ -2980,7 +3054,7 @@ class StrategyScheduler {
             assetClass: 'OPTION',
             exitAction: action,
             netPnL: pnl.netPnL,
-            netPnLPercent: pnl.netPnLPercent,
+            netPnLPercent: pnl.grossPnLPercent, // Fix 9: 使用 grossPnLPercent 避免 NaN
             totalFees: pnl.totalFees,
             // 设置 forceClose=true 使用市价单，确保快速成交
             forceClose: true,

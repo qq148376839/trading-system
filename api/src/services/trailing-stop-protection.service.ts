@@ -80,7 +80,22 @@ class TrailingStopProtectionService {
       // LongPort SDK 要求 NaiveDate 而非 JS Date
       const longport = require('longport');
       const { NaiveDate } = longport;
-      const dateParts = expireDate.split('-'); // YYYY-MM-DD
+
+      // Fix 2.5: 券商要求 expireDate 必须在今天之后
+      // 对于 0DTE/1DTE 期权，到期日可能是今天，导致 TSLPPCT 提交被拒绝
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      let effectiveExpireDate = expireDate;
+      if (expireDate <= today) {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        effectiveExpireDate = tomorrow.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+        logger.log(
+          `${TSLP_TAG} ${symbol}: 期权到期日${expireDate}不晚于今天${today}，` +
+          `TSLPPCT到期日调整为${effectiveExpireDate}`
+        );
+      }
+
+      const dateParts = effectiveExpireDate.split('-'); // YYYY-MM-DD
       const expireNaiveDate = new NaiveDate(
         parseInt(dateParts[0], 10),
         parseInt(dateParts[1], 10),
@@ -349,9 +364,10 @@ class TrailingStopProtectionService {
       }
     }
 
-    // 0DTE 收紧
+    // Fix 5: 0DTE 收紧 — 从 15% 下调至 10%
+    // 基于复盘分析 Section 10.7.1：trailing=10% 可实现近乎保本(-0.8%)，15% 仍亏损 -8.3%
     if (params.is0DTE) {
-      tp = Math.min(tp, 15);
+      tp = Math.min(tp, 10);
     }
 
     // Clamp

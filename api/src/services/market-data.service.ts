@@ -493,13 +493,23 @@ class MarketDataService {
         );
       } else {
         // 如果没有提供targetDate，使用candlesticks获取最新数据（向后兼容）
-        const { TradeSessions } = longport;
+        // Fix 2: 直接使用数值 100 代替 TradeSessions.All
+        // LongPort SDK 的 TradeSessions 枚举在 napi 层存在类型转换 bug
+        let tradeSessionsAll = 100;
+        try {
+          const TradeSessions = (longport as any).TradeSessions;
+          if (TradeSessions && typeof TradeSessions.All === 'number') {
+            tradeSessionsAll = TradeSessions.All;
+          }
+        } catch {
+          // 使用默认值 100
+        }
         candlesticks = await quoteCtx.candlesticks(
           '.VIX.US',
           Period.Day,
           count,
           AdjustType.NoAdjust,
-          TradeSessions?.All || 100 // 使用All获取所有交易时段的数据
+          tradeSessionsAll
         );
       }
 
@@ -1123,7 +1133,16 @@ class MarketDataService {
     try {
       const longport = await import('longport');
       const { Period, AdjustType } = longport;
-      const TradeSessions = (longport as any).TradeSessions;
+      // Fix 2: 直接使用数值 100 代替 TradeSessions.All，避免 napi 枚举转换错误
+      let tradeSessionsAll = 100;
+      try {
+        const TradeSessions = (longport as any).TradeSessions;
+        if (TradeSessions && typeof TradeSessions.All === 'number') {
+          tradeSessionsAll = TradeSessions.All;
+        }
+      } catch {
+        logger.debug(`[VWAP] ${symbol} TradeSessions枚举获取失败，使用默认值100`);
+      }
       const quoteCtx = await getQuoteContext();
 
       const candles = await quoteCtx.candlesticks(
@@ -1131,7 +1150,7 @@ class MarketDataService {
         Period.Min_1,
         240,                  // 最多 240 根（一个交易日 6.5 小时 = 390 分钟，取最近 240 根足够）
         AdjustType.NoAdjust,
-        TradeSessions?.All || 100 // 使用All获取所有交易时段的数据
+        tradeSessionsAll
       );
 
       if (!candles || candles.length === 0) {
