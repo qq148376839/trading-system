@@ -2,7 +2,7 @@
 
 本文档详细说明了项目中每个文件的作用以及文件之间的调用和关联关系。
 
-**最后更新**: 2026-02-18（SPX/USD/BTC 分时K线数据持久化存储）
+**最后更新**: 2026-02-19（前端策略配置整体改版 + entryThresholdOverride）
 
 ---
 
@@ -910,6 +910,7 @@ trading-system/
 - **0DTE 入场阈值**：0DTE 入场阈值提升到 -12（`zdteEntryThreshold`），非 0DTE 使用标准阈值
 - **连续确认**：入场信号需连续 N 次（默认 2）同向达标，15s 容忍窗口
 - **VWAP 结构确认**：连续确认后检查标的是否满足 VWAP 结构条件（2 根 1m 收盘在 VWAP 同侧）
+- **入场阈值覆盖**：`entryThresholdOverride` 可选配置，支持前端预设系统自定义 `directionalScoreMin`/`spreadScoreMin`，`getThresholds()` 优先读 override 再 fallback 到 `ENTRY_THRESHOLDS` 查表
 
 **调用关系**:
 - ✅ 使用 `services/trading-recommendation.service.ts` - underlying 方向信号
@@ -1319,6 +1320,22 @@ trading-system/
 
 **被调用**:
 - 📌 多个页面组件
+
+#### `frontend/components/EditStrategyModal.tsx`
+**作用**: 策略编辑模态框组件（含 OPTION_INTRADAY_V1 完整配置）
+
+**主要功能**:
+- OPTION_INTRADAY_V1 策略配置面板（6个逻辑分区：策略类型 / 风险模式 / 入场参数 / 退出参数 / 交易窗口 / 开仓设置）
+- **风险预设系统**：4档模式（保守/标准/激进/自定义），`RISK_PRESETS` 常量定义各档参数，`detectPresetMode()` 自动检测当前配置匹配的预设
+- **数字输入 UX**：`localNumbers` 状态（string 类型）+ `numberInputProps()` 复用函数，解决 number input 清空后跳回默认值问题
+- **入场阈值覆盖**：通过 `entryThresholdOverride.directionalScoreMin` 支持前端自定义入场得分阈值
+- **自动 CUSTOM 检测**：useEffect 监听配置变化，手动修改任意字段自动切换为自定义模式
+
+**调用关系**:
+- ✅ 使用 `lib/api.ts` - API 调用
+
+**被调用**:
+- 📌 `app/quant/strategies/page.tsx` - 策略管理页面
 
 #### `frontend/components/InstitutionStockSelector.tsx`
 **作用**: 机构选股组件
@@ -2137,6 +2154,25 @@ frontend/app/* (所有页面)
 - `api/src/services/market-data-cache.service.ts` - 新增 `getHistoricalIntradayFromDB()` 方法
   - 变更内容：`getHistoricalMarketData()` 回测场景优先从 DB 读取分时数据
   - 新增依赖：`services/kline-history.service.ts`
+
+---
+
+## 最新变更（2026-02-19）
+
+### 前端策略配置整体改版 + entryThresholdOverride
+
+**修改文件**:
+- `api/src/services/strategies/option-intraday-strategy.ts` - 新增 `entryThresholdOverride` 接口字段
+  - 变更内容：`OptionIntradayStrategyConfig` 新增 `entryThresholdOverride?: { directionalScoreMin?, spreadScoreMin? }`，`getThresholds()` 优先读 override 再 fallback 到 `ENTRY_THRESHOLDS`
+- `api/src/routes/quant.ts` - simulate 接口适配 `entryThresholdOverride`
+  - 变更内容：模拟接口阈值计算从 `ENTRY_THRESHOLDS[riskPreference]` 改为优先使用 `config.entryThresholdOverride`
+- `frontend/components/EditStrategyModal.tsx` - OPTION_INTRADAY_V1 配置区块重写
+  - 变更内容：新增 `PresetMode` 类型、`RISK_PRESETS` 常量（保守/标准/激进三档）、`detectPresetMode()` 自动检测、`numberInputProps()` 复用函数、`localNumbers` 状态解决数字输入 UX、6 段式布局（策略类型/风险模式/入场参数/退出参数/交易窗口/开仓设置）
+  - 修复：`noNewEntryBeforeCloseMinutes` 默认值 60→120 与后端对齐，`firstHourOnly` 开启时灰显 `noNewEntryBeforeCloseMinutes`
+
+**调用关系变更**:
+- `option-intraday-strategy.ts` 的 `getThresholds()` 新增 `this.cfg.entryThresholdOverride` 读取路径
+- `quant.ts` simulate 端点新增 `config.entryThresholdOverride` 读取路径
 
 ---
 

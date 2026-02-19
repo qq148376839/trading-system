@@ -152,6 +152,12 @@ export interface OptionIntradayStrategyConfig {
 
   tradeWindow?: TradeWindowConfig;
 
+  // ===== 入场阈值覆盖（预设系统使用） =====
+  entryThresholdOverride?: {
+    directionalScoreMin?: number;  // 覆盖 ENTRY_THRESHOLDS 的 directionalScoreMin
+    spreadScoreMin?: number;       // 覆盖 ENTRY_THRESHOLDS 的 spreadScoreMin
+  };
+
   feeModel?: {
     commissionPerContract?: number;
     minCommissionPerOrder?: number;
@@ -306,7 +312,13 @@ export class OptionIntradayStrategy extends StrategyBase {
    */
   private getThresholds(isLatePeriod: boolean = false) {
     const pref = this.cfg.riskPreference || 'CONSERVATIVE';
-    const base = ENTRY_THRESHOLDS[pref];
+    const tableBase = ENTRY_THRESHOLDS[pref];
+    const override = this.cfg.entryThresholdOverride;
+    const base = {
+      directionalScoreMin: override?.directionalScoreMin ?? tableBase.directionalScoreMin,
+      spreadScoreMin: override?.spreadScoreMin ?? tableBase.spreadScoreMin,
+      straddleIvThreshold: tableBase.straddleIvThreshold,
+    };
     if (!isLatePeriod) return base;
 
     // LATE时段：提高入场阈值

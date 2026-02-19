@@ -1,11 +1,29 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-18
+**更新时间**: 2026-02-19
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-02-19: 前端策略配置整体改版 — 风险预设系统 + 数字输入UX修复 + 布局重组
+
+**变更内容**:
+1. **后端 `entryThresholdOverride`**：`OptionIntradayStrategyConfig` 新增可选字段 `entryThresholdOverride: { directionalScoreMin?, spreadScoreMin? }`，`getThresholds()` 优先读 override，fallback 到 `ENTRY_THRESHOLDS` 查表。无需数据库迁移（JSONB 字段自动兼容）
+2. **模拟接口适配**：`quant.ts` simulate 端点阈值计算也使用 `entryThresholdOverride`
+3. **风险预设系统（4档）**：替换旧的 CONSERVATIVE/AGGRESSIVE 二选一下拉框，新增 保守/标准(推荐)/激进/自定义 四档 radio 卡片。选择预设自动填充8个关联参数，手动修改任一字段自动切为「自定义」
+4. **数字输入UX修复**：所有14个 number input 引入 `localNumbers` string 状态 + `numberInputProps()` 复用函数，onChange 存原始字符串，onBlur 解析+校验+回写 formData，用户可自由清空/编辑不再跳回默认值
+5. **6区块布局重组**：策略类型 → 风险模式 → 入场参数(可折叠) → 退出参数 → 交易窗口 → 开仓设置
+6. **新增前端配置字段**：入场得分阈值(`entryThresholdOverride.directionalScoreMin`)、方向确认窗口(`tradeWindow.directionConfirmMinutes`)、尾盘阈值提升(`latePeriod.minProfitThreshold`)
+7. **修复不一致**：`noNewEntryBeforeCloseMinutes` 默认 60→120（与后端对齐）；`firstHourOnly` 开启时灰显「禁止开仓窗口」并提示不生效
+
+**修改文件**:
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`（新增 `entryThresholdOverride` 接口 + `getThresholds()` override 逻辑）
+- 📝 `api/src/routes/quant.ts`（simulate 端点适配 `entryThresholdOverride`）
+- 📝 `frontend/components/EditStrategyModal.tsx`（重写 OPTION_INTRADAY_V1 配置区块：预设系统 + 数字输入UX + 6区块布局）
+
+---
 
 ### 2026-02-18: 修复 VWAP rangePct 单位不匹配导致波动率分桶失效
 

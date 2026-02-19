@@ -2122,8 +2122,14 @@ quantRouter.post('/strategies/:id/simulate', async (req: Request, res: Response,
       return next(ErrorFactory.missingParameter('symbols（策略无标的池且未指定symbols）'));
     }
 
-    // 获取阈值配置
-    const thresholds = ENTRY_THRESHOLDS[riskPreference] || ENTRY_THRESHOLDS.CONSERVATIVE;
+    // 获取阈值配置（优先使用 entryThresholdOverride）
+    const tableThresholds = ENTRY_THRESHOLDS[riskPreference] || ENTRY_THRESHOLDS.CONSERVATIVE;
+    const override = config.entryThresholdOverride;
+    const thresholds = {
+      directionalScoreMin: override?.directionalScoreMin ?? tableThresholds.directionalScoreMin,
+      spreadScoreMin: override?.spreadScoreMin ?? tableThresholds.spreadScoreMin,
+      straddleIvThreshold: tableThresholds.straddleIvThreshold,
+    };
 
     // 3) 对每个 symbol 执行模拟
     const results = [];
