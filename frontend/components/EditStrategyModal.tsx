@@ -458,7 +458,7 @@ export default function EditStrategyModal({
               <label className="block text-sm font-medium mb-2">
                 {formData.type === 'OPTION_INTRADAY_V1' ? '期权策略参数' : '策略参数配置'}
                 <span className="text-xs text-gray-500 ml-2">
-                  {formData.type === 'OPTION_INTRADAY_V1' ? '（强平固定：收盘前30分钟）' : '（用于计算止损止盈价格）'}
+                  {formData.type === 'OPTION_INTRADAY_V1' ? '' : '（用于计算止损止盈价格）'}
                 </span>
               </label>
               {formData.type === 'OPTION_INTRADAY_V1' ? (
@@ -585,8 +585,8 @@ export default function EditStrategyModal({
                         onChange={(e) => setFormData({ ...formData, config: { ...formData.config, riskPreference: e.target.value } })}
                         className="border rounded px-3 py-2 w-full"
                       >
-                        <option value="CONSERVATIVE">保守（阈值更高）</option>
-                        <option value="AGGRESSIVE">激进（阈值较低）</option>
+                        <option value="CONSERVATIVE">保守（得分需达30）</option>
+                        <option value="AGGRESSIVE">激进（得分需达10）</option>
                       </select>
                     </div>
                     <div>
@@ -610,7 +610,7 @@ export default function EditStrategyModal({
                         min="10"
                         max="200"
                       />
-                      <p className="text-xs text-gray-500 mt-1">盈利达到此%平仓</p>
+                      <p className="text-xs text-gray-500 mt-1">开盘基准值，随时段自动递减</p>
                     </div>
                     <div>
                       <label className="block text-xs text-gray-700 mb-1 font-medium">止损 %</label>
@@ -633,8 +633,12 @@ export default function EditStrategyModal({
                         min="10"
                         max="100"
                       />
-                      <p className="text-xs text-gray-500 mt-1">亏损达到此%平仓</p>
+                      <p className="text-xs text-gray-500 mt-1">开盘基准值，随时段自动递减</p>
                     </div>
+                  </div>
+
+                  <div className="mb-4 p-3 bg-gray-50 border border-gray-200 rounded text-xs text-gray-600">
+                    <p><strong>止盈止损说明：</strong>上方数值为开盘（EARLY）阶段基准值，系统会随时段自动缩放 — 盘中(MID)约为基准的80%，尾盘前(LATE)约60%，收盘前(FINAL)约40%。另外 0DTE 合约在收盘前 180 分钟（约 1:00 PM ET）强制平仓，非 0DTE 在收盘前 10 分钟强制平仓。</p>
                   </div>
 
                   {/* 交易时间窗口 */}
@@ -658,7 +662,12 @@ export default function EditStrategyModal({
                       />
                       <span className="text-sm">只在开盘第一小时交易（9:30-10:30 ET）</span>
                     </label>
-                    <p className="text-xs text-gray-500 mt-1 ml-6">末日期权建议开启，避免时间衰减风险</p>
+                    <p className="text-xs text-gray-500 mt-1 ml-6">
+                      开启后仅 9:30-10:30 ET 开新仓
+                      {formData.config.tradeWindow?.firstHourOnly && (
+                        <span className="text-orange-600">（已开启，下方「禁止开仓窗口」不再生效）</span>
+                      )}
+                    </p>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -842,7 +851,6 @@ export default function EditStrategyModal({
                               tradeWindow: {
                                 ...(formData.config.tradeWindow || {}),
                                 noNewEntryBeforeCloseMinutes: parseInt(e.target.value) || 60,
-                                forceCloseBeforeCloseMinutes: 30,
                               },
                             },
                           })
@@ -851,7 +859,7 @@ export default function EditStrategyModal({
                         min="0"
                         max="240"
                       />
-                      <p className="text-xs text-gray-500 mt-1">强平固定：30分钟</p>
+                      <p className="text-xs text-gray-500 mt-1">收盘前N分钟禁止新开仓</p>
                     </div>
                     <div>
                       <label className="block text-xs text-gray-700 mb-1 font-medium">开仓张数模式</label>
