@@ -34,10 +34,10 @@ interface CandlestickData {
 }
 
 interface MarketDataWindow {
-  spx: CandlestickData[];
-  usdIndex: CandlestickData[];
-  btc: CandlestickData[];
-  vix?: CandlestickData[];
+  spx: CandlestickData[];       // 日级数据（用于 analyzeMarketTrend）
+  usdIndex: CandlestickData[];  // 日级数据
+  btc: CandlestickData[];       // 日级数据
+  vix?: CandlestickData[];      // 日级 VIX
   marketTemperature: number;
   // 小时级数据（用于分时评分）
   btcHourly?: CandlestickData[];
@@ -307,6 +307,128 @@ function aggregateToHourly(minuteData: CandlestickData[]): CandlestickData[] {
   return result;
 }
 
+/** 将多日 1m K-lines 聚合为日级 K-lines（按 ET 交易日分组） */
+function aggregateToDaily(minuteData: CandlestickData[]): CandlestickData[] {
+  if (!minuteData || minuteData.length === 0) return [];
+  const dayMap = new Map<string, CandlestickData[]>();
+  for (const bar of minuteData) {
+    const d = new Date(bar.timestamp);
+    const etDate = d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    if (!dayMap.has(etDate)) dayMap.set(etDate, []);
+    dayMap.get(etDate)!.push(bar);
+  }
+  const result: CandlestickData[] = [];
+  for (const [, bars] of Array.from(dayMap.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+    if (bars.length === 0) continue;
+    result.push({
+      open: bars[0].open,
+      high: Math.max(...bars.map(b => b.high)),
+      low: Math.min(...bars.map(b => b.low)),
+      close: bars[bars.length - 1].close,
+      volume: bars.reduce((s, b) => s + b.volume, 0),
+      turnover: bars.reduce((s, b) => s + b.turnover, 0),
+      timestamp: bars[bars.length - 1].timestamp,
+    });
+  }
+  return result;
+}
+
+/**
+ * 计算标的 VWAP 和 rangePct（30分钟开盘波动率）
+ * 与生产 marketDataService.getIntradayVWAP 对齐
+ */
+function calculateVWAPFromMinuteData(
+  underlyingByMinute: Map<number, CandlestickData>,
+  currentETMin: number
+): { vwap: number; rangePct: number; recentKlines: { open: number; high: number; low: number; close: number; volume: number; timestamp: number }[] } | null {
+  // 收集开盘到当前分钟的数据
+  const bars: CandlestickData[] = [];
+  for (let m = 570; m <= currentETMin; m++) { // 9:30 开始
+    const bar = underlyingByMinute.get(m);
+    if (bar) bars.push(bar);
+  }
+  if (bars.length < 5) return null;
+
+  // VWAP = sum(typical_price * volume) / sum(volume)
+  let sumTPV = 0;
+  let sumVol = 0;
+  for (const bar of bars) {
+    const tp = (bar.high + bar.low + bar.close) / 3;
+    sumTPV += tp * bar.volume;
+    sumVol += bar.volume;
+  }
+  const vwap = sumVol > 0 ? sumTPV / sumVol : bars[bars.length - 1].close;
+
+  // rangePct = (开盘30分钟最高 - 最低) / 开盘价 * 100
+  const first30 = bars.filter((_, i) => i < 30);
+  const openPrice = first30[0].open;
+  const rangeHigh = Math.max(...first30.map(b => b.high));
+  const rangeLow = Math.min(...first30.map(b => b.low));
+  const rangePct = openPrice > 0 ? ((rangeHigh - rangeLow) / openPrice) * 100 : 0;
+
+  // 最近 2 根 K 线（结构失效检查用）
+  const recentKlines = bars.slice(-2).map(b => ({
+    open: b.open, high: b.high, low: b.low, close: b.close,
+    volume: b.volume, timestamp: b.timestamp,
+  }));
+
+  return { vwap, rangePct, recentKlines };
+}
+
+/**
+ * 估算市场温度（从 VIX + SPX 近期走势推导）
+ * 生产环境用 marketDataService 的真实温度，回测用代理指标
+ * 温度范围 0-100，50 为中性
+ */
+function estimateMarketTemperature(
+  vixBars: CandlestickData[],
+  spxDailyBars: CandlestickData[]
+): number {
+  let temp = 50; // 基准中性
+
+  // VIX 对温度的影响：VIX 低 → 温度高（贪婪），VIX 高 → 温度低（恐惧）
+  if (vixBars.length > 0) {
+    const vix = vixBars[vixBars.length - 1].close;
+    // VIX 12 → temp ~75; VIX 20 → temp ~50; VIX 30 → temp ~25; VIX 40 → temp ~5
+    temp = Math.max(0, Math.min(100, 100 - vix * 2.5));
+  }
+
+  // SPX 近期趋势修正：连涨 → 升温，连跌 → 降温
+  if (spxDailyBars.length >= 5) {
+    const recent5 = spxDailyBars.slice(-5);
+    let upDays = 0;
+    for (const bar of recent5) {
+      if (bar.close > bar.open) upDays++;
+    }
+    // 5天全涨 → +15; 5天全跌 → -15
+    temp += (upDays - 2.5) * 6;
+  }
+
+  return Math.max(0, Math.min(100, temp));
+}
+
+/**
+ * 从期权 1m K-lines 估算 IV 代理值
+ * 使用期权价格的标准化波动幅度作为 IV 近似
+ */
+function estimateIVFromOptionBars(bars: CandlestickData[]): number {
+  if (!bars || bars.length < 10) return 0.3; // 默认 30% IV
+  // 计算最近 N 根 bar 的 (high-low)/close 平均值，年化
+  const recent = bars.slice(-30);
+  const ranges: number[] = [];
+  for (const bar of recent) {
+    if (bar.close > 0) {
+      ranges.push((bar.high - bar.low) / bar.close);
+    }
+  }
+  if (ranges.length === 0) return 0.3;
+  const avgRange = ranges.reduce((s, r) => s + r, 0) / ranges.length;
+  // 1m bar 的 range → 年化: avgRange * sqrt(390 * 252)
+  // 390 分钟/天, 252 天/年
+  const annualized = avgRange * Math.sqrt(390 * 252);
+  return Math.max(0.1, Math.min(2.0, annualized));
+}
+
 /** 从 Longport 获取历史 1m K-lines */
 async function fetchLongportMinuteKlines(
   symbol: string,
@@ -507,14 +629,14 @@ class OptionBacktestService {
    */
   async getStrategySymbols(strategyId: number): Promise<string[]> {
     const res = await pool.query(
-      `SELECT config FROM strategies WHERE id = $1`,
+      `SELECT symbol_pool_config FROM strategies WHERE id = $1`,
       [strategyId]
     );
     if (res.rows.length === 0) return [];
-    const config = typeof res.rows[0].config === 'string'
-      ? JSON.parse(res.rows[0].config)
-      : res.rows[0].config;
-    return config?.symbolPoolConfig?.symbols || [];
+    const symbolPoolConfig = typeof res.rows[0].symbol_pool_config === 'string'
+      ? JSON.parse(res.rows[0].symbol_pool_config)
+      : res.rows[0].symbol_pool_config;
+    return symbolPoolConfig?.symbols || [];
   }
 
   /**
@@ -586,6 +708,40 @@ class OptionBacktestService {
   }
 
   /**
+   * 加载多日 1m 数据并聚合为日级 bar（用于 analyzeMarketTrend 等日级指标）
+   * 从目标日期往前回溯 lookbackDays 个自然日
+   */
+  private async loadMultiDayDailyBars(
+    source: string,
+    targetDate: string,
+    lookbackDays: number,
+    diagnosticLog: OptionBacktestResult['diagnosticLog']
+  ): Promise<CandlestickData[]> {
+    const endDate = new Date(`${targetDate}T23:59:59-05:00`);
+    const startDate = new Date(endDate.getTime() - lookbackDays * 24 * 3600 * 1000);
+    const startDateStr = startDate.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+
+    try {
+      const startTs = new Date(`${startDateStr}T04:00:00-05:00`).getTime();
+      const endTs = new Date(`${targetDate}T20:00:00-05:00`).getTime();
+      const data = await klineHistoryService.getIntradayData(source, startTs, endTs);
+      const dailyBars = aggregateToDaily(data);
+      diagnosticLog.dataFetch.push({
+        source: `${source}_daily`, date: targetDate,
+        count: dailyBars.length, ok: dailyBars.length > 0,
+      });
+      return dailyBars;
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      diagnosticLog.dataFetch.push({
+        source: `${source}_daily`, date: targetDate,
+        count: 0, ok: false, error: errMsg,
+      });
+      return [];
+    }
+  }
+
+  /**
    * 单日回测
    */
   private async runSingleDay(
@@ -595,10 +751,19 @@ class OptionBacktestService {
     diagnosticLog: OptionBacktestResult['diagnosticLog']
   ): Promise<BacktestTradeRecord[]> {
     // ── 1. 预加载数据 ──
+    // 加载当日 1m 数据（用于分时评分、VWAP 计算等）
     const [spxData, usdData, btcData] = await Promise.all([
       this.loadDBKlines('SPX', date, diagnosticLog),
       this.loadDBKlines('USD_INDEX', date, diagnosticLog),
       this.loadDBKlines('BTC', date, diagnosticLog),
+    ]);
+
+    // 加载多日历史数据并聚合为日级 bar（用于 analyzeMarketTrend 等日级指标）
+    // 回溯 35 自然日 ≈ 20+ 交易日，满足 20-period MA 要求
+    const [spxDaily, usdDaily, btcDaily] = await Promise.all([
+      this.loadMultiDayDailyBars('SPX', date, 35, diagnosticLog),
+      this.loadMultiDayDailyBars('USD_INDEX', date, 35, diagnosticLog),
+      this.loadMultiDayDailyBars('BTC', date, 35, diagnosticLog),
     ]);
 
     // 标的股票 1m K-lines (from Longport)
@@ -641,6 +806,7 @@ class OptionBacktestService {
     let holdingEntryReason = '';
     let holdingEntryUnderlyingPrice = 0;
     let holdingPeakPnLPercent = 0;
+    let holdingEntryIV = 0;
 
     // 期权合约 K-line 数据
     let optionKlines: CandlestickData[] = [];
@@ -652,9 +818,9 @@ class OptionBacktestService {
     for (let etMin = cfg.tradeWindowStartET; etMin <= marketCloseET; etMin++) {
       // ── IDLE: 评分 + 入场 ──
       if (state === 'IDLE' && etMin <= cfg.tradeWindowEndET && dayTradeCount < cfg.maxTradesPerDay) {
-        // 构建滑动窗口 market data
+        // 构建滑动窗口 market data（日级 + 小时级）
         const window = this.buildMarketDataWindow(
-          spxData, usdData, btcData, vixData, btcHourly, usdHourly, etMin, date
+          spxDaily, usdDaily, btcDaily, vixData, btcHourly, usdHourly, etMin, date
         );
 
         if (!window) continue;
@@ -720,6 +886,10 @@ class OptionBacktestService {
         holdingEntryReason = `${direction} score=${finalScore.toFixed(1)} (mkt=${marketScore.toFixed(1)}, intra=${intradayScore.toFixed(1)}, time=${timeAdj.toFixed(0)}) strike=${strike}`;
         holdingEntryUnderlyingPrice = underlyingPrice;
         holdingPeakPnLPercent = 0;
+        holdingEntryIV = estimateIVFromOptionBars(optKlines.filter(b => {
+          const bET = this.getETMinutes(b.timestamp);
+          return bET <= etMin;
+        }));
         optionKlines = optKlines;
         optionByMinute = optMinuteMap;
         dayTradeCount++;
@@ -767,7 +937,26 @@ class OptionBacktestService {
           holdingPeakPnLPercent = grossPnLPercent;
         }
 
-        // 构建 PositionContext
+        // 计算 VWAP 和 rangePct（与生产 strategy-scheduler 对齐）
+        const vwapData = calculateVWAPFromMinuteData(underlyingByMinute, etMin);
+
+        // 波动率分桶确定 timeStopMinutes（与生产逻辑对齐）
+        let timeStopMinutes: number | undefined;
+        if (vwapData) {
+          const { rangePct: rp } = vwapData;
+          if (rp >= 0.65) timeStopMinutes = 3;       // 高波动：3 分钟
+          else if (rp >= 0.45) timeStopMinutes = 5;   // 中波动：5 分钟
+          else timeStopMinutes = 8;                    // 低波动：8 分钟
+        }
+
+        // 估算 IV（从期权 1m bar 波动推导）
+        const optBarsUpToNow = optionKlines.filter(b => {
+          const bET = this.getETMinutes(b.timestamp);
+          return bET <= etMin;
+        });
+        const currentEstIV = estimateIVFromOptionBars(optBarsUpToNow);
+
+        // 构建 PositionContext（与生产 strategy-scheduler 的 ctx 对齐）
         const ctx: PositionContext = {
           entryPrice: holdingEntryPrice,
           currentPrice,
@@ -776,16 +965,19 @@ class OptionBacktestService {
           entryTime: virtualEntryTime,
           marketCloseTime,
           strategySide: 'BUYER',
-          entryIV: 0,
-          currentIV: 0,
+          entryIV: holdingEntryIV,
+          currentIV: currentEstIV,
           entryFees,
           estimatedExitFees: exitFees,
           is0DTE: true,
           midPrice: currentPrice, // 回测中 close ≈ mid
           optionDirection: holdingDirection,
-          recentKlines,
+          recentKlines: vwapData?.recentKlines || recentKlines,
           entryUnderlyingPrice: holdingEntryUnderlyingPrice,
           peakPnLPercent: holdingPeakPnLPercent,
+          vwap: vwapData?.vwap,
+          timeStopMinutes,
+          rangePct: vwapData?.rangePct,
         };
 
         // 临时 monkey-patch Date 让 checkExitCondition 使用虚拟时间
@@ -960,6 +1152,17 @@ class OptionBacktestService {
 
   // ── 时间 / 窗口辅助方法 ──
 
+  /** 获取 timestamp 对应的 ET 分钟数 */
+  private getETMinutes(timestamp: number): number {
+    const d = new Date(timestamp);
+    const etStr = d.toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric', minute: 'numeric', hour12: false,
+    });
+    const parts = etStr.split(':');
+    return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+  }
+
   /**
    * 将 1m K-line 数组建立为 <ET分钟数 → CandlestickData> 映射
    */
@@ -987,42 +1190,64 @@ class OptionBacktestService {
    * 构建当前时刻的 MarketDataWindow（滑动窗口）
    * 取截止到 currentETMin 的数据
    */
+  /**
+   * 构建当前时刻的 MarketDataWindow
+   *
+   * 关键修复：spxDaily/usdDaily/btcDaily 是多日聚合的日级 bar，
+   * 与生产 marketDataCacheService.getMarketData() 返回的日级数据一致，
+   * 确保 analyzeMarketTrend 的 20-period MA 是真正的 20 交易日均线。
+   */
   private buildMarketDataWindow(
-    spxAll: CandlestickData[],
-    usdAll: CandlestickData[],
-    btcAll: CandlestickData[],
+    spxDaily: CandlestickData[],
+    usdDaily: CandlestickData[],
+    btcDaily: CandlestickData[],
     vixAll: CandlestickData[],
     btcHourly: CandlestickData[],
     usdHourly: CandlestickData[],
     currentETMin: number,
     date: string
   ): MarketDataWindow | null {
-    // 将 currentETMin 转为近似 timestamp 来截断数据
-    // 日期 + ET 分钟 → UTC timestamp
     const etHour = Math.floor(currentETMin / 60);
     const etMinute = currentETMin % 60;
     const cutoffStr = `${date}T${etHour.toString().padStart(2, '0')}:${etMinute.toString().padStart(2, '0')}:59-05:00`;
     const cutoffTs = new Date(cutoffStr).getTime();
 
-    const spx = spxAll.filter(d => d.timestamp <= cutoffTs);
-    const usd = usdAll.filter(d => d.timestamp <= cutoffTs);
-    const btc = btcAll.filter(d => d.timestamp <= cutoffTs);
-    const vix = vixAll.filter(d => d.timestamp <= cutoffTs);
+    // 日级数据：截止到当前日期（包含）
+    const spx = spxDaily.filter(d => d.timestamp <= cutoffTs);
+    const usd = usdDaily.filter(d => d.timestamp <= cutoffTs);
+    const btc = btcDaily.filter(d => d.timestamp <= cutoffTs);
 
-    // 需要至少 50 根 SPX（日 K 逻辑需要 20 根，这里用 1m 数据代替，取 100 根）
-    // 实际上 calculateMarketScore 中的 analyzeMarketTrend 需要 20 根数据
-    // 1m bar 相当于高频数据，100 根 = ~100 分钟 ≈ 1.7 小时
+    // analyzeMarketTrend 需要至少 20 根日级 bar
     if (spx.length < 20) return null;
 
+    // VIX 日级聚合：从 1m 数据中取当日最新值
+    const vix = vixAll.filter(d => d.timestamp <= cutoffTs);
+    // 将 VIX 1m 数据聚合为单一日级 bar（取最新 close）
+    const vixDaily: CandlestickData[] = [];
+    if (vix.length > 0) {
+      vixDaily.push({
+        open: vix[0].open,
+        high: Math.max(...vix.map(v => v.high)),
+        low: Math.min(...vix.map(v => v.low)),
+        close: vix[vix.length - 1].close,
+        volume: 0, turnover: 0,
+        timestamp: vix[vix.length - 1].timestamp,
+      });
+    }
+
+    // 小时级数据截止到当前时刻
     const btcH = btcHourly.filter(d => d.timestamp <= cutoffTs);
     const usdH = usdHourly.filter(d => d.timestamp <= cutoffTs);
 
+    // 估算市场温度（替代硬编码 50）
+    const marketTemp = estimateMarketTemperature(vixDaily, spx);
+
     return {
-      spx: spx.slice(-100), // 最近 100 根 1m bar
-      usdIndex: usd.slice(-100),
-      btc: btc.slice(-100),
-      vix: vix.length > 0 ? vix.slice(-10) : undefined,
-      marketTemperature: 50, // 固定中性
+      spx: spx.slice(-30),       // 最近 30 日级 bar（满足 20MA + 余量）
+      usdIndex: usd.slice(-30),
+      btc: btc.slice(-30),
+      vix: vixDaily.length > 0 ? vixDaily : undefined,
+      marketTemperature: marketTemp,
       btcHourly: btcH.slice(-24),
       usdIndexHourly: usdH.slice(-24),
     };
