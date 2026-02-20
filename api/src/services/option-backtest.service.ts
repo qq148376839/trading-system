@@ -120,13 +120,18 @@ interface OptionBacktestConfig {
 // ============================================
 
 function analyzeMarketTrend(data: CandlestickData[]): { trendStrength: number } {
-  if (!data || data.length < 20) {
+  if (!data || data.length < 3) {
     return { trendStrength: 0 };
   }
   const currentPrice = data[data.length - 1].close;
-  const prices = data.slice(-20).map(d => d.close);
+
+  // 自适应窗口：用所有可用数据，最多 20 根
+  const longWindow = Math.min(data.length, 20);
+  const shortWindow = Math.min(data.length, 10);
+  const prices = data.slice(-longWindow).map(d => d.close);
   const avg20 = prices.reduce((s, p) => s + p, 0) / prices.length;
-  const avg10 = prices.slice(-10).reduce((s, p) => s + p, 0) / 10;
+  const shortPrices = data.slice(-shortWindow).map(d => d.close);
+  const avg10 = shortPrices.reduce((s, p) => s + p, 0) / shortPrices.length;
 
   let trendStrength = ((currentPrice - avg20) / avg20) * 100 * 10;
   if (currentPrice > avg10 && avg10 > avg20) trendStrength += 20;
@@ -136,7 +141,7 @@ function analyzeMarketTrend(data: CandlestickData[]): { trendStrength: number } 
 }
 
 function calculateMomentum(data: CandlestickData[]): number {
-  if (!data || data.length < 5) return 0;
+  if (!data || data.length < 2) return 0;
   const changes: number[] = [];
   for (let i = 1; i < Math.min(data.length, 10); i++) {
     changes.push((data[i].close - data[i - 1].close) / data[i - 1].close);
@@ -429,6 +434,33 @@ function estimateIVFromOptionBars(bars: CandlestickData[]): number {
   return Math.max(0.1, Math.min(2.0, annualized));
 }
 
+/** 解析 Longport K-line 响应为标准格式 */
+function parseLongportCandlesticks(
+  resp: Array<{ close: number; open: number; low: number; high: number; volume: number; turnover: number; timestamp: number | Date }>,
+  dateFilter: string
+): CandlestickData[] {
+  return resp
+    .map(c => {
+      const ts = typeof c.timestamp === 'number' ? c.timestamp :
+                 c.timestamp instanceof Date ? c.timestamp.getTime() :
+                 new Date(c.timestamp).getTime();
+      return {
+        close: typeof c.close === 'number' ? c.close : parseFloat(String(c.close)),
+        open: typeof c.open === 'number' ? c.open : parseFloat(String(c.open)),
+        low: typeof c.low === 'number' ? c.low : parseFloat(String(c.low)),
+        high: typeof c.high === 'number' ? c.high : parseFloat(String(c.high)),
+        volume: typeof c.volume === 'number' ? c.volume : parseFloat(String(c.volume)),
+        turnover: typeof c.turnover === 'number' ? c.turnover : parseFloat(String(c.turnover || '0')),
+        timestamp: ts,
+      };
+    })
+    .filter((c: CandlestickData) => {
+      const d = new Date(c.timestamp);
+      const etStr = d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      return etStr === dateFilter;
+    });
+}
+
 /** 从 Longport 获取历史 1m K-lines */
 async function fetchLongportMinuteKlines(
   symbol: string,
@@ -440,76 +472,43 @@ async function fetchLongportMinuteKlines(
     const longport = require('longport');
     const { Period, AdjustType } = longport;
 
-    // 使用 historyCandlesticksByDate 获取指定日期的数据
-    // date 格式 YYYY-MM-DD
-    const [year, month, day] = date.split('-').map(Number);
+    // 构造目标日期的收盘时间作为 datetime 锚点
+    // 格式：Date 对象，美东时间当天 16:00（收盘）
+    const targetEndOfDay = new Date(`${date}T16:00:00-05:00`);
 
     let candlesticks: CandlestickData[] = [];
 
     try {
-      // 尝试使用 historyCandlesticksByOffset（从最近时间往回取）
+      // 方法1: historyCandlesticksByOffset — 以目标日期收盘时间为锚点，向前取 count 根
       const resp = await quoteCtx.historyCandlesticksByOffset(
         symbol,
         Period.Min_1,
-        false,           // forward = false
-        undefined,       // datetime = undefined (latest)
+        false,             // forward = false (向历史回溯)
+        targetEndOfDay,    // 锚定到目标日期收盘时间
         count
       );
 
       if (resp && resp.length > 0) {
-        // 过滤出指定日期的数据
-        const dateStr = date;
-        candlesticks = resp
-          .map((c: { close: number; open: number; low: number; high: number; volume: number; turnover: number; timestamp: number | Date }) => {
-            const ts = typeof c.timestamp === 'number' ? c.timestamp :
-                       c.timestamp instanceof Date ? c.timestamp.getTime() :
-                       new Date(c.timestamp).getTime();
-            return {
-              close: typeof c.close === 'number' ? c.close : parseFloat(String(c.close)),
-              open: typeof c.open === 'number' ? c.open : parseFloat(String(c.open)),
-              low: typeof c.low === 'number' ? c.low : parseFloat(String(c.low)),
-              high: typeof c.high === 'number' ? c.high : parseFloat(String(c.high)),
-              volume: typeof c.volume === 'number' ? c.volume : parseFloat(String(c.volume)),
-              turnover: typeof c.turnover === 'number' ? c.turnover : parseFloat(String(c.turnover || '0')),
-              timestamp: ts,
-            };
-          })
-          .filter((c: CandlestickData) => {
-            // 过滤出目标日期的数据（基于美东时间）
-            const d = new Date(c.timestamp);
-            const etStr = d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-            return etStr === dateStr;
-          });
+        candlesticks = parseLongportCandlesticks(resp, date);
       }
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      logger.warn(`[期权回测] historyCandlesticksByOffset 失败 (${symbol}): ${errMsg}，尝试 candlesticks`);
+      logger.warn(`[期权回测] historyCandlesticksByOffset 失败 (${symbol} @ ${date}): ${errMsg}，尝试 candlesticks`);
 
-      // 降级：使用 candlesticks() 方法
-      const resp = await quoteCtx.candlesticks(symbol, Period.Min_1, count, AdjustType.NoAdjust);
-      if (resp && resp.length > 0) {
-        const dateStr = date;
-        candlesticks = resp
-          .map((c: { close: number; open: number; low: number; high: number; volume: number; turnover: number; timestamp: number | Date }) => {
-            const ts = typeof c.timestamp === 'number' ? c.timestamp :
-                       c.timestamp instanceof Date ? c.timestamp.getTime() :
-                       new Date(c.timestamp).getTime();
-            return {
-              close: typeof c.close === 'number' ? c.close : parseFloat(String(c.close)),
-              open: typeof c.open === 'number' ? c.open : parseFloat(String(c.open)),
-              low: typeof c.low === 'number' ? c.low : parseFloat(String(c.low)),
-              high: typeof c.high === 'number' ? c.high : parseFloat(String(c.high)),
-              volume: typeof c.volume === 'number' ? c.volume : parseFloat(String(c.volume)),
-              turnover: typeof c.turnover === 'number' ? c.turnover : parseFloat(String(c.turnover || '0')),
-              timestamp: ts,
-            };
-          })
-          .filter((c: CandlestickData) => {
-            const d = new Date(c.timestamp);
-            const etStr = d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-            return etStr === dateStr;
-          });
+      try {
+        // 方法2: candlesticks() — 通用方法，拉取最近 count 根
+        const resp = await quoteCtx.candlesticks(symbol, Period.Min_1, count, AdjustType.NoAdjust);
+        if (resp && resp.length > 0) {
+          candlesticks = parseLongportCandlesticks(resp, date);
+        }
+      } catch (err2: unknown) {
+        const errMsg2 = err2 instanceof Error ? err2.message : String(err2);
+        logger.warn(`[期权回测] candlesticks 也失败 (${symbol} @ ${date}): ${errMsg2}`);
       }
+    }
+
+    if (candlesticks.length === 0) {
+      logger.warn(`[期权回测] ${symbol} @ ${date}: 所有 API 方法均无法获取数据`);
     }
 
     return candlesticks.sort((a: CandlestickData, b: CandlestickData) => a.timestamp - b.timestamp);
@@ -773,11 +772,11 @@ class OptionBacktestService {
     const vixData = await this.loadLongportKlines('.VIX.US', date, diagnosticLog);
 
     // 验证数据充足性
-    if (spxData.length < 50) {
+    if (spxData.length < 20) {
       logger.warn(`[期权回测] ${date} SPX 数据不足 (${spxData.length}), 跳过`);
       return [];
     }
-    if (underlyingData.length < 50) {
+    if (underlyingData.length < 10) {
       logger.warn(`[期权回测] ${date} ${symbol} 数据不足 (${underlyingData.length}), 跳过`);
       return [];
     }
@@ -1217,8 +1216,9 @@ class OptionBacktestService {
     const usd = usdDaily.filter(d => d.timestamp <= cutoffTs);
     const btc = btcDaily.filter(d => d.timestamp <= cutoffTs);
 
-    // analyzeMarketTrend 需要至少 20 根日级 bar
-    if (spx.length < 20) return null;
+    // analyzeMarketTrend 自适应窗口，最少 3 根日级 bar 即可工作
+    // （精度降低但不阻塞回测）
+    if (spx.length < 2) return null;
 
     // VIX 日级聚合：从 1m 数据中取当日最新值
     const vix = vixAll.filter(d => d.timestamp <= cutoffTs);
