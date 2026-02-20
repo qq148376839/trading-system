@@ -1,11 +1,20 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-19
+**更新时间**: 2026-02-20
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-02-20: 策略回滚到盈利版本(22901e7) + 保留安全修复
+
+**变更内容**: 策略核心逻辑回滚到22901e7简洁版本（删除VWAP/价格确认/RSI/动量衰减/反向策略等过度拦截），保留Greeks检查、entryThresholdOverride、skip0DTE、0DTE冷却窗口等安全修复。评分权重恢复到40/40/20。
+
+**修改文件**:
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`（1257→749行，回滚generateSignal核心逻辑）
+- 📝 `api/src/services/option-recommendation.service.ts`（评分权重+算法恢复到22901e7版本）
+- 📄 `docs/fixes/260220-策略回滚到盈利版本.md`
 
 ### 2026-02-19: 前端策略配置整体改版 — 风险预设系统 + 数字输入UX修复 + 布局重组
 

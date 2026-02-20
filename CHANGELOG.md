@@ -1,5 +1,25 @@
 # 更新日志
 
+## 2026-02-20
+
+### 策略回滚到盈利版本(22901e7) + 保留安全修复
+
+**背景**: 98349a8 引入的14项拦截修复导致策略过度拦截入场信号，回滚核心逻辑到22901e7简洁版本。
+
+**option-intraday-strategy.ts (1257→749行)**:
+- 删除: VWAP结构确认、价格确认周期、RSI过滤、动量衰减检测、反向策略、方向确认窗口、LATE时段阈值提升
+- 保留: Greeks不可用检查、`entryThresholdOverride`、`skip0DTE`传递、0DTE冷却窗口、日志节流
+
+**option-recommendation.service.ts**:
+- `finalScore` 权重: `0.5+0.5+0.15` → `0.4+0.4+0.2`
+- `calculateMarketScore`: 恢复SPX趋势(40%)+USD(20%)+BTC(20%)+VIX(10%)+温度(10%)，移除SPX当日涨跌(35%)
+- `calculateIntradayScore`: 恢复BTC时K(40%)+USD时K(20%)+SPX近5日动量(40%)，移除SPX日内实体强度(40%)
+- `analyzeMarketTrend`/`calculateMomentum`: 恢复原始放大倍数和计算方式
+
+**详细文档**: `docs/fixes/260220-策略回滚到盈利版本.md`
+
+---
+
 ## 2026-02-18
 
 ### 修复 VWAP rangePct 单位不匹配导致波动率分桶失效
