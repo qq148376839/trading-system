@@ -171,14 +171,11 @@ export async function getQuoteContext(): Promise<QuoteContextType> {
       );
     }
 
+    // 审计修复: H-3 — 凭证日志脱敏
     console.log(`使用长桥API配置:`);
-    console.log(`  APP_KEY: ${appKey.substring(0, 8)}... (来源: ${appKeySource})`);
-    console.log(`  APP_SECRET: ${appSecret.substring(0, 8)}... (来源: ${appSecretSource})`);
-    // 显示Token后20位而不是前20位
-    const tokenDisplay = accessToken.length > 20
-      ? `...${accessToken.substring(accessToken.length - 20)}`
-      : accessToken;
-    console.log(`  ACCESS_TOKEN: ${tokenDisplay} (来源: ${accessTokenSource})`);
+    console.log(`  APP_KEY: configured: true, source: ${appKeySource}, length: ${appKey.length}`);
+    console.log(`  APP_SECRET: configured: true, source: ${appSecretSource}, length: ${appSecret.length}`);
+    console.log(`  ACCESS_TOKEN: configured: true, source: ${accessTokenSource}, length: ${accessToken.length}`);
     
     // 打印富途配置（从数据库或硬编码）
     let futunnCsrfToken: string | null = null;
@@ -204,45 +201,8 @@ export async function getQuoteContext(): Promise<QuoteContextType> {
     
     const futunnSource = futunnCsrfToken && futunnCookies ? '数据库' : '硬编码（游客配置）';
     console.log(`使用富途牛牛API配置（来源: ${futunnSource}）:`);
-    
-    // 显示 CSRF Token（显示完整值，便于对比）
-    const csrfToken = futunnConfig.csrfToken;
-    console.log(`  CSRF_TOKEN (完整值): ${csrfToken} (长度: ${csrfToken.length})`);
-    
-    // 显示 Cookies（前150位 + 后100位，便于对比）
-    const cookies = futunnConfig.cookies;
-    let cookiesPreview: string;
-    if (cookies.length > 250) {
-      cookiesPreview = `${cookies.substring(0, 150)}...${cookies.substring(cookies.length - 100)} (长度: ${cookies.length})`;
-    } else {
-      cookiesPreview = cookies;
-    }
-    console.log(`  COOKIES (预览): ${cookiesPreview}`);
-    
-    // 提取并显示关键 cookies 值（显示完整值，便于对比）
-    const cookieParts = cookies.split(';').map(s => s.trim());
-    const importantCookies = ['csrfToken', 'futu-csrf', 'cipher_device_id', 'device_id', 'locale'];
-    console.log(`  关键 Cookies 值 (完整值):`);
-    importantCookies.forEach(key => {
-      const cookie = cookieParts.find(c => c.startsWith(key + '='));
-      if (cookie) {
-        const value = cookie.split('=')[1];
-        console.log(`    ${key}: ${value} (长度: ${value?.length || 0})`);
-      }
-    });
-    
-    // 验证 CSRF Token 和 cookie 中的 csrfToken 是否一致
-    const cookieCsrfToken = cookieParts.find(c => c.startsWith('csrfToken='));
-    if (cookieCsrfToken) {
-      const cookieCsrfValue = cookieCsrfToken.split('=')[1];
-      if (csrfToken !== cookieCsrfValue) {
-        console.warn(`  ⚠️  警告: CSRF_TOKEN 与 cookie 中的 csrfToken 不一致！`);
-        console.warn(`     CSRF_TOKEN: ${csrfToken}`);
-        console.warn(`     cookie.csrfToken: ${cookieCsrfValue}`);
-      } else {
-        console.log(`  ✅ CSRF_TOKEN 与 cookie 中的 csrfToken 一致`);
-      }
-    }
+    console.log(`  CSRF_TOKEN: configured: true (长度: ${futunnConfig.csrfToken.length})`);
+    console.log(`  COOKIES: configured: true (长度: ${futunnConfig.cookies.length})`);
 
     // 使用手动创建Config的方式，因为需要enablePrintQuotePackages字段
     // 根据测试结果，Config.fromEnv()可能在某些版本有兼容性问题
@@ -275,9 +235,7 @@ export async function getQuoteContext(): Promise<QuoteContextType> {
           '2. 确认当前使用的App Key是否正确\n' +
           '3. 重新生成Access Token并更新.env文件中的LONGPORT_ACCESS_TOKEN\n' +
           '4. 确保账户已开通行情权限\n\n' +
-          `当前配置的App Key: ${appKey.substring(0, 8)}...\n` +
-          // 显示Token后20位而不是前20位
-          `当前Token后20位: ${accessToken.length > 20 ? `...${accessToken.substring(accessToken.length - 20)}` : accessToken}\n` +
+          `当前配置的App Key: configured: true, length: ${appKey.length}\n` +
           `当前Token长度: ${accessToken.length}字符`
         );
       }
@@ -374,13 +332,9 @@ export async function getTradeContext(): Promise<TradeContextType> {
 
     try {
       console.log('Initializing TradeContext...');
-      console.log(`  APP_KEY: ${appKey.substring(0, 8)}... (来源: ${appKeySource})`);
-      console.log(`  APP_SECRET: ${appSecret.substring(0, 8)}... (来源: ${appSecretSource})`);
-      // 显示Token后20位而不是前20位
-      const tokenDisplay = accessToken.length > 20
-        ? `...${accessToken.substring(accessToken.length - 20)}`
-        : accessToken;
-      console.log(`  ACCESS_TOKEN: ${tokenDisplay} (来源: ${accessTokenSource})`);
+      console.log(`  APP_KEY: configured: true, source: ${appKeySource}, length: ${appKey.length}`);
+      console.log(`  APP_SECRET: configured: true, source: ${appSecretSource}, length: ${appSecret.length}`);
+      console.log(`  ACCESS_TOKEN: configured: true, source: ${accessTokenSource}, length: ${accessToken.length}`);
       
       // 添加重试机制，最多重试3次
       let lastError: any = null;
@@ -474,12 +428,7 @@ export async function getTradeContext(): Promise<TradeContextType> {
         errorMessage += '未知错误，请检查日志获取详细信息\n';
       }
       
-      errorMessage += `\n当前配置的App Key: ${appKey.substring(0, 8)}...`;
-      // 显示Token后20位而不是前20位
-      const tokenDisplay2 = accessToken.length > 20 
-        ? `...${accessToken.substring(accessToken.length - 20)}`
-        : accessToken;
-      errorMessage += `\n当前Token后20位: ${tokenDisplay2}`;
+      errorMessage += `\n当前配置的App Key: configured: true, length: ${appKey.length}`;
       errorMessage += `\n当前Token长度: ${accessToken.length}字符`;
       
       throw new Error(errorMessage);

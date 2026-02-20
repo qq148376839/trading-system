@@ -27,6 +27,7 @@ import { getOptionPrefixesForUnderlying, isLikelyOptionSymbol } from '../utils/o
 import { estimateOptionOrderTotalCost } from './options-fee.service';
 import { getOptionDetail } from './futunn-option-chain.service';
 import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-limiter';
+import { normalizeOrderStatus } from '../utils/order-status';
 import longportOptionQuoteService from './longport-option-quote.service';
 import marketDataCacheService from './market-data-cache.service';
 import marketDataService from './market-data.service';
@@ -591,7 +592,7 @@ class StrategyScheduler {
         }
         
         const rawStatus = apiOrder.status;
-        const status = this.normalizeOrderStatus(rawStatus);
+        const status = normalizeOrderStatus(rawStatus);
         
         // 严格排除所有已完成的订单
         if (completedStatuses.includes(status)) {
@@ -610,7 +611,7 @@ class StrategyScheduler {
         );
         
         if (apiOrder) {
-          const status = this.normalizeOrderStatus(apiOrder.status);
+          const status = normalizeOrderStatus(apiOrder.status);
           
           // 更新数据库状态
           let dbStatus = 'SUBMITTED';
@@ -699,7 +700,7 @@ class StrategyScheduler {
           
           if (!apiOrder) continue;
           
-          const status = this.normalizeOrderStatus(apiOrder.status);
+          const status = normalizeOrderStatus(apiOrder.status);
           const isBuy = dbOrder.side === 'BUY' || dbOrder.side === 'Buy' || dbOrder.side === 1;
           const isSell = dbOrder.side === 'SELL' || dbOrder.side === 'Sell' || dbOrder.side === 2;
           
@@ -1868,86 +1869,8 @@ class StrategyScheduler {
   }
 
 
-  /**
-   * 标准化订单状态（复用 orders.ts 中的逻辑）
-   */
-  private normalizeOrderStatus(status: any): string {
-    if (status === null || status === undefined) return 'Unknown';
-    
-    // 如果是数字，转换为字符串枚举值
-    if (typeof status === 'number') {
-      const statusMap: Record<number, string> = {
-        0: 'NotReported',
-        1: 'NotReported',
-        2: 'ReplacedNotReported',
-        3: 'ProtectedNotReported',
-        4: 'VarietiesNotReported',
-        5: 'WaitToNew',
-        6: 'NewStatus',
-        7: 'WaitToReplace',
-        8: 'PendingReplaceStatus',
-        9: 'ReplacedStatus',
-        10: 'PartialFilledStatus',
-        11: 'FilledStatus',
-        12: 'WaitToCancel',
-        13: 'PendingCancelStatus',
-        14: 'CanceledStatus',
-        15: 'RejectedStatus',
-        16: 'ExpiredStatus',
-        17: 'PartialWithdrawal',
-      };
-      return statusMap[status] || `UnknownStatus_${status}`;
-    }
-    
-    // 如果是字符串
-    if (typeof status === 'string') {
-      // 如果是数字字符串，先转换为数字再映射
-      const numStatus = parseInt(status, 10);
-      if (!isNaN(numStatus) && status === numStatus.toString()) {
-        const statusMap: Record<number, string> = {
-          0: 'NotReported',
-          1: 'NotReported',
-          2: 'ReplacedNotReported',
-          3: 'ProtectedNotReported',
-          4: 'VarietiesNotReported',
-          5: 'WaitToNew',
-          6: 'NewStatus',
-          7: 'WaitToReplace',
-          8: 'PendingReplaceStatus',
-          9: 'ReplacedStatus',
-          10: 'PartialFilledStatus',
-          11: 'FilledStatus',
-          12: 'WaitToCancel',
-          13: 'PendingCancelStatus',
-          14: 'CanceledStatus',
-          15: 'RejectedStatus',
-          16: 'ExpiredStatus',
-          17: 'PartialWithdrawal',
-        };
-        return statusMap[numStatus] || status;
-      }
-      
-      // 如果已经是完整的枚举值名称，直接返回
-      if (status.includes('Status') || status.includes('Reported') || status.includes('To') || status === 'PartialWithdrawal') {
-        return status;
-      }
-      
-      // 如果是简写形式，映射到完整的枚举值名称
-      const statusMap: Record<string, string> = {
-        'Filled': 'FilledStatus',
-        'PartialFilled': 'PartialFilledStatus',
-        'New': 'NewStatus',
-        'NotReported': 'NotReported',
-        'Canceled': 'CanceledStatus',
-        'Cancelled': 'CanceledStatus',
-        'Rejected': 'RejectedStatus',
-        'Expired': 'ExpiredStatus',
-      };
-      return statusMap[status] || status;
-    }
-    
-    return status.toString();
-  }
+  // normalizeOrderStatus: 已移至 utils/order-status.ts (统一版本)
+  // 旧的私有方法存在错误的数字映射（5=WaitToNew 应为 5=FilledStatus 等），已删除
 
   /**
    * 检查是否有未成交的订单
@@ -1973,7 +1896,7 @@ class StrategyScheduler {
         const isBuy = orderSide === 'Buy' || orderSide === 1 || orderSide === 'BUY' || orderSide === 'buy';
         
         if (orderSymbol === symbol && isBuy) {
-          const status = this.normalizeOrderStatus(order.status);
+          const status = normalizeOrderStatus(order.status);
           if (pendingStatuses.includes(status)) {
             return true;
           }
@@ -3627,7 +3550,7 @@ class StrategyScheduler {
         const isBuy = orderSide === 'Buy' || orderSide === 1 || orderSide === 'BUY' || orderSide === 'buy';
         
         if (orderSymbol === symbol && isBuy) {
-          const status = this.normalizeOrderStatus(order.status);
+          const status = normalizeOrderStatus(order.status);
           if (pendingStatuses.includes(status)) return true;
         }
       }
@@ -3831,7 +3754,7 @@ class StrategyScheduler {
         const isSell = orderSide === 'Sell' || orderSide === 2 || orderSide === 'SELL' || orderSide === 'sell';
         
         if (orderSymbol === symbol && isSell) {
-          const status = this.normalizeOrderStatus(order.status);
+          const status = normalizeOrderStatus(order.status);
           if (pendingStatuses.includes(status)) return true;
         }
       }

@@ -350,208 +350,279 @@ class CapitalManager {
 
   /**
    * 申请资金额度
+   * 使用数据库事务 + SELECT FOR UPDATE 防止并发超配
    */
   async requestAllocation(request: AllocationRequest): Promise<AllocationResult> {
-    // 1. 前置检查：获取最新账户余额
+    // 1. 前置检查：获取最新账户余额（在事务外获取，避免长时间持锁）
     const totalCapital = await this.getTotalCapital();
 
-    // 2. 查询策略关联的资金分配账户和标的池配置
-    const strategyResult = await pool.query(
-      `SELECT s.id, s.name, s.symbol_pool_config, ca.id as allocation_id, ca.allocation_type, 
-              ca.allocation_value, ca.current_usage, ca.parent_id
-       FROM strategies s
-       LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
-       WHERE s.id = $1`,
-      [request.strategyId]
-    );
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      logger.debug(`[资金事务] requestAllocation BEGIN: 策略${request.strategyId}, 金额${request.amount.toFixed(2)}`);
 
-    if (strategyResult.rows.length === 0) {
-      return {
-        approved: false,
-        allocatedAmount: 0,
-        reason: `策略 ${request.strategyId} 不存在`,
-      };
-    }
+      // 2. 查询策略关联的资金分配账户和标的池配置
+      const strategyResult = await client.query(
+        `SELECT s.id, s.name, s.symbol_pool_config, ca.id as allocation_id, ca.allocation_type,
+                ca.allocation_value, ca.current_usage, ca.parent_id
+         FROM strategies s
+         LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
+         WHERE s.id = $1`,
+        [request.strategyId]
+      );
 
-    const strategy = strategyResult.rows[0];
-    if (!strategy.allocation_id) {
-      return {
-        approved: false,
-        allocatedAmount: 0,
-        reason: `策略 ${strategy.name} 未配置资金分配账户`,
-      };
-    }
-
-    // 3. 计算可用额度（考虑父账户限制和实时余额）
-    let allocatedAmount = 0;
-    if (strategy.allocation_type === 'PERCENTAGE') {
-      allocatedAmount = totalCapital * parseFloat(strategy.allocation_value.toString());
-    } else {
-      // 固定金额不得超过实际账户可用余额
-      const configuredAmount = parseFloat(strategy.allocation_value.toString());
-      allocatedAmount = Math.min(configuredAmount, totalCapital);
-      if (allocatedAmount < configuredAmount) {
-        logger.warn(
-          `[资金保护] 策略 ${strategy.name}: 配置金额 ${configuredAmount.toFixed(2)} > 账户可用 ${totalCapital.toFixed(2)}，` +
-          `实际分配上限降为 ${allocatedAmount.toFixed(2)}`
-        );
-      }
-    }
-
-    const currentUsage = parseFloat(strategy.current_usage || '0');
-    const availableAmount = allocatedAmount - currentUsage;
-
-    // 4. 检查标的级限制（如果提供 symbol）
-    if (request.symbol) {
-      let positionValue = 0;
-
-      // 判断是否为期权合约 symbol
-      const isOption = isLikelyOptionSymbol(request.symbol);
-
-      if (isOption) {
-        // 期权合约：通过 strategy_instances 查询该 underlying 下所有合约的已用资金
-        // 因为 auto_trades 中存的是 underlying symbol，无法按期权合约查询
-        // 从 request.symbol 提取 underlying 前缀来匹配
-        const underlyingPrefix = request.symbol.replace(/\d{6}[CP]\d+\.US$/i, '');
-        const prefixes = getOptionPrefixesForUnderlying(underlyingPrefix + '.US');
-
-        // 查询该 underlying 下所有状态为 HOLDING/OPENING 的期权合约的 allocationAmount
-        const optionPositionResult = await pool.query(
-          `SELECT
-             COALESCE((context->>'tradedSymbol')::text, symbol) as traded_symbol,
-             COALESCE((context->>'allocationAmount')::numeric, 0) as allocation_amount,
-             current_state
-           FROM strategy_instances
-           WHERE strategy_id = $1
-             AND current_state IN ('HOLDING', 'OPENING')`,
-          [request.strategyId]
-        );
-
-        for (const row of optionPositionResult.rows) {
-          const tradedSym = String(row.traded_symbol || '').toUpperCase();
-          if (!isLikelyOptionSymbol(tradedSym)) continue;
-          if (prefixes.some((p: string) => tradedSym.toUpperCase().startsWith(p.toUpperCase()))) {
-            positionValue += parseFloat(row.allocation_amount || '0');
-          }
-        }
-      } else {
-        // 股票：使用 auto_trades 查询（原逻辑）
-        const positionResult = await pool.query(
-          `SELECT SUM(quantity * avg_price) as total_value
-           FROM auto_trades
-           WHERE strategy_id = $1 AND symbol = $2 AND side = 'BUY' AND status = 'FILLED'
-           AND close_time IS NULL`,
-          [request.strategyId, request.symbol]
-        );
-        positionValue = parseFloat(positionResult.rows[0]?.total_value || '0');
-      }
-
-      // 动态计算标的级限制：策略总资金 / 标的数量
-      let symbolCount = 1;
-      try {
-        const stockSelector = (await import('./stock-selector.service')).default;
-        const symbols = await stockSelector.getSymbolPool(strategy.symbol_pool_config || {});
-        symbolCount = Math.max(1, symbols.length);
-      } catch (error: any) {
-        logger.warn(`无法获取策略 ${request.strategyId} 的标的池，使用默认限制:`, error.message);
-        symbolCount = 20;
-      }
-
-      // 动态分配：策略总资金平均分配给所有标的
-      const maxPositionPerSymbol = allocatedAmount / symbolCount;
-      const newPositionValue = positionValue + request.amount;
-
-      if (newPositionValue > maxPositionPerSymbol) {
+      if (strategyResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        logger.debug(`[资金事务] requestAllocation ROLLBACK: 策略${request.strategyId}不存在`);
         return {
           approved: false,
           allocatedAmount: 0,
-          reason: `标的 ${request.symbol} 持仓超过限制: 已用${positionValue.toFixed(2)} + 申请${request.amount.toFixed(2)} = ${newPositionValue.toFixed(2)} > 上限${maxPositionPerSymbol.toFixed(2)} (策略总资金 ${allocatedAmount.toFixed(2)} / ${symbolCount} 个标的)`,
+          reason: `策略 ${request.strategyId} 不存在`,
         };
       }
-    }
 
-    // 5. 检查可用额度
-    if (request.amount > availableAmount) {
+      const strategy = strategyResult.rows[0];
+      if (!strategy.allocation_id) {
+        await client.query('ROLLBACK');
+        logger.debug(`[资金事务] requestAllocation ROLLBACK: 策略${strategy.name}未配置资金分配账户`);
+        return {
+          approved: false,
+          allocatedAmount: 0,
+          reason: `策略 ${strategy.name} 未配置资金分配账户`,
+        };
+      }
+
+      // 3. 锁定资金分配行，防止并发修改（SELECT FOR UPDATE）
+      const allocationLockResult = await client.query(
+        `SELECT id, allocation_type, allocation_value, current_usage
+         FROM capital_allocations
+         WHERE id = $1
+         FOR UPDATE`,
+        [strategy.allocation_id]
+      );
+
+      if (allocationLockResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        logger.debug(`[资金事务] requestAllocation ROLLBACK: 资金分配账户${strategy.allocation_id}不存在`);
+        return {
+          approved: false,
+          allocatedAmount: 0,
+          reason: `资金分配账户 ${strategy.allocation_id} 不存在`,
+        };
+      }
+
+      const lockedAllocation = allocationLockResult.rows[0];
+
+      // 4. 计算可用额度（使用锁定后的最新 current_usage）
+      let allocatedAmount = 0;
+      if (lockedAllocation.allocation_type === 'PERCENTAGE') {
+        allocatedAmount = totalCapital * parseFloat(lockedAllocation.allocation_value.toString());
+      } else {
+        // 固定金额不得超过实际账户可用余额
+        const configuredAmount = parseFloat(lockedAllocation.allocation_value.toString());
+        allocatedAmount = Math.min(configuredAmount, totalCapital);
+        if (allocatedAmount < configuredAmount) {
+          logger.warn(
+            `[资金保护] 策略 ${strategy.name}: 配置金额 ${configuredAmount.toFixed(2)} > 账户可用 ${totalCapital.toFixed(2)}，` +
+            `实际分配上限降为 ${allocatedAmount.toFixed(2)}`
+          );
+        }
+      }
+
+      const currentUsage = parseFloat(lockedAllocation.current_usage || '0');
+      const availableAmount = allocatedAmount - currentUsage;
+
+      // 5. 检查标的级限制（如果提供 symbol）
+      if (request.symbol) {
+        let positionValue = 0;
+
+        // 判断是否为期权合约 symbol
+        const isOption = isLikelyOptionSymbol(request.symbol);
+
+        if (isOption) {
+          // 期权合约：通过 strategy_instances 查询该 underlying 下所有合约的已用资金
+          const underlyingPrefix = request.symbol.replace(/\d{6}[CP]\d+\.US$/i, '');
+          const prefixes = getOptionPrefixesForUnderlying(underlyingPrefix + '.US');
+
+          // 查询该 underlying 下所有状态为 HOLDING/OPENING 的期权合约的 allocationAmount
+          const optionPositionResult = await client.query(
+            `SELECT
+               COALESCE((context->>'tradedSymbol')::text, symbol) as traded_symbol,
+               COALESCE((context->>'allocationAmount')::numeric, 0) as allocation_amount,
+               current_state
+             FROM strategy_instances
+             WHERE strategy_id = $1
+               AND current_state IN ('HOLDING', 'OPENING')`,
+            [request.strategyId]
+          );
+
+          for (const row of optionPositionResult.rows) {
+            const tradedSym = String(row.traded_symbol || '').toUpperCase();
+            if (!isLikelyOptionSymbol(tradedSym)) continue;
+            if (prefixes.some((p: string) => tradedSym.toUpperCase().startsWith(p.toUpperCase()))) {
+              positionValue += parseFloat(row.allocation_amount || '0');
+            }
+          }
+        } else {
+          // 股票：使用 auto_trades 查询（原逻辑）
+          const positionResult = await client.query(
+            `SELECT SUM(quantity * avg_price) as total_value
+             FROM auto_trades
+             WHERE strategy_id = $1 AND symbol = $2 AND side = 'BUY' AND status = 'FILLED'
+             AND close_time IS NULL`,
+            [request.strategyId, request.symbol]
+          );
+          positionValue = parseFloat(positionResult.rows[0]?.total_value || '0');
+        }
+
+        // 动态计算标的级限制：策略总资金 / 标的数量
+        let symbolCount = 1;
+        try {
+          const stockSelector = (await import('./stock-selector.service')).default;
+          const symbols = await stockSelector.getSymbolPool(strategy.symbol_pool_config || {});
+          symbolCount = Math.max(1, symbols.length);
+        } catch (error: unknown) {
+          const errMsg = error instanceof Error ? error.message : String(error);
+          logger.warn(`无法获取策略 ${request.strategyId} 的标的池，使用默认限制:`, errMsg);
+          symbolCount = 20;
+        }
+
+        // 动态分配：策略总资金平均分配给所有标的
+        const maxPositionPerSymbol = allocatedAmount / symbolCount;
+        const newPositionValue = positionValue + request.amount;
+
+        if (newPositionValue > maxPositionPerSymbol) {
+          await client.query('ROLLBACK');
+          logger.debug(`[资金事务] requestAllocation ROLLBACK: 标的${request.symbol}持仓超限`);
+          return {
+            approved: false,
+            allocatedAmount: 0,
+            reason: `标的 ${request.symbol} 持仓超过限制: 已用${positionValue.toFixed(2)} + 申请${request.amount.toFixed(2)} = ${newPositionValue.toFixed(2)} > 上限${maxPositionPerSymbol.toFixed(2)} (策略总资金 ${allocatedAmount.toFixed(2)} / ${symbolCount} 个标的)`,
+          };
+        }
+      }
+
+      // 6. 检查可用额度
+      if (request.amount > availableAmount) {
+        await client.query('ROLLBACK');
+        logger.debug(`[资金事务] requestAllocation ROLLBACK: 资金不足`);
+        return {
+          approved: false,
+          allocatedAmount: 0,
+          reason: `资金不足: 申请 ${request.amount.toFixed(2)}, 可用 ${availableAmount.toFixed(2)}`,
+        };
+      }
+
+      // 7. 更新 current_usage（行已被 FOR UPDATE 锁定，安全更新）
+      const updateResult = await client.query(
+        `UPDATE capital_allocations
+         SET current_usage = current_usage + $1, updated_at = NOW()
+         WHERE id = $2 AND current_usage + $1 <= (
+           SELECT CASE
+             WHEN allocation_type = 'PERCENTAGE' THEN $3 * allocation_value
+             ELSE allocation_value
+           END
+         )
+         RETURNING current_usage`,
+        [request.amount, strategy.allocation_id, totalCapital]
+      );
+
+      if (updateResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        logger.debug(`[资金事务] requestAllocation ROLLBACK: 资金分配更新失败`);
+        return {
+          approved: false,
+          allocatedAmount: 0,
+          reason: '资金分配更新失败，可能已被其他请求占用',
+        };
+      }
+
+      await client.query('COMMIT');
+      logger.debug(`[资金事务] requestAllocation COMMIT: 策略${request.strategyId}, 分配${request.amount.toFixed(2)}`);
+
       return {
-        approved: false,
-        allocatedAmount: 0,
-        reason: `资金不足: 申请 ${request.amount.toFixed(2)}, 可用 ${availableAmount.toFixed(2)}`,
+        approved: true,
+        allocatedAmount: request.amount,
       };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error(`[资金事务] requestAllocation ROLLBACK (异常): 策略${request.strategyId}`, error);
+      throw error;
+    } finally {
+      client.release();
     }
-
-    // 6. 更新 current_usage（使用数据库锁防止并发问题）
-    const updateResult = await pool.query(
-      `UPDATE capital_allocations 
-       SET current_usage = current_usage + $1, updated_at = NOW()
-       WHERE id = $2 AND current_usage + $1 <= (
-         SELECT CASE 
-           WHEN allocation_type = 'PERCENTAGE' THEN $3 * allocation_value
-           ELSE allocation_value
-         END
-       )
-       RETURNING current_usage`,
-      [request.amount, strategy.allocation_id, totalCapital]
-    );
-
-    if (updateResult.rows.length === 0) {
-      return {
-        approved: false,
-        allocatedAmount: 0,
-        reason: '资金分配更新失败，可能已被其他请求占用',
-      };
-    }
-
-    return {
-      approved: true,
-      allocatedAmount: request.amount,
-    };
   }
 
   /**
    * 释放资金额度
+   * 使用数据库事务 + SELECT FOR UPDATE 防止并发释放导致数据不一致
    */
   async releaseAllocation(strategyId: number, amount: number, _symbol?: string): Promise<void> {
-    const strategyResult = await pool.query(
-      `SELECT ca.id as allocation_id, ca.current_usage, ca.name as allocation_name
-       FROM strategies s
-       LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
-       WHERE s.id = $1`,
-      [strategyId]
-    );
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      logger.debug(`[资金事务] releaseAllocation BEGIN: 策略${strategyId}, 金额${amount.toFixed(2)}`);
 
-    if (strategyResult.rows.length === 0 || !strategyResult.rows[0].allocation_id) {
-      throw new Error(`策略 ${strategyId} 不存在或未配置资金分配账户`);
-    }
-
-    const allocationId = strategyResult.rows[0].allocation_id;
-    const beforeUsage = parseFloat(strategyResult.rows[0].current_usage?.toString() || '0');
-    const allocationName = strategyResult.rows[0].allocation_name || '未知';
-
-    logger.debug(
-      `[资金释放] 策略 ${strategyId}, 标的 ${_symbol || 'N/A'}, ` +
-      `释放金额=${amount.toFixed(2)}, 释放前current_usage=${beforeUsage.toFixed(2)}`
-    );
-
-    const updateResult = await pool.query(
-      `UPDATE capital_allocations 
-       SET current_usage = GREATEST(0, current_usage - $1), updated_at = NOW()
-       WHERE id = $2
-       RETURNING current_usage`,
-      [amount, allocationId]
-    );
-
-    if (updateResult.rows.length > 0) {
-      const afterUsage = parseFloat(updateResult.rows[0].current_usage?.toString() || '0');
-      logger.debug(
-        `[资金释放] 策略 ${strategyId}, 分配账户 ${allocationName} (ID: ${allocationId}), ` +
-        `释放后current_usage=${afterUsage.toFixed(2)}`
+      const strategyResult = await client.query(
+        `SELECT ca.id as allocation_id, ca.current_usage, ca.name as allocation_name
+         FROM strategies s
+         LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
+         WHERE s.id = $1`,
+        [strategyId]
       );
-    } else {
-      logger.error(`[资金释放] 策略 ${strategyId} 资金释放失败，更新结果为空`);
-    }
 
-    // 可选：触发账户余额同步验证
-    // accountBalanceSyncService.syncAccountBalance().catch(console.error);
+      if (strategyResult.rows.length === 0 || !strategyResult.rows[0].allocation_id) {
+        await client.query('ROLLBACK');
+        logger.debug(`[资金事务] releaseAllocation ROLLBACK: 策略${strategyId}不存在或未配置资金分配账户`);
+        throw new Error(`策略 ${strategyId} 不存在或未配置资金分配账户`);
+      }
+
+      const allocationId = strategyResult.rows[0].allocation_id;
+      const allocationName = strategyResult.rows[0].allocation_name || '未知';
+
+      // 锁定资金分配行，获取最新 current_usage
+      const lockResult = await client.query(
+        `SELECT id, current_usage
+         FROM capital_allocations
+         WHERE id = $1
+         FOR UPDATE`,
+        [allocationId]
+      );
+
+      const beforeUsage = parseFloat(lockResult.rows[0]?.current_usage?.toString() || '0');
+
+      logger.debug(
+        `[资金释放] 策略 ${strategyId}, 标的 ${_symbol || 'N/A'}, ` +
+        `释放金额=${amount.toFixed(2)}, 释放前current_usage=${beforeUsage.toFixed(2)}`
+      );
+
+      const updateResult = await client.query(
+        `UPDATE capital_allocations
+         SET current_usage = GREATEST(0, current_usage - $1), updated_at = NOW()
+         WHERE id = $2
+         RETURNING current_usage`,
+        [amount, allocationId]
+      );
+
+      if (updateResult.rows.length > 0) {
+        const afterUsage = parseFloat(updateResult.rows[0].current_usage?.toString() || '0');
+        logger.debug(
+          `[资金释放] 策略 ${strategyId}, 分配账户 ${allocationName} (ID: ${allocationId}), ` +
+          `释放后current_usage=${afterUsage.toFixed(2)}`
+        );
+      } else {
+        logger.error(`[资金释放] 策略 ${strategyId} 资金释放失败，更新结果为空`);
+      }
+
+      await client.query('COMMIT');
+      logger.debug(`[资金事务] releaseAllocation COMMIT: 策略${strategyId}, 释放${amount.toFixed(2)}`);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error(`[资金事务] releaseAllocation ROLLBACK (异常): 策略${strategyId}`, error);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   /**
@@ -781,11 +852,16 @@ class CapitalManager {
 
   /**
    * 重置策略已用资金为0（当所有持仓已平仓时调用）
+   * 使用数据库事务 + SELECT FOR UPDATE 防止并发重置导致数据不一致
    * @param strategyId 策略ID
    */
   async resetUsedAmount(strategyId: number): Promise<void> {
+    const client = await pool.connect();
     try {
-      const strategyResult = await pool.query(
+      await client.query('BEGIN');
+      logger.debug(`[资金事务] resetUsedAmount BEGIN: 策略${strategyId}`);
+
+      const strategyResult = await client.query(
         `SELECT ca.id as allocation_id, ca.current_usage, ca.name as allocation_name
          FROM strategies s
          LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
@@ -794,23 +870,43 @@ class CapitalManager {
       );
 
       if (strategyResult.rows.length === 0 || !strategyResult.rows[0].allocation_id) {
+        await client.query('ROLLBACK');
+        logger.debug(`[资金事务] resetUsedAmount ROLLBACK: 策略${strategyId}无资金分配账户，无需重置`);
         return;
       }
 
-      const { allocation_id, current_usage, allocation_name } = strategyResult.rows[0];
-      const currentUsage = parseFloat(current_usage?.toString() || '0');
+      const allocationId = strategyResult.rows[0].allocation_id;
+      const allocationName = strategyResult.rows[0].allocation_name;
+
+      // 锁定资金分配行，获取最新 current_usage
+      const lockResult = await client.query(
+        `SELECT id, current_usage
+         FROM capital_allocations
+         WHERE id = $1
+         FOR UPDATE`,
+        [allocationId]
+      );
+
+      const currentUsage = parseFloat(lockResult.rows[0]?.current_usage?.toString() || '0');
 
       if (currentUsage > 0) {
-        await pool.query(
+        await client.query(
           `UPDATE capital_allocations SET current_usage = 0, updated_at = NOW() WHERE id = $1`,
-          [allocation_id]
+          [allocationId]
         );
         logger.info(
-          `[资金同步] 策略${strategyId} (${allocation_name}) 所有持仓已平仓，重置已用资金为0（原值=${currentUsage.toFixed(2)}）`
+          `[资金同步] 策略${strategyId} (${allocationName}) 所有持仓已平仓，重置已用资金为0（原值=${currentUsage.toFixed(2)}）`
         );
       }
-    } catch (error: any) {
-      logger.error(`[资金同步] 策略${strategyId} 重置已用资金失败: ${error.message}`);
+
+      await client.query('COMMIT');
+      logger.debug(`[资金事务] resetUsedAmount COMMIT: 策略${strategyId}`);
+    } catch (error: unknown) {
+      await client.query('ROLLBACK');
+      const errMsg = error instanceof Error ? error.message : String(error);
+      logger.error(`[资金同步] 策略${strategyId} 重置已用资金失败: ${errMsg}`);
+    } finally {
+      client.release();
     }
   }
 }

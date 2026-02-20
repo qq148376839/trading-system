@@ -5,6 +5,7 @@
 
 import { getTradeContext } from '../config/longport';
 import { logger } from '../utils/logger';
+import { normalizeOrderStatus } from '../utils/order-status';
 import strategyScheduler from './strategy-scheduler.service';
 import stateManager from './state-manager.service';
 import basicExecutionService from './basic-execution.service';
@@ -97,7 +98,8 @@ class TradePushService {
       logger.log(`[交易推送] 收到订单变更: ${symbol}, 订单ID=${orderId}, 状态=${status}, 已成交=${executedQuantity}`);
 
       // 标准化订单状态
-      const normalizedStatus = this.normalizeStatus(status);
+      // 审计修复: H-12 — 使用统一 normalizeOrderStatus
+      const normalizedStatus = normalizeOrderStatus(status);
       const dbStatus = this.mapStatusToDbStatus(normalizedStatus);
 
       // ✅ 修复BUG 1: 更新数据库订单状态（只在状态发生变化时更新，避免竞态条件）
@@ -202,31 +204,7 @@ class TradePushService {
     }
   }
 
-  /**
-   * 标准化订单状态
-   */
-  private normalizeStatus(status: any): string {
-    if (status === null || status === undefined) return 'Unknown';
-    
-    if (typeof status === 'string') {
-      // 如果已经是完整的枚举值名称，直接返回
-      if (status.includes('Status') || status.includes('Reported') || status.includes('To')) {
-        return status;
-      }
-      
-      // 简写形式映射
-      const statusMap: Record<string, string> = {
-        'Filled': 'FilledStatus',
-        'PartialFilled': 'PartialFilledStatus',
-        'New': 'NewStatus',
-        'Canceled': 'CanceledStatus',
-        'Rejected': 'RejectedStatus',
-      };
-      return statusMap[status] || status;
-    }
-    
-    return status.toString();
-  }
+  // 审计修复: H-12 — normalizeStatus 已移至 utils/order-status.ts (normalizeOrderStatus)
 
   /**
    * 映射订单状态到数据库状态

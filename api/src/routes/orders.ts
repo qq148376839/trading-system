@@ -5,6 +5,7 @@ import { validateOrderParams, normalizeOrderParams, detectMarket } from '../util
 import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-limiter';
 import orderSubmissionService from '../services/order-submission.service';
 import { logger } from '../utils/logger';
+import { normalizeOrderStatus } from '../utils/order-status';
 
 export const ordersRouter = Router();
 
@@ -36,107 +37,13 @@ export function normalizeSide(side: any): string {
 
 /**
  * 转换订单状态（status）字段
- * 根据Longbridge API文档：https://open.longbridge.com/zh-CN/docs/trade/trade-definition#orderstatus
- * API可能返回字符串枚举值或数字枚举值
- * 
- * 完整的OrderStatus枚举值（根据文档）：
- * - NotReported, ReplacedNotReported, ProtectedNotReported, VarietiesNotReported (待提交)
- * - FilledStatus (已成交)
- * - PartialFilledStatus (部分成交)
- * - NewStatus (已委托)
- * - WaitToNew (已提待报)
- * - CanceledStatus (已撤单)
- * - RejectedStatus (已拒绝)
- * - ExpiredStatus (已过期)
- * - WaitToReplace, PendingReplaceStatus, ReplacedStatus (修改相关)
- * - WaitToCancel, PendingCancelStatus (取消相关)
- * - PartialWithdrawal (部分撤单)
- * 
- * 注意：API可能返回简写形式（如"Filled"）、完整形式（如"FilledStatus"）或数字枚举值
- * 这里统一转换为完整形式，便于后续处理
+ * 审计修复: H-12 — 统一使用 utils/order-status.ts 中的 normalizeOrderStatus
+ *
+ * 委托给统一实现，保留导出名称以兼容现有调用者（quant.ts, basic-execution.service.ts 等）
  */
-export function normalizeStatus(status: any): string {
-  if (status === null || status === undefined) return 'Unknown';
-  
-  // 如果是数字，转换为字符串枚举值
-  // 根据 SDK 的 OrderStatus 枚举值映射（需要根据实际 SDK 调整）
-  if (typeof status === 'number') {
-    const statusMap: Record<number, string> = {
-      0: 'NotReported',
-      1: 'NotReported',        // 待提交
-      2: 'ReplacedNotReported', // 待提交（改单成功）
-      3: 'ProtectedNotReported', // 待提交（保价订单）
-      4: 'VarietiesNotReported', // 待提交（条件单）
-      5: 'WaitToNew',          // 已提待报
-      6: 'NewStatus',           // 已委托
-      7: 'WaitToReplace',        // 修改待报
-      8: 'PendingReplaceStatus', // 待修改
-      9: 'ReplacedStatus',       // 已修改
-      10: 'PartialFilledStatus', // 部分成交
-      11: 'FilledStatus',        // 已成交
-      12: 'WaitToCancel',        // 撤销待报
-      13: 'PendingCancelStatus', // 待撤回
-      14: 'CanceledStatus',       // 已撤单
-      15: 'RejectedStatus',      // 已拒绝
-      16: 'ExpiredStatus',       // 已过期
-      17: 'PartialWithdrawal',   // 部分撤单
-    };
-    
-    return statusMap[status] || `UnknownStatus_${status}`;
-  }
-  
-  // 如果是字符串
-  if (typeof status === 'string') {
-    // 如果是数字字符串（如 "1", "14"），先转换为数字再映射
-    const numStatus = parseInt(status, 10);
-    if (!isNaN(numStatus) && status === numStatus.toString()) {
-      // 是纯数字字符串，使用数字映射
-      const statusMap: Record<number, string> = {
-        0: 'NotReported',
-        1: 'NotReported',
-        2: 'ReplacedNotReported',
-        3: 'ProtectedNotReported',
-        4: 'VarietiesNotReported',
-        5: 'WaitToNew',
-        6: 'NewStatus',
-        7: 'WaitToReplace',
-        8: 'PendingReplaceStatus',
-        9: 'ReplacedStatus',
-        10: 'PartialFilledStatus',
-        11: 'FilledStatus',
-        12: 'WaitToCancel',
-        13: 'PendingCancelStatus',
-        14: 'CanceledStatus',
-        15: 'RejectedStatus',
-        16: 'ExpiredStatus',
-        17: 'PartialWithdrawal',
-      };
-      return statusMap[numStatus] || status;
-    }
-    
-    // 如果已经是完整的枚举值名称（包含"Status"、"Reported"、"To"等），直接返回
-    if (status.includes('Status') || status.includes('Reported') || status.includes('To') || status === 'PartialWithdrawal') {
-      return status;
-    }
-    
-    // 如果是简写形式，映射到完整的枚举值名称
-    const statusMap: Record<string, string> = {
-      'Filled': 'FilledStatus',
-      'PartialFilled': 'PartialFilledStatus',
-      'New': 'NewStatus',
-      'NotReported': 'NotReported', // 已经是完整形式
-      'Canceled': 'CanceledStatus',
-      'Cancelled': 'CanceledStatus', // 兼容拼写
-      'Rejected': 'RejectedStatus',
-      'Expired': 'ExpiredStatus',
-    };
-    
-    return statusMap[status] || status;
-  }
-  
-  // 其他类型，转换为字符串
-    return status.toString();
-  }
+export function normalizeStatus(status: string | number | null | undefined): string {
+  return normalizeOrderStatus(status);
+}
   
 /**
  * 将字符串状态转换为OrderStatus枚举值

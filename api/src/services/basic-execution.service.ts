@@ -8,7 +8,8 @@ import pool from '../config/database';
 import { TradingIntent } from './strategies/strategy-base';
 import { detectMarket } from '../utils/order-validation';
 import { logger } from '../utils/logger';
-import { normalizeSide, normalizeStatus } from '../routes/orders';
+import { normalizeSide } from '../routes/orders';
+import { normalizeOrderStatus } from '../utils/order-status';
 import orderPreventionMetrics from './order-prevention-metrics.service';
 import todayOrdersCache from './today-orders-cache.service';
 import shortValidationService from './short-position-validation.service';
@@ -364,8 +365,8 @@ class BasicExecutionService {
         const isBuy = orderSide === 'Buy' || orderSide === 1 || orderSide === 'BUY' || orderSide === 'buy';
         
         if (orderSymbol === symbol) {
-          // 使用 normalizeStatus 标准化订单状态
-          const normalizedStatus = normalizeStatus(order.status);
+          // 审计修复: H-12 — 使用统一 normalizeOrderStatus
+          const normalizedStatus = normalizeOrderStatus(order.status);
           
           if (pendingStatuses.includes(normalizedStatus)) {
             // 计算未成交数量：总数量 - 已成交数量
@@ -764,17 +765,20 @@ class BasicExecutionService {
               `策略 ${strategyId} 标的 ${symbol}: 市价单被拒绝（流动性不足），fallback到限价单`
             );
 
-            // 买入：使用高价限价单确保成交（当前价 * 1.05，向上取整到分）
-            // 卖出：使用极低价限价单确保成交（当前价 * 0.1，最低$0.01）
             let fallbackPrice: number;
             if (side === 'BUY') {
+              // 买入 fallback: 当前价 +5%，确保成交
               fallbackPrice = Math.ceil(formattedPrice * 1.05 * 100) / 100;
             } else {
-              fallbackPrice = formattedPrice < 0.1 ? 0.01 : Math.max(0.01, formattedPrice * 0.1);
+              // 卖出 fallback: 最多允许 20% 滑点（原逻辑为 90% 滑点，存在严重资金风险）
+              // 审计修复: C-4 — 期权卖出 Fallback 限价修正
+              fallbackPrice = Math.max(0.01, Math.floor(formattedPrice * 0.80 * 100) / 100);
             }
 
+            const slippagePercent = ((formattedPrice - fallbackPrice) / formattedPrice * 100).toFixed(1);
             logger.log(
-              `策略 ${strategyId} 标的 ${symbol}: 使用限价单fallback $${fallbackPrice.toFixed(2)}（原价 $${formattedPrice.toFixed(2)}）`
+              `策略 ${strategyId} 标的 ${symbol}: 使用限价单fallback $${fallbackPrice.toFixed(2)}` +
+              `（原价 $${formattedPrice.toFixed(2)}，滑点 ${slippagePercent}%，方向 ${side}）`
             );
 
             const limitOrderParams: any = {
@@ -846,7 +850,7 @@ class BasicExecutionService {
       const orderDetail = await this.waitForOrderFill(orderId, 10000); // 10秒超时
 
       // 8. 如果订单已成交，确认信号状态为EXECUTED
-      const normalizedStatus = this.normalizeStatus(orderDetail.status);
+      const normalizedStatus = normalizeOrderStatus(orderDetail.status);
       if (normalizedStatus === 'FilledStatus' || normalizedStatus === 'PartialFilledStatus') {
         if (signalId) {
           try {
@@ -966,7 +970,7 @@ class BasicExecutionService {
           const order = this.findOrderInList(todayOrders, orderId);
           
           if (order) {
-            const status = this.normalizeStatus(order.status);
+            const status = normalizeOrderStatus(order.status);
 
             if (status === 'FilledStatus' || status === 'PartialFilledStatus') {
               return order;
@@ -1011,11 +1015,11 @@ class BasicExecutionService {
         logger.warn(`超时后批量查询订单失败 (${orderId}):`, error.message);
       }
 
-      // 如果查询失败，返回一个基本结构
-      logger.warn(`订单 ${orderId} 查询超时，返回默认状态`);
+      // 审计修复: H-14 — 超时不再伪造 NewStatus，返回 Unknown 表示真实未知
+      logger.warn(`订单 ${orderId} 查询超时，返回 Unknown 状态（实际状态未确认）`);
       return {
         orderId,
-        status: 'NewStatus', // 假设是新订单状态
+        status: 'Unknown',
         executedPrice: null,
         executedQuantity: 0,
       };
@@ -1059,23 +1063,7 @@ class BasicExecutionService {
     return null;
   }
 
-  /**
-   * 标准化订单状态
-   */
-  private normalizeStatus(status: any): string {
-    if (typeof status === 'string') {
-      // 如果是简写形式，转换为完整形式
-      const statusMap: Record<string, string> = {
-        'Filled': 'FilledStatus',
-        'PartialFilled': 'PartialFilledStatus',
-        'New': 'NewStatus',
-        'Canceled': 'CanceledStatus',
-        'Rejected': 'RejectedStatus',
-      };
-      return statusMap[status] || status;
-    }
-    return String(status);
-  }
+  // 审计修复: H-12 — normalizeStatus 已移至 utils/order-status.ts (normalizeOrderStatus)
 
   /**
    * 记录订单到数据库
@@ -1259,7 +1247,7 @@ class BasicExecutionService {
   ): Promise<void> {
     const avgPrice = parseFloat(orderDetail.executedPrice?.toString() || '0');
     const filledQuantity = parseInt(orderDetail.executedQuantity?.toString() || '0');
-    const status = this.normalizeStatus(orderDetail.status);
+    const status = normalizeOrderStatus(orderDetail.status);
     const orderId = orderDetail.orderId || orderDetail.order_id;
 
     // 判断是开仓还是平仓
