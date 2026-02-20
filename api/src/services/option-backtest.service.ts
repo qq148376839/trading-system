@@ -408,6 +408,7 @@ class OptionBacktestService {
    * 创建回测任务（写入 DB）
    */
   async createTask(
+    strategyId: number,
     dates: string[],
     symbols: string[],
     config?: OptionBacktestConfig
@@ -419,7 +420,7 @@ class OptionBacktestService {
       ) VALUES ($1, $2, $3, $4, 'PENDING', NOW(), NOW())
       RETURNING id`,
       [
-        -1, // 使用 -1 表示期权回测（区别于策略回测）
+        strategyId,
         dates[0],
         dates[dates.length - 1],
         JSON.stringify({ type: 'OPTION_BACKTEST', dates, symbols, ...config }),
@@ -499,6 +500,21 @@ class OptionBacktestService {
       },
       diagnosticLog: diagLog || { dataFetch: [], signals: [] },
     };
+  }
+
+  /**
+   * 根据 strategyId 从 DB 获取策略配置中的 symbols
+   */
+  async getStrategySymbols(strategyId: number): Promise<string[]> {
+    const res = await pool.query(
+      `SELECT config FROM strategies WHERE id = $1`,
+      [strategyId]
+    );
+    if (res.rows.length === 0) return [];
+    const config = typeof res.rows[0].config === 'string'
+      ? JSON.parse(res.rows[0].config)
+      : res.rows[0].config;
+    return config?.symbolPoolConfig?.symbols || [];
   }
 
   /**

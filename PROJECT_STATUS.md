@@ -7,6 +7,16 @@
 
 ## 🆕 最近更新
 
+### 2026-02-20: 期权回测策略关联 + UX 重构
+
+**变更内容**: 修复期权回测 FK 约束错误（strategy_id=-1 违反外键）+ 前端重构为策略优先选择模式。
+
+**修改文件**:
+- 🐛 `api/src/services/option-backtest.service.ts`（createTask 接收 strategyId 替代 -1，新增 getStrategySymbols）
+- 🐛 `api/src/routes/option-backtest.ts`（POST body: symbols → strategyId，自动从策略配置获取标的）
+- 📝 `frontend/app/quant/backtest/page.tsx`（OptionBacktestTab 重构：策略选择器 + 只读标的展示 + 策略列）
+- 📝 `frontend/lib/api.ts`（optionBacktestApi.run 签名更新）
+
 ### 2026-02-20: 期权策略回测模块 (Option Intraday Backtest)
 
 **变更内容**: 新建独立期权策略回测引擎，回放 OPTION_INTRADAY_V1 策略在指定日期的表现。不修改生产服务。

@@ -745,6 +745,7 @@ export default function BacktestPage() {
 
 interface OptionBacktestResultItem {
   id: number;
+  strategyId: number;
   status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
   errorMessage?: string;
   dates: string[];
@@ -765,20 +766,19 @@ interface OptionBacktestResultItem {
   completedAt?: string;
 }
 
-const DEFAULT_OPTION_SYMBOLS = ['QQQ.US', 'SPY.US', 'TSLA.US', 'NVDA.US', 'AAPL.US', 'AMZN.US', 'GOOGL.US', 'META.US'];
-
 function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
   const router = useRouter();
   const [showRunModal, setShowRunModal] = useState(false);
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<OptionBacktestResultItem[]>([]);
+  const [optionStrategies, setOptionStrategies] = useState<Strategy[]>([]);
   const [loadingResults, setLoadingResults] = useState(false);
   const [pollingTasks, setPollingTasks] = useState<Set<number>>(new Set());
 
   // 表单状态
+  const [optStrategyId, setOptStrategyId] = useState<number | null>(null);
+  const [optStrategySymbols, setOptStrategySymbols] = useState<string[]>([]);
   const [optDates, setOptDates] = useState<Dayjs[]>([]);
-  const [optSymbols, setOptSymbols] = useState<string[]>(['QQQ.US']);
-  const [optSymbolInput, setOptSymbolInput] = useState('');
   const [optEntryThreshold, setOptEntryThreshold] = useState<number>(15);
   const [optRiskPref, setOptRiskPref] = useState<'AGGRESSIVE' | 'CONSERVATIVE'>('CONSERVATIVE');
   const [optContracts, setOptContracts] = useState<number>(1);
@@ -787,7 +787,7 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
   const [optMaxTrades, setOptMaxTrades] = useState<number>(3);
 
   useEffect(() => {
-    loadOptionResults();
+    loadOptionData();
   }, []);
 
   // 页面加载时检查是否有进行中的任务
@@ -801,43 +801,78 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [results.length]);
 
-  const loadOptionResults = async () => {
+  const loadOptionData = async () => {
     try {
       setLoadingResults(true);
-      // 期权回测使用 strategy_id = -1，通过现有 API 获取
-      const res = await backtestApi.getBacktestResultsByStrategy(-1);
-      if (res.success && res.data) {
-        const mapped: OptionBacktestResultItem[] = res.data.map((row: any) => {
-          const config = typeof row.config === 'string' ? JSON.parse(row.config) : row.config;
-          const result = typeof row.result === 'string' ? JSON.parse(row.result) : row.result;
-          return {
-            id: row.id,
-            status: row.status || 'COMPLETED',
-            errorMessage: row.errorMessage,
-            dates: config?.dates || [row.startDate, row.endDate],
-            symbols: config?.symbols || result?.symbols || [],
-            summary: result?.summary || {
-              totalTrades: row.totalTrades || 0,
-              winningTrades: row.winningTrades || 0,
-              losingTrades: row.losingTrades || 0,
-              winRate: row.winRate || 0,
-              totalGrossPnL: 0,
-              totalNetPnL: 0,
-              avgGrossPnLPercent: row.avgReturn || 0,
-              maxDrawdownPercent: row.maxDrawdown || 0,
-              avgHoldingMinutes: 0,
-              profitFactor: 0,
-            },
-            startedAt: row.startedAt || row.created_at,
-            completedAt: row.completedAt,
-          };
-        });
-        setResults(mapped.sort((a: OptionBacktestResultItem, b: OptionBacktestResultItem) => b.id - a.id));
+      // 加载期权类型策略
+      const strategiesRes = await quantApi.getStrategies();
+      if (strategiesRes.success && strategiesRes.data) {
+        const optStrategies = strategiesRes.data.filter(
+          (s: Strategy) => s.type === 'OPTION_INTRADAY_V1'
+        );
+        setOptionStrategies(optStrategies);
+
+        // 加载所有期权策略的回测结果
+        const allResults: OptionBacktestResultItem[] = [];
+        for (const strategy of optStrategies) {
+          try {
+            const res = await backtestApi.getBacktestResultsByStrategy(strategy.id);
+            if (res.success && res.data) {
+              for (const row of res.data) {
+                const config = typeof row.config === 'string' ? JSON.parse(row.config) : row.config;
+                const result = typeof row.result === 'string' ? JSON.parse(row.result) : row.result;
+                if (config?.type === 'OPTION_BACKTEST') {
+                  allResults.push({
+                    id: row.id,
+                    strategyId: row.strategyId || strategy.id,
+                    status: row.status || 'COMPLETED',
+                    errorMessage: row.errorMessage,
+                    dates: config?.dates || [row.startDate, row.endDate],
+                    symbols: config?.symbols || result?.symbols || [],
+                    summary: result?.summary || {
+                      totalTrades: row.totalTrades || 0,
+                      winningTrades: row.winningTrades || 0,
+                      losingTrades: row.losingTrades || 0,
+                      winRate: row.winRate || 0,
+                      totalGrossPnL: 0,
+                      totalNetPnL: 0,
+                      avgGrossPnLPercent: row.avgReturn || 0,
+                      maxDrawdownPercent: row.maxDrawdown || 0,
+                      avgHoldingMinutes: 0,
+                      profitFactor: 0,
+                    },
+                    startedAt: row.startedAt || row.created_at,
+                    completedAt: row.completedAt,
+                  });
+                }
+              }
+            }
+          } catch (err) {
+            // 忽略单个策略加载错误
+          }
+        }
+        setResults(allResults.sort((a, b) => b.id - a.id));
       }
     } catch (err) {
       // 静默处理
     } finally {
       setLoadingResults(false);
+    }
+  };
+
+  const handleStrategySelect = async (strategyId: number) => {
+    setOptStrategyId(strategyId);
+    setOptStrategySymbols([]);
+    if (strategyId) {
+      try {
+        const res = await quantApi.getStrategy(strategyId);
+        if (res.success && res.data) {
+          const symbols = res.data.symbolPoolConfig?.symbols || [];
+          setOptStrategySymbols(symbols);
+        }
+      } catch (err) {
+        // 忽略
+      }
     }
   };
 
@@ -853,12 +888,12 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
           if (status === 'COMPLETED') {
             clearInterval(interval);
             setPollingTasks(prev => { const s = new Set(prev); s.delete(taskId); return s; });
-            await loadOptionResults();
+            await loadOptionData();
             message.success('期权回测完成!');
           } else if (status === 'FAILED') {
             clearInterval(interval);
             setPollingTasks(prev => { const s = new Set(prev); s.delete(taskId); return s; });
-            await loadOptionResults();
+            await loadOptionData();
             message.error(`期权回测失败: ${res.data.errorMessage || '未知错误'}`);
           }
         }
@@ -874,8 +909,12 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
   };
 
   const handleRunOptionBacktest = async () => {
-    if (optDates.length === 0 || optSymbols.length === 0) {
-      message.warning('请选择回测日期和标的');
+    if (!optStrategyId) {
+      message.warning('请选择策略');
+      return;
+    }
+    if (optDates.length === 0) {
+      message.warning('请选择回测日期');
       return;
     }
 
@@ -884,8 +923,8 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
     try {
       setRunning(true);
       const res = await optionBacktestApi.run({
+        strategyId: optStrategyId,
         dates,
-        symbols: optSymbols,
         config: {
           entryThreshold: optEntryThreshold,
           riskPreference: optRiskPref,
@@ -900,7 +939,7 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
         message.success('期权回测任务已创建');
         setShowRunModal(false);
         startOptionPolling(res.data.id);
-        await loadOptionResults();
+        await loadOptionData();
       } else {
         const errMsg = typeof res.error === 'string' ? res.error : res.error?.message || '创建失败';
         message.error(errMsg);
@@ -923,7 +962,7 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
           const res = await optionBacktestApi.deleteResult(id);
           if (res.success) {
             message.success('已删除');
-            await loadOptionResults();
+            await loadOptionData();
           }
         } catch (err: any) {
           message.error(err.message || '删除失败');
@@ -932,15 +971,15 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
     });
   };
 
-  const addSymbol = () => {
-    const sym = optSymbolInput.trim().toUpperCase();
-    if (sym && !optSymbols.includes(sym)) {
-      setOptSymbols([...optSymbols, sym.includes('.') ? sym : `${sym}.US`]);
-    }
-    setOptSymbolInput('');
-  };
-
   const optColumns = [
+    {
+      title: '策略',
+      key: 'strategy',
+      render: (_: unknown, record: OptionBacktestResultItem) => {
+        const strategy = optionStrategies.find(s => s.id === record.strategyId);
+        return strategy?.name || `策略 #${record.strategyId}`;
+      },
+    },
     {
       title: '回测日期',
       key: 'dates',
@@ -1056,6 +1095,48 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
           width={640}
         >
           <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            {/* 选择策略 */}
+            <div>
+              <div style={{ marginBottom: 8, fontWeight: 500 }}>策略 *</div>
+              {optionStrategies.length === 0 ? (
+                <Alert
+                  message="暂无 OPTION_INTRADAY_V1 类型的策略"
+                  description="请先在策略管理中创建期权日内策略"
+                  type="warning"
+                  showIcon
+                />
+              ) : (
+                <Select
+                  value={optStrategyId || undefined}
+                  onChange={(value) => handleStrategySelect(value)}
+                  style={{ width: '100%' }}
+                  placeholder="请选择期权策略"
+                >
+                  {optionStrategies.map((s) => (
+                    <Select.Option key={s.id} value={s.id}>
+                      {s.name} ({s.status})
+                    </Select.Option>
+                  ))}
+                </Select>
+              )}
+            </div>
+
+            {/* 显示策略配置的标的 */}
+            {optStrategyId && (
+              <div>
+                <div style={{ marginBottom: 8, fontWeight: 500 }}>回测标的（来自策略配置）</div>
+                {optStrategySymbols.length > 0 ? (
+                  <Space wrap>
+                    {optStrategySymbols.map(s => (
+                      <Tag key={s} color="blue">{s}</Tag>
+                    ))}
+                  </Space>
+                ) : (
+                  <span style={{ color: '#999', fontSize: 14 }}>该策略未配置标的代码</span>
+                )}
+              </div>
+            )}
+
             {/* 回测日期 */}
             <div>
               <div style={{ marginBottom: 8, fontWeight: 500 }}>回测日期 *（可多选）</div>
@@ -1069,53 +1150,8 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
               />
             </div>
 
-            {/* 标的 */}
-            <div>
-              <div style={{ marginBottom: 8, fontWeight: 500 }}>底层标的 *</div>
-              <Space wrap style={{ marginBottom: 8 }}>
-                {optSymbols.map(s => (
-                  <Tag
-                    key={s}
-                    closable
-                    onClose={() => setOptSymbols(optSymbols.filter(x => x !== s))}
-                  >
-                    {s}
-                  </Tag>
-                ))}
-              </Space>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <Input
-                  value={optSymbolInput}
-                  onChange={e => setOptSymbolInput(e.target.value)}
-                  placeholder="输入标的代码 (如 QQQ)"
-                  onPressEnter={addSymbol}
-                  style={{ flex: 1 }}
-                />
-                <Button onClick={addSymbol}>添加</Button>
-              </div>
-              <div style={{ marginTop: 8 }}>
-                <span style={{ color: '#999', fontSize: 12, marginRight: 8 }}>快捷选择:</span>
-                {DEFAULT_OPTION_SYMBOLS.map(s => (
-                  <Tag
-                    key={s}
-                    style={{ cursor: 'pointer', marginBottom: 4 }}
-                    color={optSymbols.includes(s) ? 'blue' : undefined}
-                    onClick={() => {
-                      if (optSymbols.includes(s)) {
-                        setOptSymbols(optSymbols.filter(x => x !== s));
-                      } else {
-                        setOptSymbols([...optSymbols, s]);
-                      }
-                    }}
-                  >
-                    {s.replace('.US', '')}
-                  </Tag>
-                ))}
-              </div>
-            </div>
-
             {/* 策略参数 */}
-            <Card size="small" title="策略参数">
+            <Card size="small" title="策略参数（可选覆盖）">
               <Row gutter={16}>
                 <Col xs={12}>
                   <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>入场阈值</div>

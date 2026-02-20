@@ -698,8 +698,8 @@ export const optionBacktestApi = {
    * 创建期权回测任务
    */
   run: (data: {
+    strategyId: number;
     dates: string[];
-    symbols: string[];
     config?: {
       entryThreshold?: number;
       riskPreference?: 'AGGRESSIVE' | 'CONSERVATIVE';

@@ -816,7 +816,7 @@ trading-system/
 - ✅ 使用 `services/intraday-data-filter.service.ts` - 数据过滤
 - ✅ 使用 `services/option-dynamic-exit.service.ts` - 退出判定
 - ✅ 使用 `config/longport.ts` - Longport SDK 拉取 VIX/股票/期权 K-lines
-- ✅ 使用 `config/database.ts` - 数据库操作（复用 backtest_results 表，strategy_id=-1）
+- ✅ 使用 `config/database.ts` - 数据库操作（复用 backtest_results 表，使用实际 strategy_id）
 
 **被调用**:
 - 📌 `routes/option-backtest.ts` - 期权回测 API 路由

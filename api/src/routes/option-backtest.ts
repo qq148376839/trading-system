@@ -28,9 +28,13 @@ const optionBacktestRouter = express.Router();
  *           schema:
  *             type: object
  *             required:
+ *               - strategyId
  *               - dates
- *               - symbols
  *             properties:
+ *               strategyId:
+ *                 type: integer
+ *                 description: 策略ID（标的从策略配置中自动获取）
+ *                 example: 1
  *               dates:
  *                 type: array
  *                 items:
@@ -38,12 +42,6 @@ const optionBacktestRouter = express.Router();
  *                   format: date
  *                 description: 回测日期列表 (YYYY-MM-DD)
  *                 example: ["2026-02-18", "2026-02-19"]
- *               symbols:
- *                 type: array
- *                 items:
- *                   type: string
- *                 description: 底层标的列表
- *                 example: ["QQQ.US"]
  *               config:
  *                 type: object
  *                 description: 覆盖回测配置（可选）
@@ -89,14 +87,14 @@ const optionBacktestRouter = express.Router();
  */
 optionBacktestRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { dates, symbols, config } = req.body;
+    const { strategyId, dates, config } = req.body;
+
+    if (!strategyId || typeof strategyId !== 'number') {
+      return next(ErrorFactory.missingParameter('strategyId (策略ID)'));
+    }
 
     if (!dates || !Array.isArray(dates) || dates.length === 0) {
       return next(ErrorFactory.missingParameter('dates (数组, 格式 YYYY-MM-DD)'));
-    }
-
-    if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
-      return next(ErrorFactory.missingParameter('symbols (数组, 如 ["QQQ.US"])'));
     }
 
     // 验证日期格式
@@ -106,9 +104,15 @@ optionBacktestRouter.post('/', async (req: Request, res: Response, next: NextFun
       }
     }
 
-    logger.info(`[期权回测] 创建任务: dates=${dates.join(',')}, symbols=${symbols.join(',')}`);
+    // 从策略配置中获取 symbols
+    const symbols = await optionBacktestService.getStrategySymbols(strategyId);
+    if (symbols.length === 0) {
+      return next(ErrorFactory.validationError(`策略 #${strategyId} 未配置标的代码`));
+    }
 
-    const taskId = await optionBacktestService.createTask(dates, symbols, config);
+    logger.info(`[期权回测] 创建任务: strategyId=${strategyId}, dates=${dates.join(',')}, symbols=${symbols.join(',')}`);
+
+    const taskId = await optionBacktestService.createTask(strategyId, dates, symbols, config);
 
     // 异步执行
     optionBacktestService.executeAsync(taskId, dates, symbols, config)
