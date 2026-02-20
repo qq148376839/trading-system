@@ -692,6 +692,41 @@ export const backtestApi = {
   },
 };
 
+// 期权回测 API
+export const optionBacktestApi = {
+  /**
+   * 创建期权回测任务
+   */
+  run: (data: {
+    dates: string[];
+    symbols: string[];
+    config?: {
+      entryThreshold?: number;
+      riskPreference?: 'AGGRESSIVE' | 'CONSERVATIVE';
+      positionContracts?: number;
+      tradeWindowStartET?: number;
+      tradeWindowEndET?: number;
+      maxTradesPerDay?: number;
+    };
+  }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
+    return api.post('/option-backtest', data);
+  },
+
+  /**
+   * 获取期权回测结果
+   */
+  getResult: (id: number): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
+    return api.get(`/option-backtest/${id}`);
+  },
+
+  /**
+   * 删除期权回测结果（复用 backtest_results 表）
+   */
+  deleteResult: (id: number): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
+    return api.delete(`/quant/backtest/${id}`);
+  },
+};
+
 export const quantApi = {
   // 策略管理
   getStrategies: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {

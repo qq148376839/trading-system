@@ -2,6 +2,25 @@
 
 ## 2026-02-20
 
+### 期权策略回测模块 (Option Intraday Backtest)
+
+**新增**: 独立的期权策略回测引擎，回放 `OPTION_INTRADAY_V1` 策略在指定日期的表现。不修改生产服务，新建独立引擎复用评分/退出算法。
+
+**后端**:
+- 新建 `api/src/services/option-backtest.service.ts` (~580行) — 核心回测引擎：数据预加载、滑动窗口评分、ATM 期权合约构造、退出判定（调用 `optionDynamicExitService.checkExitCondition`）、结果汇总
+- 新建 `api/src/routes/option-backtest.ts` (~170行) — `POST /api/option-backtest` 创建任务 + `GET /api/option-backtest/:id` 获取结果
+- 修改 `api/src/server.ts` — 注册 `/api/option-backtest` 路由
+- 修复 `api/src/services/backtest.service.ts:180` — 预存 bug（缺失 `historyCandlesticksByOffset` 方法名）
+
+**前端**:
+- 修改 `frontend/app/quant/backtest/page.tsx` — 添加 Tabs（策略回测/期权回测），新增 `OptionBacktestTab` 组件（执行表单 + 结果列表 + 轮询）
+- 新建 `frontend/app/quant/backtest/option/[id]/page.tsx` — 期权回测详情页（8 项汇总指标、逐笔 PnL 图、交易明细表、数据诊断、信号日志）
+- 修改 `frontend/lib/api.ts` — 新增 `optionBacktestApi`（run/getResult/deleteResult）
+
+**详细文档**: `docs/features/260220-期权回测模块.md`
+
+---
+
 ### 策略回滚到盈利版本(22901e7) + 保留安全修复
 
 **背景**: 98349a8 引入的14项拦截修复导致策略过度拦截入场信号，回滚核心逻辑到22901e7简洁版本。

@@ -2,7 +2,7 @@
 
 本文档详细说明了项目中每个文件的作用以及文件之间的调用和关联关系。
 
-**最后更新**: 2026-02-19（前端策略配置整体改版 + entryThresholdOverride）
+**最后更新**: 2026-02-20（期权回测模块）
 
 ---
 
@@ -799,6 +799,39 @@ trading-system/
 **被调用**:
 - 📌 `routes/backtest.ts` - 回测API路由
 - 📌 `scripts/backtest-strategy.ts` - 回测脚本
+
+#### `api/src/services/option-backtest.service.ts`
+**作用**: 期权策略回测引擎
+
+**主要功能**:
+- 回放 OPTION_INTRADAY_V1 策略在指定日期的表现
+- 复制评分算法（calculateMarketScore/calculateIntradayScore/calculateTimeWindowAdjustment）
+- 分钟级 tick 驱动的入场/退出模拟
+- ATM 期权合约符号构造（支持不同 strike 间距）
+- 调用 optionDynamicExitService.checkExitCondition 判定退出
+- 结果汇总（胜率、PnL、最大回撤、盈利因子等）
+
+**调用关系**:
+- ✅ 使用 `services/kline-history.service.ts` - DB 读取 SPX/USD/BTC 1m K-lines
+- ✅ 使用 `services/intraday-data-filter.service.ts` - 数据过滤
+- ✅ 使用 `services/option-dynamic-exit.service.ts` - 退出判定
+- ✅ 使用 `config/longport.ts` - Longport SDK 拉取 VIX/股票/期权 K-lines
+- ✅ 使用 `config/database.ts` - 数据库操作（复用 backtest_results 表，strategy_id=-1）
+
+**被调用**:
+- 📌 `routes/option-backtest.ts` - 期权回测 API 路由
+
+#### `api/src/routes/option-backtest.ts`
+**作用**: 期权回测 API 路由
+
+**主要功能**:
+- `POST /api/option-backtest` - 创建异步回测任务
+- `GET /api/option-backtest/:id` - 获取回测结果
+
+**调用关系**:
+- ✅ 使用 `services/option-backtest.service.ts` - 回测引擎
+
+---
 
 #### `api/src/services/strategy-scheduler.service.ts`
 **作用**: 策略调度器服务（核心服务）

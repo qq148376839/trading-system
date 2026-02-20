@@ -2,10 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { backtestApi, quantApi } from '@/lib/api';
+import { backtestApi, quantApi, optionBacktestApi } from '@/lib/api';
 import Link from 'next/link';
 import AppLayout from '@/components/AppLayout';
-import { DatePicker, Button, Table, Card, Space, Modal, message, Alert, Tag, Spin, Select, Checkbox, Row, Col } from 'antd';
+import { DatePicker, Button, Table, Card, Space, Modal, message, Alert, Tag, Spin, Select, Checkbox, Row, Col, Tabs, InputNumber, Input } from 'antd';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import type { Dayjs } from 'dayjs';
 import dayjs from 'dayjs';
@@ -475,25 +475,6 @@ export default function BacktestPage() {
       <Card>
         <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16 }}>
           <h1 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 600, margin: 0 }}>回测管理</h1>
-          <Space wrap>
-            {selectedForCompare.length > 0 && (
-              <>
-                <Button
-                  type="primary"
-                  style={{ background: '#722ed1', borderColor: '#722ed1' }}
-                  onClick={() => setShowCompareModal(true)}
-                >
-                  对比分析 ({selectedForCompare.length})
-                </Button>
-                <Button type="primary" danger onClick={handleBatchDelete}>
-                  批量删除 ({selectedForCompare.length})
-                </Button>
-              </>
-            )}
-            <Button type="primary" onClick={() => setShowRunModal(true)}>
-              执行回测
-            </Button>
-          </Space>
         </div>
 
         {error && (
@@ -507,80 +488,118 @@ export default function BacktestPage() {
           />
         )}
 
-        {/* 筛选功能 */}
-        <Card style={{ marginBottom: 16 }}>
-          <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>筛选条件</h2>
-          <Row gutter={16}>
-            <Col xs={24} sm={8}>
-              <div style={{ marginBottom: 8, fontWeight: 500 }}>策略</div>
-              <Select
-                value={filterStrategyId || undefined}
-                onChange={(value) => setFilterStrategyId(value || null)}
-                style={{ width: '100%' }}
-                placeholder="全部策略"
-                allowClear
-              >
-                {strategies.map((s) => (
-                  <Select.Option key={s.id} value={s.id}>
-                    {s.name}
-                  </Select.Option>
-                ))}
-              </Select>
-            </Col>
-            <Col xs={24} sm={8}>
-              <div style={{ marginBottom: 8, fontWeight: 500 }}>日期范围</div>
-              <DatePicker.RangePicker
-                value={filterDateRange}
-                onChange={(dates) => setFilterDateRange(dates)}
-                format="YYYY-MM-DD"
-                style={{ width: '100%' }}
-                placeholder={['开始日期', '结束日期']}
-                presets={[
-                  {
-                    label: '最近一个月',
-                    value: [dayjs().subtract(1, 'month'), dayjs()],
-                  },
-                  {
-                    label: '最近三个月',
-                    value: [dayjs().subtract(3, 'month'), dayjs()],
-                  },
-                  {
-                    label: '最近六个月',
-                    value: [dayjs().subtract(6, 'month'), dayjs()],
-                  },
-                  {
-                    label: '最近九个月',
-                    value: [dayjs().subtract(9, 'month'), dayjs()],
-                  },
-                  {
-                    label: '最近一年',
-                    value: [dayjs().subtract(1, 'year'), dayjs()],
-                  },
-                ]}
-              />
-            </Col>
-            <Col xs={24} sm={8}>
-              <div style={{ marginBottom: 8 }}>&nbsp;</div>
-              <Button
-                onClick={() => {
-                  setFilterStrategyId(null);
-                  setFilterDateRange(null);
-                }}
-                block
-              >
-                清除筛选
-              </Button>
-            </Col>
-          </Row>
-        </Card>
-
-        <Table
-          dataSource={filteredResults}
-          columns={columns}
-          rowKey="id"
-          locale={{
-            emptyText: '暂无回测结果',
-          }}
+        <Tabs
+          defaultActiveKey="strategy"
+          items={[
+            {
+              key: 'strategy',
+              label: '策略回测',
+              children: (
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+                    <Space wrap>
+                      {selectedForCompare.length > 0 && (
+                        <>
+                          <Button
+                            type="primary"
+                            style={{ background: '#722ed1', borderColor: '#722ed1' }}
+                            onClick={() => setShowCompareModal(true)}
+                          >
+                            对比分析 ({selectedForCompare.length})
+                          </Button>
+                          <Button type="primary" danger onClick={handleBatchDelete}>
+                            批量删除 ({selectedForCompare.length})
+                          </Button>
+                        </>
+                      )}
+                      <Button type="primary" onClick={() => setShowRunModal(true)}>
+                        执行回测
+                      </Button>
+                    </Space>
+                  </div>
+                  {/* 筛选功能 */}
+                  <Card style={{ marginBottom: 16 }}>
+                    <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>筛选条件</h2>
+                    <Row gutter={16}>
+                      <Col xs={24} sm={8}>
+                        <div style={{ marginBottom: 8, fontWeight: 500 }}>策略</div>
+                        <Select
+                          value={filterStrategyId || undefined}
+                          onChange={(value) => setFilterStrategyId(value || null)}
+                          style={{ width: '100%' }}
+                          placeholder="全部策略"
+                          allowClear
+                        >
+                          {strategies.map((s) => (
+                            <Select.Option key={s.id} value={s.id}>
+                              {s.name}
+                            </Select.Option>
+                          ))}
+                        </Select>
+                      </Col>
+                      <Col xs={24} sm={8}>
+                        <div style={{ marginBottom: 8, fontWeight: 500 }}>日期范围</div>
+                        <DatePicker.RangePicker
+                          value={filterDateRange}
+                          onChange={(dates) => setFilterDateRange(dates)}
+                          format="YYYY-MM-DD"
+                          style={{ width: '100%' }}
+                          placeholder={['开始日期', '结束日期']}
+                          presets={[
+                            {
+                              label: '最近一个月',
+                              value: [dayjs().subtract(1, 'month'), dayjs()],
+                            },
+                            {
+                              label: '最近三个月',
+                              value: [dayjs().subtract(3, 'month'), dayjs()],
+                            },
+                            {
+                              label: '最近六个月',
+                              value: [dayjs().subtract(6, 'month'), dayjs()],
+                            },
+                            {
+                              label: '最近九个月',
+                              value: [dayjs().subtract(9, 'month'), dayjs()],
+                            },
+                            {
+                              label: '最近一年',
+                              value: [dayjs().subtract(1, 'year'), dayjs()],
+                            },
+                          ]}
+                        />
+                      </Col>
+                      <Col xs={24} sm={8}>
+                        <div style={{ marginBottom: 8 }}>&nbsp;</div>
+                        <Button
+                          onClick={() => {
+                            setFilterStrategyId(null);
+                            setFilterDateRange(null);
+                          }}
+                          block
+                        >
+                          清除筛选
+                        </Button>
+                      </Col>
+                    </Row>
+                  </Card>
+                  <Table
+                    dataSource={filteredResults}
+                    columns={columns}
+                    rowKey="id"
+                    locale={{
+                      emptyText: '暂无回测结果',
+                    }}
+                  />
+                </>
+              ),
+            },
+            {
+              key: 'option',
+              label: '期权回测',
+              children: <OptionBacktestTab isMobile={isMobile} />,
+            },
+          ]}
         />
       </Card>
 
@@ -717,6 +736,461 @@ export default function BacktestPage() {
         />
       )}
     </AppLayout>
+  );
+}
+
+// ============================
+// 期权回测 Tab 组件
+// ============================
+
+interface OptionBacktestResultItem {
+  id: number;
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+  errorMessage?: string;
+  dates: string[];
+  symbols: string[];
+  summary: {
+    totalTrades: number;
+    winningTrades: number;
+    losingTrades: number;
+    winRate: number;
+    totalGrossPnL: number;
+    totalNetPnL: number;
+    avgGrossPnLPercent: number;
+    maxDrawdownPercent: number;
+    avgHoldingMinutes: number;
+    profitFactor: number;
+  };
+  startedAt?: string;
+  completedAt?: string;
+}
+
+const DEFAULT_OPTION_SYMBOLS = ['QQQ.US', 'SPY.US', 'TSLA.US', 'NVDA.US', 'AAPL.US', 'AMZN.US', 'GOOGL.US', 'META.US'];
+
+function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
+  const router = useRouter();
+  const [showRunModal, setShowRunModal] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [results, setResults] = useState<OptionBacktestResultItem[]>([]);
+  const [loadingResults, setLoadingResults] = useState(false);
+  const [pollingTasks, setPollingTasks] = useState<Set<number>>(new Set());
+
+  // 表单状态
+  const [optDates, setOptDates] = useState<Dayjs[]>([]);
+  const [optSymbols, setOptSymbols] = useState<string[]>(['QQQ.US']);
+  const [optSymbolInput, setOptSymbolInput] = useState('');
+  const [optEntryThreshold, setOptEntryThreshold] = useState<number>(15);
+  const [optRiskPref, setOptRiskPref] = useState<'AGGRESSIVE' | 'CONSERVATIVE'>('CONSERVATIVE');
+  const [optContracts, setOptContracts] = useState<number>(1);
+  const [optWindowStart, setOptWindowStart] = useState<number>(570);
+  const [optWindowEnd, setOptWindowEnd] = useState<number>(630);
+  const [optMaxTrades, setOptMaxTrades] = useState<number>(3);
+
+  useEffect(() => {
+    loadOptionResults();
+  }, []);
+
+  // 页面加载时检查是否有进行中的任务
+  useEffect(() => {
+    const pending = results.filter(r => r.status === 'PENDING' || r.status === 'RUNNING');
+    pending.forEach(task => {
+      if (!pollingTasks.has(task.id)) {
+        startOptionPolling(task.id);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results.length]);
+
+  const loadOptionResults = async () => {
+    try {
+      setLoadingResults(true);
+      // 期权回测使用 strategy_id = -1，通过现有 API 获取
+      const res = await backtestApi.getBacktestResultsByStrategy(-1);
+      if (res.success && res.data) {
+        const mapped: OptionBacktestResultItem[] = res.data.map((row: any) => {
+          const config = typeof row.config === 'string' ? JSON.parse(row.config) : row.config;
+          const result = typeof row.result === 'string' ? JSON.parse(row.result) : row.result;
+          return {
+            id: row.id,
+            status: row.status || 'COMPLETED',
+            errorMessage: row.errorMessage,
+            dates: config?.dates || [row.startDate, row.endDate],
+            symbols: config?.symbols || result?.symbols || [],
+            summary: result?.summary || {
+              totalTrades: row.totalTrades || 0,
+              winningTrades: row.winningTrades || 0,
+              losingTrades: row.losingTrades || 0,
+              winRate: row.winRate || 0,
+              totalGrossPnL: 0,
+              totalNetPnL: 0,
+              avgGrossPnLPercent: row.avgReturn || 0,
+              maxDrawdownPercent: row.maxDrawdown || 0,
+              avgHoldingMinutes: 0,
+              profitFactor: 0,
+            },
+            startedAt: row.startedAt || row.created_at,
+            completedAt: row.completedAt,
+          };
+        });
+        setResults(mapped.sort((a: OptionBacktestResultItem, b: OptionBacktestResultItem) => b.id - a.id));
+      }
+    } catch (err) {
+      // 静默处理
+    } finally {
+      setLoadingResults(false);
+    }
+  };
+
+  const startOptionPolling = (taskId: number) => {
+    if (pollingTasks.has(taskId)) return;
+    setPollingTasks(prev => new Set(prev).add(taskId));
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await optionBacktestApi.getResult(taskId);
+        if (res.success && res.data) {
+          const status = res.data.status;
+          if (status === 'COMPLETED') {
+            clearInterval(interval);
+            setPollingTasks(prev => { const s = new Set(prev); s.delete(taskId); return s; });
+            await loadOptionResults();
+            message.success('期权回测完成!');
+          } else if (status === 'FAILED') {
+            clearInterval(interval);
+            setPollingTasks(prev => { const s = new Set(prev); s.delete(taskId); return s; });
+            await loadOptionResults();
+            message.error(`期权回测失败: ${res.data.errorMessage || '未知错误'}`);
+          }
+        }
+      } catch (err) {
+        // 继续轮询
+      }
+    }, 3000);
+
+    setTimeout(() => {
+      clearInterval(interval);
+      setPollingTasks(prev => { const s = new Set(prev); s.delete(taskId); return s; });
+    }, 30 * 60 * 1000);
+  };
+
+  const handleRunOptionBacktest = async () => {
+    if (optDates.length === 0 || optSymbols.length === 0) {
+      message.warning('请选择回测日期和标的');
+      return;
+    }
+
+    const dates = optDates.map(d => d.format('YYYY-MM-DD'));
+
+    try {
+      setRunning(true);
+      const res = await optionBacktestApi.run({
+        dates,
+        symbols: optSymbols,
+        config: {
+          entryThreshold: optEntryThreshold,
+          riskPreference: optRiskPref,
+          positionContracts: optContracts,
+          tradeWindowStartET: optWindowStart,
+          tradeWindowEndET: optWindowEnd,
+          maxTradesPerDay: optMaxTrades,
+        },
+      });
+
+      if (res.success && res.data?.id) {
+        message.success('期权回测任务已创建');
+        setShowRunModal(false);
+        startOptionPolling(res.data.id);
+        await loadOptionResults();
+      } else {
+        const errMsg = typeof res.error === 'string' ? res.error : res.error?.message || '创建失败';
+        message.error(errMsg);
+      }
+    } catch (err: any) {
+      message.error(err.message || '创建期权回测任务失败');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const handleDeleteOptionResult = (id: number) => {
+    Modal.confirm({
+      title: '确认删除',
+      content: '确定要删除这个期权回测结果吗?',
+      okText: '删除',
+      okType: 'danger',
+      onOk: async () => {
+        try {
+          const res = await optionBacktestApi.deleteResult(id);
+          if (res.success) {
+            message.success('已删除');
+            await loadOptionResults();
+          }
+        } catch (err: any) {
+          message.error(err.message || '删除失败');
+        }
+      },
+    });
+  };
+
+  const addSymbol = () => {
+    const sym = optSymbolInput.trim().toUpperCase();
+    if (sym && !optSymbols.includes(sym)) {
+      setOptSymbols([...optSymbols, sym.includes('.') ? sym : `${sym}.US`]);
+    }
+    setOptSymbolInput('');
+  };
+
+  const optColumns = [
+    {
+      title: '回测日期',
+      key: 'dates',
+      render: (_: unknown, record: OptionBacktestResultItem) => record.dates?.join(', ') || '-',
+    },
+    {
+      title: '标的',
+      key: 'symbols',
+      render: (_: unknown, record: OptionBacktestResultItem) => record.symbols?.join(', ') || '-',
+    },
+    {
+      title: '状态',
+      key: 'status',
+      render: (_: unknown, record: OptionBacktestResultItem) => {
+        if (record.status === 'PENDING' || record.status === 'RUNNING') {
+          return <Tag color="processing">{pollingTasks.has(record.id) ? '执行中...' : record.status}</Tag>;
+        }
+        if (record.status === 'FAILED') return <Tag color="error">失败</Tag>;
+        return <Tag color="success">完成</Tag>;
+      },
+    },
+    {
+      title: '交易数',
+      key: 'trades',
+      render: (_: unknown, record: OptionBacktestResultItem) => record.summary?.totalTrades ?? '-',
+    },
+    {
+      title: '胜率',
+      key: 'winRate',
+      render: (_: unknown, record: OptionBacktestResultItem) => {
+        const wr = record.summary?.winRate;
+        return wr !== undefined ? `${wr}%` : '-';
+      },
+    },
+    {
+      title: '总 PnL',
+      key: 'totalPnL',
+      render: (_: unknown, record: OptionBacktestResultItem) => {
+        const pnl = record.summary?.totalNetPnL;
+        if (pnl === undefined) return '-';
+        return (
+          <span style={{ color: pnl >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 600 }}>
+            {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+          </span>
+        );
+      },
+    },
+    {
+      title: '平均 PnL%',
+      key: 'avgPnL',
+      render: (_: unknown, record: OptionBacktestResultItem) => {
+        const avg = record.summary?.avgGrossPnLPercent;
+        if (avg === undefined) return '-';
+        return (
+          <span style={{ color: avg >= 0 ? '#52c41a' : '#ff4d4f' }}>
+            {avg >= 0 ? '+' : ''}{avg.toFixed(2)}%
+          </span>
+        );
+      },
+    },
+    {
+      title: '盈利因子',
+      key: 'pf',
+      render: (_: unknown, record: OptionBacktestResultItem) => {
+        const pf = record.summary?.profitFactor;
+        return pf !== undefined ? pf.toFixed(2) : '-';
+      },
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      render: (_: unknown, record: OptionBacktestResultItem) => (
+        <Space>
+          {record.status === 'COMPLETED' && (
+            <Link href={`/quant/backtest/option/${record.id}`} style={{ color: '#1890ff' }}>
+              查看详情
+            </Link>
+          )}
+          <Button type="link" danger onClick={() => handleDeleteOptionResult(record.id)}>
+            删除
+          </Button>
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+        <Button type="primary" onClick={() => setShowRunModal(true)}>
+          执行期权回测
+        </Button>
+      </div>
+
+      {loadingResults ? (
+        <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
+      ) : (
+        <Table
+          dataSource={results}
+          columns={optColumns}
+          rowKey="id"
+          locale={{ emptyText: '暂无期权回测结果' }}
+        />
+      )}
+
+      {/* 期权回测执行 Modal */}
+      {showRunModal && (
+        <Modal
+          title="执行期权回测"
+          open={true}
+          onCancel={() => setShowRunModal(false)}
+          footer={null}
+          width={640}
+        >
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            {/* 回测日期 */}
+            <div>
+              <div style={{ marginBottom: 8, fontWeight: 500 }}>回测日期 *（可多选）</div>
+              <DatePicker
+                multiple
+                value={optDates}
+                onChange={(dates) => setOptDates(dates || [])}
+                format="YYYY-MM-DD"
+                style={{ width: '100%' }}
+                placeholder="选择交易日"
+              />
+            </div>
+
+            {/* 标的 */}
+            <div>
+              <div style={{ marginBottom: 8, fontWeight: 500 }}>底层标的 *</div>
+              <Space wrap style={{ marginBottom: 8 }}>
+                {optSymbols.map(s => (
+                  <Tag
+                    key={s}
+                    closable
+                    onClose={() => setOptSymbols(optSymbols.filter(x => x !== s))}
+                  >
+                    {s}
+                  </Tag>
+                ))}
+              </Space>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <Input
+                  value={optSymbolInput}
+                  onChange={e => setOptSymbolInput(e.target.value)}
+                  placeholder="输入标的代码 (如 QQQ)"
+                  onPressEnter={addSymbol}
+                  style={{ flex: 1 }}
+                />
+                <Button onClick={addSymbol}>添加</Button>
+              </div>
+              <div style={{ marginTop: 8 }}>
+                <span style={{ color: '#999', fontSize: 12, marginRight: 8 }}>快捷选择:</span>
+                {DEFAULT_OPTION_SYMBOLS.map(s => (
+                  <Tag
+                    key={s}
+                    style={{ cursor: 'pointer', marginBottom: 4 }}
+                    color={optSymbols.includes(s) ? 'blue' : undefined}
+                    onClick={() => {
+                      if (optSymbols.includes(s)) {
+                        setOptSymbols(optSymbols.filter(x => x !== s));
+                      } else {
+                        setOptSymbols([...optSymbols, s]);
+                      }
+                    }}
+                  >
+                    {s.replace('.US', '')}
+                  </Tag>
+                ))}
+              </div>
+            </div>
+
+            {/* 策略参数 */}
+            <Card size="small" title="策略参数">
+              <Row gutter={16}>
+                <Col xs={12}>
+                  <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>入场阈值</div>
+                  <InputNumber
+                    value={optEntryThreshold}
+                    onChange={v => setOptEntryThreshold(v ?? 15)}
+                    min={5}
+                    max={50}
+                    style={{ width: '100%' }}
+                  />
+                </Col>
+                <Col xs={12}>
+                  <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>风险偏好</div>
+                  <Select
+                    value={optRiskPref}
+                    onChange={setOptRiskPref}
+                    style={{ width: '100%' }}
+                  >
+                    <Select.Option value="CONSERVATIVE">保守</Select.Option>
+                    <Select.Option value="AGGRESSIVE">激进</Select.Option>
+                  </Select>
+                </Col>
+              </Row>
+              <Row gutter={16} style={{ marginTop: 12 }}>
+                <Col xs={8}>
+                  <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>合约数</div>
+                  <InputNumber
+                    value={optContracts}
+                    onChange={v => setOptContracts(v ?? 1)}
+                    min={1}
+                    max={10}
+                    style={{ width: '100%' }}
+                  />
+                </Col>
+                <Col xs={8}>
+                  <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>每日最大交易</div>
+                  <InputNumber
+                    value={optMaxTrades}
+                    onChange={v => setOptMaxTrades(v ?? 3)}
+                    min={1}
+                    max={10}
+                    style={{ width: '100%' }}
+                  />
+                </Col>
+                <Col xs={8}>
+                  <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>交易窗口</div>
+                  <Select
+                    value={`${optWindowStart}-${optWindowEnd}`}
+                    onChange={v => {
+                      const [s, e] = v.split('-').map(Number);
+                      setOptWindowStart(s);
+                      setOptWindowEnd(e);
+                    }}
+                    style={{ width: '100%' }}
+                  >
+                    <Select.Option value="570-630">9:30-10:30 (首小时)</Select.Option>
+                    <Select.Option value="570-720">9:30-12:00 (上午)</Select.Option>
+                    <Select.Option value="570-900">9:30-15:00 (全天)</Select.Option>
+                    <Select.Option value="570-960">9:30-16:00 (含尾盘)</Select.Option>
+                  </Select>
+                </Col>
+              </Row>
+            </Card>
+          </Space>
+          <div style={{ textAlign: 'right', marginTop: 24, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
+            <Space>
+              <Button onClick={() => setShowRunModal(false)} disabled={running}>取消</Button>
+              <Button type="primary" onClick={handleRunOptionBacktest} loading={running}>
+                执行回测
+              </Button>
+            </Space>
+          </div>
+        </Modal>
+      )}
+    </>
   );
 }
 

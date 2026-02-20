@@ -23,7 +23,10 @@ import { orderPreventionMetricsRouter } from './routes/order-prevention-metrics'
 import { logsRouter } from './routes/logs';
 import { tradingDaysRouter } from './routes/trading-days';
 import { klineHistoryRouter } from './routes/kline-history';
+import optionBacktestRouter from './routes/option-backtest';
 import { errorHandler } from './middleware/errorHandler';
+import { apiAuth } from './middleware/auth';
+import { rateLimiter } from './middleware/rateLimiter';
 
 // Swagger 文档配置
 import swaggerUi from 'swagger-ui-express';
@@ -45,10 +48,21 @@ const PORT = parseInt(process.env.PORT || '3001', 10);
 const FRONTEND_PORT = parseInt(process.env.FRONTEND_PORT || '3000', 10);
 
 // 中间件
-app.use(cors());
+// CORS 策略：
+//   - 若配置了 CORS_ALLOWED_ORIGINS，严格限定来源（逗号分隔）
+//   - 若未配置，允许所有来源（依赖 Cloudflare Access SSO 做边缘认证）
+app.use(cors({
+  origin: process.env.CORS_ALLOWED_ORIGINS
+    ? process.env.CORS_ALLOWED_ORIGINS.split(',').map(s => s.trim())
+    : true,
+  credentials: true,
+}));
 // 增加 JSON 解析限制，支持更大的回测结果
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// ── 公开路由（无需认证） ──
+app.use('/api/health', healthRouter);
 
 // Swagger spec JSON 端点（供 Swagger UI 通过 URL 加载，同时可用于调试）
 app.get('/api/swagger.json', (_req, res) => {
@@ -59,6 +73,12 @@ app.get('/api/swagger.json', (_req, res) => {
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(null, {
   swaggerUrl: '/api/swagger.json',
 }));
+
+// ── 认证 + 限流中间件（保护后续所有 /api/* 路由） ──
+app.use('/api', apiAuth);
+app.use('/api', rateLimiter);
+
+// ── 受保护路由 ──
 app.use('/api/quote', quoteRouter);
 app.use('/api/candlesticks', candlesticksRouter);
 app.use('/api/watchlist', watchlistRouter);
@@ -78,7 +98,7 @@ app.use('/api/order-prevention-metrics', orderPreventionMetricsRouter);
 app.use('/api/logs', logsRouter);
 app.use('/api/trading-days', tradingDaysRouter);
 app.use('/api/kline-history', klineHistoryRouter);
-app.use('/api/health', healthRouter);
+app.use('/api/option-backtest', optionBacktestRouter);
 
 // 前端代理 - 将所有非 API 请求代理到前端服务
 // Express 会按顺序匹配路由，/api/* 已经在上面处理，剩余的请求会被代理
@@ -170,6 +190,17 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     }
   }, 6000);
 
+  // 启动 0DTE 强平看门狗（独立于策略调度器的安全网）
+  setTimeout(async () => {
+    try {
+      const zeroDTEWatchdog = (await import('./services/0dte-watchdog.service')).default;
+      zeroDTEWatchdog.start();
+      console.log('0DTE 强平看门狗已启动');
+    } catch (error: any) {
+      console.warn('启动 0DTE 强平看门狗失败:', error.message);
+    }
+  }, 7000);
+
   // 启动K线数据采集服务
   setTimeout(async () => {
     try {
@@ -178,7 +209,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     } catch (error: any) {
       console.warn('启动K线数据采集服务失败:', error.message);
     }
-  }, 7000);
+  }, 8000);
 
   // 启动日志系统
   setTimeout(async () => {
@@ -237,7 +268,16 @@ const gracefulShutdown = async (signal: string) => {
     console.error('停止策略调度器失败:', error.message);
   }
 
-  // 3.5 停止K线数据采集服务
+  // 3.5 停止 0DTE 强平看门狗
+  try {
+    const zeroDTEWatchdog = (await import('./services/0dte-watchdog.service')).default;
+    zeroDTEWatchdog.stop();
+    console.log('0DTE 强平看门狗已停止');
+  } catch (error: any) {
+    console.error('停止 0DTE 强平看门狗失败:', error.message);
+  }
+
+  // 3.6 停止K线数据采集服务
   try {
     const klineCollectionService = (await import('./services/kline-collection.service')).default;
     klineCollectionService.stop();

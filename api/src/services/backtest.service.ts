@@ -175,7 +175,7 @@ class BacktestService {
           );
           
           const count = Math.min(daysDiff + 100, 1000); // 最多1000条
-          // ✅ historyCandlesticksByOffset参数顺序：
+          // ✅ 参数顺序：
           // symbol, period, adjustType, forward, datetime, count, tradeSessions(可选)
           candlesticks = await quoteCtx.historyCandlesticksByOffset(
             symbol,
