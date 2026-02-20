@@ -55,6 +55,8 @@ export interface SelectedOptionContract {
   delta: number;
   theta: number;
   timeValue: number;
+  greeksUnavailable?: boolean;   // 审计修复: C-5 — Greeks 零值拦截
+  greeksSource?: string;         // 审计修复: H-11 — Moomoo fallback Greeks 标记
 }
 
 function toNumber(v: any, fallback = 0): number {
@@ -337,21 +339,26 @@ async function selectOptionContractViaLongPort(
           continue;
         }
 
-        // Greek filters (only apply if we actually got Greeks)
-        if (deltaNum !== 0 || thetaNum !== 0) {
-          const absDelta = Math.abs(deltaNum);
-          if (greek.deltaMin !== undefined && absDelta < greek.deltaMin) {
-            logger.debug(`[期权-LB ${c.symbol}] |Delta| ${absDelta.toFixed(4)} < ${greek.deltaMin}，跳过`);
-            continue;
-          }
-          if (greek.deltaMax !== undefined && absDelta > greek.deltaMax) {
-            logger.debug(`[期权-LB ${c.symbol}] |Delta| ${absDelta.toFixed(4)} > ${greek.deltaMax}，跳过`);
-            continue;
-          }
-          if (greek.thetaMaxAbs !== undefined && Math.abs(thetaNum) > greek.thetaMaxAbs) {
-            logger.debug(`[期权-LB ${c.symbol}] |Theta| ${Math.abs(thetaNum).toFixed(4)} > ${greek.thetaMaxAbs}，跳过`);
-            continue;
-          }
+        // 审计修复: C-5 — Greeks 零值拦截
+        // 当 delta 和 theta 均为 0 时，说明 calcIndexes 未返回有效数据，排除自动交易
+        if (deltaNum === 0 && thetaNum === 0) {
+          logger.warn(`合约 ${c.symbol} Greeks 不可用 (delta=0, theta=0)，排除自动交易`);
+          continue;
+        }
+
+        // Greek filters
+        const absDelta = Math.abs(deltaNum);
+        if (greek.deltaMin !== undefined && absDelta < greek.deltaMin) {
+          logger.debug(`[期权-LB ${c.symbol}] |Delta| ${absDelta.toFixed(4)} < ${greek.deltaMin}，跳过`);
+          continue;
+        }
+        if (greek.deltaMax !== undefined && absDelta > greek.deltaMax) {
+          logger.debug(`[期权-LB ${c.symbol}] |Delta| ${absDelta.toFixed(4)} > ${greek.deltaMax}，跳过`);
+          continue;
+        }
+        if (greek.thetaMaxAbs !== undefined && Math.abs(thetaNum) > greek.thetaMaxAbs) {
+          logger.debug(`[期权-LB ${c.symbol}] |Theta| ${Math.abs(thetaNum).toFixed(4)} > ${greek.thetaMaxAbs}，跳过`);
+          continue;
         }
 
         evaluated.push({
@@ -390,6 +397,13 @@ async function selectOptionContractViaLongPort(
       const optQuote = await longportOptionQuoteService.getOptionQuote(top.symbol);
       if (!optQuote || optQuote.price <= 0) return null;
       const fallbackGreeks = greeksMap.get(top.symbol);
+      const fallbackDelta = fallbackGreeks?.delta || 0;
+      const fallbackTheta = fallbackGreeks?.theta || 0;
+      // 审计修复: C-5 — LongPort fallback 合约 Greeks 零值标记
+      const fallbackGreeksUnavailable = fallbackDelta === 0 && fallbackTheta === 0;
+      if (fallbackGreeksUnavailable) {
+        logger.warn(`合约 ${top.symbol} Greeks 不可用 (delta=0, theta=0)，排除自动交易`);
+      }
       return {
         underlyingSymbol: params.underlyingSymbol,
         optionSymbol: top.symbol,
@@ -406,9 +420,10 @@ async function selectOptionContractViaLongPort(
         last: optQuote.price,
         openInterest: optQuote.openInterest,
         impliedVolatility: safePct(optQuote.iv),
-        delta: fallbackGreeks?.delta || 0,
-        theta: fallbackGreeks?.theta || 0,
+        delta: fallbackDelta,
+        theta: fallbackTheta,
         timeValue: 0,
+        greeksUnavailable: fallbackGreeksUnavailable,
       };
     }
 
@@ -639,6 +654,8 @@ async function selectOptionContractViaMoomoo(
     const fallbackSymbol = normalizeMoomooOptionCodeToSymbol(top.o.code);
     const quote = await getFutunnOptionQuote(fallbackSymbol);
     if (!quote) return null;
+    // 审计修复: C-5 + H-11 — Moomoo fallback 合约 Greeks/IV 均为零，标记为不可用
+    logger.warn(`合约 ${fallbackSymbol} Greeks 不可用 (delta=0, theta=0)，排除自动交易`);
     return {
       underlyingSymbol: params.underlyingSymbol,
       optionSymbol: fallbackSymbol,
@@ -658,6 +675,8 @@ async function selectOptionContractViaMoomoo(
       delta: 0,
       theta: 0,
       timeValue: 0,
+      greeksUnavailable: true,
+      greeksSource: 'unavailable',
     };
   }
 
