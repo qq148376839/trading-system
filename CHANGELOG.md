@@ -1,5 +1,28 @@
 # 更新日志
 
+## 2026-02-21
+
+### Moomoo Cookie 池扩容 (3 → 15) + 边缘函数请求去重
+
+**优化**: Cookie 池从 3 组扩充至 15 组，降低单 Cookie 被限流的概率；CF Worker 和 Vercel Edge Function 新增请求去重（2.5s TTL），合并同语义并发请求，减少上游 API 调用。
+
+**新增文件**:
+- `scripts/harvest-moomoo-cookies.js` — Playwright 自动采集游客 Cookie 脚本（Chromium incognito，指纹随机化，15 轮串行采集）
+
+**修改文件**:
+- `edge-functions/moomoo-proxy/src/index.js` — `GUEST_CONFIGS` 扩至 15 组 + 请求去重（`INFLIGHT_REQUESTS` Map + `computeDedupKey` + 2.5s TTL）
+- `edge-functions/vercel-moomoo-proxy/api/moomooapi.js` — 同步 15 组 Cookie + 同款请求去重逻辑
+- `api/src/config/futunn.ts` — `HARDCODED_FALLBACK` 扩至 15 组（Guest #1 ~ #15）
+
+**去重设计**:
+- Key = `apiPath|param1=val1&param2=val2`（排除 `_` 时间戳参数）
+- 2.5 秒窗口内相同语义请求合并为单次上游 fetch
+- `.finally()` 清理 + `setTimeout` 兜底清理
+
+**部署**: CF Worker 已部署至 `moomoo-api.riowang.win`（Version: 0cc9c202）
+
+---
+
 ## 2026-02-20
 
 ### 期权回测：策略关联 + UX 重构

@@ -1,11 +1,23 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-20
+**更新时间**: 2026-02-21
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-02-21: Moomoo Cookie 池扩容 + 边缘函数请求去重
+
+**变更内容**: Cookie 池 3→15 组 + CF Worker/Vercel Edge 请求去重（2.5s TTL），降低限流风险，合并并发请求。
+
+**新增文件**:
+- 🆕 `scripts/harvest-moomoo-cookies.js`（Playwright 自动采集脚本）
+
+**修改文件**:
+- 📝 `edge-functions/moomoo-proxy/src/index.js`（15 组 Cookie + 请求去重）
+- 📝 `edge-functions/vercel-moomoo-proxy/api/moomooapi.js`（15 组 Cookie + 请求去重）
+- 📝 `api/src/config/futunn.ts`（HARDCODED_FALLBACK 扩至 15 组）
 
 ### 2026-02-20: 期权回测策略关联 + UX 重构
 
