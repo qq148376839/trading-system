@@ -547,7 +547,7 @@ class MarketDataService {
       } catch (error: any) {
         logger.error(`[市场温度] 调用失败:`, error.message);
         logger.error(`[市场温度] 错误详情:`, error);
-        
+
         // 如果方法不存在，检查SDK版本
         if (error.message && error.message.includes('is not a function')) {
           try {
@@ -558,6 +558,21 @@ class MarketDataService {
             // 忽略
           }
         }
+
+        // 降级：使用缓存值（避免温度分量突然归零导致虚假信号）
+        if (this.temperatureCache) {
+          const cacheAge = Date.now() - this.temperatureCache.timestamp;
+          if (cacheAge < this.TEMPERATURE_CACHE_TTL) {
+            logger.warn(`[市场温度] API调用失败，使用缓存值 ${this.temperatureCache.value}（${Math.round(cacheAge / 1000)}秒前）`);
+            return this.temperatureCache.value;
+          }
+          if (cacheAge < this.TEMPERATURE_CACHE_TTL * 3) {
+            logger.warn(`[市场温度] API调用失败，使用过期缓存值 ${this.temperatureCache.value}（${Math.round(cacheAge / 1000)}秒前，已过期）`);
+            return this.temperatureCache.value;
+          }
+        }
+
+        logger.warn(`[市场温度] API调用失败且无可用缓存，温度分量将缺失`);
         return null;
       }
       

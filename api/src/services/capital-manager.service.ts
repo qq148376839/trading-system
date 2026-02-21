@@ -320,13 +320,14 @@ class CapitalManager {
 
       const strategy = strategyResult.rows[0];
       
-      // 计算策略总资金
+      // 计算策略总资金（与 requestAllocation 一致，应用资金保护）
       const totalCapital = await this.getTotalCapital();
       let allocatedAmount = 0;
       if (strategy.allocation_type === 'PERCENTAGE') {
         allocatedAmount = totalCapital * parseFloat(strategy.allocation_value.toString());
       } else {
-        allocatedAmount = parseFloat(strategy.allocation_value.toString());
+        const configuredAmount = parseFloat(strategy.allocation_value.toString());
+        allocatedAmount = Math.min(configuredAmount, totalCapital);
       }
 
       // 获取标的池中的标的数量
