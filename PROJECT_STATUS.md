@@ -7,6 +7,13 @@
 
 ## 🆕 最近更新
 
+### 2026-02-21: 策略模拟接口新增资金分配诊断
+
+**变更内容**: simulate 端点响应新增 `capitalAllocation` 字段，展示账户现金、策略额度、已用/可用、标的池过滤、每标的上限、持仓明细。
+
+**修改文件**:
+- 📝 `api/src/routes/quant.ts`（simulate 端点 +81 行）
+
 ### 2026-02-21: Moomoo Cookie 池扩容 + 边缘函数请求去重
 
 **变更内容**: Cookie 池 3→15 组 + CF Worker/Vercel Edge 请求去重（2.5s TTL），降低限流风险，合并并发请求。

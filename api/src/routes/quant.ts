@@ -2131,6 +2131,86 @@ quantRouter.post('/strategies/:id/simulate', async (req: Request, res: Response,
       straddleIvThreshold: tableThresholds.straddleIvThreshold,
     };
 
+    // 2) 资金分配诊断
+    let capitalAllocationInfo: Record<string, unknown> = {};
+    try {
+      const totalCash = await capitalManager.getTotalCapital();
+
+      // 查询策略的资金分配账户
+      const caResult = await pool.query(
+        `SELECT ca.id, ca.allocation_type, ca.allocation_value, ca.current_usage
+         FROM strategies s
+         LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
+         WHERE s.id = $1`,
+        [strategyId]
+      );
+
+      if (caResult.rows.length > 0 && caResult.rows[0].id) {
+        const ca = caResult.rows[0];
+        const allocationType = ca.allocation_type as string;
+        const allocationValue = parseFloat(ca.allocation_value?.toString() || '0');
+        const currentUsage = parseFloat(ca.current_usage?.toString() || '0');
+
+        // 计算策略实际可用额度（FIXED_AMOUNT 受账户余额上限保护）
+        let strategyBudget: number;
+        if (allocationType === 'PERCENTAGE') {
+          strategyBudget = totalCash * allocationValue;
+        } else {
+          strategyBudget = Math.min(allocationValue, totalCash);
+        }
+        const availableForStrategy = Math.max(0, strategyBudget - currentUsage);
+
+        // 有效标的池过滤
+        const poolResult = await capitalManager.getEffectiveSymbolPool(strategyId, symbols, strategyBudget);
+
+        // 查询当前持仓占用明细
+        const holdingResult = await pool.query(
+          `SELECT symbol,
+                  COALESCE((context->>'tradedSymbol')::text, symbol) as traded_symbol,
+                  COALESCE((context->>'allocationAmount')::numeric, 0) as allocation_amount,
+                  current_state
+           FROM strategy_instances
+           WHERE strategy_id = $1 AND current_state IN ('HOLDING', 'OPENING', 'CLOSING')`,
+          [strategyId]
+        );
+        const holdingDetails = holdingResult.rows.map((r: Record<string, unknown>) => ({
+          symbol: r.symbol,
+          tradedSymbol: r.traded_symbol,
+          state: r.current_state,
+          allocationAmount: parseFloat((r.allocation_amount as string) || '0'),
+        }));
+
+        capitalAllocationInfo = {
+          accountCash: Math.round(totalCash * 100) / 100,
+          strategy: {
+            allocationType,
+            configuredValue: allocationValue,
+            effectiveBudget: Math.round(strategyBudget * 100) / 100,
+            currentUsage: Math.round(currentUsage * 100) / 100,
+            availableForNewEntry: Math.round(availableForStrategy * 100) / 100,
+            budgetCapped: allocationType === 'FIXED_AMOUNT' && allocationValue > totalCash,
+          },
+          symbolPool: {
+            totalSymbols: symbols.length,
+            effectiveSymbols: poolResult.effectiveSymbols,
+            excludedSymbols: poolResult.excludedSymbols,
+            maxPerSymbol: Math.round(poolResult.maxPerSymbol * 100) / 100,
+            minOptionCost: 300,
+          },
+          currentHoldings: holdingDetails,
+        };
+      } else {
+        capitalAllocationInfo = {
+          accountCash: Math.round(totalCash * 100) / 100,
+          strategy: null,
+          note: '策略未配置资金分配账户',
+        };
+      }
+    } catch (capitalError: unknown) {
+      const msg = capitalError instanceof Error ? capitalError.message : String(capitalError);
+      capitalAllocationInfo = { error: `资金信息获取失败: ${msg}` };
+    }
+
     // 3) 对每个 symbol 执行模拟
     const results = [];
 
@@ -2363,6 +2443,7 @@ quantRouter.post('/strategies/:id/simulate', async (req: Request, res: Response,
           strategyTypes: config.strategyTypes || null,
           expirationMode: config.expirationMode,
         },
+        capitalAllocation: capitalAllocationInfo,
         simulatedAt: new Date().toISOString(),
         executeOrder,
         symbolCount: symbols.length,

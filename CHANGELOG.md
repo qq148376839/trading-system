@@ -23,6 +23,24 @@
 
 ---
 
+### 策略模拟接口新增资金分配诊断
+
+**增强**: `POST /quant/strategies/:id/simulate` 响应中新增 `capitalAllocation` 字段，展示策略资金分配全链路信息，方便验证资金保护逻辑是否正确。
+
+**返回信息**:
+- `accountCash` — 账户实际可用现金
+- `strategy.configuredValue` / `effectiveBudget` — 配置额度 vs 实际生效额度（受余额上限保护）
+- `strategy.currentUsage` / `availableForNewEntry` — 已占用 / 可用于新开仓
+- `strategy.budgetCapped` — 是否触发了账户余额封顶
+- `symbolPool.effectiveSymbols` / `excludedSymbols` — 有效标的 vs 因资金不足被排除的标的
+- `symbolPool.maxPerSymbol` — 每标的资金上限（= effectiveBudget / 有效标的数）
+- `currentHoldings` — 当前持仓占用明细（标的、合约、状态、占用金额）
+
+**修改文件**:
+- `api/src/routes/quant.ts` — simulate 端点新增资金分配诊断逻辑（+81行）
+
+---
+
 ## 2026-02-20
 
 ### 期权回测：策略关联 + UX 重构
