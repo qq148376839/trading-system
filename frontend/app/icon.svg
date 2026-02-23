@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1677ff"/>
+      <stop offset="100%" stop-color="#0958d9"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect width="32" height="32" rx="7" fill="url(#bg)"/>
+  <!-- Uptrend line chart -->
+  <polyline points="6,22 12,18 17,20 26,9" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Arrow head -->
+  <polyline points="22,9 26,9 26,13" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Dollar sign -->
+  <text x="16" y="30" text-anchor="middle" font-family="Arial,sans-serif" font-weight="bold" font-size="7" fill="rgba(255,255,255,0.5)">$</text>
+</svg>

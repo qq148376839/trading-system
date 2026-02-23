@@ -14,6 +14,9 @@ export const viewport: Viewport = {
 export const metadata: Metadata = {
   title: '长桥股票交易系统',
   description: '基于NAS+Docker的股票交易系统',
+  icons: {
+    icon: '/icon.svg',
+  },
 }
 
 export default function RootLayout({
