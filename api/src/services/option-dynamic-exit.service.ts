@@ -191,10 +191,16 @@ class OptionDynamicExitService {
    * 计算盈亏（含手续费）
    */
   calculatePnL(ctx: PositionContext): PnLResult {
-    const { entryPrice, currentPrice, quantity, multiplier, entryFees, estimatedExitFees } = ctx;
+    // 防御性数值化：强制 Number() 转换，防止字符串/null/undefined 导致 NaN
+    const entryPrice = Number(ctx.entryPrice) || 0;
+    const currentPrice = Number(ctx.currentPrice) || 0;
+    const quantity = Number(ctx.quantity) || 0;
+    const multiplier = Number(ctx.multiplier) || 100;
+    const entryFees = Number(ctx.entryFees) || 0;
+    const estimatedExitFees = Number(ctx.estimatedExitFees) || 0;
 
     // 0DTE优先使用mid价格（bid/ask中间价更稳定，避免lastDone跳动放大PnL波动）
-    const effectivePrice = (ctx.is0DTE && ctx.midPrice && ctx.midPrice > 0) ? ctx.midPrice : currentPrice;
+    const effectivePrice = (ctx.is0DTE && ctx.midPrice && Number(ctx.midPrice) > 0) ? Number(ctx.midPrice) : currentPrice;
 
     // 毛盈亏 = (当前价 - 入场价) * 数量 * 乘数
     // 注意：买方做多期权，卖方做空期权（此处统一按买方计算，卖方需反向）
@@ -210,13 +216,35 @@ class OptionDynamicExitService {
     const costBasis = entryPrice * quantity * multiplier + entryFees;
 
     // 盈亏百分比
-    const grossPnLPercent = costBasis > 0 ? (grossPnL / costBasis) * 100 : 0;
-    const netPnLPercent = costBasis > 0 ? (netPnL / costBasis) * 100 : 0;
+    let grossPnLPercent = costBasis > 0 ? (grossPnL / costBasis) * 100 : 0;
+    let netPnLPercent = costBasis > 0 ? (netPnL / costBasis) * 100 : 0;
+
+    // 安全回退：当 costBasis 异常（<=0 或 NaN）但有价格差异时，使用简化公式
+    if ((!isFinite(grossPnLPercent) || (grossPnL !== 0 && grossPnLPercent === 0)) && entryPrice > 0) {
+      grossPnLPercent = (priceDiff / entryPrice) * 100;
+      netPnLPercent = entryPrice > 0 ? ((priceDiff / entryPrice) * 100) - ((totalFees / (entryPrice * quantity * multiplier || 1)) * 100) : 0;
+      // 诊断日志：帮助追踪 costBasis 异常原因
+      console.warn(
+        `[PnL诊断] costBasis异常，启用回退公式 | ` +
+        `entryPrice=${ctx.entryPrice}(type=${typeof ctx.entryPrice}) ` +
+        `quantity=${ctx.quantity}(type=${typeof ctx.quantity}) ` +
+        `multiplier=${ctx.multiplier}(type=${typeof ctx.multiplier}) ` +
+        `entryFees=${ctx.entryFees}(type=${typeof ctx.entryFees}) ` +
+        `costBasis=${costBasis} grossPnL=${grossPnL.toFixed(2)} ` +
+        `回退grossPnLPercent=${grossPnLPercent.toFixed(2)}%`
+      );
+    }
+
+    // 最终 NaN 兜底
+    if (!isFinite(grossPnLPercent)) grossPnLPercent = 0;
+    if (!isFinite(netPnLPercent)) netPnLPercent = 0;
 
     // 保本价格 = 入场价 + (总手续费 / 数量 / 乘数)
-    const breakEvenPrice = isBuyer
-      ? entryPrice + (totalFees / quantity / multiplier)
-      : entryPrice - (totalFees / quantity / multiplier);
+    const breakEvenPrice = (quantity > 0 && multiplier > 0)
+      ? (isBuyer
+          ? entryPrice + (totalFees / quantity / multiplier)
+          : entryPrice - (totalFees / quantity / multiplier))
+      : entryPrice;
 
     return {
       grossPnL,

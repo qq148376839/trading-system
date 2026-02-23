@@ -1,5 +1,25 @@
 # 更新日志
 
+## 2026-02-24
+
+### 盈亏百分比归零修复 + LIT 止盈保护单
+
+**修复(P0)**: `grossPnLPercent` 始终为 0.0% 导致止盈止损完全失效。根因：`multiplier` 从数据库 JSONB 反序列化为字符串 `"100"` 而非数字 `100`，导致 `costBasis` 计算为 NaN，百分比回退为 0。实际亏损37%的仓位未触发34%止损。
+
+**修复内容**:
+1. **calculatePnL 防御性强化** — 所有输入参数强制 `Number()` 转换；当 `costBasis` 异常时启用回退公式 `(priceDiff/entryPrice)*100`；诊断日志输出各字段 typeof 帮助追踪
+2. **positionCtx 数值类型保护** — `multiplier`/`entryPrice`/`currentPrice`/`quantity` 全部 `Number()` 包裹
+3. **LIT 止盈保护单（新增）** — 期权买入成交后自动提交 LIT（触价限价单）止盈保护，与 TSLPPCT 互补构成双保险（TSLPPCT 防回撤 + LIT 确保止盈）
+4. **LIT 生命周期管理** — 持仓监控时检查 LIT 状态；软件退出前取消 LIT；LIT/TSLPPCT 任一方触发成交时自动取消另一方
+
+**修改文件**:
+- 🐛 `api/src/services/option-dynamic-exit.service.ts`（`calculatePnL()` 防御性 Number() + 回退公式 + 诊断日志）
+- 🐛 `api/src/services/strategy-scheduler.service.ts`（positionCtx 数值保护 + LIT 提交/检查/取消集成）
+- 📝 `api/src/services/trailing-stop-protection.service.ts`（新增 `submitTakeProfitProtection()` / `cancelTakeProfitProtection()`）
+- 📄 `docs/fixes/260224-盈亏百分比归零与LIT止盈保护修复.md`
+
+---
+
 ## 2026-02-23
 
 ### 移除标的池 $300 硬编码筛选门槛

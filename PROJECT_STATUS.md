@@ -1,11 +1,26 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-23
+**更新时间**: 2026-02-24
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-02-24: 盈亏百分比归零修复 + LIT 止盈保护单
+
+**变更内容**:
+1. **P0 修复**: `grossPnLPercent` 始终为 0.0% 导致止盈止损完全失效。`multiplier` 从 JSONB 反序列化为字符串，`costBasis` 计算 NaN → 百分比归零。`calculatePnL()` 强制 `Number()` 转换 + 回退公式 `(priceDiff/entryPrice)*100` + 诊断日志
+2. **positionCtx 数值保护**: `multiplier`/`entryPrice`/`currentPrice`/`quantity` 全部 `Number()` 包裹
+3. **LIT 止盈保护单**: 期权买入后自动提交 LIT（触价限价单）止盈保护，与 TSLPPCT 互补（TSLPPCT 防回撤 + LIT 确保止盈）
+4. **LIT 生命周期**: 持仓监控状态检查 + 软件退出前取消 + 双保护单互斥处理
+
+**修改文件**:
+- 🐛 `api/src/services/option-dynamic-exit.service.ts`（`calculatePnL()` 防御性强化）
+- 🐛 `api/src/services/strategy-scheduler.service.ts`（positionCtx 数值保护 + LIT 集成）
+- 📝 `api/src/services/trailing-stop-protection.service.ts`（新增 LIT 止盈方法）
+
+**开发文档**: [260224-盈亏百分比归零与LIT止盈保护修复](docs/fixes/260224-盈亏百分比归零与LIT止盈保护修复.md)
 
 ### 2026-02-23: 移除标的池 $300 硬编码筛选门槛
 

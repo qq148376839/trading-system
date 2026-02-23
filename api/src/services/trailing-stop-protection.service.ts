@@ -415,6 +415,122 @@ class TrailingStopProtectionService {
   }
 
   // ============================================
+  // LIT 止盈保护单
+  // ============================================
+
+  /**
+   * 提交 LIT（触价限价单）止盈保护单
+   *
+   * 当价格上涨到 triggerPrice 时自动触发限价卖出。
+   * 作为 TSLPPCT 的补充：TSLPPCT 防回撤，LIT 确保止盈。
+   *
+   * @param symbol        期权代码
+   * @param quantity      合约数量
+   * @param entryPrice    入场价格（用于计算触发价）
+   * @param takeProfitPct 止盈百分比（如 25 表示 25%）
+   * @param expireDate    到期日 YYYY-MM-DD
+   * @param strategyId    策略ID
+   */
+  async submitTakeProfitProtection(
+    symbol: string,
+    quantity: number,
+    entryPrice: number,
+    takeProfitPct: number,
+    expireDate: string,
+    strategyId: number,
+  ): Promise<SubmitResult> {
+    try {
+      if (takeProfitPct <= 0 || entryPrice <= 0) {
+        return { success: false, error: `无效参数: takeProfitPct=${takeProfitPct}, entryPrice=${entryPrice}` };
+      }
+
+      const triggerPrice = entryPrice * (1 + takeProfitPct / 100);
+      // 限价 = 触发价 * 0.97（留3%滑点空间确保成交）
+      const limitPrice = triggerPrice * 0.97;
+
+      const tradeCtx = await getTradeContext();
+
+      const longport = require('longport');
+      const { NaiveDate } = longport;
+
+      // 到期日处理（同 TSLPPCT 逻辑）
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      let effectiveExpireDate = expireDate;
+      if (expireDate <= today) {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        effectiveExpireDate = tomorrow.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      }
+
+      const dateParts = effectiveExpireDate.split('-');
+      const expireNaiveDate = new NaiveDate(
+        parseInt(dateParts[0], 10),
+        parseInt(dateParts[1], 10),
+        parseInt(dateParts[2], 10)
+      );
+
+      const orderOptions: Record<string, unknown> = {
+        symbol,
+        orderType: OrderType.LIT,
+        side: OrderSide.Sell,
+        submittedQuantity: new Decimal(quantity.toString()),
+        submittedPrice: new Decimal(limitPrice.toFixed(2)),
+        triggerPrice: new Decimal(triggerPrice.toFixed(2)),
+        timeInForce: TimeInForceType.GoodTilDate,
+        expireDate: expireNaiveDate,
+        remark: 'TP_LIT_AUTO',
+      };
+
+      const response = await longportRateLimiter.execute(() =>
+        retryWithBackoff<any>(() => tradeCtx.submitOrder(orderOptions as any) as any)
+      );
+
+      if (!response || !response.orderId) {
+        const errMsg = '未返回订单ID';
+        logger.log(
+          `${TSLP_TAG} 策略 ${strategyId} 期权 ${symbol}: LIT止盈单提交失败(${errMsg})`,
+          { dbWrite: true },
+        );
+        return { success: false, error: errMsg };
+      }
+
+      // 写入 execution_orders 表
+      await pool.query(
+        `INSERT INTO execution_orders
+         (strategy_id, symbol, order_id, side, quantity, price, current_status, execution_stage)
+         VALUES ($1, $2, $3, 'SELL', $4, $5, 'SUBMITTED', 1)`,
+        [strategyId, symbol, response.orderId, quantity, triggerPrice],
+      );
+
+      logger.log(
+        `${TSLP_TAG} 策略 ${strategyId} 期权 ${symbol}: LIT止盈保护单已提交 orderId=${response.orderId}, ` +
+        `trigger=${triggerPrice.toFixed(2)}(+${takeProfitPct}%), limit=${limitPrice.toFixed(2)}`,
+        { dbWrite: true },
+      );
+
+      return { success: true, orderId: response.orderId };
+    } catch (error: any) {
+      const errMsg = error?.message || String(error);
+      logger.log(
+        `${TSLP_TAG} 策略 ${strategyId} 期权 ${symbol}: LIT止盈单提交失败(${errMsg})`,
+        { dbWrite: true },
+      );
+      return { success: false, error: errMsg };
+    }
+  }
+
+  /**
+   * 取消 LIT 止盈保护单（复用 cancelProtection 逻辑）
+   */
+  async cancelTakeProfitProtection(
+    orderId: string,
+    strategyId: number,
+    symbol: string,
+  ): Promise<CancelResult> {
+    return this.cancelProtection(orderId, strategyId, symbol);
+  }
+
+  // ============================================
   // 内部辅助
   // ============================================
 

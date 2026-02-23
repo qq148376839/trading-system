@@ -902,6 +902,30 @@ class StrategyScheduler {
                         } else {
                           logger.warn(`策略 ${strategyId} 期权 ${tradedSym}: TSLPPCT提交失败(${tslpResult.error})，降级到纯监控模式`);
                         }
+
+                        // === LIT 止盈保护单提交 ===
+                        // TSLPPCT 防回撤，LIT 兜底确保止盈触发
+                        try {
+                          const tpPct = parseFloat(String(strategyConfig?.exitRules?.takeProfitPercent || 0)) || 25;
+                          const litResult = await trailingStopProtectionService.submitTakeProfitProtection(
+                            tradedSym,
+                            filledQuantity,
+                            avgPrice,
+                            tpPct,
+                            expDate,
+                            strategyId,
+                          );
+                          if (litResult.success && litResult.orderId) {
+                            await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
+                              takeProfitOrderId: litResult.orderId,
+                            });
+                            logger.log(`策略 ${strategyId} 期权 ${tradedSym}: LIT止盈保护单已提交 orderId=${litResult.orderId}, tp=${tpPct}%`);
+                          } else {
+                            logger.warn(`策略 ${strategyId} 期权 ${tradedSym}: LIT止盈单提交失败(${litResult.error})，依赖软件监控止盈`);
+                          }
+                        } catch (litErr: any) {
+                          logger.warn(`策略 ${strategyId} 期权 ${tradedSym}: LIT止盈单提交异常(${litErr?.message})，依赖软件监控止盈`);
+                        }
                       } catch (tslpErr: any) {
                         logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: TSLPPCT提交异常(${tslpErr?.message})，降级到纯监控模式`);
                       }
@@ -940,21 +964,121 @@ class StrategyScheduler {
 
                   // Fix 11: 递增 dailyTradeCount 供动态冷却期使用
                   const prevDailyTradeCount = context.dailyTradeCount ?? 0;
+
+                  // Fix 12: 计算本笔交易 PnL 并追踪日内累计亏损
+                  const sellEntryPrice = parseFloat(String(context.entryPrice || 0));
+                  const sellQty = parseFloat(String(context.quantity || context.optionMeta?.quantity || 1));
+                  const sellMultiplier = Number(context.optionMeta?.multiplier) || 100;
+                  const sellEntryFees = parseFloat(String(context.entryFees || context.optionMeta?.estimatedFees || 0));
+                  const isOptionAssetSell = context.optionMeta?.assetClass === 'OPTION';
+                  let tradePnL = 0;
+                  if (sellEntryPrice > 0 && avgPrice > 0) {
+                    if (isOptionAssetSell) {
+                      tradePnL = (avgPrice - sellEntryPrice) * sellQty * sellMultiplier - sellEntryFees * 2;
+                    } else {
+                      tradePnL = (avgPrice - sellEntryPrice) * sellQty;
+                    }
+                  }
+                  tradePnL = Math.round(tradePnL * 100) / 100;
+
+                  const prevConsecutiveLosses = context.consecutiveLosses ?? 0;
+                  const newConsecutiveLosses = tradePnL < 0 ? prevConsecutiveLosses + 1 : 0;
+                  const prevDailyPnL = context.dailyRealizedPnL ?? 0;
+                  const newDailyPnL = Math.round((prevDailyPnL + tradePnL) * 100) / 100;
+
+                  // 提取交易方向（CALL/PUT）
+                  const tradeDirection = context.optionMeta?.optionDirection
+                    || context.optionMeta?.optionType
+                    || context.intent?.metadata?.optionDirection
+                    || null;
+
                   await strategyInstance.updateState(instanceKeySymbol, 'IDLE', {
                     lastExitTime: new Date().toISOString(),
                     dailyTradeCount: prevDailyTradeCount + 1,
+                    // 日内 PnL 追踪
+                    dailyRealizedPnL: newDailyPnL,
+                    consecutiveLosses: newConsecutiveLosses,
+                    lastTradeDirection: tradeDirection,
+                    lastTradePnL: tradePnL,
                     ...(isTslpFill ? { exitReason: 'TSLPPCT_FILLED', protectionOrderId: undefined, protectionTrailingPct: undefined } : {}),
                   });
 
-                  // Fix 8b 联动: 卖出成交后更新反向策略 kill switch
-                  if (context.entryPrice && avgPrice > 0) {
-                    const sellEntryPrice = parseFloat(String(context.entryPrice));
-                    if (sellEntryPrice > 0) {
-                      const pnlPct = ((avgPrice - sellEntryPrice) / sellEntryPrice) * 100;
-                      const si = strategyInstance as any;
-                      if (typeof si.updateReverseStrategyKillSwitch === 'function') {
-                        si.updateReverseStrategyKillSwitch(pnlPct);
+                  if (tradePnL !== 0) {
+                    logger.log(
+                      `策略 ${strategyId} 标的 ${instanceKeySymbol}: 本笔PnL=$${tradePnL.toFixed(2)}, ` +
+                      `日内累计=$${newDailyPnL.toFixed(2)}, 连亏=${newConsecutiveLosses}笔` +
+                      (tradeDirection ? `, 方向=${tradeDirection}` : '')
+                    );
+                  }
+
+                  // 策略级日内亏损熔断检查（跨标的聚合）
+                  if (isOptionAssetSell && tradePnL < 0) {
+                    try {
+                      const strategyConfig = (strategyInstance as any)?.config || {};
+                      const riskLimits = (strategyConfig as any)?.riskLimits || {};
+                      const maxConsecLosses = riskLimits.maxConsecutiveLosses ?? 4;
+                      // 动态熔断阈值：基于策略实际可用资金的百分比（默认30%）
+                      const circuitBreakerPct = riskLimits.circuitBreakerPercent ?? 30;
+
+                      // 聚合策略级日内 PnL（所有标的）
+                      const pnlResult = await pool.query(
+                        `SELECT COALESCE(SUM((context->>'dailyRealizedPnL')::numeric), 0) as total_pnl
+                         FROM strategy_instances
+                         WHERE strategy_id = $1
+                           AND (context->>'dailyRealizedPnL') IS NOT NULL`,
+                        [strategyId]
+                      );
+                      const strategyDailyPnL = parseFloat(pnlResult.rows[0]?.total_pnl || '0');
+
+                      // 获取策略可用资金池（allocated - current_usage）作为动态阈值基准
+                      let maxDailyLoss = riskLimits.maxDailyLoss ?? 300; // fallback 固定值
+                      try {
+                        const availableCapital = await capitalManager.getAvailableCapital(strategyId);
+                        const totalAllocated = availableCapital + parseFloat(String(context.allocationAmount || 0));
+                        if (totalAllocated > 0) {
+                          maxDailyLoss = Math.round(totalAllocated * circuitBreakerPct / 100);
+                          // 最低 $100 防止资金池很小时阈值太低
+                          maxDailyLoss = Math.max(100, maxDailyLoss);
+                        }
+                      } catch (capErr: unknown) {
+                        logger.warn(`策略 ${strategyId}: 获取可用资金失败，使用固定熔断阈值 $${maxDailyLoss}`);
                       }
+
+                      const shouldBreak = strategyDailyPnL <= -maxDailyLoss || newConsecutiveLosses >= maxConsecLosses;
+                      if (shouldBreak) {
+                        const reason = strategyDailyPnL <= -maxDailyLoss
+                          ? `日内累计亏损 $${Math.abs(strategyDailyPnL).toFixed(0)} >= 阈值 $${maxDailyLoss}`
+                          : `连续亏损 ${newConsecutiveLosses} 笔 >= 阈值 ${maxConsecLosses}`;
+
+                        logger.warn(`[CIRCUIT_BREAKER] 策略 ${strategyId} 标的 ${instanceKeySymbol}: ${reason}，暂停至收盘`);
+
+                        // 对该策略所有标的设置熔断
+                        await pool.query(
+                          `UPDATE strategy_instances
+                           SET context = context || $1::jsonb
+                           WHERE strategy_id = $2`,
+                          [
+                            JSON.stringify({
+                              circuitBreakerActive: true,
+                              circuitBreakerReason: reason,
+                              circuitBreakerTime: new Date().toISOString(),
+                            }),
+                            strategyId,
+                          ]
+                        );
+                      }
+                    } catch (cbErr: unknown) {
+                      const cbMsg = cbErr instanceof Error ? cbErr.message : String(cbErr);
+                      logger.warn(`策略 ${strategyId}: 熔断检查异常: ${cbMsg}`);
+                    }
+                  }
+
+                  // Fix 8b 联动: 卖出成交后更新反向策略 kill switch
+                  if (sellEntryPrice > 0 && avgPrice > 0) {
+                    const pnlPct = ((avgPrice - sellEntryPrice) / sellEntryPrice) * 100;
+                    const si = strategyInstance as any;
+                    if (typeof si.updateReverseStrategyKillSwitch === 'function') {
+                      si.updateReverseStrategyKillSwitch(pnlPct);
                     }
                   }
 
@@ -1388,20 +1512,60 @@ class StrategyScheduler {
           }
         }
 
-        // Fix 11: LATE时段冷却期 — 0DTE根据当日交易次数动态调整
+        // Fix 12a: 新交易日检测 — 重置日内 PnL / 连亏计数 / 熔断状态
+        if (cancelCtx?.lastExitTime) {
+          const etFormatter = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/New_York',
+            year: 'numeric', month: '2-digit', day: '2-digit',
+          });
+          const lastExitETDate = etFormatter.format(new Date(cancelCtx.lastExitTime));
+          const nowETDate = etFormatter.format(new Date());
+          if (lastExitETDate !== nowETDate) {
+            await strategyInstance.updateState(symbol, 'IDLE', {
+              dailyTradeCount: 0,
+              dailyRealizedPnL: 0,
+              consecutiveLosses: 0,
+              lastTradeDirection: null,
+              lastTradePnL: 0,
+              circuitBreakerActive: false,
+              circuitBreakerReason: null,
+              circuitBreakerTime: null,
+            });
+            // 重新读取 context（已重置）
+            const freshState = await stateManager.getInstanceState(strategyId, symbol);
+            Object.assign(cancelCtx || {}, freshState?.context || {});
+          }
+        }
+
+        // Fix 12b: 日内熔断检查 — 已熔断则直接跳过
+        if (cancelCtx?.circuitBreakerActive) {
+          summary.idle.push(`${symbol}(CIRCUIT_BREAKER:${cancelCtx.circuitBreakerReason || 'active'})`);
+          return;
+        }
+
+        // Fix 11+12: LATE时段冷却期 — 优先感知连续亏损，否则沿用交易次数逻辑
         const dailyTradeCount = cancelCtx?.dailyTradeCount ?? 0;
+        const consecLosses = cancelCtx?.consecutiveLosses ?? 0;
         const is0DTEContext = cancelCtx?.optionMeta?.expirationMode === '0DTE'
           || cancelCtx?.is0DTE === true;
 
         let cooldownMinutes: number;
         if (is0DTEContext) {
-          // 0DTE 动态冷却：前2笔无冷却，3-4笔1分钟，5笔起3分钟
-          if (dailyTradeCount <= 1) {
-            cooldownMinutes = 0;
-          } else if (dailyTradeCount <= 3) {
-            cooldownMinutes = 1;
+          if (consecLosses >= 3) {
+            cooldownMinutes = 15;  // 3笔连亏：长冷却，等待趋势明确
+          } else if (consecLosses === 2) {
+            cooldownMinutes = 5;   // 2笔连亏：中等冷却
+          } else if (consecLosses === 1) {
+            cooldownMinutes = 3;   // 1笔亏损：短冷却
           } else {
-            cooldownMinutes = 3;
+            // 无连续亏损：沿用原有基于交易次数的逻辑
+            if (dailyTradeCount <= 1) {
+              cooldownMinutes = 0;
+            } else if (dailyTradeCount <= 3) {
+              cooldownMinutes = 1;
+            } else {
+              cooldownMinutes = 3;
+            }
           }
         } else {
           cooldownMinutes = strategyConfig?.latePeriod?.cooldownMinutes ?? 3;
@@ -1410,7 +1574,8 @@ class StrategyScheduler {
         if (cancelCtx?.lastExitTime && cooldownMinutes > 0) {
           const exitElapsed = Date.now() - new Date(cancelCtx.lastExitTime).getTime();
           if (exitElapsed < cooldownMinutes * 60000) {
-            summary.idle.push(`${symbol}(COOLDOWN_${Math.ceil((cooldownMinutes * 60000 - exitElapsed) / 60000)}m_trade#${dailyTradeCount})`);
+            const remainMin = Math.ceil((cooldownMinutes * 60000 - exitElapsed) / 60000);
+            summary.idle.push(`${symbol}(COOLDOWN_${remainMin}m_trade#${dailyTradeCount}${consecLosses > 0 ? `_consLoss${consecLosses}` : ''})`);
             return;
           }
         }
@@ -1446,6 +1611,24 @@ class StrategyScheduler {
       if (intent.action === 'HOLD') {
         summary.idle.push(symbol); // HOLD 信号，视为 IDLE
         return;
+      }
+
+      // Fix 12c: 信号方向抑制 — 连续同方向亏损后抑制同方向新信号
+      if (intent.action === 'BUY' && isOptionStrategy) {
+        const suppressState = await stateManager.getInstanceState(strategyId, symbol);
+        const suppressCtx = suppressState?.context;
+        const suppressConsecLosses = suppressCtx?.consecutiveLosses ?? 0;
+        const suppressLastDir = suppressCtx?.lastTradeDirection;
+        const intentDirection = (intent.metadata as any)?.optionDirection;
+
+        if (suppressConsecLosses >= 2 && suppressLastDir && intentDirection && suppressLastDir === intentDirection) {
+          logger.warn(
+            `[SIGNAL_SUPPRESSED] 策略 ${strategyId} 标的 ${symbol}: ` +
+            `信号方向 ${intentDirection} 与最近 ${suppressConsecLosses} 笔连亏方向一致，抑制信号`
+          );
+          summary.idle.push(`${symbol}(SIGNAL_SUPPRESSED_${intentDirection})`);
+          return;
+        }
       }
 
       // 记录信号日志（关键业务事件）
@@ -2595,11 +2778,52 @@ class StrategyScheduler {
         }
       }
 
+      // 0b. LIT 止盈保护单状态检查：如果券商止盈单已触发成交，直接转 IDLE
+      if (context.takeProfitOrderId) {
+        try {
+          const litStatus = await trailingStopProtectionService.checkProtectionStatus(context.takeProfitOrderId);
+          if (litStatus === 'filled') {
+            logger.log(
+              `策略 ${strategyId} 期权 ${effectiveSymbol}: LIT止盈单已触发成交(${context.takeProfitOrderId})，券商已平仓，更新状态为IDLE`
+            );
+            // 同时取消 TSLPPCT 保护单（如有）
+            if (context.protectionOrderId) {
+              try {
+                await trailingStopProtectionService.cancelProtection(context.protectionOrderId, strategyId, effectiveSymbol);
+              } catch { /* 取消失败不阻塞 */ }
+            }
+            await strategyInstance.updateState(symbol, 'IDLE', {
+              ...context,
+              lastExitTime: new Date().toISOString(),
+              exitReason: 'LIT_TP_FILLED',
+              exitReasonDetail: `LIT止盈单${context.takeProfitOrderId}已触发`,
+              protectionOrderId: undefined,
+              protectionTrailingPct: undefined,
+              takeProfitOrderId: undefined,
+            });
+            if (context.allocationAmount) {
+              await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
+            }
+            return { actionTaken: true };
+          }
+          if (litStatus === 'cancelled' || litStatus === 'expired') {
+            logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: LIT止盈单已${litStatus}，清除takeProfitOrderId`);
+            await strategyInstance.updateState(symbol, 'HOLDING', {
+              ...context,
+              takeProfitOrderId: undefined,
+            });
+            context.takeProfitOrderId = undefined;
+          }
+        } catch (litCheckErr: any) {
+          logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: LIT止盈单状态查询异常(${litCheckErr?.message})，继续软件监控`);
+        }
+      }
+
       const optionDynamicExitService = (await import('./option-dynamic-exit.service')).default;
 
       // 1. 从 context 获取期权元数据
       const optionMeta = context.optionMeta || context.intent?.metadata || {};
-      const multiplier = optionMeta.multiplier || 100;
+      const multiplier = Number(optionMeta.multiplier) || 100;
       const entryTime = context.entryTime ? new Date(context.entryTime) : new Date();
 
       // 2. 获取手续费信息
@@ -2804,10 +3028,10 @@ class StrategyScheduler {
       // 7. 构建持仓上下文
       const marketCloseTime = optionDynamicExitService.getMarketCloseTime();
       const positionCtx = {
-        entryPrice,
-        currentPrice,
-        quantity,
-        multiplier,
+        entryPrice: Number(entryPrice) || 0,
+        currentPrice: Number(currentPrice) || 0,
+        quantity: Number(quantity) || 0,
+        multiplier: Number(multiplier) || 100,
         entryTime,
         marketCloseTime,
         strategySide,
@@ -2933,6 +3157,40 @@ class StrategyScheduler {
           } catch (cancelErr: any) {
             logger.warn(
               `策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT取消异常(${cancelErr?.message})，继续软件卖出`
+            );
+          }
+        }
+
+        // === LIT 止盈单取消：软件退出前先取消券商止盈保护单 ===
+        if (context.takeProfitOrderId) {
+          try {
+            const litCancelResult = await trailingStopProtectionService.cancelTakeProfitProtection(
+              context.takeProfitOrderId,
+              strategyId,
+              effectiveSymbol,
+            );
+            if (litCancelResult.alreadyFilled) {
+              // LIT 止盈单已触发成交！跳过软件卖出，直接转 IDLE
+              logger.log(
+                `策略 ${strategyId} 期权 ${effectiveSymbol}: LIT止盈单已触发成交，跳过软件卖出`
+              );
+              await strategyInstance.updateState(symbol, 'IDLE', {
+                ...context,
+                lastExitTime: new Date().toISOString(),
+                exitReason: 'LIT_TP_FILLED',
+                exitReasonDetail: `软件退出时发现LIT止盈单(${context.takeProfitOrderId})已成交`,
+                protectionOrderId: undefined,
+                protectionTrailingPct: undefined,
+                takeProfitOrderId: undefined,
+              });
+              if (context.allocationAmount) {
+                await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
+              }
+              return { actionTaken: true };
+            }
+          } catch (litCancelErr: any) {
+            logger.warn(
+              `策略 ${strategyId} 期权 ${effectiveSymbol}: LIT止盈单取消异常(${litCancelErr?.message})，继续软件卖出`
             );
           }
         }

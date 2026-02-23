@@ -738,7 +738,7 @@ trading-system/
 - 📌 `services/strategy-scheduler.service.ts` - 策略调度器（持仓监控）
 
 #### `api/src/services/trailing-stop-protection.service.ts`
-**作用**: TSLPPCT 跟踪止损保护服务
+**作用**: TSLPPCT 跟踪止损 + LIT 止盈保护服务
 
 **主要功能**:
 - 管理券商侧跟踪止损单（Trailing Stop Loss Percentage），作为期权持仓安全网
@@ -747,6 +747,8 @@ trading-system/
 - 取消 TSLPPCT 订单（动态退出触发时先取消再市价卖出）
 - 补挂/状态检查：检测 TSLPPCT 订单是否有效，失效时尝试补挂
 - 降级容错：提交失败时退化为纯监控模式（无券商侧保护）
+- **LIT 止盈保护单**: `submitTakeProfitProtection()` 提交触价限价卖出单（triggerPrice = entryPrice × (1+tp%)，limitPrice = trigger × 0.97）
+- **LIT 取消**: `cancelTakeProfitProtection()` 复用三步确认取消逻辑
 
 **调用关系**:
 - ✅ 使用 `config/longport.ts` - 获取交易上下文（提交/取消跟踪止损单）
@@ -773,6 +775,7 @@ trading-system/
 - **VWAP 结构失效止损**：标的连续 2 根 1m K 线穿回 VWAP → 平仓（`structure_invalidation`）
 - **时间止损**：入场后 T 分钟无顺风延续 → 退出（T 按波动率分桶 3/5/8min）
 - **追踪止盈动态化**：0DTE 按波动率分桶设置 trail（10%/12%/15%），使用精确 peakPnLPercent
+- **PnL 防御性计算**：`calculatePnL()` 所有输入强制 `Number()` 转换，`costBasis` 异常时回退到 `(priceDiff/entryPrice)*100`
 
 **调用关系**:
 - ✅ 使用 `services/trading-recommendation.service.ts` - 获取市场状态
@@ -859,7 +862,7 @@ trading-system/
 - ✅ 使用 `services/basic-execution.service.ts` - 订单执行
 - ✅ 使用 `services/dynamic-position-manager.service.ts` - 动态持仓管理
 - ✅ 使用 `services/option-dynamic-exit.service.ts` - 期权动态止盈止损
-- ✅ 使用 `services/trailing-stop-protection.service.ts` - TSLPPCT 跟踪止损保护（买入后提交、退出前取消、补挂/调整）
+- ✅ 使用 `services/trailing-stop-protection.service.ts` - TSLPPCT 跟踪止损保护（买入后提交、退出前取消、补挂/调整）+ LIT 止盈保护（买入后提交、退出前取消）
 - ✅ 使用 `services/trading-recommendation.service.ts` - 交易推荐服务（获取ATR）
 - ✅ 使用 `services/market-session.service.ts` - 收盘窗口计算（禁开仓/强平）
 - ✅ 使用 `config/longport.ts` - 获取持仓和订单（直接调用 SDK）
