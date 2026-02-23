@@ -79,7 +79,7 @@ npx ts-node scripts/test-trade-push-fix.ts
 
 ## 📚 更多信息
 
-- **详细测试计划**: `docs/tests/251217-TRADE_PUSH_FIX_TEST_PLAN.md`
+- **详细测试计划**: `docs/test/251217-交易推送修复测试计划.md`
 - **BUG分析报告**: `docs/analysis/251217-TRADE_PUSH_BUG_ANALYSIS.md`
 - **修复总结**: `docs/fixes/251217-TRADE_PUSH_BUG_FIX.md`
 

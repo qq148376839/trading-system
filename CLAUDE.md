@@ -46,7 +46,7 @@ docs/                 → 项目文档
 - 中文命名：`YYMMDD-功能名称.md`
 - 单一文档原则：一个功能一份文档，优先更新现有文档
 - 导航文件：`CHANGELOG.md` / `PROJECT_STATUS.md` / `README.md` / `CODE_MAP.md`
-- 文档目录：`docs/features/` `docs/fixes/` `docs/analysis/` `docs/guides/` `docs/technical/`
+- 文档目录：`docs/features/` `docs/fixes/` `docs/analysis/` `docs/guides/` `docs/technical/` `docs/test/` `docs/review/` `docs/integration/` `docs/archive/`
 
 ## 核心原则
 - **先确认，再执行** — 不明确的需求必须先澄清

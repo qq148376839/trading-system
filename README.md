@@ -606,7 +606,7 @@ docker-compose exec app node api/scripts/create-admin.js admin your_password
 4. ✅ 持仓/卖空持仓 `context` 为空时自动恢复（无历史则重置为 `IDLE`）
 
 **相关文档**：
-- 📄 [错误位置定位及修复指南](错误位置定位及修复指南.md)
+- 📄 [错误位置定位及修复指南](docs/guides/260127-错误位置定位及修复指南.md)
 
 ### 2025-12-19: LongPort SDK 升级和测试完成 ⭐ 最新
 
