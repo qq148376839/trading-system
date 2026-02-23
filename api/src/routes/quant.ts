@@ -2195,7 +2195,6 @@ quantRouter.post('/strategies/:id/simulate', async (req: Request, res: Response,
             effectiveSymbols: poolResult.effectiveSymbols,
             excludedSymbols: poolResult.excludedSymbols,
             maxPerSymbol: Math.round(poolResult.maxPerSymbol * 100) / 100,
-            minOptionCost: 300,
           },
           currentHoldings: holdingDetails,
         };

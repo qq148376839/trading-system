@@ -1,11 +1,19 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-21
+**更新时间**: 2026-02-23
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-02-23: 移除标的池 $300 硬编码筛选门槛
+
+**变更内容**: 删除 `getEffectiveSymbolPool()` 中 `MIN_OPTION_COST = 300` 硬编码，简化为全标的均分。资金保护由下游 `requestAllocation()` 事务级关卡负责。
+
+**修改文件**:
+- 📝 `api/src/services/capital-manager.service.ts`（`getEffectiveSymbolPool` 简化）
+- 📝 `api/src/routes/quant.ts`（simulate 诊断移除 `minOptionCost`）
 
 ### 2026-02-21: 策略模拟接口新增资金分配诊断
 

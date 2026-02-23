@@ -792,14 +792,14 @@ class CapitalManager {
   }
 
   /**
-   * 获取有效标的池（排除资金不足的标的，重新分配资金）
+   * 获取有效标的池（均分资金到所有标的）
    * @param strategyId 策略ID
    * @param symbols 全量标的池
    * @param allocatedAmount 策略分配的总资金
    * @returns 有效标的、排除标的、每标的最大额度
    */
   async getEffectiveSymbolPool(
-    strategyId: number,
+    _strategyId: number,
     symbols: string[],
     allocatedAmount: number
   ): Promise<{ effectiveSymbols: string[]; excludedSymbols: string[]; maxPerSymbol: number }> {
@@ -807,47 +807,11 @@ class CapitalManager {
       return { effectiveSymbols: [], excludedSymbols: symbols, maxPerSymbol: 0 };
     }
 
-    // 最低期权门槛：$3 权利金 × 100 乘数 = $300（加手续费约 $302）
-    const MIN_OPTION_COST = 300;
-
-    // 第一轮：按全池计算初始 per-symbol 上限
-    let perSymbol = allocatedAmount / symbols.length;
-
-    const excluded: string[] = [];
-    const effective: string[] = [];
-
-    for (const symbol of symbols) {
-      // 如果每标的分配额小于最低期权成本，排除该标的
-      if (perSymbol < MIN_OPTION_COST) {
-        excluded.push(symbol);
-        continue;
-      }
-      effective.push(symbol);
-    }
-
-    // 如果所有标的都被排除（资金极度不足），尝试用最少标的数重新分配
-    if (effective.length === 0 && symbols.length > 0) {
-      // 计算最多能支持多少个标的
-      const maxSymbols = Math.floor(allocatedAmount / MIN_OPTION_COST);
-      if (maxSymbols > 0) {
-        // 取前 N 个标的（假设按优先级排序）
-        const selected = symbols.slice(0, maxSymbols);
-        return {
-          effectiveSymbols: selected,
-          excludedSymbols: symbols.slice(maxSymbols),
-          maxPerSymbol: allocatedAmount / maxSymbols,
-        };
-      }
-      return { effectiveSymbols: [], excludedSymbols: symbols, maxPerSymbol: 0 };
-    }
-
-    // 第二轮：用有效标的数重新计算 per-symbol 上限（排除的标的资金重新分配）
-    const finalPerSymbol = effective.length > 0 ? allocatedAmount / effective.length : 0;
-
+    // 所有标的均分预算，实际资金保护由 requestAllocation() 事务级关卡负责
     return {
-      effectiveSymbols: effective,
-      excludedSymbols: excluded,
-      maxPerSymbol: finalPerSymbol,
+      effectiveSymbols: [...symbols],
+      excludedSymbols: [],
+      maxPerSymbol: allocatedAmount / symbols.length,
     };
   }
 

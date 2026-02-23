@@ -1,5 +1,22 @@
 # 更新日志
 
+## 2026-02-23
+
+### 移除标的池 $300 硬编码筛选门槛
+
+**优化**: 删除 `getEffectiveSymbolPool()` 中的 `MIN_OPTION_COST = 300` 硬编码门槛。该门槛与下游 `requestAllocation()` 事务级资金保护冗余，且假设固化（$3 权利金 × 100 乘数），会错误排除低权利金期权的合法场景。
+
+**改动**:
+- `api/src/services/capital-manager.service.ts` — `getEffectiveSymbolPool()` 简化为全标的均分预算，资金保护完全交由 `requestAllocation()` 负责
+- `api/src/routes/quant.ts` — simulate 诊断移除 `minOptionCost` 字段
+
+**资金保护链路（不受影响）**:
+- 信号生成阶段：`maxPremiumUsd` / `getAvailableCapital()` 控制合约数
+- 资金申请阶段：`requestAllocation()` 事务锁 + 每标的上限检查
+- 集中度控制：`allocatedAmount / symbolCount` 动态计算
+
+---
+
 ## 2026-02-21
 
 ### Moomoo Cookie 池扩容 (3 → 15) + 边缘函数请求去重
