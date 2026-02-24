@@ -59,6 +59,11 @@ class StrategyScheduler {
   private readonly ORDER_CACHE_TTL = 60000; // 60秒缓存
   // 策略执行锁：防止并发执行（当执行时间超过间隔时）
   private strategyExecutionLocks: Map<number, boolean> = new Map();
+  // 260225 Iron Dome: 防御系统
+  private ironDomeIntervals: Map<number, NodeJS.Timeout> = new Map();
+  // TSLPPCT 连续失败计数（per strategy，内存级，进程重启归零 = 安全）
+  private tslpFailureCount: Map<number, number> = new Map();
+  private readonly TSLP_FAILURE_THRESHOLD = 2; // 失败 >= 2 次禁止开仓
 
   /**
    * 启动策略调度器
@@ -97,6 +102,14 @@ class StrategyScheduler {
         clearInterval(monitorId);
         this.orderMonitorIntervals.delete(strategyId);
       }
+    }
+
+    // 停止所有 Iron Dome 防御循环
+    if (this.ironDomeIntervals) {
+      for (const [, domeId] of this.ironDomeIntervals.entries()) {
+        clearInterval(domeId);
+      }
+      this.ironDomeIntervals.clear();
     }
 
     logger.log('策略调度器已停止', { dbWrite: false });
@@ -205,7 +218,19 @@ class StrategyScheduler {
 
     this.orderMonitorIntervals.set(strategyId, orderMonitorId);
 
-    logger.log(`策略 ${strategy.name} (ID: ${strategyId}) 已启动（策略周期: ${intervalDesc}，订单监控: ${orderMonitorDesc}）`, { dbWrite: false });
+    // 260225 Iron Dome: 启动防御循环（60秒周期 — Shadow-Pricer + Reconciliation）
+    if (isOptionStrategy) {
+      const ironDomeId = setInterval(async () => {
+        try {
+          await this.runIronDomeCycle(strategyId);
+        } catch (err: any) {
+          logger.warn(`[IRON_DOME] 策略 ${strategyId} 防御循环异常: ${err?.message}`);
+        }
+      }, 60 * 1000); // 60秒 — 不需要5秒那么频繁，但足够捕捉归零和幽灵仓位
+      this.ironDomeIntervals.set(strategyId, ironDomeId);
+    }
+
+    logger.log(`策略 ${strategy.name} (ID: ${strategyId}) 已启动（策略周期: ${intervalDesc}，订单监控: ${orderMonitorDesc}${isOptionStrategy ? '，Iron Dome: 60秒' : ''}）`, { dbWrite: false });
 
     // 立即执行一次策略周期
     try {
@@ -231,7 +256,14 @@ class StrategyScheduler {
       clearInterval(orderMonitorId);
       this.orderMonitorIntervals.delete(strategyId);
     }
-    
+
+    // 停止 Iron Dome 防御循环
+    const ironDomeId = this.ironDomeIntervals?.get(strategyId);
+    if (ironDomeId) {
+      clearInterval(ironDomeId);
+      this.ironDomeIntervals.delete(strategyId);
+    }
+
     logger.log(`策略 ${strategyId} 已停止`, { dbWrite: false });
 
     // 更新数据库状态
@@ -548,7 +580,7 @@ class StrategyScheduler {
       
       // 2. 查询策略的所有订单（买入和卖出，用于价格更新和状态同步）
       const strategyOrders = await pool.query(
-        `SELECT eo.order_id, eo.symbol, eo.side, eo.price, eo.quantity, eo.created_at, eo.current_status, eo.fill_processed
+        `SELECT eo.order_id, eo.symbol, eo.side, eo.price, eo.quantity, eo.created_at, eo.current_status, eo.fill_processed, eo.execution_stage
          FROM execution_orders eo
          WHERE eo.strategy_id = $1
          AND eo.created_at >= NOW() - INTERVAL '24 hours'
@@ -714,9 +746,10 @@ class StrategyScheduler {
             
             if (avgPrice > 0 && filledQuantity > 0) {
               try {
-                // Fix 4b: 立即标记 fill_processed，防止下个周期重复处理
+                // Fix 4b+260225 Fix E: 立即标记 fill_processed + current_status，防止下个周期重复处理
+                // 必须在 TSLPPCT 提交之前完成，避免 TSLPPCT 耗时导致重入
                 await pool.query(
-                  `UPDATE execution_orders SET fill_processed = TRUE, updated_at = NOW() WHERE order_id = $1`,
+                  `UPDATE execution_orders SET current_status = 'FILLED', fill_processed = TRUE, updated_at = NOW() WHERE order_id = $1`,
                   [dbOrder.order_id]
                 );
 
@@ -870,26 +903,9 @@ class StrategyScheduler {
                           is0DTE,
                         });
 
-                        // Fix 6: 动态调整 — 实际成交价与信号价偏差大时收紧 trailing
-                        if (is0DTE && context.intent?.entryPrice) {
-                          const signalPrice = parseFloat(String(context.intent.entryPrice));
-                          const filledPrice = avgPrice;
-                          if (filledPrice > 0 && signalPrice > 0) {
-                            const actualDeviation = Math.abs((filledPrice - signalPrice) / signalPrice);
-                            if (actualDeviation > 0.02) {
-                              const adjustment = Math.min(actualDeviation * 50, trailingPct - 8);
-                              if (adjustment > 0) {
-                                const adjustedTrailing = Math.max(trailingPct - adjustment, 8);
-                                logger.info(
-                                  `[动态调整] ${tradedSym} 0DTE 成交偏差${(actualDeviation * 100).toFixed(2)}%` +
-                                  `(信号${signalPrice.toFixed(2)} vs 成交${filledPrice.toFixed(2)})，` +
-                                  `trailing从${trailingPct}%调整为${adjustedTrailing.toFixed(1)}%`
-                                );
-                                trailingPct = adjustedTrailing;
-                              }
-                            }
-                          }
-                        }
+                        // deviation 动态调整已删除 (260225二次审查 Fix A)
+                        // TSLPPCT 是崩溃保护安全网，固定使用 getTrailingPercentForPhase 返回值
+                        // 0DTE=45%, 非0DTE EARLY=60%。不因信号偏差收紧。
 
                         const tslpResult = await trailingStopProtectionService.submitProtection(
                           tradedSym,
@@ -906,19 +922,21 @@ class StrategyScheduler {
                             protectionTrailingPct: trailingPct,
                           });
                           logger.log(`策略 ${strategyId} 期权 ${tradedSym}: TSLPPCT保护单已提交 orderId=${tslpResult.orderId}, trailing=${trailingPct}%`);
+                          // 260225 Iron Dome: TSLPPCT 成功，重置失败计数
+                          this.resetTslpFailure(strategyId);
                         } else {
                           logger.warn(`策略 ${strategyId} 期权 ${tradedSym}: TSLPPCT提交失败(${tslpResult.error})，降级到纯监控模式`);
+                          // 260225 Iron Dome: 记录 TSLPPCT 失败
+                          this.recordTslpFailure(strategyId);
                         }
 
                       } catch (tslpErr: any) {
                         logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: TSLPPCT提交异常(${tslpErr?.message})，降级到纯监控模式`);
+                        // 260225 Iron Dome: 异常也计入失败
+                        this.recordTslpFailure(strategyId);
                       }
                     }
-                    // 买入处理完成，标记 fill_processed
-                    await pool.query(
-                      `UPDATE execution_orders SET current_status = 'FILLED', fill_processed = TRUE, updated_at = NOW() WHERE order_id = $1`,
-                      [dbOrder.order_id]
-                    );
+                    // fill_processed 已在 Fix E 处提前标记，此处无需重复
                   }
                 } else if (isSell) {
                   // 卖出订单成交：更新状态为IDLE，释放资金
@@ -945,10 +963,13 @@ class StrategyScheduler {
                     }
                   }
                   
-                  // 检测是否为 TSLPPCT 自动成交
-                  const isTslpFill = dbOrder.execution_stage === 1 || dbOrder.remark === 'TSLP_AUTO';
+                  // 检测是否为 TSLPPCT 自动成交 (260225 Fix D: 用 protectionOrderId 匹配 + execution_stage 辅助)
+                  const isTslpFill = Boolean(
+                    (context.protectionOrderId && dbOrder.order_id === context.protectionOrderId) ||
+                    (dbOrder.execution_stage === 1 && dbOrder.side === 'SELL')
+                  );
                   if (isTslpFill) {
-                    logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol}: 卖出订单为TSLPPCT自动触发成交 (orderId=${dbOrder.order_id})`);
+                    logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol}: 卖出订单为TSLPPCT自动触发成交 (orderId=${dbOrder.order_id}, protectionOrderId=${context.protectionOrderId})`);
                   }
 
                   // Fix 11: 递增 dailyTradeCount 供动态冷却期使用
@@ -981,6 +1002,23 @@ class StrategyScheduler {
                     || context.intent?.metadata?.optionDirection
                     || null;
 
+                  // 260225 Fix C: 软件退出时取消 broker 端残留 TSLPPCT 保护单
+                  if (context.protectionOrderId && !isTslpFill) {
+                    try {
+                      const cancelResult = await trailingStopProtectionService.cancelProtection(
+                        context.protectionOrderId,
+                        strategyId,
+                        context.tradedSymbol || dbOrder.symbol,
+                      );
+                      if (cancelResult.alreadyFilled) {
+                        logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: TSLPPCT在软件退出前已触发成交！需要检查仓位一致性`);
+                      }
+                    } catch (cancelErr: any) {
+                      logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: 取消残留TSLPPCT失败: ${cancelErr?.message}`);
+                    }
+                  }
+
+                  // 260225 Fix B: protectionOrderId 无条件清除（不再依赖 isTslpFill 条件分支）
                   await strategyInstance.updateState(instanceKeySymbol, 'IDLE', {
                     lastExitTime: new Date().toISOString(),
                     dailyTradeCount: prevDailyTradeCount + 1,
@@ -989,8 +1027,10 @@ class StrategyScheduler {
                     consecutiveLosses: newConsecutiveLosses,
                     lastTradeDirection: tradeDirection,
                     lastTradePnL: tradePnL,
-                    takeProfitOrderId: undefined,
-                    ...(isTslpFill ? { exitReason: 'TSLPPCT_FILLED', protectionOrderId: undefined, protectionTrailingPct: undefined } : {}),
+                    takeProfitOrderId: null,
+                    protectionOrderId: null,
+                    protectionTrailingPct: null,
+                    exitReason: isTslpFill ? 'TSLPPCT_FILLED' : null,
                   });
 
                   if (tradePnL !== 0) {
@@ -1600,6 +1640,17 @@ class StrategyScheduler {
 
       if (intent.action === 'HOLD') {
         summary.idle.push(symbol); // HOLD 信号，视为 IDLE
+        return;
+      }
+
+      // 260225 Iron Dome Layer 3: TSLPPCT 连续失败 → 禁止开仓
+      if (intent.action === 'BUY' && isOptionStrategy && this.isTslpBlocked(strategyId)) {
+        logger.warn(
+          `[IRON_DOME:TSLP_BLOCKED] 策略 ${strategyId} 标的 ${symbol}: ` +
+          `TSLPPCT 连续失败 ${this.tslpFailureCount.get(strategyId)} 次，禁止新开仓。` +
+          `没有保护单还想开仓？你是觉得亏得不够快吗？`
+        );
+        summary.idle.push(`${symbol}(TSLP_BLOCKED)`);
         return;
       }
 
@@ -4026,6 +4077,245 @@ class StrategyScheduler {
         }
       }
     }
+  }
+
+  // =========================================================================
+  // 260225 Iron Dome: 三层准自动化防御
+  // =========================================================================
+
+  /**
+   * Iron Dome 主循环（60秒周期）
+   * Layer 1: Shadow-Pricer — 0DTE 仓位影子定价，检测归零风险
+   * Layer 2: Reconciliation — 账实核对，检测 broker 端幽灵平仓
+   */
+  private async runIronDomeCycle(strategyId: number): Promise<void> {
+    // 获取该策略所有 HOLDING 状态的实例
+    const holdingResult = await pool.query(
+      `SELECT symbol, context FROM strategy_instances
+       WHERE strategy_id = $1 AND current_state = 'HOLDING'`,
+      [strategyId]
+    );
+
+    if (holdingResult.rows.length === 0) return;
+
+    // === Layer 1: Shadow-Pricer ===
+    await this.shadowPricerCheck(strategyId, holdingResult.rows);
+
+    // === Layer 2: Reconciliation ===
+    await this.reconciliationCheck(strategyId, holdingResult.rows);
+  }
+
+  /**
+   * Shadow-Pricer: 影子定价器
+   *
+   * 不依赖 SELL 订单，直接用 mark price 与 entry price 对比。
+   * 如果期权残值 < 入场价的 10%（亏损 90%+），触发虚拟熔断。
+   * 解决: "0DTE 到期归零不触发熔断"的盲区。
+   */
+  private async shadowPricerCheck(
+    strategyId: number,
+    holdingRows: Array<{ symbol: string; context: any }>
+  ): Promise<void> {
+    for (const row of holdingRows) {
+      try {
+        const ctx = typeof row.context === 'string' ? JSON.parse(row.context) : (row.context || {});
+        const optMeta = ctx.optionMeta;
+        if (!optMeta) continue; // 非期权仓位，跳过
+
+        const tradedSymbol = ctx.tradedSymbol;
+        if (!tradedSymbol) continue;
+
+        const entryPrice = parseFloat(String(ctx.entryPrice || 0));
+        if (entryPrice <= 0) continue;
+
+        // 检查是否 0DTE
+        const expDate = trailingStopProtectionService.extractOptionExpireDate(tradedSymbol, optMeta);
+        const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+        const is0DTE = expDate === today;
+        if (!is0DTE) continue; // 只对 0DTE 启用 shadow pricer
+
+        // 获取当前 mark price（使用 broker 持仓数据，不额外调 API）
+        const allPositions = await this.getCachedPositions();
+        const pos = allPositions.find((p: any) => {
+          const sym = p.symbol || p.stock_code;
+          return sym === tradedSymbol;
+        });
+
+        if (!pos) {
+          // DB 说 HOLDING 但 broker 无持仓 → Layer 2 会处理
+          continue;
+        }
+
+        const currentPrice = parseFloat(
+          (pos.currentPrice || pos.current_price || pos.lastPrice || pos.last_price || pos.costPrice || pos.cost_price || '0').toString()
+        );
+        if (currentPrice <= 0) continue;
+
+        // 核心判断：残值 < 入场价 * 10% → 亏损 90%+ → 虚拟熔断
+        const shadowPnLPct = ((currentPrice - entryPrice) / entryPrice) * 100;
+
+        if (currentPrice < entryPrice * 0.10) {
+          logger.warn(
+            `[IRON_DOME:SHADOW_PRICER] 策略 ${strategyId} 标的 ${row.symbol}: ` +
+            `0DTE 期权 ${tradedSymbol} 残值 $${currentPrice.toFixed(2)} < 入场 $${entryPrice.toFixed(2)} 的 10%! ` +
+            `虚拟亏损 ${shadowPnLPct.toFixed(1)}%。触发虚拟熔断！`
+          );
+
+          // 虚拟 PnL 写入，触发熔断
+          const quantity = parseFloat(String(ctx.quantity || 1));
+          const multiplier = Number(optMeta.multiplier) || 100;
+          const virtualLoss = Math.round((currentPrice - entryPrice) * quantity * multiplier * 100) / 100;
+
+          // 直接激活全策略熔断
+          await pool.query(
+            `UPDATE strategy_instances
+             SET context = context || $1::jsonb
+             WHERE strategy_id = $2`,
+            [
+              JSON.stringify({
+                circuitBreakerActive: true,
+                circuitBreakerReason: `SHADOW_PRICER: ${tradedSymbol} 残值${currentPrice.toFixed(2)}(亏损${Math.abs(shadowPnLPct).toFixed(0)}%)`,
+                circuitBreakerTime: new Date().toISOString(),
+              }),
+              strategyId,
+            ]
+          );
+
+          logger.warn(
+            `[IRON_DOME:CIRCUIT_BREAKER] 策略 ${strategyId}: Shadow-Pricer 触发全策略熔断! ` +
+            `虚拟亏损 $${Math.abs(virtualLoss).toFixed(2)}。` +
+            `别装死了，你的 0DTE 期权快归零了！立即检查仓位！`
+          );
+        } else if (currentPrice < entryPrice * 0.30) {
+          // 亏损 70%+ 预警（不触发熔断，但记录警告）
+          logger.warn(
+            `[IRON_DOME:SHADOW_PRICER] 策略 ${strategyId} 标的 ${row.symbol}: ` +
+            `0DTE 期权 ${tradedSymbol} 当前 $${currentPrice.toFixed(2)} (亏损 ${Math.abs(shadowPnLPct).toFixed(0)}%)，接近归零阈值`
+          );
+        }
+      } catch (spErr: any) {
+        logger.warn(`[IRON_DOME:SHADOW_PRICER] 策略 ${strategyId} 标的 ${row.symbol} 检查异常: ${spErr?.message}`);
+      }
+    }
+  }
+
+  /**
+   * Reconciliation Loop: 账实核对
+   *
+   * 对比 broker 实际持仓 vs DB strategy_instances HOLDING 状态。
+   * 如果 DB 说 HOLDING 但 broker 持仓为零，标记 BROKER_TERMINATED + 全策略熔断。
+   * 解决: "Broker 强平逻辑脱钩"的盲区。
+   */
+  private async reconciliationCheck(
+    strategyId: number,
+    holdingRows: Array<{ symbol: string; context: any }>
+  ): Promise<void> {
+    if (holdingRows.length === 0) return;
+
+    let allPositions: any[];
+    try {
+      allPositions = await this.getCachedPositions();
+    } catch {
+      return; // API 失败不阻塞
+    }
+
+    for (const row of holdingRows) {
+      try {
+        const ctx = typeof row.context === 'string' ? JSON.parse(row.context) : (row.context || {});
+        const tradedSymbol = ctx.tradedSymbol;
+        if (!tradedSymbol) continue;
+
+        // 在 broker 持仓中查找
+        const pos = allPositions.find((p: any) => {
+          const sym = p.symbol || p.stock_code;
+          return sym === tradedSymbol;
+        });
+
+        const brokerQty = pos
+          ? parseInt((pos.quantity || pos.available_quantity || pos.availableQuantity || '0').toString(), 10)
+          : 0;
+
+        if (brokerQty <= 0) {
+          // DB 说 HOLDING 但 broker 持仓为零 → 幽灵仓位！
+          const entryPrice = parseFloat(String(ctx.entryPrice || 0));
+          const dbQty = parseInt(String(ctx.quantity || 0), 10);
+
+          logger.warn(
+            `[IRON_DOME:RECONCILIATION] 策略 ${strategyId} 标的 ${row.symbol}: ` +
+            `DB状态=HOLDING (${tradedSymbol}, qty=${dbQty}, entry=$${entryPrice.toFixed(2)}) ` +
+            `但 broker 持仓为零! 仓位已被 broker 强平或到期归零。` +
+            `系统要你命的时候都不会提前通知你！`
+          );
+
+          // 标记为 BROKER_TERMINATED 并释放资金
+          const allocationAmount = parseFloat(String(ctx.allocationAmount || 0));
+          await stateManager.updateState(strategyId, row.symbol, 'IDLE', {
+            exitReason: 'BROKER_TERMINATED',
+            protectionOrderId: null,
+            protectionTrailingPct: null,
+            takeProfitOrderId: null,
+            lastExitTime: new Date().toISOString(),
+            // 记录虚拟 PnL = -100%（最坏情况估算）
+            lastTradePnL: allocationAmount > 0 ? -allocationAmount : 0,
+          });
+
+          // 释放资金分配
+          if (allocationAmount > 0) {
+            try {
+              await capitalManager.releaseAllocation(strategyId, allocationAmount, row.symbol);
+            } catch (relErr: any) {
+              logger.warn(`[IRON_DOME] 策略 ${strategyId} 释放资金失败: ${relErr?.message}`);
+            }
+          }
+
+          // 触发全策略熔断
+          await pool.query(
+            `UPDATE strategy_instances
+             SET context = context || $1::jsonb
+             WHERE strategy_id = $2`,
+            [
+              JSON.stringify({
+                circuitBreakerActive: true,
+                circuitBreakerReason: `BROKER_TERMINATED: ${tradedSymbol} 券商端持仓归零`,
+                circuitBreakerTime: new Date().toISOString(),
+              }),
+              strategyId,
+            ]
+          );
+
+          logger.warn(
+            `[IRON_DOME:CIRCUIT_BREAKER] 策略 ${strategyId}: 账实不符触发全策略熔断! ` +
+            `${tradedSymbol} 已标记 BROKER_TERMINATED。资金已释放。` +
+            `券商把你仓位剁了，快去检查数据库和交易记录！`
+          );
+        }
+      } catch (rcErr: any) {
+        logger.warn(`[IRON_DOME:RECONCILIATION] 策略 ${strategyId} 标的 ${row.symbol} 核对异常: ${rcErr?.message}`);
+      }
+    }
+  }
+
+  /**
+   * TSLPPCT 失败计数: 记录失败并检查是否应禁止开仓
+   * 返回 true = 允许继续, false = 禁止开仓
+   */
+  recordTslpFailure(strategyId: number): void {
+    const count = (this.tslpFailureCount.get(strategyId) || 0) + 1;
+    this.tslpFailureCount.set(strategyId, count);
+    logger.warn(
+      `[IRON_DOME:TSLP_COUNTER] 策略 ${strategyId}: TSLPPCT 累计失败 ${count} 次` +
+      (count >= this.TSLP_FAILURE_THRESHOLD
+        ? `，已达阈值 ${this.TSLP_FAILURE_THRESHOLD}，禁止新开仓！你还在送钱吗？`
+        : ``)
+    );
+  }
+
+  resetTslpFailure(strategyId: number): void {
+    this.tslpFailureCount.set(strategyId, 0);
+  }
+
+  isTslpBlocked(strategyId: number): boolean {
+    return (this.tslpFailureCount.get(strategyId) || 0) >= this.TSLP_FAILURE_THRESHOLD;
   }
 
   private createStrategyInstance(strategyType: string, strategyId: number, config: any): StrategyBase {

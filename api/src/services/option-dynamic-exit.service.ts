@@ -588,23 +588,23 @@ class OptionDynamicExitService {
    * 获取美股收盘时间（美东时间16:00）
    */
   getMarketCloseTime(date: Date = new Date()): Date {
-    // 获取美东时间的日期
+    // 260225 Fix F: DST 自适应 — 用 Intl API 获取当前 ET 偏移量，不硬编码 -05:00
+    // 获取美东时间的日期部分
     const etDateStr = date.toLocaleDateString('en-US', { timeZone: 'America/New_York' });
     const [month, day, year] = etDateStr.split('/').map(Number);
 
-    // 创建美东时间16:00的Date对象
-    const closeTime = new Date(`${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}T16:00:00-05:00`);
+    // 计算当前 UTC 与 ET 的偏移量（自动适应 EST/EDT）
+    // 原理：同一个 UTC 时刻，转成 ET 字符串再解析回 Date，差值就是 UTC-ET 偏移
+    const utcMs = date.getTime();
+    const etStr = date.toLocaleString('en-US', { timeZone: 'America/New_York' });
+    const etAsLocal = new Date(etStr);
+    const offsetMs = utcMs - etAsLocal.getTime();
 
-    // 夏令时调整（简化处理）
-    const etHour = parseInt(date.toLocaleString('en-US', {
-      timeZone: 'America/New_York',
-      hour: 'numeric',
-      hour12: false,
-    }));
+    // 构造 ET 16:00:00 的本地时间表示，再加上偏移量得到真实 UTC 时间
+    const et1600Local = new Date(year, month - 1, day, 16, 0, 0, 0);
+    const closeTimeUtc = new Date(et1600Local.getTime() + offsetMs);
 
-    // 如果当前ET时间和创建的时间差异大，说明夏令时不同
-    // 这是简化处理，实际应使用更精确的时区库
-    return closeTime;
+    return closeTimeUtc;
   }
 
   /**
