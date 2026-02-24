@@ -1,11 +1,24 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-24
+**更新时间**: 2026-02-25
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-02-25: Fix 1/2/3 — JSONB 合并 + LIT 移除 + 评分修正
+
+**变更内容**:
+1. **Fix 1 JSONB 合并**: `updateState()` 使用 `||` 合并替代整体覆盖，保留累积字段（`dailyRealizedPnL`、`consecutiveLosses`）
+2. **Fix 2 移除 LIT**: LIT 止盈保护单与软件止盈冲突，移除全部三处调用（提交/检查/取消）。TSLPPCT trailing 放宽至 55-60%（崩溃安全网），不干扰软件动态退出
+3. **Fix 3 评分修正**: 温度 ≥65 权重 0.3→0.5；趋势放大 10x→5x
+
+**修改文件**:
+- 📝 `api/src/services/state-manager.service.ts`（JSONB 合并）
+- 🐛 `api/src/services/strategy-scheduler.service.ts`（LIT 移除 -76 行）
+- 📝 `api/src/services/trailing-stop-protection.service.ts`（TSLPPCT 55-60%）
+- 📝 `api/src/services/option-recommendation.service.ts`（评分修正）
 
 ### 2026-02-24: 订单成交竞态修复 + 0DTE 收盘窗口扩至180分钟
 

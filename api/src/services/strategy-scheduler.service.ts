@@ -850,7 +850,7 @@ class StrategyScheduler {
                     // 期权买入成交后自动挂出跟踪止损保护单
                     const optMeta = context.optionMeta || context.intent?.metadata;
                     const isOptionAsset = optMeta?.assetClass === 'OPTION' || optMeta?.optionType;
-                    if (isOptionAsset) {
+                    if (isOptionAsset && !context.protectionOrderId) {
                       try {
                         const tradedSym = context.tradedSymbol || dbOrder.symbol;
                         const expDate = trailingStopProtectionService.extractOptionExpireDate(tradedSym, optMeta);
@@ -903,29 +903,6 @@ class StrategyScheduler {
                           logger.warn(`策略 ${strategyId} 期权 ${tradedSym}: TSLPPCT提交失败(${tslpResult.error})，降级到纯监控模式`);
                         }
 
-                        // === LIT 止盈保护单提交 ===
-                        // TSLPPCT 防回撤，LIT 兜底确保止盈触发
-                        try {
-                          const tpPct = parseFloat(String(strategyConfig?.exitRules?.takeProfitPercent || 0)) || 25;
-                          const litResult = await trailingStopProtectionService.submitTakeProfitProtection(
-                            tradedSym,
-                            filledQuantity,
-                            avgPrice,
-                            tpPct,
-                            expDate,
-                            strategyId,
-                          );
-                          if (litResult.success && litResult.orderId) {
-                            await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
-                              takeProfitOrderId: litResult.orderId,
-                            });
-                            logger.log(`策略 ${strategyId} 期权 ${tradedSym}: LIT止盈保护单已提交 orderId=${litResult.orderId}, tp=${tpPct}%`);
-                          } else {
-                            logger.warn(`策略 ${strategyId} 期权 ${tradedSym}: LIT止盈单提交失败(${litResult.error})，依赖软件监控止盈`);
-                          }
-                        } catch (litErr: any) {
-                          logger.warn(`策略 ${strategyId} 期权 ${tradedSym}: LIT止盈单提交异常(${litErr?.message})，依赖软件监控止盈`);
-                        }
                       } catch (tslpErr: any) {
                         logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: TSLPPCT提交异常(${tslpErr?.message})，降级到纯监控模式`);
                       }
@@ -1005,6 +982,7 @@ class StrategyScheduler {
                     consecutiveLosses: newConsecutiveLosses,
                     lastTradeDirection: tradeDirection,
                     lastTradePnL: tradePnL,
+                    takeProfitOrderId: undefined,
                     ...(isTslpFill ? { exitReason: 'TSLPPCT_FILLED', protectionOrderId: undefined, protectionTrailingPct: undefined } : {}),
                   });
 
@@ -2783,47 +2761,6 @@ class StrategyScheduler {
         }
       }
 
-      // 0b. LIT 止盈保护单状态检查：如果券商止盈单已触发成交，直接转 IDLE
-      if (context.takeProfitOrderId) {
-        try {
-          const litStatus = await trailingStopProtectionService.checkProtectionStatus(context.takeProfitOrderId);
-          if (litStatus === 'filled') {
-            logger.log(
-              `策略 ${strategyId} 期权 ${effectiveSymbol}: LIT止盈单已触发成交(${context.takeProfitOrderId})，券商已平仓，更新状态为IDLE`
-            );
-            // 同时取消 TSLPPCT 保护单（如有）
-            if (context.protectionOrderId) {
-              try {
-                await trailingStopProtectionService.cancelProtection(context.protectionOrderId, strategyId, effectiveSymbol);
-              } catch { /* 取消失败不阻塞 */ }
-            }
-            await strategyInstance.updateState(symbol, 'IDLE', {
-              ...context,
-              lastExitTime: new Date().toISOString(),
-              exitReason: 'LIT_TP_FILLED',
-              exitReasonDetail: `LIT止盈单${context.takeProfitOrderId}已触发`,
-              protectionOrderId: undefined,
-              protectionTrailingPct: undefined,
-              takeProfitOrderId: undefined,
-            });
-            if (context.allocationAmount) {
-              await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
-            }
-            return { actionTaken: true };
-          }
-          if (litStatus === 'cancelled' || litStatus === 'expired') {
-            logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: LIT止盈单已${litStatus}，清除takeProfitOrderId`);
-            await strategyInstance.updateState(symbol, 'HOLDING', {
-              ...context,
-              takeProfitOrderId: undefined,
-            });
-            context.takeProfitOrderId = undefined;
-          }
-        } catch (litCheckErr: any) {
-          logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: LIT止盈单状态查询异常(${litCheckErr?.message})，继续软件监控`);
-        }
-      }
-
       const optionDynamicExitService = (await import('./option-dynamic-exit.service')).default;
 
       // 1. 从 context 获取期权元数据
@@ -3162,40 +3099,6 @@ class StrategyScheduler {
           } catch (cancelErr: any) {
             logger.warn(
               `策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT取消异常(${cancelErr?.message})，继续软件卖出`
-            );
-          }
-        }
-
-        // === LIT 止盈单取消：软件退出前先取消券商止盈保护单 ===
-        if (context.takeProfitOrderId) {
-          try {
-            const litCancelResult = await trailingStopProtectionService.cancelTakeProfitProtection(
-              context.takeProfitOrderId,
-              strategyId,
-              effectiveSymbol,
-            );
-            if (litCancelResult.alreadyFilled) {
-              // LIT 止盈单已触发成交！跳过软件卖出，直接转 IDLE
-              logger.log(
-                `策略 ${strategyId} 期权 ${effectiveSymbol}: LIT止盈单已触发成交，跳过软件卖出`
-              );
-              await strategyInstance.updateState(symbol, 'IDLE', {
-                ...context,
-                lastExitTime: new Date().toISOString(),
-                exitReason: 'LIT_TP_FILLED',
-                exitReasonDetail: `软件退出时发现LIT止盈单(${context.takeProfitOrderId})已成交`,
-                protectionOrderId: undefined,
-                protectionTrailingPct: undefined,
-                takeProfitOrderId: undefined,
-              });
-              if (context.allocationAmount) {
-                await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
-              }
-              return { actionTaken: true };
-            }
-          } catch (litCancelErr: any) {
-            logger.warn(
-              `策略 ${strategyId} 期权 ${effectiveSymbol}: LIT止盈单取消异常(${litCancelErr?.message})，继续软件卖出`
             );
           }
         }

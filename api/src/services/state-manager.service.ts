@@ -43,15 +43,20 @@ class StateManager {
     context?: any
   ): Promise<void> {
     // 使用 UPSERT 语法（PostgreSQL 9.5+）
+    // context 使用 JSONB 合并（||），保留 dailyRealizedPnL / consecutiveLosses 等累积字段
+    const contextJson = context ? JSON.stringify(context) : null;
     await pool.query(
       `INSERT INTO strategy_instances (strategy_id, symbol, current_state, context, last_updated)
-       VALUES ($1, $2, $3, $4, NOW())
-       ON CONFLICT (strategy_id, symbol) 
-       DO UPDATE SET 
+       VALUES ($1, $2, $3, COALESCE($4::jsonb, '{}'::jsonb), NOW())
+       ON CONFLICT (strategy_id, symbol)
+       DO UPDATE SET
          current_state = $3,
-         context = $4,
+         context = CASE
+           WHEN $4::text IS NULL THEN strategy_instances.context
+           ELSE COALESCE(strategy_instances.context, '{}'::jsonb) || $4::jsonb
+         END,
          last_updated = NOW()`,
-      [strategyId, symbol, newState, context ? JSON.stringify(context) : null]
+      [strategyId, symbol, newState, contextJson]
     );
   }
 

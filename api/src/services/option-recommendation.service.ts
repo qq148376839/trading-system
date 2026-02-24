@@ -257,9 +257,10 @@ class OptionRecommendationService {
       }
 
       if (temp > 50) {
-        const tempScore = (temp - 50) * 0.3; // 高温加分
+        const tempCoeff = temp >= 65 ? 0.5 : 0.3; // 高温时提升权重，Goldilocks环境不被看空信号压制
+        const tempScore = (temp - 50) * tempCoeff;
         score += tempScore;
-        components.push(`温度=${temp.toFixed(0)}→+${tempScore.toFixed(1)}`);
+        components.push(`温度=${temp.toFixed(0)}(coeff=${tempCoeff})→+${tempScore.toFixed(1)}`);
       } else if (temp < 20) {
         const tempScore = (20 - temp) * 0.5; // 低温减分
         score -= tempScore;
@@ -338,7 +339,7 @@ class OptionRecommendationService {
       .reduce((sum, p) => sum + p, 0) / 10;
 
     // 计算趋势强度 (-100 to 100)
-    let trendStrength = ((currentPrice - avg20) / avg20) * 100 * 10; // 放大10倍
+    let trendStrength = ((currentPrice - avg20) / avg20) * 100 * 5; // 放大5倍（从10倍降低，避免微小偏差被过度放大）
 
     // 短期趋势加成
     if (currentPrice > avg10 && avg10 > avg20) {

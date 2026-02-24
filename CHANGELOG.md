@@ -1,5 +1,29 @@
 # 更新日志
 
+## 2026-02-25
+
+### Fix 1/2/3: JSONB 合并 + LIT 移除 + 评分修正
+
+**Fix 1 — JSONB 合并修复**: `updateState()` 使用 `||` JSONB 合并替代整体覆盖，保留 `dailyRealizedPnL` / `consecutiveLosses` 等累积字段。
+
+**Fix 2 — 移除 LIT 止盈保护单 + TSLPPCT 放宽为崩溃保护**:
+- LIT 止盈保护单与软件动态止盈冲突严重（券商单和软件单竞争卖出），完全移除三处调用：买入提交、持仓监控检查、卖出前取消
+- TSLPPCT trailing 放宽至 55-60%（仅防进程崩溃期间灾难性亏损），不再干扰软件动态退出
+- 盈利收紧门槛从 30%/50% 提升至 80%；0DTE cap 从 10% 放宽至 45%
+- LIT 方法保留在 `trailing-stop-protection.service.ts` 中（不删除死代码），仅移除调用方
+
+**Fix 3 — 推荐评分修正**:
+- 市场温度 ≥65 时提升权重系数 0.3→0.5，避免 Goldilocks 环境被看空信号压制
+- 趋势强度放大倍数 10→5，避免微小偏差被过度放大
+
+**修改文件**:
+- 📝 `api/src/services/state-manager.service.ts`（JSONB `||` 合并）
+- 🐛 `api/src/services/strategy-scheduler.service.ts`（移除 LIT 三处调用 + takeProfitOrderId 清理）
+- 📝 `api/src/services/trailing-stop-protection.service.ts`（TSLPPCT trailing 55-60% 崩溃保护）
+- 📝 `api/src/services/option-recommendation.service.ts`（温度权重 + 趋势强度修正）
+
+---
+
 ## 2026-02-24
 
 ### 订单成交竞态修复 + 0DTE 收盘窗口扩至180分钟
@@ -22,7 +46,7 @@
 
 ---
 
-### 盈亏百分比归零修复 + LIT 止盈保护单
+### 盈亏百分比归零修复 + LIT 止盈保护单 *(LIT 已在 2026-02-25 Fix 2 中移除)*
 
 **修复(P0)**: `grossPnLPercent` 始终为 0.0% 导致止盈止损完全失效。根因：`multiplier` 从数据库 JSONB 反序列化为字符串 `"100"` 而非数字 `100`，导致 `costBasis` 计算为 NaN，百分比回退为 0。实际亏损37%的仓位未触发34%止损。
 

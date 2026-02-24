@@ -22,10 +22,10 @@ import type { TradingPhase } from './option-dynamic-exit.service';
 // 常量
 // ============================================
 
-const DEFAULT_TRAILING_PERCENT = 45;
+const DEFAULT_TRAILING_PERCENT = 60;
 const DEFAULT_LIMIT_OFFSET = 0.10;
 const MIN_TRAILING_PERCENT = 8;
-const MAX_TRAILING_PERCENT = 50;
+const MAX_TRAILING_PERCENT = 65;
 const ADJUST_THRESHOLD = 3; // trailing_percent 差异≥3% 才调用 replaceOrder
 
 const TSLP_TAG = '[TSLP]';
@@ -327,47 +327,47 @@ class TrailingStopProtectionService {
   /**
    * 根据时段 / IV / 盈利情况计算应设的 trailingPercent
    *
+   * Fix 2 修订：TSLPPCT 放宽为崩溃保护安全网（55-60%），不干扰软件动态退出。
+   * 仅在进程崩溃期间防止灾难性亏损。
+   *
    * 规则：
-   * - 时段映射: EARLY→45%, MID→35%, LATE→25%, FINAL→15%
-   * - IV 调整: IV 涨>20% → +5%, IV 跌>20% → -5%
-   * - 盈利收紧: 盈利>30% → min(current,20%), 盈利>50% → min(current,15%)
-   * - 0DTE: min(current, 15%)
-   * - Clamp to [8%, 50%]
+   * - 时段映射: EARLY→60%, MID→58%, LATE→55%, FINAL→55%
+   * - IV 调整: IV 涨>20% → +3%, IV 跌>20% → -3%（微调）
+   * - 盈利收紧: 盈利>80% → min(current,45%)（仅极端盈利收紧）
+   * - 0DTE: min(current, 45%)
+   * - Clamp to [8%, 65%]
    */
   getTrailingPercentForPhase(params: TrailingPercentParams): number {
-    // 基础映射
+    // 基础映射（崩溃保护：宽松 trailing，不干扰软件退出）
     const phaseMap: Record<TradingPhase, number> = {
-      EARLY: 45,
-      MID: 35,
-      LATE: 25,
-      FINAL: 15,
+      EARLY: 60,
+      MID: 58,
+      LATE: 55,
+      FINAL: 55,
     };
 
     let tp = phaseMap[params.phase] ?? DEFAULT_TRAILING_PERCENT;
 
-    // IV 调整
+    // IV 调整（微调）
     if (params.entryIV && params.currentIV && params.entryIV > 0) {
       const ivChange = (params.currentIV - params.entryIV) / params.entryIV;
       if (ivChange > 0.2) {
-        tp += 5;
+        tp += 3;
       } else if (ivChange < -0.2) {
-        tp -= 5;
+        tp -= 3;
       }
     }
 
-    // 盈利收紧
+    // 盈利收紧（仅极端盈利时适度收紧，防崩溃期间回吐过多利润）
     if (params.netPnLPercent !== undefined) {
-      if (params.netPnLPercent > 50) {
-        tp = Math.min(tp, 15);
-      } else if (params.netPnLPercent > 30) {
-        tp = Math.min(tp, 20);
+      if (params.netPnLPercent > 80) {
+        tp = Math.min(tp, 45);
       }
     }
 
-    // Fix 5: 0DTE 收紧 — 从 15% 下调至 10%
-    // 基于复盘分析 Section 10.7.1：trailing=10% 可实现近乎保本(-0.8%)，15% 仍亏损 -8.3%
+    // 0DTE: 适度收紧但仍保持安全网角色
     if (params.is0DTE) {
-      tp = Math.min(tp, 10);
+      tp = Math.min(tp, 45);
     }
 
     // Clamp
