@@ -36,8 +36,8 @@ const MAX_RETRIES = 3;
 /** 重试间隔（毫秒） */
 const RETRY_DELAY_MS = 10_000;
 
-/** 强平开始时间（美东时间 14:00，即收盘前120分钟） */
-const FORCE_CLOSE_HOUR_ET = 14;
+/** 强平开始时间（美东时间 13:00，即收盘前180分钟） */
+const FORCE_CLOSE_HOUR_ET = 13;
 const FORCE_CLOSE_MINUTE_ET = 0;
 
 /** 市场收盘时间（美东时间 16:00） */

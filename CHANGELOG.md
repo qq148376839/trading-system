@@ -2,6 +2,26 @@
 
 ## 2026-02-24
 
+### 订单成交竞态修复 + 0DTE 收盘窗口扩至180分钟
+
+**修复(P0)**: WebSocket trade-push 将 `execution_orders.current_status` 提前设为 `'FILLED'`，导致 order monitor（5s 轮询）的守卫条件 `current_status !== 'FILLED'` 恒为 false，所有卖出回调逻辑（PnL 追踪、熔断器、LIT 保护单）沦为死代码。
+
+**修复方案**: 新增 `fill_processed` 布尔列，仅由 order monitor 在完成全部回调后置 `TRUE`，与 trade-push 的 `current_status` 更新解耦。
+
+**修复内容**:
+1. **`fill_processed` 列** — `execution_orders` 新增 `BOOLEAN DEFAULT FALSE`，含 `(strategy_id, fill_processed)` 索引
+2. **守卫条件修复** — `dbOrder.current_status !== 'FILLED'` → `!dbOrder.fill_processed`
+3. **买入/卖出处理完成后标记** — 三处 `UPDATE` 语句均追加 `fill_processed = TRUE`
+4. **0DTE 收盘窗口 120→180 分钟** — 5 处修改：策略调度器 ×3、动态退出服务 ×1、0DTE watchdog ×1（`FORCE_CLOSE_HOUR_ET` 14→13）
+
+**修改文件**:
+- 🐛 `api/src/services/strategy-scheduler.service.ts`（守卫条件 + fill_processed 标记 + 180 分钟）
+- 🐛 `api/src/services/option-dynamic-exit.service.ts`（0DTE TIME_STOP 阈值 120→180）
+- 🐛 `api/src/services/0dte-watchdog.service.ts`（`FORCE_CLOSE_HOUR_ET` 14→13）
+- 📝 `api/migrations/000_init_schema.sql`（`fill_processed` 列 + 兼容迁移块）
+
+---
+
 ### 盈亏百分比归零修复 + LIT 止盈保护单
 
 **修复(P0)**: `grossPnLPercent` 始终为 0.0% 导致止盈止损完全失效。根因：`multiplier` 从数据库 JSONB 反序列化为字符串 `"100"` 而非数字 `100`，导致 `costBasis` 计算为 NaN，百分比回退为 0。实际亏损37%的仓位未触发34%止损。

@@ -316,13 +316,13 @@ class StrategyScheduler {
       return;
     }
 
-    // 期权策略：收盘前120分钟（2:00 PM ET）且无持仓时，跳过本周期（避免资源浪费）
+    // 期权策略：收盘前180分钟（1:00 PM ET）且无持仓时，跳过本周期（避免资源浪费）
     const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy;
     if (isOptionStrategy) {
       try {
         const closeWindow = await getMarketCloseWindow({
           market: 'US',
-          noNewEntryBeforeCloseMinutes: 120,
+          noNewEntryBeforeCloseMinutes: 180,
           forceCloseBeforeCloseMinutes: 30,
         });
         if (closeWindow && new Date() >= closeWindow.noNewEntryTimeUtc) {
@@ -337,7 +337,7 @@ class StrategyScheduler {
             const lastLogKey = `0dte_idle_skip_${strategyId}`;
             const lastLogTime = (this as any)[lastLogKey] || 0;
             if (now - lastLogTime > 5 * 60 * 1000) {
-              logger.debug(`策略 ${strategyId}: 收盘前120分钟，已无持仓，跳过监控`);
+              logger.debug(`策略 ${strategyId}: 收盘前180分钟，已无持仓，跳过监控`);
               (this as any)[lastLogKey] = now;
             }
             return;
@@ -704,8 +704,8 @@ class StrategyScheduler {
           const isBuy = dbOrder.side === 'BUY' || dbOrder.side === 'Buy' || dbOrder.side === 1;
           const isSell = dbOrder.side === 'SELL' || dbOrder.side === 'Sell' || dbOrder.side === 2;
           
-          // 检查订单是否已处理：1) 数据库状态已经是FILLED，或 2) 在当前循环中已处理过
-          if (status === 'FilledStatus' && dbOrder.current_status !== 'FILLED' && !processedOrders.has(dbOrder.order_id)) {
+          // 检查订单是否已处理：1) fill_processed 标记已完成，或 2) 在当前循环中已处理过
+          if (status === 'FilledStatus' && !dbOrder.fill_processed && !processedOrders.has(dbOrder.order_id)) {
             // 标记为已处理，避免重复处理
             processedOrders.add(dbOrder.order_id);
             const avgPrice = parseFloat(apiOrder.executedPrice?.toString() || apiOrder.executed_price?.toString() || '0');
@@ -827,9 +827,9 @@ class StrategyScheduler {
                   // 检查是否已经是HOLDING状态（避免重复更新和日志）
                   const currentInstanceState = await strategyInstance.getCurrentState(instanceKeySymbol);
                   if (currentInstanceState === 'HOLDING') {
-                    // 已经是HOLDING，只需确保DB状态标记为FILLED
+                    // 已经是HOLDING，只需确保DB状态标记为FILLED并标记fill_processed
                     await pool.query(
-                      `UPDATE execution_orders SET current_status = 'FILLED', updated_at = NOW() WHERE order_id = $1 AND current_status != 'FILLED'`,
+                      `UPDATE execution_orders SET current_status = 'FILLED', fill_processed = TRUE, updated_at = NOW() WHERE order_id = $1`,
                       [dbOrder.order_id]
                     );
                   } else {
@@ -930,6 +930,11 @@ class StrategyScheduler {
                         logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: TSLPPCT提交异常(${tslpErr?.message})，降级到纯监控模式`);
                       }
                     }
+                    // 买入处理完成，标记 fill_processed
+                    await pool.query(
+                      `UPDATE execution_orders SET current_status = 'FILLED', fill_processed = TRUE, updated_at = NOW() WHERE order_id = $1`,
+                      [dbOrder.order_id]
+                    );
                   }
                 } else if (isSell) {
                   // 卖出订单成交：更新状态为IDLE，释放资金
@@ -1179,11 +1184,11 @@ class StrategyScheduler {
                     // 非关键操作，失败不阻塞
                   }
 
-                  // 立即更新数据库状态为FILLED，防止重复处理
+                  // 立即更新数据库状态为FILLED并标记fill_processed，防止重复处理
                   await pool.query(
                     `UPDATE execution_orders
-                     SET current_status = 'FILLED', updated_at = NOW()
-                     WHERE order_id = $1 AND current_status != 'FILLED'`,
+                     SET current_status = 'FILLED', fill_processed = TRUE, updated_at = NOW()
+                     WHERE order_id = $1`,
                     [dbOrder.order_id]
                   );
                 }
@@ -1480,9 +1485,9 @@ class StrategyScheduler {
       }
 
       // IDLE 状态：处理买入逻辑
-      // 期权策略：收盘前N分钟不再开新仓（默认120分钟，可配置）
+      // 期权策略：收盘前N分钟不再开新仓（默认180分钟，可配置）
       if (isOptionStrategy) {
-        const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 120), 10) || 120);
+        const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 180), 10) || 180);
         const window = await getMarketCloseWindow({
           market: 'US',
           noNewEntryBeforeCloseMinutes: noNewEntryMins,

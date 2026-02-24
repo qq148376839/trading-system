@@ -358,6 +358,7 @@ CREATE TABLE IF NOT EXISTS execution_orders (
     price DECIMAL(15, 4),
     current_status VARCHAR(20),
     execution_stage INTEGER DEFAULT 1,
+    fill_processed BOOLEAN DEFAULT FALSE,
     signal_id INTEGER REFERENCES strategy_signals(id) ON DELETE SET NULL,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
@@ -365,6 +366,7 @@ CREATE TABLE IF NOT EXISTS execution_orders (
 
 CREATE INDEX IF NOT EXISTS idx_execution_orders_status ON execution_orders(current_status);
 CREATE INDEX IF NOT EXISTS idx_execution_orders_strategy ON execution_orders(strategy_id, symbol);
+CREATE INDEX IF NOT EXISTS idx_execution_orders_strategy_fill_processed ON execution_orders(strategy_id, fill_processed);
 CREATE INDEX IF NOT EXISTS idx_execution_orders_order_id ON execution_orders(order_id);
 CREATE INDEX IF NOT EXISTS idx_execution_orders_signal_id ON execution_orders(signal_id);
 
@@ -383,6 +385,19 @@ END $$;
 
 -- Add column comment (using English to avoid encoding issues)
 COMMENT ON COLUMN execution_orders.signal_id IS 'Reference to strategy_signals table. Used to track signal execution status based on order status';
+
+-- Add fill_processed column if it doesn't exist (for existing tables)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'execution_orders' AND column_name = 'fill_processed'
+    ) THEN
+        ALTER TABLE execution_orders
+        ADD COLUMN fill_processed BOOLEAN DEFAULT FALSE;
+        CREATE INDEX IF NOT EXISTS idx_execution_orders_strategy_fill_processed ON execution_orders(strategy_id, fill_processed);
+    END IF;
+END $$;
 
 -- 为execution_orders表创建触发器
 DROP TRIGGER IF EXISTS update_execution_orders_updated_at ON execution_orders;

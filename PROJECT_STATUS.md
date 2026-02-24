@@ -7,6 +7,20 @@
 
 ## 🆕 最近更新
 
+### 2026-02-24: 订单成交竞态修复 + 0DTE 收盘窗口扩至180分钟
+
+**变更内容**:
+1. **P0 竞态修复**: WebSocket trade-push 抢先设 `current_status='FILLED'`，order monitor 守卫恒 false → 卖出回调（PnL/熔断/LIT）全部失效。新增 `fill_processed` 布尔列解耦，仅 order monitor 处理完成后置 TRUE
+2. **0DTE 收盘窗口 120→180 分钟**: 不再开新仓时间从 2:00 PM ET 提前到 1:00 PM ET，强平 watchdog 同步调整
+
+**修改文件**:
+- 🐛 `api/src/services/strategy-scheduler.service.ts`（守卫条件 + fill_processed + 180min）
+- 🐛 `api/src/services/option-dynamic-exit.service.ts`（TIME_STOP 阈值 180min）
+- 🐛 `api/src/services/0dte-watchdog.service.ts`（FORCE_CLOSE_HOUR 14→13）
+- 📝 `api/migrations/000_init_schema.sql`（fill_processed 列 + 兼容迁移）
+
+**部署注意**: 需执行数据库迁移 `000_init_schema.sql`（含 IF NOT EXISTS 兼容）
+
 ### 2026-02-24: 盈亏百分比归零修复 + LIT 止盈保护单
 
 **变更内容**:
