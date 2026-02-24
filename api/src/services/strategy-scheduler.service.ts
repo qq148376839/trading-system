@@ -548,10 +548,11 @@ class StrategyScheduler {
       
       // 2. 查询策略的所有订单（买入和卖出，用于价格更新和状态同步）
       const strategyOrders = await pool.query(
-        `SELECT eo.order_id, eo.symbol, eo.side, eo.price, eo.quantity, eo.created_at, eo.current_status
+        `SELECT eo.order_id, eo.symbol, eo.side, eo.price, eo.quantity, eo.created_at, eo.current_status, eo.fill_processed
          FROM execution_orders eo
-         WHERE eo.strategy_id = $1 
+         WHERE eo.strategy_id = $1
          AND eo.created_at >= NOW() - INTERVAL '24 hours'
+         AND (eo.fill_processed IS NOT TRUE)
          ORDER BY eo.created_at DESC
          LIMIT 40`,
         [strategyId]
@@ -713,6 +714,12 @@ class StrategyScheduler {
             
             if (avgPrice > 0 && filledQuantity > 0) {
               try {
+                // Fix 4b: 立即标记 fill_processed，防止下个周期重复处理
+                await pool.query(
+                  `UPDATE execution_orders SET fill_processed = TRUE, updated_at = NOW() WHERE order_id = $1`,
+                  [dbOrder.order_id]
+                );
+
                 // 记录交易到数据库（如果之前没有记录）
                 try {
                   // 获取订单详情和手续费
