@@ -180,13 +180,15 @@ class BacktestService {
           const count = Math.min(daysDiff + 100, 1000); // 最多1000条
           // ✅ 参数顺序：
           // symbol, period, adjustType, forward, datetime, count, tradeSessions(可选)
+          const tradeSessions = TradeSessions?.All || 100;
           candlesticks = await quoteCtx.historyCandlesticksByOffset(
             symbol,
             Period.Day,
             AdjustType.NoAdjust,
             false,  // forward: false表示向历史数据方向查找
             endNaiveDatetime,
-            count
+            count,
+            tradeSessions
           );
           logger.log(`✅ 使用historyCandlesticksByOffset获取到 ${candlesticks?.length || 0} 条历史数据 (${symbol})`);
         }

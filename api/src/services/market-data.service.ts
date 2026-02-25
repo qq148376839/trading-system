@@ -486,13 +486,15 @@ class MarketDataService {
         );
         const targetNaiveDatetime = new NaiveDatetime(targetNaiveDate, targetNaiveTime);
 
+        const tradeSessionsAll = longport.TradeSessions?.All || 100;
         candlesticks = await quoteCtx.historyCandlesticksByOffset(
           '.VIX.US',
           Period.Day,
           AdjustType.NoAdjust,
           false, // forward: false表示向历史数据方向查找
           targetNaiveDatetime,
-          count
+          count,
+          tradeSessionsAll
         );
       } else {
         // 如果没有提供targetDate，使用candlesticks获取最新数据（向后兼容）

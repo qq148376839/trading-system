@@ -413,7 +413,7 @@ candlesticksRouter.get('/history', rateLimiter, async (req: Request, res: Respon
 
     const quoteCtx = await getQuoteContext();
     const longport = require('longport');
-    const { AdjustType, NaiveDate, Time, NaiveDatetime } = longport;
+    const { AdjustType, NaiveDate, Time, NaiveDatetime, TradeSessions } = longport;
 
     // 将 JavaScript Date 转换为 NaiveDatetime（Longbridge SDK 要求的格式）
     // NaiveDatetime 构造函数：new NaiveDatetime(NaiveDate, Time)
@@ -431,16 +431,18 @@ candlesticksRouter.get('/history', rateLimiter, async (req: Request, res: Respon
     const naiveDatetime = new NaiveDatetime(naiveDate, naiveTime);
 
     const adjustType = AdjustType?.NoAdjust || 0;
+    const tradeSessions = TradeSessions?.All || 100;
 
     // historyCandlesticksByOffset 参数：
-    // symbol, period, adjustType, forward, datetime, count
+    // symbol, period, adjustType, forward, datetime, count, tradeSessions(v3.0.21+)
     const candlesticks = await quoteCtx.historyCandlesticksByOffset(
       symbol as string,
       periodEnum,
       adjustType,
       isForward,
       naiveDatetime,
-      countNum
+      countNum,
+      tradeSessions
     );
 
     // ── 格式化响应 ──
