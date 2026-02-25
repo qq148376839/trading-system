@@ -842,11 +842,36 @@ class BasicExecutionService {
         await this.recordOrder(strategyId, symbol, side, normalizedQuantity, price, orderId, signalId);
       } catch (dbError: any) {
         logger.error(`记录订单到数据库失败 (${orderId}):`, dbError.message);
-        // P1-2: 孤儿订单补救 — DB记录失败时尝试取消broker订单
+        // C4 修复: 孤儿订单补救 — cancel后验证订单状态
         try {
           const tradeCtx = await getTradeContext();
           await tradeCtx.cancelOrder(orderId);
-          logger.warn(`[ORPHAN_RESCUE] 订单${orderId}: DB记录失败，已取消broker订单`);
+          // 等待cancel处理
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          // 验证cancel是否成功
+          const orderDetails = await tradeCtx.orderDetail(orderId);
+          const orderStatus = normalizeOrderStatus(orderDetails?.status || 'Unknown');
+
+          if (orderStatus === 'FilledStatus' || orderStatus === 'PartialFilledStatus') {
+            // 订单已成交 — cancel失败，必须重试DB记录
+            logger.error(`[ORPHAN_RESCUE] 订单${orderId}: cancel失败(已${orderStatus})，重试DB记录`);
+            try {
+              await this.recordOrder(strategyId, symbol, side, normalizedQuantity, price, orderId, signalId);
+              logger.warn(`[ORPHAN_RESCUE] 订单${orderId}: DB重试成功`);
+              // DB记录恢复成功，继续正常流程
+            } catch (retryDbErr: any) {
+              logger.error(`[CRITICAL] 孤儿订单! 订单${orderId}: 已成交但DB记录两次失败: ${retryDbErr.message}。需人工介入!`);
+            }
+            // 返回submitted=true让调用方知道订单在broker存在
+            return {
+              success: false,
+              orderId,
+              error: `订单已成交但DB记录失败(已重试): ${dbError.message}`,
+              submitted: true,
+            };
+          } else {
+            logger.warn(`[ORPHAN_RESCUE] 订单${orderId}: 已成功取消(状态=${orderStatus})`);
+          }
         } catch (cancelErr: any) {
           logger.error(`[CRITICAL] 孤儿订单! 订单${orderId}: DB记录失败且取消也失败: ${cancelErr.message}。需人工介入!`);
         }
@@ -1279,87 +1304,87 @@ class BasicExecutionService {
     const status = normalizeOrderStatus(orderDetail.status);
     const orderId = orderDetail.orderId || orderDetail.order_id;
 
-    // 判断是开仓还是平仓
-    const existingTrade = await pool.query(
-      `SELECT id FROM auto_trades 
-       WHERE strategy_id = $1 AND symbol = $2 AND side = $3 AND close_time IS NULL
-       ORDER BY open_time DESC LIMIT 1`,
-      [strategyId, symbol, side === 'BUY' ? 'SELL' : 'BUY'] // 平仓时 side 相反
-    );
+    // H11 修复：使用事务保证一致性
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
 
-    if (existingTrade.rows.length > 0 && side === 'SELL') {
-      // 平仓：更新现有交易记录
-      const tradeId = existingTrade.rows[0].id;
-      const openTrade = await pool.query(
-        'SELECT avg_price, quantity FROM auto_trades WHERE id = $1',
-        [tradeId]
+      // 判断是开仓还是平仓
+      const existingTrade = await client.query(
+        `SELECT id FROM auto_trades
+         WHERE strategy_id = $1 AND symbol = $2 AND side = $3 AND close_time IS NULL
+         ORDER BY open_time DESC LIMIT 1`,
+        [strategyId, symbol, side === 'BUY' ? 'SELL' : 'BUY']
       );
 
-      if (openTrade.rows.length > 0) {
-        const openPrice = parseFloat(openTrade.rows[0].avg_price);
-        const openQuantity = parseInt(openTrade.rows[0].quantity);
-        const pnl = (avgPrice - openPrice) * Math.min(filledQuantity, openQuantity);
+      if (existingTrade.rows.length > 0 && side === 'SELL') {
+        const tradeId = existingTrade.rows[0].id;
+        const openTrade = await client.query(
+          'SELECT avg_price, quantity FROM auto_trades WHERE id = $1',
+          [tradeId]
+        );
 
-        // P1-1: PartialFill 卖出不关闭交易，更新剩余数量
-        if (status === 'PartialFilledStatus' && filledQuantity < openQuantity) {
-          const remainingQty = openQuantity - filledQuantity;
-          await pool.query(
-            `UPDATE auto_trades
-             SET quantity = $1, fees = COALESCE(fees, 0) + $2, status = 'PARTIALLY_FILLED'
-             WHERE id = $3`,
-            [remainingQty, fees, tradeId]
-          );
-          logger.warn(`[PARTIAL_FILL] 卖出部分成交: 交易${tradeId} 原始数量=${openQuantity} 已卖=${filledQuantity} 剩余=${remainingQty}`);
-        } else {
-          await pool.query(
-            `UPDATE auto_trades
-             SET close_time = NOW(), pnl = $1, fees = $2, status = $3
-             WHERE id = $4`,
-            [pnl, fees, status === 'FilledStatus' ? 'FILLED' : 'PARTIALLY_FILLED', tradeId]
-          );
+        if (openTrade.rows.length > 0) {
+          const openPrice = parseFloat(openTrade.rows[0].avg_price);
+          const openQuantity = parseInt(openTrade.rows[0].quantity);
+          const pnl = (avgPrice - openPrice) * Math.min(filledQuantity, openQuantity);
+
+          if (status === 'PartialFilledStatus' && filledQuantity < openQuantity) {
+            const remainingQty = openQuantity - filledQuantity;
+            await client.query(
+              `UPDATE auto_trades
+               SET quantity = $1, fees = COALESCE(fees, 0) + $2, status = 'PARTIALLY_FILLED'
+               WHERE id = $3`,
+              [remainingQty, fees, tradeId]
+            );
+            logger.warn(`[PARTIAL_FILL] 卖出部分成交: 交易${tradeId} 原始数量=${openQuantity} 已卖=${filledQuantity} 剩余=${remainingQty}`);
+          } else {
+            await client.query(
+              `UPDATE auto_trades
+               SET close_time = NOW(), pnl = $1, fees = $2, status = $3
+               WHERE id = $4`,
+              [pnl, fees, status === 'FilledStatus' ? 'FILLED' : 'PARTIALLY_FILLED', tradeId]
+            );
+          }
         }
+      } else {
+        await client.query(
+          `INSERT INTO auto_trades
+           (strategy_id, symbol, side, quantity, avg_price, fees, status, order_id, open_time)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+          [strategyId, symbol, side, filledQuantity, avgPrice, fees,
+            status === 'FilledStatus' ? 'FILLED' : 'PARTIALLY_FILLED', orderId]
+        );
       }
-    } else {
-      // 开仓：插入新交易记录
-      await pool.query(
-        `INSERT INTO auto_trades 
-         (strategy_id, symbol, side, quantity, avg_price, fees, status, order_id, open_time)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
-        [
-          strategyId,
-          symbol,
-          side,
-          filledQuantity,
-          avgPrice,
-          fees,
-          status === 'FilledStatus' ? 'FILLED' : 'PARTIALLY_FILLED',
-          orderId,
-        ]
-      );
-    }
 
-    // 更新订单状态（将API状态转换为数据库状态格式）
-    // API状态: FilledStatus, PartialFilledStatus
-    // 数据库状态: FILLED, PARTIALLY_FILLED
-    let dbStatus = 'SUBMITTED';
-    if (status === 'FilledStatus') {
-      dbStatus = 'FILLED';
-    } else if (status === 'PartialFilledStatus') {
-      dbStatus = 'PARTIALLY_FILLED';
-    } else if (status === 'CanceledStatus' || status === 'PendingCancelStatus' || status === 'WaitToCancel') {
-      dbStatus = 'CANCELLED';
-    } else if (status === 'RejectedStatus') {
-      dbStatus = 'REJECTED';
-    } else {
-      dbStatus = status; // 其他状态保持原样
+      // 更新订单状态
+      let dbStatus = 'SUBMITTED';
+      if (status === 'FilledStatus') {
+        dbStatus = 'FILLED';
+      } else if (status === 'PartialFilledStatus') {
+        dbStatus = 'PARTIALLY_FILLED';
+      } else if (status === 'CanceledStatus' || status === 'PendingCancelStatus' || status === 'WaitToCancel') {
+        dbStatus = 'CANCELLED';
+      } else if (status === 'RejectedStatus') {
+        dbStatus = 'REJECTED';
+      } else {
+        dbStatus = status;
+      }
+
+      await client.query(
+        `UPDATE execution_orders
+         SET current_status = $1, updated_at = NOW()
+         WHERE order_id = $2`,
+        [dbStatus, orderId]
+      );
+
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
-    
-    await pool.query(
-      `UPDATE execution_orders 
-       SET current_status = $1, updated_at = NOW()
-       WHERE order_id = $2`,
-      [dbStatus, orderId]
-    );
   }
 }
 

@@ -28,10 +28,9 @@ pool.on('connect', () => {
 
 pool.on('error', (err) => {
   infraLogger.error('Unexpected error on idle client', err);
-  // 在测试环境中不退出进程
-  if (process.env.NODE_ENV !== 'test') {
-    process.exit(-1);
-  }
+  // H12 修复：不再直接 process.exit — 瞬断不应杀死整个进程
+  // pg Pool 会自动移除出错的连接并在下次请求时创建新连接
+  // 仅记录错误，让连接池自愈
 });
 
 export default pool;

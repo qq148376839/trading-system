@@ -120,7 +120,7 @@ interface OptionBacktestConfig {
 // ============================================
 
 function analyzeMarketTrend(data: CandlestickData[]): { trendStrength: number } {
-  if (!data || data.length < 3) {
+  if (!data || data.length < 20) {
     return { trendStrength: 0 };
   }
   const currentPrice = data[data.length - 1].close;
@@ -133,7 +133,7 @@ function analyzeMarketTrend(data: CandlestickData[]): { trendStrength: number } 
   const shortPrices = data.slice(-shortWindow).map(d => d.close);
   const avg10 = shortPrices.reduce((s, p) => s + p, 0) / shortPrices.length;
 
-  let trendStrength = ((currentPrice - avg20) / avg20) * 100 * 10;
+  let trendStrength = ((currentPrice - avg20) / avg20) * 100 * 5; // 与实盘对齐（从10降到5）
   if (currentPrice > avg10 && avg10 > avg20) trendStrength += 20;
   else if (currentPrice < avg10 && avg10 < avg20) trendStrength -= 20;
 
@@ -204,33 +204,42 @@ function calculateMarketScore(md: MarketDataWindow): number {
 
   // 市场温度 (10%) — 回测固定 50
   const temp = md.marketTemperature;
-  if (temp > 50) score += (temp - 50) * 0.3;
-  else if (temp < 20) score -= (20 - temp) * 0.5;
+  if (temp > 50) {
+    const tempCoeff = temp >= 65 ? 0.5 : 0.3; // 与实盘对齐：高温时提升权重
+    score += (temp - 50) * tempCoeff;
+  } else if (temp < 20) {
+    score -= (20 - temp) * 0.5;
+  }
 
   return Math.max(-100, Math.min(100, score));
 }
 
-/** 复制自 option-recommendation.service.ts calculateIntradayScore */
+/** 与实盘对齐的分时评分 (调整权重 + 添加 SPX 日内分量) */
 function calculateIntradayScore(md: MarketDataWindow): number {
   let score = 0;
 
-  // BTC 小时 K 动量 (40%)
+  // 1. SPX 日内/小时动量 (25% — 对应实盘的 SPX intraday 25% + 替代实盘的底层1m 30% 中的一部分)
+  // 回测无法获取底层1m实时动量，用 SPX 近期数据替代
+  if (md.spx && md.spx.length >= 5) {
+    const recent = md.spx.slice(-10);
+    score += calculateMomentum(recent) * 0.45; // 合并底层 + SPX 权重
+  }
+
+  // 2. BTC 小时 K 动量 (15% — 与实盘对齐)
   if (md.btcHourly && md.btcHourly.length >= 10) {
     const filtered = intradayDataFilterService.filterData(md.btcHourly);
-    score += calculateMomentum(filtered) * 0.4;
+    score += calculateMomentum(filtered) * 0.15;
   }
 
-  // USD 小时 K 动量 (20%, 反向)
+  // 3. USD 小时 K 动量 (15%, 反向 — 与实盘对齐)
   if (md.usdIndexHourly && md.usdIndexHourly.length >= 10) {
     const filtered = intradayDataFilterService.filterData(md.usdIndexHourly);
-    score += -calculateMomentum(filtered) * 0.2;
+    score += -calculateMomentum(filtered) * 0.15;
   }
 
-  // SPX 近 5 日动量 (40%)
-  if (md.spx && md.spx.length > 0) {
-    const recent = md.spx.slice(-5);
-    score += calculateMomentum(recent) * 0.4;
-  }
+  // 注意: 实盘还有 VWAP position (15%) 和 underlying 1m momentum (30%)
+  // 回测无法完全复现这两项，SPX 动量已吸收部分权重 (0.45 ≈ 0.30 + 0.15)
+  // 剩余 0.25 的权重缺失，使得回测分时评分整体偏保守
 
   return Math.max(-100, Math.min(100, score));
 }
@@ -834,7 +843,7 @@ class OptionBacktestService {
         const marketScore = calculateMarketScore(window);
         const intradayScore = calculateIntradayScore(window);
         const timeAdj = calculateTimeWindowAdjustment(etMin);
-        const finalScore = marketScore * 0.4 + intradayScore * 0.4 + timeAdj * 0.2;
+        const finalScore = marketScore * 0.2 + intradayScore * 0.6 + timeAdj * 0.2; // 与实盘对齐（大盘20% + 日内60% + 时间20%）
 
         // 方向判定
         let direction: 'CALL' | 'PUT' | 'HOLD' = 'HOLD';

@@ -64,6 +64,8 @@ class StrategyScheduler {
   // TSLPPCT 连续失败计数（per strategy，内存级，进程重启归零 = 安全）
   private tslpFailureCount: Map<number, number> = new Map();
   private readonly TSLP_FAILURE_THRESHOLD = 2; // 失败 >= 2 次禁止开仓
+  // H2 修复：每日重置追踪（per strategy）
+  private lastDailyResetDate: Map<number, string> = new Map();
 
   /**
    * 启动策略调度器
@@ -174,6 +176,30 @@ class StrategyScheduler {
       strategyId,
       strategy.config
     );
+
+    // C6 修复：启动时清理残留的 OPENING/SHORTING 状态（进程崩溃后恢复）
+    try {
+      const staleStates = await pool.query(
+        `SELECT symbol, current_state, context FROM strategy_instances
+         WHERE strategy_id = $1 AND current_state IN ('OPENING', 'SHORTING')`,
+        [strategyId]
+      );
+      for (const row of staleStates.rows) {
+        const ctx = row.context || {};
+        const allocationAmount = parseFloat(ctx.allocationAmount || '0');
+        if (allocationAmount > 0) {
+          try {
+            await capitalManager.releaseAllocation(strategyId, allocationAmount, row.symbol);
+          } catch (relErr: any) {
+            logger.error(`[STARTUP_CLEANUP] 释放资金失败 ${row.symbol}: ${relErr.message}`);
+          }
+        }
+        await strategyInstance.updateState(row.symbol, 'IDLE');
+        logger.warn(`[STARTUP_CLEANUP] 策略${strategyId} 标的${row.symbol}: 清理残留${row.current_state}状态，释放资金$${allocationAmount.toFixed(2)}`);
+      }
+    } catch (cleanupErr: any) {
+      logger.error(`[STARTUP_CLEANUP] 策略${strategyId} 清理失败: ${cleanupErr.message}`);
+    }
 
     // 根据策略类型确定执行间隔
     // - 期权策略（OPTION_INTRADAY_V1）：5秒，期权市场需要快速响应
@@ -350,6 +376,47 @@ class StrategyScheduler {
 
     // 期权策略：收盘前180分钟（1:00 PM ET）且无持仓时，跳过本周期（避免资源浪费）
     const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy;
+
+    // H2 修复：策略级别每日重置（不依赖IDLE状态）
+    if (isOptionStrategy) {
+      const etFormatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+      });
+      const todayET = etFormatter.format(new Date());
+      const lastReset = this.lastDailyResetDate.get(strategyId);
+      if (lastReset !== todayET) {
+        // 扫描所有非IDLE状态的实例，重置其每日计数
+        const holdingInstances = await pool.query(
+          `SELECT symbol, current_state, context FROM strategy_instances
+           WHERE strategy_id = $1 AND current_state NOT IN ('IDLE')`,
+          [strategyId]
+        );
+        for (const row of holdingInstances.rows) {
+          const ctx = row.context || {};
+          const refTime = ctx.lastExitTime || ctx.circuitBreakerTime || ctx.entryTime;
+          if (refTime) {
+            const refDate = etFormatter.format(new Date(refTime));
+            if (refDate !== todayET) {
+              await strategyInstance.updateState(row.symbol, row.current_state, {
+                dailyTradeCount: 0,
+                dailyRealizedPnL: 0,
+                consecutiveLosses: 0,
+                lastTradeDirection: null,
+                lastTradePnL: 0,
+                circuitBreakerActive: false,
+                circuitBreakerReason: null,
+                circuitBreakerTime: null,
+                tslpFailureCount: 0,
+              });
+            }
+          }
+        }
+        this.lastDailyResetDate.set(strategyId, todayET);
+        this.tslpFailureCount.set(strategyId, 0);
+      }
+    }
+
     if (isOptionStrategy) {
       try {
         const closeWindow = await getMarketCloseWindow({
@@ -943,35 +1010,23 @@ class StrategyScheduler {
                           // 260225 Iron Dome: 记录 TSLPPCT 失败
                           await this.recordTslpFailure(strategyId);
 
-                          // P1-4: TSLP 紧急保护 — 写入 emergencyStopLoss + 30秒后自动重试
+                          // C1 修复：将重试标记写入DB context（替代不可靠的setTimeout）
+                          // 下一个HOLDING周期会检测此标记并重试
                           if (avgPrice > 0) {
                             const emergencyStopLoss = avgPrice * 0.5;
                             await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
                               emergencyStopLoss,
+                              tslpRetryPending: true,
+                              tslpRetryParams: {
+                                tradedSymbol: tradedSym,
+                                quantity: filledQuantity,
+                                trailingPct,
+                                limitOffset: 0.10,
+                                expireDate: expDate,
+                              },
+                              tslpRetryAfter: new Date(Date.now() + 30000).toISOString(),
                             });
-                            logger.warn(`[TSLP_EMERGENCY] 策略${strategyId} ${tradedSym}: 设置紧急止损 $${emergencyStopLoss.toFixed(2)} (入场价50%)`);
-
-                            // 30秒后自动重试一次 submitProtection
-                            setTimeout(async () => {
-                              try {
-                                const retryResult = await trailingStopProtectionService.submitProtection(
-                                  tradedSym, filledQuantity, trailingPct, 0.10, expDate, strategyId,
-                                );
-                                if (retryResult.success && retryResult.orderId) {
-                                  await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
-                                    protectionOrderId: retryResult.orderId,
-                                    protectionTrailingPct: trailingPct,
-                                    emergencyStopLoss: undefined, // 清除紧急止损
-                                  });
-                                  logger.log(`[TSLP_RETRY] 策略${strategyId} ${tradedSym}: 重试成功 orderId=${retryResult.orderId}`);
-                                  await this.resetTslpFailure(strategyId);
-                                } else {
-                                  logger.warn(`[TSLP_RETRY] 策略${strategyId} ${tradedSym}: 重试仍失败(${retryResult.error})，保持紧急止损`);
-                                }
-                              } catch (retryErr: any) {
-                                logger.warn(`[TSLP_RETRY] 策略${strategyId} ${tradedSym}: 重试异常: ${retryErr.message}`);
-                              }
-                            }, 30000);
+                            logger.warn(`[TSLP_EMERGENCY] 策略${strategyId} ${tradedSym}: 设置紧急止损 $${emergencyStopLoss.toFixed(2)} + 30秒后DB重试`);
                           }
                         }
 
@@ -1473,10 +1528,19 @@ class StrategyScheduler {
       
       if (orderResult.rows.length > 0) {
         const order = orderResult.rows[0];
-        const amount = parseFloat(order.quantity) * parseFloat(order.price);
-        
+        // C3 修复：优先使用 context.allocationAmount（期权含100x乘数），回退到 qty*price（股票）
+        const instanceResult = await pool.query(
+          'SELECT context FROM strategy_instances WHERE strategy_id = $1 AND symbol = $2',
+          [strategyId, symbol]
+        );
+        const ctx = instanceResult.rows[0]?.context || {};
+        const allocationAmount = parseFloat(ctx.allocationAmount || '0');
+        const amount = allocationAmount > 0
+          ? allocationAmount
+          : parseFloat(order.quantity) * parseFloat(order.price);
+
         await capitalManager.releaseAllocation(strategyId, amount, symbol);
-        
+
         const strategyConfigResult = await pool.query(
           'SELECT type, config FROM strategies WHERE id = $1',
           [strategyId]
@@ -1484,12 +1548,8 @@ class StrategyScheduler {
         const strategyType = strategyConfigResult.rows[0]?.type || 'RECOMMENDATION_V1';
         const strategyConfig = strategyConfigResult.rows[0]?.config || {};
         const strategyInstance = this.createStrategyInstance(strategyType, strategyId, strategyConfig);
-        // 读取当前context获取之前的cancelCount
-        const cancelCtxResult = await pool.query(
-          'SELECT context FROM strategy_instances WHERE strategy_id = $1 AND symbol = $2',
-          [strategyId, symbol]
-        );
-        const prevCancelCtx = cancelCtxResult.rows[0]?.context || {};
+        // 读取当前context获取之前的cancelCount（复用上面的instanceResult）
+        const prevCancelCtx = ctx;
         const prevCancelCount = prevCancelCtx.cancelCount || 0;
 
         await strategyInstance.updateState(symbol, 'IDLE', {
@@ -1525,10 +1585,19 @@ class StrategyScheduler {
       
       if (orderResult.rows.length > 0) {
         const order = orderResult.rows[0];
-        const amount = parseFloat(order.quantity) * parseFloat(order.price);
-        
+        // C3 修复：优先使用 context.allocationAmount（期权含100x乘数），回退到 qty*price（股票）
+        const instanceResult = await pool.query(
+          'SELECT context FROM strategy_instances WHERE strategy_id = $1 AND symbol = $2',
+          [strategyId, symbol]
+        );
+        const ctx = instanceResult.rows[0]?.context || {};
+        const allocationAmount = parseFloat(ctx.allocationAmount || '0');
+        const amount = allocationAmount > 0
+          ? allocationAmount
+          : parseFloat(order.quantity) * parseFloat(order.price);
+
         await capitalManager.releaseAllocation(strategyId, amount, symbol);
-        
+
         const strategyConfigResult = await pool.query(
           'SELECT type, config FROM strategies WHERE id = $1',
           [strategyId]
@@ -1536,12 +1605,8 @@ class StrategyScheduler {
         const strategyType = strategyConfigResult.rows[0]?.type || 'RECOMMENDATION_V1';
         const strategyConfig = strategyConfigResult.rows[0]?.config || {};
         const strategyInstance = this.createStrategyInstance(strategyType, strategyId, strategyConfig);
-        // 读取当前context获取之前的cancelCount
-        const rejectCtxResult = await pool.query(
-          'SELECT context FROM strategy_instances WHERE strategy_id = $1 AND symbol = $2',
-          [strategyId, symbol]
-        );
-        const prevRejectCtx = rejectCtxResult.rows[0]?.context || {};
+        // 读取当前context获取之前的cancelCount（复用上面的instanceResult）
+        const prevRejectCtx = ctx;
         const prevRejectCancelCount = prevRejectCtx.cancelCount || 0;
 
         await strategyInstance.updateState(symbol, 'IDLE', {
@@ -1600,7 +1665,29 @@ class StrategyScheduler {
         }
         return;
       } else if (currentState === 'CLOSING' || currentState === 'COVERING') {
-        // ⚠️ 修复：平仓中状态（做多平仓或卖空平仓）
+        // C2 修复：CLOSING/COVERING 超时强制重置（15分钟）
+        const closingStaleResult = await pool.query(
+          `SELECT context FROM strategy_instances
+           WHERE strategy_id = $1 AND symbol = $2 AND current_state = $3
+             AND last_updated < NOW() - INTERVAL '15 minutes'`,
+          [strategyId, symbol, currentState]
+        );
+        if (closingStaleResult.rows.length > 0) {
+          const staleCtx = closingStaleResult.rows[0].context || {};
+          const allocationAmount = parseFloat(staleCtx.allocationAmount || '0');
+          if (allocationAmount > 0) {
+            try {
+              await capitalManager.releaseAllocation(strategyId, allocationAmount, symbol);
+            } catch (releaseErr: any) {
+              logger.error(`[${currentState}_TIMEOUT] 资金释放失败: ${releaseErr.message}`);
+            }
+          }
+          await strategyInstance.updateState(symbol, 'IDLE');
+          logger.warn(`[${currentState}_TIMEOUT] 策略${strategyId} 标的${symbol}: 超过15分钟，强制重置为IDLE，释放资金${allocationAmount}`);
+          summary.errors.push(`${symbol}(${currentState}_TIMEOUT)`);
+          return;
+        }
+        // 正常处理平仓中状态
         summary.other.push(`${symbol}(${currentState})`);
         if (currentState === 'CLOSING') {
           await this.processClosingPosition(strategyInstance, strategyId, symbol);
@@ -3005,6 +3092,49 @@ class StrategyScheduler {
           }
         } catch (tslpCheckErr: any) {
           logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT状态查询异常(${tslpCheckErr?.message})，继续软件监控`);
+        }
+      }
+
+      // C1 修复：检查DB中的TSLP重试标记
+      if (context.tslpRetryPending && context.tslpRetryAfter) {
+        const retryAfter = new Date(context.tslpRetryAfter).getTime();
+        if (Date.now() >= retryAfter) {
+          try {
+            const params = context.tslpRetryParams;
+            if (params) {
+              const retryResult = await trailingStopProtectionService.submitProtection(
+                params.tradedSymbol, params.quantity, params.trailingPct,
+                params.limitOffset, params.expireDate, strategyId,
+              );
+              if (retryResult.success && retryResult.orderId) {
+                await strategyInstance.updateState(symbol, 'HOLDING', {
+                  protectionOrderId: retryResult.orderId,
+                  protectionTrailingPct: params.trailingPct,
+                  emergencyStopLoss: undefined,
+                  tslpRetryPending: undefined,
+                  tslpRetryParams: undefined,
+                  tslpRetryAfter: undefined,
+                });
+                logger.log(`[TSLP_RETRY] 策略${strategyId} ${params.tradedSymbol}: DB重试成功 orderId=${retryResult.orderId}`);
+                await this.resetTslpFailure(strategyId);
+              } else {
+                // 重试失败，清除重试标记，保持紧急止损
+                await strategyInstance.updateState(symbol, 'HOLDING', {
+                  tslpRetryPending: undefined,
+                  tslpRetryParams: undefined,
+                  tslpRetryAfter: undefined,
+                });
+                logger.warn(`[TSLP_RETRY] 策略${strategyId} ${params.tradedSymbol}: DB重试仍失败(${retryResult.error})，保持紧急止损`);
+              }
+            }
+          } catch (retryErr: any) {
+            await strategyInstance.updateState(symbol, 'HOLDING', {
+              tslpRetryPending: undefined,
+              tslpRetryParams: undefined,
+              tslpRetryAfter: undefined,
+            });
+            logger.warn(`[TSLP_RETRY] 策略${strategyId}: DB重试异常: ${retryErr.message}`);
+          }
         }
       }
 
