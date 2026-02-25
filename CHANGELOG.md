@@ -1,5 +1,63 @@
 # 更新日志
 
+## 2026-02-26
+
+### 生死审查 — P0安全修复 + 日内评分系统重写 + VIX自适应入场 + 诊断API升级
+
+**Audit**: 全面审计交易系统后发现多项关键缺陷，4次提交完成修复。
+
+**Commit 1 — P0 安全 Bug 修复（4项）**:
+1. **V1 Shadow-Pricer costPrice 回退移除**: `strategy-scheduler.service.ts:4151` 移除 costPrice fallback，消除 Shadow-Pricer 使用过时成本价导致的盈亏误判
+2. **V2 Reconciliation 字段补全**: `strategy-scheduler.service.ts:4262` 对账逻辑新增 `dailyRealizedPnL`/`consecutiveLosses`/`dailyTradeCount` 三个累积字段，修复对账时意外清零
+3. **V11 MIN_TRAILING_PERCENT 修正**: `trailing-stop-protection.service.ts:27` 从 8 提升至 30，避免崩溃保护过早触发（8% 回撤即平仓 → 30% 回撤才触发）
+4. **V12 NaN 防护**: `strategy-scheduler.service.ts:994` 对 `prevDailyPnL` 和 `prevConsecutiveLosses` 添加 NaN guard，防止未初始化状态传播
+
+**Commit 2 — 日内评分系统重写 + VIX 自适应入场**:
+1. **calculateIntradayScore 重写**: 5 个新分量 — 标的 1m 动量(30%) + VWAP 位置(15%) + SPX 日内(25%) + BTC 时K(15%) + USD 时K(15%)。旧系统使用 BTC时K + USD时K + SPX日K(误标为日内)，三项均产出接近 0 的评分
+2. **finalScore 权重调整**: market 0.4 + intraday 0.4 → market 0.2 + intraday 0.6，提高日内信号的决策权重
+3. **结构对齐检查**: VWAP 方向必须与信号方向一致，不一致则降低评分
+4. **VIX 自适应入场阈值**: `threshold = base * (VIX/20)`，高波动市场自动提高入场门槛
+5. **SPX 日内数据**: 新增 `getSPXHourlyCandlesticks()` 方法 + `market-data-cache.service.ts` 新增 `spxHourly` 缓存
+
+**Commit 3 — 诊断 API 升级**:
+1. **模拟接口增强**: `POST /api/quant/strategies/{id}/simulate` 响应新增 VIX 因子、日内评分分量明细、结构对齐检查结果
+2. **日内评分独立测试**: 新增 `GET /api/quote/intraday-scoring-test?symbol=SPY.US`，独立数据管线测试评分系统
+3. **SPX 日内数据测试**: 新增 `GET /api/futunn-test/test-spx-hourly`，测试 SPX 小时级别 K 线数据获取
+
+**Commit 3 — P1 四项修复**:
+1. **V4 TSLP 失败计数器持久化**: `recordTslpFailure`/`resetTslpFailure` 改为 async 并写入 DB context，新增 `restoreTslpFailureCount` 在进程重启后从 DB 恢复计数。新交易日同步重置内存和 DB。解决进程重启后允许裸仓交易的问题
+2. **V3 熔断器收紧 HOLDING 仓位**: 熔断触发后遍历所有 HOLDING 仓位，调用 `adjustProtection` 将 TSLPPCT 收紧至 15%。无保护单的 HOLDING 仓位输出告警日志
+3. **V6 PnL 手续费实际值**: BUY 成交时将 `chargeDetail` 实际费用存入 `entryFees`；SELL 时优先用 `buyFees + sellFees` 实际值，回退到已知一端 × 2。消除每日 $15-25 估算偏差
+4. **V5 PartialFilledStatus 分离**: `PartialFilledStatus` 不再触发 fill 处理，使用新状态 `PARTIAL_FILLED` 存入 DB，等待最终 `FilledStatus` 后一次性处理
+
+**Commit 4 — 单元测试（46 用例）**:
+- A. NaN Guard (7): dailyRealizedPnL/consecutiveLosses 的 NaN/null/string 回退
+- B. 分时评分系统 (8): 5组件权重/动量方向/VWAP位置/数据缺失降级
+- C. 结构一致性检查 (6): VWAP方向 vs 信号方向冲突降级/强信号覆盖
+- D. VIX自适应阈值 (9): factor计算/上下限截断/回退/实际应用
+- E. TSLP计数器持久化 (8): DB写入/恢复/重置/阻塞判断
+- F. 手续费计算 (7): 实际值/回退估算/PnL验证
+
+**Commit 5 — 审计报告**:
+- 生成完整审计文档 `docs/analysis/260226-生死审查报告.md`
+
+**修改文件**:
+- 🐛 `api/src/services/strategy-scheduler.service.ts`（P0 + P1: costPrice/reconciliation/NaN/TSLP持久化/熔断收紧/实际手续费/PartialFill分离）
+- 🐛 `api/src/services/trailing-stop-protection.service.ts`（MIN_TRAILING_PERCENT 8→30）
+- 📝 `api/src/services/option-recommendation.service.ts`（日内评分重写 + VIX 自适应 + 结构对齐）
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`（finalScore 权重调整）
+- 📝 `api/src/services/market-data.service.ts`（新增 getSPXHourlyCandlesticks）
+- 📝 `api/src/services/market-data-cache.service.ts`（新增 spxHourly 缓存）
+- 📝 `api/src/routes/quant.ts`（simulate 增强：VIX + 日内分量 + 结构检查）
+- 📝 `api/src/routes/quote.ts`（新增 intraday-scoring-test 端点）
+- 📝 `api/src/routes/futunn-test.ts`（新增 test-spx-hourly 端点）
+- ✅ `api/src/__tests__/safety-guards.test.ts`（新增 46 用例安全防护测试）
+- 📄 `docs/analysis/260226-生死审查报告.md`（新增审计报告）
+
+**相关文档**: [生死审查报告](docs/analysis/260226-生死审查报告.md)
+
+---
+
 ## 2026-02-25
 
 ### Fix 1/2/3: JSONB 合并 + LIT 移除 + 评分修正

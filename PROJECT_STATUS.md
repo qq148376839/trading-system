@@ -1,11 +1,38 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-25
+**更新时间**: 2026-02-26
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-02-26: 生死审查 — P0安全修复 + 评分重写 + P1四项修复 + 46用例测试
+
+**变更内容**:
+1. **P0 安全修复（4项）**: Shadow-Pricer costPrice fallback 移除、Reconciliation 补全 `dailyRealizedPnL`/`consecutiveLosses`/`dailyTradeCount`、MIN_TRAILING_PERCENT 8→30、NaN guard on prevDailyPnL/prevConsecutiveLosses
+2. **日内评分系统重写**: `calculateIntradayScore` 从 3 个失效分量重写为 5 个有效分量 — 标的1m动量(30%) + VWAP位置(15%) + SPX日内(25%) + BTC时K(15%) + USD时K(15%)
+3. **finalScore 权重**: market 0.4 + intraday 0.4 → market 0.2 + intraday 0.6
+4. **VIX 自适应入场**: `threshold = base * (VIX/20)`，高波动自动提高门槛
+5. **结构对齐检查**: VWAP vs 信号方向一致性验证
+6. **P1-V4 TSLP 失败计数器持久化**: `recordTslpFailure`/`resetTslpFailure` 写入 DB context，进程重启后恢复
+7. **P1-V3 熔断器收紧 HOLDING**: 熔断触发后将 HOLDING 仓位 TSLPPCT 收紧至 15%
+8. **P1-V6 PnL 实际手续费**: 用 `chargeDetail` 实际费用替代 `estimatedFees * 2` 估算
+9. **P1-V5 PartialFilledStatus 分离**: 部分成交不再触发 fill 处理，等待最终 FilledStatus
+10. **单元测试 46 用例**: NaN guard / 评分系统 / 结构检查 / VIX / TSLP持久化 / 手续费
+
+**修改文件**:
+- 🐛 `api/src/services/strategy-scheduler.service.ts`（P0 + P1 全部修复）
+- 🐛 `api/src/services/trailing-stop-protection.service.ts`（MIN_TRAILING_PERCENT 8→30）
+- 📝 `api/src/services/option-recommendation.service.ts`（日内评分重写 + VIX 自适应）
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`（权重调整）
+- 📝 `api/src/services/market-data.service.ts`（SPX hourly）
+- 📝 `api/src/services/market-data-cache.service.ts`（spxHourly 缓存）
+- 📝 `api/src/routes/quant.ts` + `quote.ts` + `futunn-test.ts`（诊断 API）
+- ✅ `api/src/__tests__/safety-guards.test.ts`（新增 46 用例安全防护测试）
+- 📄 `docs/analysis/260226-生死审查报告.md`（审计报告）
+
+**相关文档**: [生死审查报告](docs/analysis/260226-生死审查报告.md)
 
 ### 2026-02-25: Fix 1/2/3 — JSONB 合并 + LIT 移除 + 评分修正
 
@@ -718,6 +745,12 @@
 
 ## 🔧 最近修复
 
+### 2026-02-26: 生死审查 P0 安全修复（4项）
+1. 🐛 Shadow-Pricer costPrice fallback 移除 — 消除过时成本价导致盈亏误判
+2. 🐛 Reconciliation 对账字段补全 — `dailyRealizedPnL`/`consecutiveLosses`/`dailyTradeCount` 不再被意外清零
+3. 🐛 MIN_TRAILING_PERCENT 8→30 — 崩溃保护不再因 8% 回撤过早触发
+4. 🐛 NaN guard — `prevDailyPnL`/`prevConsecutiveLosses` 未初始化不再传播 NaN
+
 > 2025-12-05 ~ 2026-02-01 的历史修复记录已归档至 [历史修复记录](docs/archive/260223-project-status-history.md)
 
 ---
@@ -806,6 +839,6 @@
 
 ---
 
-**最后更新**: 2026-02-18（SPX/USD/BTC 分时K线数据持久化存储 — 采集+查询+REST API+回测DB优先读取）
+**最后更新**: 2026-02-26（生死审查 — P0安全修复 + 日内评分系统重写 + VIX自适应入场 + 诊断API升级）
 **项目版本**: 1.0
 
