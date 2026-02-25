@@ -648,7 +648,7 @@ class StrategyScheduler {
           
           // 更新数据库状态
           let dbStatus = 'SUBMITTED';
-          if (status === 'FilledStatus' || status === 'PartialFilledStatus') {
+          if (status === 'FilledStatus') {
             dbStatus = 'FILLED';
             // 记录已成交订单，后续更新策略实例状态
             const avgPrice = parseFloat(apiOrder.executedPrice?.toString() || apiOrder.executed_price?.toString() || '0');
@@ -669,6 +669,15 @@ class StrategyScheduler {
               } catch (signalError: any) {
                 logger.warn(`更新信号状态失败 (orderId: ${dbOrder.order_id}):`, signalError.message);
               }
+            }
+          } else if (status === 'PartialFilledStatus') {
+            // V5: 部分成交不触发 fill 处理，等待最终 FilledStatus
+            dbStatus = 'PARTIAL_FILLED';
+            if (dbOrder.current_status !== 'PARTIAL_FILLED') {
+              logger.warn(
+                `[PARTIAL_FILL] 订单 ${dbOrder.order_id} (${dbOrder.symbol}): ` +
+                `部分成交 qty=${apiOrder.executedQuantity || apiOrder.executed_quantity || '?'}，等待完全成交`
+              );
             }
           } else if (status === 'CanceledStatus' || status === 'PendingCancelStatus' || status === 'WaitToCancel') {
             dbStatus = 'CANCELLED';
@@ -753,19 +762,23 @@ class StrategyScheduler {
                   [dbOrder.order_id]
                 );
 
+                // V6: 记录实际手续费，供 PnL 计算使用
+                let currentOrderFees = 0;
+
                 // 记录交易到数据库（如果之前没有记录）
                 try {
                   // 获取订单详情和手续费
                   const { getTradeContext } = await import('../config/longport');
                   const tradeCtx = await getTradeContext();
                   const orderDetail = await tradeCtx.orderDetail(dbOrder.order_id);
-                  
+
                   // 计算手续费
                   const chargeDetail = (orderDetail as any).chargeDetail || (orderDetail as any).charge_detail;
-                  const fees = chargeDetail && chargeDetail.total_amount 
-                    ? parseFloat(chargeDetail.total_amount.toString()) 
+                  const fees = chargeDetail && chargeDetail.total_amount
+                    ? parseFloat(chargeDetail.total_amount.toString())
                     : 0;
-                  
+                  currentOrderFees = fees;
+
                   // 记录交易
                   await basicExecutionService.recordTrade(
                     strategyId,
@@ -882,6 +895,7 @@ class StrategyScheduler {
                       tradedSymbol: context.tradedSymbol || (dbOrder.symbol !== instanceKeySymbol ? dbOrder.symbol : undefined),
                       optionMeta: context.optionMeta || (context.intent?.metadata ? context.intent.metadata : undefined),
                       allocationAmount,
+                      entryFees: currentOrderFees,  // V6: 实际 BUY 端手续费
                     });
 
                     logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol} 买入订单已成交，更新状态为HOLDING，订单ID: ${dbOrder.order_id}`);
@@ -923,17 +937,17 @@ class StrategyScheduler {
                           });
                           logger.log(`策略 ${strategyId} 期权 ${tradedSym}: TSLPPCT保护单已提交 orderId=${tslpResult.orderId}, trailing=${trailingPct}%`);
                           // 260225 Iron Dome: TSLPPCT 成功，重置失败计数
-                          this.resetTslpFailure(strategyId);
+                          await this.resetTslpFailure(strategyId);
                         } else {
                           logger.warn(`策略 ${strategyId} 期权 ${tradedSym}: TSLPPCT提交失败(${tslpResult.error})，降级到纯监控模式`);
                           // 260225 Iron Dome: 记录 TSLPPCT 失败
-                          this.recordTslpFailure(strategyId);
+                          await this.recordTslpFailure(strategyId);
                         }
 
                       } catch (tslpErr: any) {
                         logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: TSLPPCT提交异常(${tslpErr?.message})，降级到纯监控模式`);
                         // 260225 Iron Dome: 异常也计入失败
-                        this.recordTslpFailure(strategyId);
+                        await this.recordTslpFailure(strategyId);
                       }
                     }
                     // fill_processed 已在 Fix E 处提前标记，此处无需重复
@@ -975,18 +989,26 @@ class StrategyScheduler {
                   // Fix 11: 递增 dailyTradeCount 供动态冷却期使用
                   const prevDailyTradeCount = context.dailyTradeCount ?? 0;
 
-                  // Fix 12: 计算本笔交易 PnL 并追踪日内累计亏损
+                  // Fix 12 + V6: 计算本笔交易 PnL 并追踪日内累计亏损
                   const sellEntryPrice = parseFloat(String(context.entryPrice || 0));
                   const sellQty = parseFloat(String(context.quantity || context.optionMeta?.quantity || 1));
                   const sellMultiplier = Number(context.optionMeta?.multiplier) || 100;
-                  const sellEntryFees = parseFloat(String(context.entryFees || context.optionMeta?.estimatedFees || 0));
                   const isOptionAssetSell = context.optionMeta?.assetClass === 'OPTION';
+
+                  // V6: 用实际手续费替代 sellEntryFees * 2 估算
+                  const buyFees = parseFloat(String(context.entryFees || 0));
+                  const sellFees = currentOrderFees;
+                  // 总手续费: 优先用两端实际值，回退到已知一端 × 2
+                  const totalFees = (buyFees > 0 && sellFees > 0)
+                    ? buyFees + sellFees
+                    : (buyFees > 0 ? buyFees * 2 : (sellFees > 0 ? sellFees * 2 : 0));
+
                   let tradePnL = 0;
                   if (sellEntryPrice > 0 && avgPrice > 0) {
                     if (isOptionAssetSell) {
-                      tradePnL = (avgPrice - sellEntryPrice) * sellQty * sellMultiplier - sellEntryFees * 2;
+                      tradePnL = (avgPrice - sellEntryPrice) * sellQty * sellMultiplier - totalFees;
                     } else {
-                      tradePnL = (avgPrice - sellEntryPrice) * sellQty;
+                      tradePnL = (avgPrice - sellEntryPrice) * sellQty - totalFees;
                     }
                   }
                   tradePnL = Math.round(tradePnL * 100) / 100;
@@ -1098,6 +1120,44 @@ class StrategyScheduler {
                             strategyId,
                           ]
                         );
+
+                        // V3: 熔断后对所有 HOLDING 仓位收紧 TSLPPCT 保护
+                        try {
+                          const holdingInstances = await pool.query(
+                            `SELECT symbol, context FROM strategy_instances
+                             WHERE strategy_id = $1 AND current_state = 'HOLDING'`,
+                            [strategyId]
+                          );
+                          for (const row of holdingInstances.rows) {
+                            const hCtx = typeof row.context === 'string' ? JSON.parse(row.context) : (row.context || {});
+                            const tradedSymbol = hCtx.tradedSymbol || row.symbol;
+                            const protectionId = hCtx.protectionOrderId;
+                            const qty = parseInt(String(hCtx.quantity || 1));
+
+                            if (protectionId) {
+                              try {
+                                await trailingStopProtectionService.adjustProtection(
+                                  protectionId, 15, 0.10, qty, strategyId, tradedSymbol
+                                );
+                                logger.warn(
+                                  `[CIRCUIT_BREAKER] 策略 ${strategyId} 标的 ${row.symbol}: HOLDING仓位TSLPPCT已收紧至15%`
+                                );
+                              } catch (replaceErr: unknown) {
+                                logger.warn(
+                                  `[CIRCUIT_BREAKER] 策略 ${strategyId} 标的 ${row.symbol}: ` +
+                                  `收紧TSLPPCT失败: ${replaceErr instanceof Error ? replaceErr.message : replaceErr}`
+                                );
+                              }
+                            } else {
+                              logger.warn(
+                                `[CIRCUIT_BREAKER] 策略 ${strategyId} 标的 ${row.symbol}: ` +
+                                `HOLDING仓位无保护单，熔断后无法收紧`
+                              );
+                            }
+                          }
+                        } catch (holdingErr: unknown) {
+                          logger.warn(`策略 ${strategyId}: 熔断收紧HOLDING失败: ${holdingErr instanceof Error ? holdingErr.message : holdingErr}`);
+                        }
                       }
                     } catch (cbErr: unknown) {
                       const cbMsg = cbErr instanceof Error ? cbErr.message : String(cbErr);
@@ -1512,6 +1572,9 @@ class StrategyScheduler {
       }
 
       // IDLE 状态：处理买入逻辑
+      // V4: 恢复 TSLP 失败计数（进程重启后首次进入）
+      await this.restoreTslpFailureCount(strategyId);
+
       // 期权策略：收盘前N分钟不再开新仓（默认180分钟，可配置）
       if (isOptionStrategy) {
         const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 180), 10) || 180);
@@ -1562,7 +1625,10 @@ class StrategyScheduler {
               circuitBreakerActive: false,
               circuitBreakerReason: null,
               circuitBreakerTime: null,
+              tslpFailureCount: 0,  // V4: 新交易日重置 TSLP 失败计数
             });
+            // V4: 同步重置内存计数
+            this.tslpFailureCount.set(strategyId, 0);
             // 重新读取 context（已重置）
             const freshState = await stateManager.getInstanceState(strategyId, symbol);
             Object.assign(cancelCtx || {}, freshState?.context || {});
@@ -4301,26 +4367,68 @@ class StrategyScheduler {
   }
 
   /**
-   * TSLPPCT 失败计数: 记录失败并检查是否应禁止开仓
-   * 返回 true = 允许继续, false = 禁止开仓
+   * TSLPPCT 失败计数: 记录失败并检查是否应禁止开仓 (V4: 持久化到 DB)
    */
-  recordTslpFailure(strategyId: number): void {
+  async recordTslpFailure(strategyId: number): Promise<void> {
     const count = (this.tslpFailureCount.get(strategyId) || 0) + 1;
     this.tslpFailureCount.set(strategyId, count);
+    // V4: 同步写入 DB，进程重启后可恢复
+    try {
+      await pool.query(
+        `UPDATE strategy_instances
+         SET context = context || $1::jsonb
+         WHERE strategy_id = $2`,
+        [JSON.stringify({ tslpFailureCount: count }), strategyId]
+      );
+    } catch (dbErr: unknown) {
+      logger.warn(`[IRON_DOME:TSLP_COUNTER] 策略 ${strategyId}: DB写入失败: ${dbErr instanceof Error ? dbErr.message : dbErr}`);
+    }
     logger.warn(
       `[IRON_DOME:TSLP_COUNTER] 策略 ${strategyId}: TSLPPCT 累计失败 ${count} 次` +
       (count >= this.TSLP_FAILURE_THRESHOLD
-        ? `，已达阈值 ${this.TSLP_FAILURE_THRESHOLD}，禁止新开仓！你还在送钱吗？`
+        ? `，已达阈值 ${this.TSLP_FAILURE_THRESHOLD}，禁止新开仓`
         : ``)
     );
   }
 
-  resetTslpFailure(strategyId: number): void {
+  async resetTslpFailure(strategyId: number): Promise<void> {
     this.tslpFailureCount.set(strategyId, 0);
+    try {
+      await pool.query(
+        `UPDATE strategy_instances
+         SET context = context || '{"tslpFailureCount": 0}'::jsonb
+         WHERE strategy_id = $1`,
+        [strategyId]
+      );
+    } catch (dbErr: unknown) {
+      logger.warn(`[IRON_DOME:TSLP_COUNTER] 策略 ${strategyId}: 重置DB写入失败: ${dbErr instanceof Error ? dbErr.message : dbErr}`);
+    }
   }
 
   isTslpBlocked(strategyId: number): boolean {
     return (this.tslpFailureCount.get(strategyId) || 0) >= this.TSLP_FAILURE_THRESHOLD;
+  }
+
+  /**
+   * V4: 从 DB 恢复 TSLP 失败计数（进程重启后首次遇到策略时调用）
+   */
+  async restoreTslpFailureCount(strategyId: number): Promise<void> {
+    if (this.tslpFailureCount.has(strategyId)) return; // 已恢复
+    try {
+      const result = await pool.query(
+        `SELECT MAX((context->>'tslpFailureCount')::int) as count
+         FROM strategy_instances WHERE strategy_id = $1`,
+        [strategyId]
+      );
+      const count = result.rows[0]?.count || 0;
+      this.tslpFailureCount.set(strategyId, count);
+      if (count > 0) {
+        logger.warn(`[IRON_DOME:TSLP_RESTORE] 策略 ${strategyId}: 从DB恢复TSLP失败计数=${count}`);
+      }
+    } catch (dbErr: unknown) {
+      this.tslpFailureCount.set(strategyId, 0);
+      logger.warn(`[IRON_DOME:TSLP_RESTORE] 策略 ${strategyId}: DB恢复失败: ${dbErr instanceof Error ? dbErr.message : dbErr}`);
+    }
   }
 
   private createStrategyInstance(strategyType: string, strategyId: number, config: any): StrategyBase {
