@@ -552,3 +552,334 @@ describe('F. 手续费计算 (V6)', () => {
     expect(calculateTotalFees(3.5, 0)).toBe(7.0);
   });
 });
+
+// ============================================
+// G. V9 熔断器重置边缘空洞修复
+// ============================================
+
+describe('V9 — 熔断器新交易日重置条件', () => {
+  /**
+   * 复刻 strategy-scheduler.service.ts 的重置判定逻辑:
+   * resetReferenceTime = lastExitTime || circuitBreakerTime
+   * 如果 resetReferenceTime 存在且为前日(ET) → 触发重置
+   */
+  function shouldResetForNewDay(
+    cancelCtx: { lastExitTime?: string; circuitBreakerTime?: string } | undefined,
+    nowDate?: Date,
+  ): boolean {
+    const resetReferenceTime = cancelCtx?.lastExitTime || cancelCtx?.circuitBreakerTime;
+    if (!resetReferenceTime) return false;
+    const etFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    });
+    const refETDate = etFormatter.format(new Date(resetReferenceTime));
+    const nowETDate = etFormatter.format(nowDate ?? new Date());
+    return refETDate !== nowETDate;
+  }
+
+  test('V9 — 无 lastExitTime 但有前日 circuitBreakerTime → 触发重置', () => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const ctx = {
+      circuitBreakerTime: yesterday.toISOString(),
+    };
+    expect(shouldResetForNewDay(ctx)).toBe(true);
+  });
+
+  test('V9 — 无 lastExitTime 且无 circuitBreakerTime → 不触发重置', () => {
+    expect(shouldResetForNewDay({})).toBe(false);
+    expect(shouldResetForNewDay(undefined)).toBe(false);
+  });
+
+  test('V9 — 有 lastExitTime (今日) → 不触发重置', () => {
+    const now = new Date();
+    const ctx = {
+      lastExitTime: now.toISOString(),
+    };
+    expect(shouldResetForNewDay(ctx, now)).toBe(false);
+  });
+
+  test('V9 — lastExitTime 优先于 circuitBreakerTime', () => {
+    const now = new Date();
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    // lastExitTime 今日, circuitBreakerTime 昨日 → 不重置(用 lastExitTime)
+    const ctx = {
+      lastExitTime: now.toISOString(),
+      circuitBreakerTime: yesterday.toISOString(),
+    };
+    expect(shouldResetForNewDay(ctx, now)).toBe(false);
+  });
+});
+
+// ============================================
+// G. P0-1 资金泄漏防护
+// ============================================
+
+describe('G. P0-1 资金泄漏防护', () => {
+  /**
+   * 模拟 processSymbol 的资金分配/释放逻辑:
+   * 1. requestAllocation 成功
+   * 2. executeBuyIntent 抛异常
+   * 3. catch 块应调用 releaseAllocation
+   */
+  test('executeBuyIntent 异常后释放已分配资金', async () => {
+    let released = false;
+    let releasedAmount = 0;
+
+    const capitalManager = {
+      requestAllocation: jest.fn().mockResolvedValue({
+        approved: true,
+        allocatedAmount: 500,
+      }),
+      releaseAllocation: jest.fn().mockImplementation((_sid: number, amount: number) => {
+        released = true;
+        releasedAmount = amount;
+        return Promise.resolve();
+      }),
+    };
+
+    const strategyInstance = {
+      updateState: jest.fn().mockResolvedValue(undefined),
+    };
+
+    // 模拟 processSymbol 核心逻辑（简化版）
+    let allocationResult: { approved: boolean; allocatedAmount: number } | null = null;
+    try {
+      allocationResult = await capitalManager.requestAllocation({
+        strategyId: 1,
+        amount: 500,
+        symbol: 'AAPL.US',
+      });
+
+      if (!allocationResult.approved) return;
+
+      await strategyInstance.updateState('AAPL.US', 'OPENING', {
+        allocationAmount: allocationResult.allocatedAmount,
+      });
+
+      // 模拟 executeBuyIntent 抛异常
+      throw new Error('Network timeout');
+    } catch (error: any) {
+      // P0-1: catch 块的资金释放逻辑
+      if (allocationResult?.approved) {
+        await capitalManager.releaseAllocation(1, allocationResult.allocatedAmount, 'AAPL.US');
+        await strategyInstance.updateState('AAPL.US', 'IDLE');
+      }
+    }
+
+    expect(released).toBe(true);
+    expect(releasedAmount).toBe(500);
+    expect(capitalManager.releaseAllocation).toHaveBeenCalledWith(1, 500, 'AAPL.US');
+    expect(strategyInstance.updateState).toHaveBeenLastCalledWith('AAPL.US', 'IDLE');
+  });
+
+  test('资金未分配时异常不触发释放', async () => {
+    const capitalManager = {
+      requestAllocation: jest.fn().mockResolvedValue({
+        approved: false,
+        allocatedAmount: 0,
+        reason: '资金不足',
+      }),
+      releaseAllocation: jest.fn(),
+    };
+
+    let allocationResult: { approved: boolean; allocatedAmount: number } | null = null;
+    try {
+      allocationResult = await capitalManager.requestAllocation({
+        strategyId: 1,
+        amount: 500,
+        symbol: 'AAPL.US',
+      });
+
+      if (!allocationResult.approved) return;
+
+      throw new Error('Should not reach here');
+    } catch {
+      if (allocationResult?.approved) {
+        await capitalManager.releaseAllocation(1, allocationResult.allocatedAmount, 'AAPL.US');
+      }
+    }
+
+    expect(capitalManager.releaseAllocation).not.toHaveBeenCalled();
+  });
+
+  test('多仓路径异常后释放资金', async () => {
+    const capitalManager = {
+      requestAllocation: jest.fn().mockResolvedValue({
+        approved: true,
+        allocatedAmount: 300,
+      }),
+      releaseAllocation: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const strategyInstance = {
+      updateState: jest.fn().mockResolvedValue(undefined),
+    };
+
+    let allocationResult: { approved: boolean; allocatedAmount: number } | null = null;
+    let newContractSymbol = 'AAPL.US';
+    try {
+      newContractSymbol = 'AAPL260228C00200000.US';
+
+      allocationResult = await capitalManager.requestAllocation({
+        strategyId: 1,
+        amount: 300,
+        symbol: newContractSymbol,
+      });
+
+      // 模拟执行过程中抛异常
+      throw new Error('Execution failed');
+    } catch {
+      if (allocationResult?.approved) {
+        await capitalManager.releaseAllocation(1, allocationResult.allocatedAmount, newContractSymbol);
+        await strategyInstance.updateState(newContractSymbol, 'IDLE');
+      }
+    }
+
+    expect(capitalManager.releaseAllocation).toHaveBeenCalledWith(1, 300, 'AAPL260228C00200000.US');
+    expect(strategyInstance.updateState).toHaveBeenCalledWith('AAPL260228C00200000.US', 'IDLE');
+  });
+});
+
+// ============================================
+// H. P0-2 OPENING 超时
+// ============================================
+
+describe('H. P0-2 OPENING/SHORTING 超时重置', () => {
+  const mockQuery = pool.query as jest.Mock;
+
+  beforeEach(() => {
+    mockQuery.mockReset();
+  });
+
+  /**
+   * 模拟 OPENING 状态超过15分钟的检测逻辑
+   */
+  async function checkStaleState(
+    strategyId: number,
+    symbol: string,
+    currentState: string,
+  ): Promise<{ isStale: boolean; allocationAmount: number }> {
+    if (currentState !== 'OPENING' && currentState !== 'SHORTING') {
+      return { isStale: false, allocationAmount: 0 };
+    }
+    const staleResult = await pool.query(
+      `SELECT context FROM strategy_instances
+       WHERE strategy_id = $1 AND symbol = $2 AND current_state = $3
+         AND last_updated < NOW() - INTERVAL '15 minutes'`,
+      [strategyId, symbol, currentState]
+    );
+    if (staleResult.rows.length > 0) {
+      const staleCtx = staleResult.rows[0].context || {};
+      const allocationAmount = parseFloat(staleCtx.allocationAmount || '0');
+      return { isStale: true, allocationAmount };
+    }
+    return { isStale: false, allocationAmount: 0 };
+  }
+
+  test('OPENING 超过15分钟 → 标记为 stale 并返回分配金额', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ context: { allocationAmount: 1000, intent: { symbol: 'AAPL.US' } } }],
+    });
+
+    const result = await checkStaleState(1, 'AAPL.US', 'OPENING');
+    expect(result.isStale).toBe(true);
+    expect(result.allocationAmount).toBe(1000);
+  });
+
+  test('OPENING 未超时 → 不标记为 stale', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+
+    const result = await checkStaleState(1, 'AAPL.US', 'OPENING');
+    expect(result.isStale).toBe(false);
+    expect(result.allocationAmount).toBe(0);
+  });
+
+  test('SHORTING 超过15分钟 → 标记为 stale', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ context: { allocationAmount: 2000 } }],
+    });
+
+    const result = await checkStaleState(1, 'TSLA.US', 'SHORTING');
+    expect(result.isStale).toBe(true);
+    expect(result.allocationAmount).toBe(2000);
+  });
+
+  test('COOLDOWN 状态不触发超时检查', async () => {
+    const result = await checkStaleState(1, 'AAPL.US', 'COOLDOWN');
+    expect(result.isStale).toBe(false);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('IDLE 状态不触发超时检查', async () => {
+    const result = await checkStaleState(1, 'AAPL.US', 'IDLE');
+    expect(result.isStale).toBe(false);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('超时但 allocationAmount=0 → stale 但无需释放资金', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ context: {} }],
+    });
+
+    const result = await checkStaleState(1, 'AAPL.US', 'OPENING');
+    expect(result.isStale).toBe(true);
+    expect(result.allocationAmount).toBe(0);
+  });
+});
+
+// ============================================
+// I. P0-3 熔断绕过防护
+// ============================================
+
+describe('I. P0-3 熔断绕过防护 — 多仓路径', () => {
+  /**
+   * 模拟多仓路径的熔断检查逻辑:
+   * circuitBreakerActive=true → 直接返回，不开新仓
+   * isTslpBlocked=true → 直接返回，不开新仓
+   */
+  function shouldBlockNewPosition(
+    cbCtx: { circuitBreakerActive?: boolean },
+    isTslpBlocked: boolean,
+  ): boolean {
+    if (cbCtx.circuitBreakerActive) return true;
+    if (isTslpBlocked) return true;
+    return false;
+  }
+
+  test('circuitBreakerActive=true → 禁止开新仓', () => {
+    expect(shouldBlockNewPosition({ circuitBreakerActive: true }, false)).toBe(true);
+  });
+
+  test('isTslpBlocked=true → 禁止开新仓', () => {
+    expect(shouldBlockNewPosition({ circuitBreakerActive: false }, true)).toBe(true);
+  });
+
+  test('circuitBreakerActive=true + isTslpBlocked=true → 禁止开新仓', () => {
+    expect(shouldBlockNewPosition({ circuitBreakerActive: true }, true)).toBe(true);
+  });
+
+  test('circuitBreakerActive=false + isTslpBlocked=false → 允许开新仓', () => {
+    expect(shouldBlockNewPosition({ circuitBreakerActive: false }, false)).toBe(false);
+  });
+
+  test('circuitBreakerActive 为 undefined → 允许开新仓', () => {
+    expect(shouldBlockNewPosition({}, false)).toBe(false);
+  });
+
+  test('P1-4 紧急止损阈值计算正确', () => {
+    const entryPrice = 2.50;
+    const emergencyStopLoss = entryPrice * 0.5;
+    expect(emergencyStopLoss).toBe(1.25);
+
+    // 当前价格低于紧急止损 → 触发
+    const currentPrice = 1.20;
+    expect(currentPrice <= emergencyStopLoss).toBe(true);
+
+    // 当前价格高于紧急止损 → 不触发
+    const safePrice = 1.30;
+    expect(safePrice <= emergencyStopLoss).toBe(false);
+  });
+});

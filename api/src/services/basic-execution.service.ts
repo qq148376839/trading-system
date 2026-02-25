@@ -28,6 +28,8 @@ export interface ExecutionResult {
   error?: string;
   orderStatus?: string; // 订单状态：FilledStatus, NewStatus, RejectedStatus 等
   submitted?: boolean; // 订单是否已成功提交到交易所
+  partialFill?: boolean; // P1-1: 是否部分成交
+  remainingQuantity?: number; // P1-1: 未成交剩余数量
 }
 
 class BasicExecutionService {
@@ -41,7 +43,8 @@ class BasicExecutionService {
   private validateBuyPrice(
     buyPrice: number,
     currentPrice: number | null,
-    symbol: string
+    symbol: string,
+    isOption: boolean = false
   ): { valid: boolean; warning?: string; error?: string } {
     // 基础验证：价格必须大于0
     if (buyPrice <= 0) {
@@ -51,8 +54,15 @@ class BasicExecutionService {
       };
     }
 
-    // 如果无法获取当前市场价格，跳过价格偏差验证（记录警告）
+    // P1-3: 期权无行情拒单 — 期权必须有实时行情才能下单
     if (currentPrice === null || currentPrice <= 0) {
+      if (isOption) {
+        return {
+          valid: false,
+          error: `期权无行情，拒绝下单 (${symbol})`,
+        };
+      }
+      // 股票：保持现有行为（跳过验证）
       logger.warn(`无法获取${symbol}的当前市场价格，跳过价格偏差验证`);
       return { valid: true };
     }
@@ -98,7 +108,8 @@ class BasicExecutionService {
 
     // 价格验证：获取当前市场价格并验证合理性
     const currentPrice = await this.getCurrentMarketPrice(intent.symbol, intent.metadata);
-    const priceValidation = this.validateBuyPrice(intent.entryPrice, currentPrice, intent.symbol);
+    const isOption = (intent.metadata as any)?.assetClass === 'OPTION';
+    const priceValidation = this.validateBuyPrice(intent.entryPrice, currentPrice, intent.symbol, isOption);
     
     if (!priceValidation.valid) {
       logger.error(`策略 ${strategyId} 标的 ${intent.symbol}: 价格验证失败 - ${priceValidation.error}`);
@@ -831,7 +842,20 @@ class BasicExecutionService {
         await this.recordOrder(strategyId, symbol, side, normalizedQuantity, price, orderId, signalId);
       } catch (dbError: any) {
         logger.error(`记录订单到数据库失败 (${orderId}):`, dbError.message);
-        // 不阻止后续流程，因为订单已经提交成功
+        // P1-2: 孤儿订单补救 — DB记录失败时尝试取消broker订单
+        try {
+          const tradeCtx = await getTradeContext();
+          await tradeCtx.cancelOrder(orderId);
+          logger.warn(`[ORPHAN_RESCUE] 订单${orderId}: DB记录失败，已取消broker订单`);
+        } catch (cancelErr: any) {
+          logger.error(`[CRITICAL] 孤儿订单! 订单${orderId}: DB记录失败且取消也失败: ${cancelErr.message}。需人工介入!`);
+        }
+        return {
+          success: false,
+          orderId,
+          error: `订单已提交但DB记录失败，已尝试取消: ${dbError.message}`,
+          submitted: true,
+        };
       }
 
       // 6. 如果订单提交成功，更新信号状态为EXECUTED
@@ -893,16 +917,21 @@ class BasicExecutionService {
 
       // 判断订单是否已成交
       const isFilled = normalizedStatus === 'FilledStatus';
+      const isPartialFill = normalizedStatus === 'PartialFilledStatus';
       const isRejected = normalizedStatus === 'RejectedStatus' || normalizedStatus === 'CanceledStatus';
-      
+      const filledQty = parseInt(orderDetail.executedQuantity?.toString() || orderDetail.executed_quantity?.toString() || '0');
+
       return {
         success: isFilled,
         orderId,
         avgPrice: parseFloat(orderDetail.executedPrice?.toString() || orderDetail.executed_price?.toString() || '0'),
-        filledQuantity: parseInt(orderDetail.executedQuantity?.toString() || orderDetail.executed_quantity?.toString() || '0'),
+        filledQuantity: filledQty,
         fees,
         orderStatus: normalizedStatus,
         submitted: true, // 订单已成功提交到交易所
+        // P1-1: Partial Fill 标记
+        partialFill: isPartialFill,
+        remainingQuantity: isPartialFill ? Math.max(0, absQuantity - filledQty) : undefined,
         // 如果订单被拒绝或取消，设置错误信息
         error: isRejected ? `订单状态: ${normalizedStatus}` : undefined,
       };
@@ -1271,12 +1300,24 @@ class BasicExecutionService {
         const openQuantity = parseInt(openTrade.rows[0].quantity);
         const pnl = (avgPrice - openPrice) * Math.min(filledQuantity, openQuantity);
 
-        await pool.query(
-          `UPDATE auto_trades 
-           SET close_time = NOW(), pnl = $1, fees = $2, status = $3
-           WHERE id = $4`,
-          [pnl, fees, status === 'FilledStatus' ? 'FILLED' : 'PARTIALLY_FILLED', tradeId]
-        );
+        // P1-1: PartialFill 卖出不关闭交易，更新剩余数量
+        if (status === 'PartialFilledStatus' && filledQuantity < openQuantity) {
+          const remainingQty = openQuantity - filledQuantity;
+          await pool.query(
+            `UPDATE auto_trades
+             SET quantity = $1, fees = COALESCE(fees, 0) + $2, status = 'PARTIALLY_FILLED'
+             WHERE id = $3`,
+            [remainingQty, fees, tradeId]
+          );
+          logger.warn(`[PARTIAL_FILL] 卖出部分成交: 交易${tradeId} 原始数量=${openQuantity} 已卖=${filledQuantity} 剩余=${remainingQty}`);
+        } else {
+          await pool.query(
+            `UPDATE auto_trades
+             SET close_time = NOW(), pnl = $1, fees = $2, status = $3
+             WHERE id = $4`,
+            [pnl, fees, status === 'FilledStatus' ? 'FILLED' : 'PARTIALLY_FILLED', tradeId]
+          );
+        }
       }
     } else {
       // 开仓：插入新交易记录

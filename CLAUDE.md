@@ -52,3 +52,8 @@ docs/                 → 项目文档
 - **先确认，再执行** — 不明确的需求必须先澄清
 - **最小变更** — 只做必要改动，不过度工程
 - **资金安全第一** — 涉及资金/订单的变更必须格外谨慎
+
+## Role Memory MCP (`rm`)
+- teammate-mode 下，上下文压缩后自动调用 `get_active_team` 恢复团队身份
+- 手动恢复：`/mcp__rm__who` | 切换团队：`/mcp__rm__switch team=<name>`
+- 团队配置目录：`.claude/teams/*.md`
