@@ -224,6 +224,8 @@ export class OptionIntradayStrategy extends StrategyBase {
   private cfg: OptionIntradayStrategyConfig;
   // 非交易时间日志限频（每标的每5分钟最多打印一次）
   private tradeWindowSkipLogTimes: Map<string, number> = new Map();
+  // 当前评估周期的VIX值（在generateSignal开始时设置）
+  private currentCycleVix?: number;
 
   constructor(strategyId: number, config: OptionIntradayStrategyConfig = {}) {
     super(strategyId, config as any);
@@ -244,16 +246,30 @@ export class OptionIntradayStrategy extends StrategyBase {
   }
 
   /**
-   * 获取入场阈值（根据风险偏好 + entryThresholdOverride）
+   * 计算VIX阈值因子
+   * VIX=20 → factor=1.0（基准）
+   * VIX=10 → factor=0.5（低波动，降低阈值更容易入场）
+   * VIX=50 → factor=2.5（高波动，抬高阈值更难入场）
+   */
+  private getVixThresholdFactor(vixValue?: number): number {
+    if (!vixValue || vixValue <= 0) return 1.0;
+    return Math.max(0.5, Math.min(2.5, vixValue / 20));
+  }
+
+  /**
+   * 获取入场阈值（根据风险偏好 + entryThresholdOverride + VIX自适应）
    */
   private getThresholds() {
     const pref = this.cfg.riskPreference || 'CONSERVATIVE';
-    const tableBase = ENTRY_THRESHOLDS[pref];
+    const tableBase = ENTRY_THRESHOLDS[pref] || ENTRY_THRESHOLDS.CONSERVATIVE;
     const override = this.cfg.entryThresholdOverride;
+    const vixFactor = this.getVixThresholdFactor(this.currentCycleVix);
+
     return {
-      directionalScoreMin: override?.directionalScoreMin ?? tableBase.directionalScoreMin,
-      spreadScoreMin: override?.spreadScoreMin ?? tableBase.spreadScoreMin,
+      directionalScoreMin: Math.round((override?.directionalScoreMin ?? tableBase.directionalScoreMin) * vixFactor),
+      spreadScoreMin: Math.round((override?.spreadScoreMin ?? tableBase.spreadScoreMin) * vixFactor),
       straddleIvThreshold: tableBase.straddleIvThreshold,
+      vixFactor,
     };
   }
 
@@ -317,20 +333,21 @@ export class OptionIntradayStrategy extends StrategyBase {
   ): { shouldTrade: boolean; direction: 'CALL' | 'PUT'; reason: string } {
     const thresholds = this.getThresholds();
     const score = optionRec.finalScore;
+    const vixInfo = `VIX因子=${thresholds.vixFactor.toFixed(2)}`;
 
     if (strategyType === 'DIRECTIONAL_CALL') {
       // CALL: 需要正分数超过阈值
       if (score >= thresholds.directionalScoreMin) {
-        return { shouldTrade: true, direction: 'CALL', reason: `看涨信号得分${score.toFixed(1)}≥${thresholds.directionalScoreMin}` };
+        return { shouldTrade: true, direction: 'CALL', reason: `得分${score.toFixed(1)}≥${thresholds.directionalScoreMin} (${vixInfo})` };
       }
     } else {
       // PUT: 需要负分数超过阈值（绝对值）
       if (score <= -thresholds.directionalScoreMin) {
-        return { shouldTrade: true, direction: 'PUT', reason: `看跌信号得分${score.toFixed(1)}≤-${thresholds.directionalScoreMin}` };
+        return { shouldTrade: true, direction: 'PUT', reason: `得分${score.toFixed(1)}≤-${thresholds.directionalScoreMin} (${vixInfo})` };
       }
     }
 
-    return { shouldTrade: false, direction: strategyType === 'DIRECTIONAL_CALL' ? 'CALL' : 'PUT', reason: `得分${score.toFixed(1)}未达阈值±${thresholds.directionalScoreMin}` };
+    return { shouldTrade: false, direction: strategyType === 'DIRECTIONAL_CALL' ? 'CALL' : 'PUT', reason: `得分${score.toFixed(1)}未达阈值±${thresholds.directionalScoreMin} (${vixInfo})` };
   }
 
   /**
@@ -362,18 +379,19 @@ export class OptionIntradayStrategy extends StrategyBase {
   ): { shouldTrade: boolean; direction: 'CALL' | 'PUT'; reason: string } {
     const thresholds = this.getThresholds();
     const score = optionRec.finalScore;
+    const vixInfo = `VIX因子=${thresholds.vixFactor.toFixed(2)}`;
 
     if (strategyType === 'BULL_SPREAD') {
       if (score >= thresholds.spreadScoreMin) {
-        return { shouldTrade: true, direction: 'CALL', reason: `综合得分${score.toFixed(1)}≥${thresholds.spreadScoreMin}，适合牛市价差` };
+        return { shouldTrade: true, direction: 'CALL', reason: `得分${score.toFixed(1)}≥${thresholds.spreadScoreMin}，适合牛市价差 (${vixInfo})` };
       }
     } else {
       if (score <= -thresholds.spreadScoreMin) {
-        return { shouldTrade: true, direction: 'PUT', reason: `综合得分${score.toFixed(1)}≤-${thresholds.spreadScoreMin}，适合熊市价差` };
+        return { shouldTrade: true, direction: 'PUT', reason: `得分${score.toFixed(1)}≤-${thresholds.spreadScoreMin}，适合熊市价差 (${vixInfo})` };
       }
     }
 
-    return { shouldTrade: false, direction: strategyType === 'BULL_SPREAD' ? 'CALL' : 'PUT', reason: `综合得分${score.toFixed(1)}未达阈值±${thresholds.spreadScoreMin}` };
+    return { shouldTrade: false, direction: strategyType === 'BULL_SPREAD' ? 'CALL' : 'PUT', reason: `得分${score.toFixed(1)}未达阈值±${thresholds.spreadScoreMin} (${vixInfo})` };
   }
 
   /**
@@ -487,6 +505,9 @@ export class OptionIntradayStrategy extends StrategyBase {
 
       // 2) 获取市场推荐
       const optionRec = await optionRecommendationService.calculateOptionRecommendation(symbol);
+
+      // 设置当前周期VIX值，供getThresholds()使用
+      this.currentCycleVix = optionRec.currentVix;
 
       logData.marketScore = optionRec.marketScore;
       logData.intradayScore = optionRec.intradayScore;

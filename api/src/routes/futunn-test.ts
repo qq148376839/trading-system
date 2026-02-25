@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import { getFutunnHeaders, getFutunnConfig } from '../config/futunn';
 import { generateQuoteToken } from '../utils/moomoo-quote-token';
 import { logger } from '../utils/logger';
+import marketDataService from '../services/market-data.service';
 
 export const futunnTestRouter = Router();
 
@@ -580,6 +581,41 @@ futunnTestRouter.get('/test-all', async (_req: Request, res: Response) => {
         message: err.message,
         stack: err.stack,
       },
+    });
+  }
+});
+
+/**
+ * GET /api/futunn-test/test-spx-hourly
+ * 测试 SPX 小时级 K线数据获取
+ */
+futunnTestRouter.get('/test-spx-hourly', async (_req: Request, res: Response) => {
+  const start = Date.now();
+  try {
+    const data = await marketDataService.getSPXHourlyCandlesticks(100);
+    const latency = Date.now() - start;
+
+    res.json({
+      success: true,
+      data: {
+        barCount: data.length,
+        latestBar: data.length > 0 ? (() => {
+          const last = data[data.length - 1];
+          return { timestamp: last.timestamp, open: last.open, close: last.close, high: last.high, low: last.low, volume: last.volume };
+        })() : null,
+        oldestBar: data.length > 0 ? (() => {
+          const first = data[0];
+          return { timestamp: first.timestamp, close: first.close };
+        })() : null,
+        latency_ms: latency,
+      },
+    });
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.json({
+      success: false,
+      error: msg,
+      latency_ms: Date.now() - start,
     });
   }
 });

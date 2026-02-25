@@ -29,6 +29,7 @@ interface MarketDataCache {
   // 分时数据（可选）
   usdIndexHourly?: CandlestickData[];
   btcHourly?: CandlestickData[];
+  spxHourly?: CandlestickData[];
   hourlyTimestamp?: number;
 }
 
@@ -110,13 +111,15 @@ class MarketDataCacheService {
 
     // 如果包含分时数据，优先从 DB 读取（DB 有数据则跳过 API 调用）
     if (includeIntraday) {
-      const [dbUsd, dbBtc] = await Promise.all([
+      const [dbUsd, dbBtc, dbSpx] = await Promise.all([
         this.getHistoricalIntradayFromDB('USD_INDEX', targetDate),
         this.getHistoricalIntradayFromDB('BTC', targetDate),
+        this.getHistoricalIntradayFromDB('SPX', targetDate),
       ]);
 
       result.usdIndexHourly = dbUsd.length >= 50 ? dbUsd : (marketData.usdIndexHourly || []);
       result.btcHourly = dbBtc.length >= 50 ? dbBtc : (marketData.btcHourly || []);
+      result.spxHourly = dbSpx.length >= 50 ? dbSpx : (marketData.spxHourly || []);
       result.hourlyTimestamp = targetDate.getTime();
     }
 
@@ -203,6 +206,7 @@ class MarketDataCacheService {
       if (includeIntraday) {
         this.cache.usdIndexHourly = marketData.usdIndexHourly || [];
         this.cache.btcHourly = marketData.btcHourly || [];
+        this.cache.spxHourly = marketData.spxHourly || [];
         this.cache.hourlyTimestamp = Date.now();
       }
 
@@ -260,6 +264,7 @@ class MarketDataCacheService {
           if (includeIntraday) {
             this.cache.usdIndexHourly = retryData.usdIndexHourly || [];
             this.cache.btcHourly = retryData.btcHourly || [];
+            this.cache.spxHourly = retryData.spxHourly || [];
             this.cache.hourlyTimestamp = Date.now();
           }
 
@@ -312,6 +317,7 @@ class MarketDataCacheService {
           if (includeIntraday) {
             this.cache.usdIndexHourly = retryData.usdIndexHourly || [];
             this.cache.btcHourly = retryData.btcHourly || [];
+            this.cache.spxHourly = retryData.spxHourly || [];
             this.cache.hourlyTimestamp = Date.now();
           }
 

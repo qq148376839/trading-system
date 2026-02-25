@@ -13,6 +13,9 @@ import { logger } from '../utils/logger';
 import { moomooProxy, getProxyMode } from '../utils/moomoo-proxy';
 import { getFutunnConfig } from '../config/futunn';
 import { generateQuoteToken } from '../utils/moomoo-quote-token';
+import marketDataService from '../services/market-data.service';
+import marketDataCacheService from '../services/market-data-cache.service';
+import optionRecommendationService from '../services/option-recommendation.service';
 
 export const quoteRouter = Router();
 
@@ -1278,4 +1281,130 @@ quoteRouter.get('/market-data-test', async (req: Request, res: Response) => {
       steps,
     },
   });
+});
+
+/**
+ * @openapi
+ * /quote/intraday-scoring-test:
+ *   get:
+ *     tags:
+ *       - 市场行情
+ *     summary: Intraday 评分数据管道诊断
+ *     description: 独立测试 intraday scoring 数据管道，不触发任何交易逻辑
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: symbol
+ *         schema:
+ *           type: string
+ *           default: SPY.US
+ *         description: 标的代码
+ *     responses:
+ *       200:
+ *         description: 诊断结果
+ */
+quoteRouter.get('/intraday-scoring-test', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const symbol = (req.query.symbol as string) || 'SPY.US';
+    const results: Record<string, unknown> = {
+      symbol,
+      timestamp: new Date().toISOString(),
+    };
+
+    // 1. Underlying VWAP data
+    const vwapStart = Date.now();
+    try {
+      const vwapData = await marketDataService.getIntradayVWAP(symbol);
+      results.underlyingVWAP = {
+        success: !!vwapData,
+        vwap: vwapData?.vwap || null,
+        dataPoints: vwapData?.dataPoints || 0,
+        recentKlines: vwapData?.recentKlines?.slice(-5).map((k) => ({ timestamp: k.timestamp, close: k.close })) || [],
+        latency_ms: Date.now() - vwapStart,
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      results.underlyingVWAP = { success: false, error: msg, latency_ms: Date.now() - vwapStart };
+    }
+
+    // 2. Market data (includes spxHourly, btcHourly, usdHourly)
+    const mdStart = Date.now();
+    try {
+      const marketData = await marketDataCacheService.getMarketData(100, true);
+      results.spxHourly = {
+        success: !!(marketData.spxHourly && marketData.spxHourly.length > 0),
+        barCount: marketData.spxHourly?.length || 0,
+        latestBar: marketData.spxHourly?.length ? (() => {
+          const last = marketData.spxHourly![marketData.spxHourly!.length - 1];
+          return { timestamp: last.timestamp, open: last.open, close: last.close, volume: last.volume };
+        })() : null,
+        latency_ms: Date.now() - mdStart,
+      };
+      results.btcHourly = {
+        success: !!(marketData.btcHourly && marketData.btcHourly.length >= 10),
+        barCount: marketData.btcHourly?.length || 0,
+        latestBar: marketData.btcHourly?.length ? (() => {
+          const last = marketData.btcHourly![marketData.btcHourly!.length - 1];
+          return { timestamp: last.timestamp, close: last.close };
+        })() : null,
+      };
+      results.usdHourly = {
+        success: !!(marketData.usdIndexHourly && marketData.usdIndexHourly.length >= 10),
+        barCount: marketData.usdIndexHourly?.length || 0,
+        latestBar: marketData.usdIndexHourly?.length ? (() => {
+          const last = marketData.usdIndexHourly![marketData.usdIndexHourly!.length - 1];
+          return { timestamp: last.timestamp, close: last.close };
+        })() : null,
+      };
+
+      // VIX
+      const vixValue = marketData.vix?.length ? marketData.vix[marketData.vix.length - 1]?.close : null;
+      results.vix = {
+        success: vixValue != null && vixValue > 0,
+        currentValue: vixValue,
+        vixFactor: vixValue && vixValue > 0 ? Math.max(0.5, Math.min(2.5, vixValue / 20)) : 1.0,
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      results.marketDataError = msg;
+    }
+
+    // 3. Full recommendation (scoring result)
+    const recStart = Date.now();
+    try {
+      const rec = await optionRecommendationService.calculateOptionRecommendation(symbol);
+      results.scoring = {
+        intradayComponents: rec.intradayComponents,
+        intradayScore: rec.intradayScore,
+        marketScore: rec.marketScore,
+        finalScore: rec.finalScore,
+        direction: rec.direction,
+        confidence: rec.confidence,
+        structureCheck: rec.structureCheck,
+        vwapData: rec.vwapData,
+        dataCheck: rec.dataCheck,
+        latency_ms: Date.now() - recStart,
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      results.scoringError = msg;
+    }
+
+    // 4. Threshold effects at different risk levels
+    const vixResult = results.vix as Record<string, unknown> | undefined;
+    const vixValue = vixResult?.currentValue as number | null | undefined;
+    const vixFactor = (vixResult?.vixFactor as number) || 1.0;
+    results.thresholds = {
+      aggressive: { base: 8, effective: Math.round(8 * vixFactor) },
+      standard: { base: 12, effective: Math.round(12 * vixFactor) },
+      conservative: { base: 20, effective: Math.round(20 * vixFactor) },
+      vixValue,
+      vixFactor,
+    };
+
+    res.json({ success: true, data: results });
+  } catch (error: unknown) {
+    next(error);
+  }
 });

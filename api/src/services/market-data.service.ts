@@ -767,6 +767,22 @@ class MarketDataService {
     );
   }
 
+  /**
+   * 获取SPX小时K数据（分时数据）
+   * 用于日内评分系统，替代日K数据提供更精细的SPX走势
+   */
+  async getSPXHourlyCandlesticks(count: number = 500, timeout: number = 15000): Promise<CandlestickData[]> {
+    return this.getHourlyCandlesticks(
+      this.config.spx.stockId,
+      this.config.spx.marketId,
+      this.config.spx.marketCode,
+      this.config.spx.instrumentType,
+      this.config.spx.subInstrumentType,
+      count,
+      timeout
+    );
+  }
+
 
   /**
    * 获取历史市场数据（截止到指定日期）
@@ -838,6 +854,12 @@ class MarketDataService {
               logger.warn(`获取BTC分时历史数据失败（非关键）:`, err.message);
               return [];
             })
+          ),
+          histDelay(3200).then(() =>
+            this.getSPXHourlyCandlesticks(requestCount).then(data => this.filterDataBeforeDate(data, targetDate, count)).catch(err => {
+              logger.warn(`获取SPX分时历史数据失败（非关键）:`, err.message);
+              return [];
+            })
           )
         );
       }
@@ -873,6 +895,7 @@ class MarketDataService {
       if (includeIntraday) {
         result.usdIndexHourly = optionalResults[0] || [];
         result.btcHourly = optionalResults[1] || [];
+        result.spxHourly = optionalResults[2] || [];
       }
 
       // 输出数据获取结果摘要
@@ -885,6 +908,7 @@ class MarketDataService {
       if (includeIntraday) {
         dataSummary['USD Index分时'] = `${optionalResults[0]?.length || 0}条`;
         dataSummary['BTC分时'] = `${optionalResults[1]?.length || 0}条`;
+        dataSummary['SPX分时'] = `${optionalResults[2]?.length || 0}条`;
       }
       logger.info(`历史市场数据获取完成:`, dataSummary);
 
@@ -1028,6 +1052,13 @@ class MarketDataService {
               logger.warn(`获取BTC分时数据失败（非关键）:`, err.message);
               return [];
             });
+          })(),
+          (async () => {
+            await delay(2400);
+            return this.getSPXHourlyCandlesticks(count, timeout).catch(err => {
+              logger.warn(`获取SPX分时数据失败（非关键）:`, err.message);
+              return [];
+            });
           })()
         );
       }
@@ -1060,6 +1091,7 @@ class MarketDataService {
       if (includeIntraday) {
         result.usdIndexHourly = optionalResults[0] || [];
         result.btcHourly = optionalResults[1] || [];
+        result.spxHourly = optionalResults[2] || [];
       }
 
       // 输出数据获取结果摘要
@@ -1068,7 +1100,7 @@ class MarketDataService {
         'USD Index': `${criticalResults[1].length}条`,
         BTC: `${criticalResults[2].length}条`,
       };
-      
+
       // 添加VIX和市场温度信息
       if (vixData && vixData.length > 0) {
         const lastVix = vixData[vixData.length - 1];
@@ -1088,6 +1120,7 @@ class MarketDataService {
       if (includeIntraday) {
         dataSummary['USD Index分时'] = `${optionalResults[0]?.length || 0}条`;
         dataSummary['BTC分时'] = `${optionalResults[1]?.length || 0}条`;
+        dataSummary['SPX分时'] = `${optionalResults[2]?.length || 0}条`;
       }
       logger.info(`市场数据获取完成:`, dataSummary);
 

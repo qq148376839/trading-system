@@ -7,12 +7,13 @@
  * 3. 降低入场门槛，提高交易频率
  *
  * 决策流程：
- * - 大盘环境评分 (40%): SPX趋势 + 市场温度 + VIX
- * - 分时动量评分 (40%): BTC/USD小时K + 底层股票分时
+ * - 大盘环境评分 (20%): SPX趋势 + 市场温度 + VIX
+ * - 分时动量评分 (60%): 底层1m动量(30%) + VWAP位置(15%) + SPX日内(25%) + BTC时K(15%) + USD时K(15%)
  * - 期权特性调整 (20%): 时间窗口 + 波动率
  */
 
 import marketDataCacheService from './market-data-cache.service';
+import marketDataService from './market-data.service';
 import intradayDataFilterService from './intraday-data-filter.service';
 import { logger } from '../utils/logger';
 
@@ -50,6 +51,9 @@ interface OptionRecommendation {
     btcCount: number;
     vixAvailable: boolean;
     temperatureAvailable: boolean;
+    underlyingVWAPAvailable: boolean;
+    underlyingKlineCount: number;
+    spxHourlyCount: number;
   };
   // 检查点3数据（用于日志记录）
   riskMetrics?: {
@@ -58,6 +62,26 @@ interface OptionRecommendation {
     riskScore?: number;
   };
   rsi?: number;
+  intradayComponents?: {
+    underlyingMomentum: number;
+    vwapPosition: number;
+    spxIntraday: number;
+    btcHourly: number;
+    usdHourly: number;
+  };
+  currentVix?: number;
+  vwapData?: {
+    vwap: number;
+    lastPrice: number;
+    distancePct: number;
+    priceAboveVWAP: boolean;
+  } | null;
+  structureCheck?: {
+    mismatch: boolean;
+    originalDirection: string;
+    finalDirection: string;
+    reason: string;
+  };
 }
 
 class OptionRecommendationService {
@@ -95,25 +119,51 @@ class OptionRecommendationService {
         );
       }
 
-      // 2. 计算大盘环境得分 (40%权重)
+      // 2. 获取底层标的VWAP数据（用于日内评分）
+      let underlyingVWAP: { vwap: number; dataPoints: number; rangePct: number; recentKlines: CandlestickData[] } | null = null;
+      try {
+        const vwapResult = await marketDataService.getIntradayVWAP(underlyingSymbol);
+        if (vwapResult) {
+          underlyingVWAP = {
+            vwap: vwapResult.vwap,
+            dataPoints: vwapResult.dataPoints,
+            rangePct: vwapResult.rangePct,
+            recentKlines: vwapResult.recentKlines.map(k => ({
+              open: k.open,
+              high: k.high,
+              low: k.low,
+              close: k.close,
+              volume: k.volume,
+              turnover: 0,
+              timestamp: k.timestamp,
+            })),
+          };
+        }
+      } catch (err) {
+        logger.warn(`[${underlyingSymbol}] VWAP数据获取失败: ${err instanceof Error ? err.message : err}`);
+      }
+
+      // 3. 计算大盘环境得分 (20%权重)
       const marketScore = await this.calculateMarketScore(marketData);
 
-      // 3. 计算分时动量得分 (40%权重)
-      const intradayScore = await this.calculateIntradayScore(
+      // 4. 计算分时动量得分 (60%权重)
+      const { score: intradayScore, components: intradayComponents } = await this.calculateIntradayScore(
         marketData,
-        underlyingSymbol
+        underlyingSymbol,
+        underlyingVWAP,
+        marketData.spxHourly
       );
 
-      // 4. 计算期权时间窗口调整 (20%权重)
+      // 5. 计算期权时间窗口调整 (20%权重)
       const timeWindowAdjustment = this.calculateTimeWindowAdjustment();
 
-      // 5. 综合得分计算
+      // 6. 综合得分计算 (大盘20% + 日内60% + 时间窗口20%)
       const finalScore =
-        marketScore * 0.4 +
-        intradayScore * 0.4 +
+        marketScore * 0.2 +
+        intradayScore * 0.6 +
         timeWindowAdjustment * 0.2;
 
-      // 6. 决策逻辑（降低门槛）
+      // 7. 决策逻辑（降低门槛）
       let direction: 'CALL' | 'PUT' | 'HOLD' = 'HOLD';
       let confidence = 0;
 
@@ -123,14 +173,14 @@ class OptionRecommendationService {
         confidence = Math.min(Math.round((finalScore / 100) * 100), 100);
         // [检查点2] 方向判定 - CALL
         logger.info(
-          `[${underlyingSymbol}信号] BUY_CALL | 得分=${finalScore.toFixed(1)} (市场${marketScore.toFixed(1)} + 日内${intradayScore.toFixed(1)} + 时间${timeWindowAdjustment.toFixed(1)}) | 置信度=${confidence}%`
+          `[${underlyingSymbol}信号] BUY_CALL | 得分=${finalScore.toFixed(1)} (市场${marketScore.toFixed(1)}*0.2 + 日内${intradayScore.toFixed(1)}*0.6 + 时间${timeWindowAdjustment.toFixed(1)}*0.2) | 置信度=${confidence}%`
         );
       } else if (finalScore < -15) {
         direction = 'PUT';
         confidence = Math.min(Math.round((Math.abs(finalScore) / 100) * 100), 100);
         // [检查点2] 方向判定 - PUT
         logger.info(
-          `[${underlyingSymbol}信号] BUY_PUT | 得分=${finalScore.toFixed(1)} (市场${marketScore.toFixed(1)} + 日内${intradayScore.toFixed(1)} + 时间${timeWindowAdjustment.toFixed(1)}) | 置信度=${confidence}%`
+          `[${underlyingSymbol}信号] BUY_PUT | 得分=${finalScore.toFixed(1)} (市场${marketScore.toFixed(1)}*0.2 + 日内${intradayScore.toFixed(1)}*0.6 + 时间${timeWindowAdjustment.toFixed(1)}*0.2) | 置信度=${confidence}%`
         );
       } else {
         direction = 'HOLD';
@@ -141,23 +191,48 @@ class OptionRecommendationService {
         );
       }
 
-      // 7. Delta建议（根据得分强度）
+      // 8. Structure alignment: verify signal direction matches VWAP structure
+      let structureCheckResult: { mismatch: boolean; originalDirection: string; finalDirection: string; reason: string } | undefined;
+      if (underlyingVWAP && underlyingVWAP.vwap > 0 && underlyingVWAP.recentKlines?.length >= 2 && direction !== 'HOLD') {
+        const lastPrice = underlyingVWAP.recentKlines[underlyingVWAP.recentKlines.length - 1].close;
+        const priceAboveVWAP = lastPrice > underlyingVWAP.vwap;
+        const mismatch = (direction === 'PUT' && priceAboveVWAP) || (direction === 'CALL' && !priceAboveVWAP);
+
+        const originalDirection = direction;
+        if (mismatch && Math.abs(finalScore) < 30) {
+          logger.warn(
+            `[${underlyingSymbol}结构冲突] ${direction}但价格${priceAboveVWAP ? '>' : '<'}VWAP (${lastPrice.toFixed(2)} vs ${underlyingVWAP.vwap.toFixed(2)}), 得分${Math.abs(finalScore).toFixed(1)}<30, 降级HOLD`
+          );
+          direction = 'HOLD';
+          confidence = Math.round(100 - Math.abs(finalScore) * 2);
+        }
+        structureCheckResult = {
+          mismatch,
+          originalDirection,
+          finalDirection: direction,
+          reason: mismatch
+            ? (Math.abs(finalScore) < 30 ? `${originalDirection}与VWAP冲突,降级HOLD` : `${originalDirection}与VWAP冲突,但信号强度>=30,允许覆盖`)
+            : '方向与VWAP结构一致',
+        };
+      }
+
+      // 9. Delta建议（根据得分强度）
       const suggestedDelta = this.calculateSuggestedDelta(finalScore, direction);
 
-      // 8. 入场时机建议
+      // 10. 入场时机建议
       const entryWindow = this.calculateEntryWindow(
         finalScore,
         intradayScore,
         direction
       );
 
-      // 9. 风险等级评估
+      // 11. 风险等级评估
       const { riskLevel, riskMetrics } = this.assessRiskLevel(marketData, finalScore);
 
-      // 10. 时间价值衰减因子
+      // 12. 时间价值衰减因子
       const timeDecayFactor = this.calculateTimeDecayFactor();
 
-      // 11. 生成推理说明
+      // 13. 生成推理说明
       const reasoning = this.generateReasoning(
         marketScore,
         intradayScore,
@@ -167,14 +242,35 @@ class OptionRecommendationService {
         marketData
       );
 
-      // 12. 构建检查点1数据
+      // 14. 构建检查点1数据
       const dataCheck = {
         spxCount: marketData.spx?.length || 0,
         usdCount: marketData.usdIndex?.length || 0,
         btcCount: marketData.btc?.length || 0,
         vixAvailable: !!(marketData.vix && marketData.vix.length > 0),
         temperatureAvailable: marketData.marketTemperature !== undefined,
+        underlyingVWAPAvailable: !!underlyingVWAP,
+        underlyingKlineCount: underlyingVWAP?.recentKlines?.length || 0,
+        spxHourlyCount: marketData.spxHourly?.length || 0,
       };
+
+      // 15. 提取当前VIX值
+      const currentVix = (marketData.vix && marketData.vix.length > 0)
+        ? marketData.vix[marketData.vix.length - 1].close
+        : undefined;
+
+      // 16. 构建VWAP数据摘要
+      let vwapData: { vwap: number; lastPrice: number; distancePct: number; priceAboveVWAP: boolean } | null = null;
+      if (underlyingVWAP && underlyingVWAP.vwap > 0 && underlyingVWAP.recentKlines?.length > 0) {
+        const lastPrice = underlyingVWAP.recentKlines[underlyingVWAP.recentKlines.length - 1].close;
+        const distancePct = ((lastPrice - underlyingVWAP.vwap) / underlyingVWAP.vwap) * 100;
+        vwapData = {
+          vwap: underlyingVWAP.vwap,
+          lastPrice,
+          distancePct,
+          priceAboveVWAP: lastPrice > underlyingVWAP.vwap,
+        };
+      }
 
       return {
         direction,
@@ -189,6 +285,10 @@ class OptionRecommendationService {
         timeDecayFactor,
         dataCheck,
         riskMetrics,
+        intradayComponents,
+        currentVix,
+        vwapData,
+        structureCheck: structureCheckResult,
       };
     } catch (error: any) {
       logger.error(`计算期权推荐失败 (${underlyingSymbol}):`, error.message);
@@ -275,49 +375,94 @@ class OptionRecommendationService {
   }
 
   /**
-   * 计算分时动量得分
-   * 使用小时K线数据，捕捉日内动量
+   * 计算分时动量得分 (5-component scoring)
+   * 底层1m动量(30%) + VWAP位置(15%) + SPX日内(25%) + BTC时K(15%) + USD时K(15%)
    */
   private async calculateIntradayScore(
     marketData: any,
-    underlyingSymbol: string
-  ): Promise<number> {
+    underlyingSymbol: string,
+    underlyingVWAP?: { vwap: number; dataPoints: number; rangePct: number; recentKlines: CandlestickData[] } | null,
+    spxHourly?: CandlestickData[] | null
+  ): Promise<{ score: number; components: { underlyingMomentum: number; vwapPosition: number; spxIntraday: number; btcHourly: number; usdHourly: number } }> {
     let score = 0;
-    const components: string[] = [];
+    const logParts: string[] = [];
+    const componentScores = {
+      underlyingMomentum: 0,
+      vwapPosition: 0,
+      spxIntraday: 0,
+      btcHourly: 0,
+      usdHourly: 0,
+    };
 
-    // 1. BTC小时K动量 (权重40%)
+    // 1. Underlying 1m momentum (30%)
+    if (underlyingVWAP?.recentKlines && underlyingVWAP.recentKlines.length >= 5) {
+      const recentBars = underlyingVWAP.recentKlines.slice(-20);
+      const momentum = this.calculateMomentum(recentBars);
+      const weighted = momentum * 0.3;
+      componentScores.underlyingMomentum = weighted;
+      score += weighted;
+      logParts.push(`底层1m动量=${momentum.toFixed(1)}*0.3→${weighted.toFixed(1)}`);
+    } else {
+      logParts.push(`底层1m动量=N/A(K线${underlyingVWAP?.recentKlines?.length || 0}根<5)`);
+    }
+
+    // 2. VWAP position score (15%)
+    if (underlyingVWAP && underlyingVWAP.vwap > 0 && underlyingVWAP.recentKlines?.length > 0) {
+      const lastPrice = underlyingVWAP.recentKlines[underlyingVWAP.recentKlines.length - 1].close;
+      const distancePct = ((lastPrice - underlyingVWAP.vwap) / underlyingVWAP.vwap) * 100;
+      const rawScore = Math.max(-100, Math.min(100, distancePct * 200));
+      const weighted = rawScore * 0.15;
+      componentScores.vwapPosition = weighted;
+      score += weighted;
+      logParts.push(`VWAP位置=${distancePct.toFixed(3)}%→raw${rawScore.toFixed(1)}*0.15→${weighted.toFixed(1)}`);
+    } else {
+      logParts.push(`VWAP位置=N/A`);
+    }
+
+    // 3. SPX intraday momentum (25%)
+    if (spxHourly && spxHourly.length >= 5) {
+      const filteredSPXHourly = intradayDataFilterService.filterData(spxHourly);
+      if (filteredSPXHourly.length >= 5) {
+        const spxMomentum = this.calculateMomentum(filteredSPXHourly);
+        const weighted = spxMomentum * 0.25;
+        componentScores.spxIntraday = weighted;
+        score += weighted;
+        logParts.push(`SPX日内=${spxMomentum.toFixed(1)}*0.25→${weighted.toFixed(1)}`);
+      } else {
+        logParts.push(`SPX日内=N/A(过滤后${filteredSPXHourly.length}根<5)`);
+      }
+    } else {
+      logParts.push(`SPX日内=N/A(${spxHourly?.length || 0}根<5)`);
+    }
+
+    // 4. BTC hourly momentum (15%)
     if (marketData.btcHourly && marketData.btcHourly.length >= 10) {
       const filteredBTCHourly = intradayDataFilterService.filterData(
         marketData.btcHourly
       );
       const btcHourlyMomentum = this.calculateMomentum(filteredBTCHourly);
-      score += btcHourlyMomentum * 0.4;
-      components.push(`BTC时K=${btcHourlyMomentum.toFixed(1)}→${(btcHourlyMomentum * 0.4).toFixed(1)}`);
+      const weighted = btcHourlyMomentum * 0.15;
+      componentScores.btcHourly = weighted;
+      score += weighted;
+      logParts.push(`BTC时K=${btcHourlyMomentum.toFixed(1)}*0.15→${weighted.toFixed(1)}`);
     }
 
-    // 2. USD小时K动量 (权重20%, 反向)
+    // 5. USD hourly momentum (15%, inverted)
     if (marketData.usdIndexHourly && marketData.usdIndexHourly.length >= 10) {
       const filteredUSDHourly = intradayDataFilterService.filterData(
         marketData.usdIndexHourly
       );
       const usdHourlyMomentum = this.calculateMomentum(filteredUSDHourly);
-      score += -usdHourlyMomentum * 0.2;
-      components.push(`USD时K=${usdHourlyMomentum.toFixed(1)}→${(-usdHourlyMomentum * 0.2).toFixed(1)}`);
-    }
-
-    // 3. 底层股票分时动量 (权重40%)
-    // 使用SPX日K最后几根的强度作为替代
-    if (marketData.spx && marketData.spx.length > 0) {
-      const recentCandles = marketData.spx.slice(-5);
-      const shortTermMomentum = this.calculateMomentum(recentCandles);
-      score += shortTermMomentum * 0.4;
-      components.push(`SPX近5日动量=${shortTermMomentum.toFixed(1)}→${(shortTermMomentum * 0.4).toFixed(1)}`);
+      const weighted = -usdHourlyMomentum * 0.15;
+      componentScores.usdHourly = weighted;
+      score += weighted;
+      logParts.push(`USD时K=${usdHourlyMomentum.toFixed(1)}*-0.15→${weighted.toFixed(1)}`);
     }
 
     const finalIntradayScore = Math.max(-100, Math.min(100, score));
-    logger.info(`[分时评分明细] 总分=${finalIntradayScore.toFixed(1)} | ${components.join(' | ')}`);
+    logger.info(`[${underlyingSymbol}分时评分明细] 总分=${finalIntradayScore.toFixed(1)} | ${logParts.join(' | ')}`);
 
-    return finalIntradayScore;
+    return { score: finalIntradayScore, components: componentScores };
   }
 
   /**

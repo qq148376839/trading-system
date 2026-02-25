@@ -2229,12 +2229,28 @@ quantRouter.post('/strategies/:id/simulate', async (req: Request, res: Response,
           reasoning: recommendation.reasoning,
           dataCheck: recommendation.dataCheck,
           riskMetrics: recommendation.riskMetrics,
+          intradayComponents: recommendation.intradayComponents,
+          currentVix: recommendation.currentVix,
+          vwapData: recommendation.vwapData,
+          structureCheck: recommendation.structureCheck,
         };
 
         // Step 2: 信号评估 — 用阈值判断是否入场
+        // VIX-adaptive threshold calculation
+        const currentVix = recommendation?.currentVix;
+        const vixFactor = (currentVix && currentVix > 0) ? Math.max(0.5, Math.min(2.5, currentVix / 20)) : 1.0;
+        const adaptiveThresholds = {
+          directionalScoreMin: Math.round(thresholds.directionalScoreMin * vixFactor),
+          spreadScoreMin: Math.round(thresholds.spreadScoreMin * vixFactor),
+          straddleIvThreshold: thresholds.straddleIvThreshold,
+          vixFactor,
+          baseDirectional: thresholds.directionalScoreMin,
+          baseSpread: thresholds.spreadScoreMin,
+        };
+
         const absScore = Math.abs(recommendation.finalScore);
         const directionFromScore = recommendation.finalScore >= 0 ? 'CALL' : 'PUT';
-        const passed = recommendation.direction !== 'HOLD' && absScore >= thresholds.directionalScoreMin;
+        const passed = recommendation.direction !== 'HOLD' && absScore >= adaptiveThresholds.directionalScoreMin;
 
         let selectedStrategy: string | null = null;
         let signalDirection: 'CALL' | 'PUT' | null = null;
@@ -2254,15 +2270,18 @@ quantRouter.post('/strategies/:id/simulate', async (req: Request, res: Response,
 
         result.signalEvaluation = {
           thresholds: {
-            directionalScoreMin: thresholds.directionalScoreMin,
-            spreadScoreMin: thresholds.spreadScoreMin,
+            baseDirectional: thresholds.directionalScoreMin,
+            baseSpread: thresholds.spreadScoreMin,
+            vixFactor,
+            effectiveDirectional: adaptiveThresholds.directionalScoreMin,
+            effectiveSpread: adaptiveThresholds.spreadScoreMin,
           },
           absScore,
           selectedStrategy,
           direction: signalDirection,
           reason: passed
-            ? `得分 ${absScore} >= 阈值 ${thresholds.directionalScoreMin}，方向 ${signalDirection}`
-            : `得分 ${absScore} < 阈值 ${thresholds.directionalScoreMin} 或方向 HOLD，不入场`,
+            ? `得分 ${absScore} >= 阈值 ${adaptiveThresholds.directionalScoreMin} (base=${thresholds.directionalScoreMin} x vix=${vixFactor.toFixed(2)})，方向 ${signalDirection}`
+            : `得分 ${absScore} < 阈值 ${adaptiveThresholds.directionalScoreMin} (base=${thresholds.directionalScoreMin} x vix=${vixFactor.toFixed(2)}) 或方向 HOLD，不入场`,
           passed,
         };
 
