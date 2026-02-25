@@ -991,9 +991,11 @@ class StrategyScheduler {
                   }
                   tradePnL = Math.round(tradePnL * 100) / 100;
 
-                  const prevConsecutiveLosses = context.consecutiveLosses ?? 0;
+                  const rawPrevLosses = parseInt(String(context.consecutiveLosses ?? 0), 10);
+                  const prevConsecutiveLosses = isNaN(rawPrevLosses) ? 0 : rawPrevLosses;
                   const newConsecutiveLosses = tradePnL < 0 ? prevConsecutiveLosses + 1 : 0;
-                  const prevDailyPnL = context.dailyRealizedPnL ?? 0;
+                  const rawPrevPnL = parseFloat(String(context.dailyRealizedPnL ?? 0));
+                  const prevDailyPnL = isNaN(rawPrevPnL) ? 0 : rawPrevPnL;
                   const newDailyPnL = Math.round((prevDailyPnL + tradePnL) * 100) / 100;
 
                   // 提取交易方向（CALL/PUT）
@@ -4147,7 +4149,7 @@ class StrategyScheduler {
         }
 
         const currentPrice = parseFloat(
-          (pos.currentPrice || pos.current_price || pos.lastPrice || pos.last_price || pos.costPrice || pos.cost_price || '0').toString()
+          (pos.currentPrice || pos.current_price || pos.lastPrice || pos.last_price || '0').toString()
         );
         if (currentPrice <= 0) continue;
 
@@ -4257,6 +4259,9 @@ class StrategyScheduler {
             lastExitTime: new Date().toISOString(),
             // 记录虚拟 PnL = -100%（最坏情况估算）
             lastTradePnL: allocationAmount > 0 ? -allocationAmount : 0,
+            dailyRealizedPnL: (parseFloat(String(ctx.dailyRealizedPnL ?? 0)) + (allocationAmount > 0 ? -allocationAmount : 0)),
+            consecutiveLosses: (parseInt(String(ctx.consecutiveLosses ?? 0)) + 1),
+            dailyTradeCount: (parseInt(String(ctx.dailyTradeCount ?? 0)) + 1),
           });
 
           // 释放资金分配

@@ -24,7 +24,7 @@ import type { TradingPhase } from './option-dynamic-exit.service';
 
 const DEFAULT_TRAILING_PERCENT = 60;
 const DEFAULT_LIMIT_OFFSET = 0.10;
-const MIN_TRAILING_PERCENT = 8;
+const MIN_TRAILING_PERCENT = 30;
 const MAX_TRAILING_PERCENT = 65;
 const ADJUST_THRESHOLD = 3; // trailing_percent 差异≥3% 才调用 replaceOrder
 
