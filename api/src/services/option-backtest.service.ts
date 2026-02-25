@@ -470,11 +470,14 @@ async function fetchLongportMinuteKlines(
   try {
     const quoteCtx = await getQuoteContext();
     const longport = require('longport');
-    const { Period, AdjustType } = longport;
+    const { Period, AdjustType, NaiveDate: LbNaiveDate, Time: LbTime, NaiveDatetime } = longport;
 
-    // 构造目标日期的收盘时间作为 datetime 锚点
-    // 格式：Date 对象，美东时间当天 16:00（收盘）
-    const targetEndOfDay = new Date(`${date}T16:00:00-05:00`);
+    // 构造目标日期的收盘时间作为 NaiveDatetime 锚点
+    // 美东时间当天 16:00（收盘）
+    const [year, month, day] = date.split('-').map(Number);
+    const endOfDayDate = new LbNaiveDate(year, month, day);
+    const endOfDayTime = new LbTime(16, 0, 0);
+    const targetEndOfDay = new NaiveDatetime(endOfDayDate, endOfDayTime);
 
     let candlesticks: CandlestickData[] = [];
 
@@ -483,6 +486,7 @@ async function fetchLongportMinuteKlines(
       const resp = await quoteCtx.historyCandlesticksByOffset(
         symbol,
         Period.Min_1,
+        AdjustType.NoAdjust,
         false,             // forward = false (向历史回溯)
         targetEndOfDay,    // 锚定到目标日期收盘时间
         count

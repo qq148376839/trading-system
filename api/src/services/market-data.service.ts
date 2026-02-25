@@ -466,7 +466,7 @@ class MarketDataService {
     try {
       const quoteCtx = await getQuoteContext();
       const longport = require('longport');
-      const { Period, AdjustType, NaiveDatetime } = longport;
+      const { Period, AdjustType, NaiveDate: LbNaiveDate, Time: LbTime, NaiveDatetime } = longport;
       const { formatLongbridgeCandlestick } = require('../utils/candlestick-formatter');
 
       let candlesticks: any[] = [];
@@ -474,14 +474,17 @@ class MarketDataService {
       if (targetDate) {
         // 使用historyCandlesticksByOffset获取历史数据
         // 参数：symbol, period, adjustType, forward, datetime, count, tradeSessions(可选)
-        const targetNaiveDatetime = new NaiveDatetime(
+        const targetNaiveDate = new LbNaiveDate(
           targetDate.getFullYear(),
           targetDate.getMonth() + 1,
-          targetDate.getDate(),
+          targetDate.getDate()
+        );
+        const targetNaiveTime = new LbTime(
           targetDate.getHours() || 23,
           targetDate.getMinutes() || 59,
           targetDate.getSeconds() || 59
         );
+        const targetNaiveDatetime = new NaiveDatetime(targetNaiveDate, targetNaiveTime);
 
         candlesticks = await quoteCtx.historyCandlesticksByOffset(
           '.VIX.US',

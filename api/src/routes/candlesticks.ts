@@ -413,19 +413,22 @@ candlesticksRouter.get('/history', rateLimiter, async (req: Request, res: Respon
 
     const quoteCtx = await getQuoteContext();
     const longport = require('longport');
-    const { AdjustType, NaiveDatetime } = longport;
+    const { AdjustType, NaiveDate, Time, NaiveDatetime } = longport;
 
     // 将 JavaScript Date 转换为 NaiveDatetime（Longbridge SDK 要求的格式）
-    // NaiveDatetime 构造函数：new NaiveDatetime(year, month, day, hour, minute, second)
+    // NaiveDatetime 构造函数：new NaiveDatetime(NaiveDate, Time)
     // 注意：month 从 1 开始（1=1月，12=12月）
-    const naiveDatetime = new NaiveDatetime(
+    const naiveDate = new NaiveDate(
       parsedDate.getFullYear(),
       parsedDate.getMonth() + 1,
-      parsedDate.getDate(),
+      parsedDate.getDate()
+    );
+    const naiveTime = new Time(
       parsedDate.getHours(),
       parsedDate.getMinutes(),
       parsedDate.getSeconds()
     );
+    const naiveDatetime = new NaiveDatetime(naiveDate, naiveTime);
 
     const adjustType = AdjustType?.NoAdjust || 0;
 

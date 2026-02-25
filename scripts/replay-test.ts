@@ -106,48 +106,54 @@ async function checkDataQuality(): Promise<DataQuality[]> {
     }
   }
 
-  // 标的 K 线
+  // 标的 K 线 — 优先用 history 接口，失败时降级到实时接口
   try {
     const spyResp = await apiFetch(
       `/api/candlesticks/history?symbol=SPY.US&period=1m&date=${REPLAY_DATE}T16:00:00&direction=Backward&count=500`
     );
     const bars = spyResp.data?.candlesticks?.length || 0;
     results.push({ source: 'SPY.US 1m', bars, ok: bars >= 100 });
-  } catch (err: any) {
-    results.push({ source: 'SPY.US 1m', bars: 0, ok: false });
+  } catch {
+    // history 接口可能因 SDK NaiveDate 兼容问题失败，降级到实时接口
+    try {
+      const fallbackResp = await apiFetch(
+        `/api/candlesticks?symbol=SPY.US&period=1m&count=500`
+      );
+      const bars = fallbackResp.data?.candlesticks?.length || 0;
+      results.push({ source: 'SPY.US 1m (realtime fallback)', bars, ok: bars >= 5 });
+    } catch (err2: any) {
+      results.push({ source: 'SPY.US 1m', bars: 0, ok: false });
+    }
   }
 
   return results;
 }
 
 async function runBacktest(): Promise<any> {
-  // 1. 创建回测任务
-  const createResp = await apiFetch('/api/quant/backtest', {
+  // 1. 创建期权回测任务（使用 option-backtest 端点）
+  const createResp = await apiFetch('/api/option-backtest', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       strategyId: STRATEGY_ID,
-      symbols: ['SPY.US'],
-      startDate: REPLAY_DATE,
-      endDate: REPLAY_DATE,
+      dates: [REPLAY_DATE],
       config: { entryThreshold: 15, maxTradesPerDay: 3 },
     }),
   });
   const taskId = createResp.data?.id;
   if (!taskId) throw new Error(`创建回测失败: ${JSON.stringify(createResp)}`);
-  console.log(`  回测任务 #${taskId} 已创建，等待完成...`);
+  console.log(`  期权回测任务 #${taskId} 已创建，等待完成...`);
 
-  // 2. 轮询等待完成
+  // 2. 轮询等待完成（option-backtest 的 GET /:id 同时返回 status 和结果）
   for (let i = 0; i < 60; i++) {
     await sleep(3000);
-    const statusResp = await apiFetch(`/api/quant/backtest/${taskId}/status`);
-    const status = statusResp.data?.status;
+    const result = await apiFetch(`/api/option-backtest/${taskId}`);
+    const status = result.data?.status;
     if (status === 'COMPLETED') {
-      const result = await apiFetch(`/api/quant/backtest/${taskId}`);
       return result.data;
     }
     if (status === 'FAILED') {
-      throw new Error(`回测失败: ${statusResp.data?.error || 'unknown'}`);
+      throw new Error(`回测失败: ${result.data?.errorMessage || 'unknown'}`);
     }
     if (i % 5 === 4) {
       console.log(`  ... 仍在等待 (${(i + 1) * 3}s, status=${status})`);
@@ -190,8 +196,8 @@ function compareResults(
 
   // 对于每个回测交易，在实际订单中找 ±5 分钟内的匹配
   for (const bt of sortedBt) {
-    const btTime = new Date(bt.entryTime || bt.entry_time || 0).getTime();
-    const btSymbol = (bt.symbol || '').toUpperCase();
+    const btTime = new Date(bt.entryTime || 0).getTime();
+    const btSymbol = (bt.optionSymbol || bt.symbol || '').toUpperCase();
     let bestMatch: { idx: number; timeDiff: number; priceDev: number } | null = null;
 
     for (let i = 0; i < sortedActual.length; i++) {
@@ -206,7 +212,7 @@ function compareResults(
       if (!btSymbol.includes(orderSymbol.replace('.US', '')) &&
           !orderSymbol.includes(btSymbol.replace('.US', ''))) continue;
 
-      const btPrice = bt.entryPrice || bt.entry_price || 0;
+      const btPrice = bt.entryPrice || 0;
       const orderPrice = parseFloat(order.executed_price || order.price || '0');
       const priceDev = btPrice > 0 && orderPrice > 0
         ? Math.abs(btPrice - orderPrice) / btPrice
@@ -428,21 +434,25 @@ function printReport(report: ReplayReport): void {
       const trades = bt.trades || [];
       console.log(`  回测交易 (${trades.length}笔):`);
       for (const t of trades.slice(0, 10)) {
-        const sym = t.symbol || t.optionSymbol || '?';
-        const side = t.side || t.direction || '?';
-        const entry = (t.entryPrice || t.entry_price || 0).toFixed(2);
-        const exit = (t.exitPrice || t.exit_price || 0).toFixed(2);
-        const pnl = t.pnlPercent || t.pnl_percent || t.returnPercent || 0;
+        const sym = t.optionSymbol || t.symbol || '?';
+        const dir = t.direction || t.side || '?';
+        const entry = (t.entryPrice || 0).toFixed(2);
+        const exit = (t.exitPrice || 0).toFixed(2);
+        const entryT = t.entryTime ? t.entryTime.slice(11, 16) : '?';
+        const exitT = t.exitTime ? t.exitTime.slice(11, 16) : 'open';
+        const pnl = t.grossPnLPercent || t.netPnLPercent || 0;
         const pnlStr = pnl >= 0 ? `+${pnl.toFixed(1)}%` : `${pnl.toFixed(1)}%`;
-        console.log(`    ${side.padEnd(5)} ${sym} $${entry} → $${exit} PnL ${pnlStr}`);
+        console.log(`    ${dir.padEnd(5)} ${sym} ${entryT}→${exitT} $${entry}→$${exit} PnL ${pnlStr}`);
       }
       if (trades.length > 10) console.log(`    ... 及 ${trades.length - 10} 笔更多交易`);
 
-      // P&L 摘要
-      const totalReturn = bt.totalReturn ?? bt.total_return;
-      const winRate = bt.winRate ?? bt.win_rate;
-      if (totalReturn !== undefined) {
-        console.log(`\n  模拟 P&L: 总收益率 ${(totalReturn * 100).toFixed(2)}% | 胜率 ${((winRate || 0) * 100).toFixed(0)}%`);
+      // P&L 摘要 (option-backtest summary)
+      const summary = bt.summary;
+      if (summary) {
+        const winRate = summary.winRate ?? 0;
+        const netPnL = summary.totalNetPnL ?? 0;
+        const grossPnL = summary.totalGrossPnL ?? 0;
+        console.log(`\n  模拟 P&L: 毛利 $${grossPnL.toFixed(0)} | 净利 $${netPnL.toFixed(0)} | 胜率 ${winRate.toFixed(0)}% | 交易 ${summary.totalTrades || 0}笔`);
       }
       console.log();
     }

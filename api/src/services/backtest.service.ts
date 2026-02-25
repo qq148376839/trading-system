@@ -164,15 +164,18 @@ class BacktestService {
         } else {
           // 日期范围超过1000天，使用historyCandlesticksByOffset从结束日期往前获取
           // ✅ 将JavaScript Date转换为NaiveDatetime（Longbridge SDK要求的格式）
-          // NaiveDatetime构造函数：new NaiveDatetime(year, month, day, hour, minute, second)
-          const endNaiveDatetime = new NaiveDatetime(
+          // NaiveDatetime构造函数：new NaiveDatetime(NaiveDate, Time)
+          const endNaiveDate = new NaiveDate(
             endDate.getFullYear(),
             endDate.getMonth() + 1,
-            endDate.getDate(),
+            endDate.getDate()
+          );
+          const endNaiveTime = new longport.Time(
             endDate.getHours(),
             endDate.getMinutes(),
             endDate.getSeconds()
           );
+          const endNaiveDatetime = new NaiveDatetime(endNaiveDate, endNaiveTime);
           
           const count = Math.min(daysDiff + 100, 1000); // 最多1000条
           // ✅ 参数顺序：
