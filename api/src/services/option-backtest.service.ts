@@ -42,6 +42,9 @@ interface MarketDataWindow {
   // 小时级数据（用于分时评分）
   btcHourly?: CandlestickData[];
   usdIndexHourly?: CandlestickData[];
+  // 1分钟级数据（用于分时评分 — 与实盘完全对齐）
+  spxIntraday?: CandlestickData[];     // SPX 1m（SPX intraday momentum 25%）
+  underlying?: CandlestickData[];       // 标的 1m（underlying momentum 30% + VWAP 15%）
 }
 
 interface BacktestTradeRecord {
@@ -214,32 +217,57 @@ function calculateMarketScore(md: MarketDataWindow): number {
   return Math.max(-100, Math.min(100, score));
 }
 
-/** 与实盘对齐的分时评分 (调整权重 + 添加 SPX 日内分量) */
+/** 从 1m OHLCV 数据计算 VWAP（复制自 market-data.service.ts） */
+function calculateVWAP(bars: CandlestickData[]): { vwap: number; lastPrice: number } | null {
+  if (!bars || bars.length < 5) return null;
+  let sumTPV = 0, sumV = 0;
+  for (const k of bars) {
+    const tp = (k.high + k.low + k.close) / 3;
+    sumTPV += tp * k.volume;
+    sumV += k.volume;
+  }
+  if (sumV <= 0) return null;
+  return { vwap: sumTPV / sumV, lastPrice: bars[bars.length - 1].close };
+}
+
+/** 与实盘完全对齐的分时评分 — 5组件 (option-recommendation.service.ts lines 378-466) */
 function calculateIntradayScore(md: MarketDataWindow): number {
   let score = 0;
 
-  // 1. SPX 日内/小时动量 (25% — 对应实盘的 SPX intraday 25% + 替代实盘的底层1m 30% 中的一部分)
-  // 回测无法获取底层1m实时动量，用 SPX 近期数据替代
-  if (md.spx && md.spx.length >= 5) {
-    const recent = md.spx.slice(-10);
-    score += calculateMomentum(recent) * 0.45; // 合并底层 + SPX 权重
+  // 1. Underlying 1m momentum (30% — 与实盘对齐)
+  if (md.underlying && md.underlying.length >= 5) {
+    const recent = md.underlying.slice(-10);
+    score += calculateMomentum(recent) * 0.30;
   }
 
-  // 2. BTC 小时 K 动量 (15% — 与实盘对齐)
+  // 2. VWAP position (15% — 与实盘对齐)
+  // distancePct = (lastPrice - vwap) / vwap * 100, rawScore = distancePct * 200
+  if (md.underlying && md.underlying.length >= 20) {
+    const vwapResult = calculateVWAP(md.underlying);
+    if (vwapResult && vwapResult.vwap > 0) {
+      const distancePct = ((vwapResult.lastPrice - vwapResult.vwap) / vwapResult.vwap) * 100;
+      const vwapScore = Math.max(-100, Math.min(100, distancePct * 200));
+      score += vwapScore * 0.15;
+    }
+  }
+
+  // 3. SPX intraday momentum (25% — 与实盘对齐)
+  if (md.spxIntraday && md.spxIntraday.length >= 5) {
+    const recent = md.spxIntraday.slice(-10);
+    score += calculateMomentum(recent) * 0.25;
+  }
+
+  // 4. BTC hourly momentum (15% — 与实盘对齐)
   if (md.btcHourly && md.btcHourly.length >= 10) {
     const filtered = intradayDataFilterService.filterData(md.btcHourly);
     score += calculateMomentum(filtered) * 0.15;
   }
 
-  // 3. USD 小时 K 动量 (15%, 反向 — 与实盘对齐)
+  // 5. USD hourly momentum (15%, inverted — 与实盘对齐)
   if (md.usdIndexHourly && md.usdIndexHourly.length >= 10) {
     const filtered = intradayDataFilterService.filterData(md.usdIndexHourly);
     score += -calculateMomentum(filtered) * 0.15;
   }
-
-  // 注意: 实盘还有 VWAP position (15%) 和 underlying 1m momentum (30%)
-  // 回测无法完全复现这两项，SPX 动量已吸收部分权重 (0.45 ≈ 0.30 + 0.15)
-  // 剩余 0.25 的权重缺失，使得回测分时评分整体偏保守
 
   return Math.max(-100, Math.min(100, score));
 }
@@ -834,7 +862,8 @@ class OptionBacktestService {
       if (state === 'IDLE' && etMin <= cfg.tradeWindowEndET && dayTradeCount < cfg.maxTradesPerDay) {
         // 构建滑动窗口 market data（日级 + 小时级）
         const window = this.buildMarketDataWindow(
-          spxDaily, usdDaily, btcDaily, vixData, btcHourly, usdHourly, etMin, date
+          spxDaily, usdDaily, btcDaily, vixData, btcHourly, usdHourly, etMin, date,
+          spxData, underlyingData,
         );
 
         if (!window) continue;
@@ -1219,7 +1248,9 @@ class OptionBacktestService {
     btcHourly: CandlestickData[],
     usdHourly: CandlestickData[],
     currentETMin: number,
-    date: string
+    date: string,
+    spxIntraday?: CandlestickData[],
+    underlyingIntraday?: CandlestickData[],
   ): MarketDataWindow | null {
     const etHour = Math.floor(currentETMin / 60);
     const etMinute = currentETMin % 60;
@@ -1250,6 +1281,10 @@ class OptionBacktestService {
       });
     }
 
+    // 1分钟级数据截止到当前时刻（用于分时评分 5 组件）
+    const spxIntra = spxIntraday ? spxIntraday.filter(d => d.timestamp <= cutoffTs) : [];
+    const underlyingIntra = underlyingIntraday ? underlyingIntraday.filter(d => d.timestamp <= cutoffTs) : [];
+
     // 小时级数据截止到当前时刻
     const btcH = btcHourly.filter(d => d.timestamp <= cutoffTs);
     const usdH = usdHourly.filter(d => d.timestamp <= cutoffTs);
@@ -1265,6 +1300,8 @@ class OptionBacktestService {
       marketTemperature: marketTemp,
       btcHourly: btcH.slice(-24),
       usdIndexHourly: usdH.slice(-24),
+      spxIntraday: spxIntra.slice(-60),       // 最近 60 根 1m bar（1小时窗口）
+      underlying: underlyingIntra.slice(-240), // 全天 1m bar（用于 VWAP 从开盘累计）
     };
   }
 
