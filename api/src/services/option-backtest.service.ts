@@ -17,6 +17,7 @@ import { getQuoteContext } from '../config/longport';
 import klineHistoryService from './kline-history.service';
 import intradayDataFilterService from './intraday-data-filter.service';
 import { optionDynamicExitService, PositionContext, DEFAULT_FEE_CONFIG } from './option-dynamic-exit.service';
+import { estimateOptionOrderTotalCost } from './options-fee.service';
 import { ENTRY_THRESHOLDS } from './strategies/option-intraday-strategy';
 import { logger } from '../utils/logger';
 
@@ -113,7 +114,7 @@ export interface OptionBacktestResult {
 interface OptionBacktestConfig {
   entryThreshold?: number;           // default 15
   riskPreference?: 'AGGRESSIVE' | 'CONSERVATIVE';
-  positionContracts?: number;        // default 1
+  positionContracts?: number;        // 固定合约数（仅 FIXED_CONTRACTS 模式使用）
   entryPriceMode?: 'CLOSE' | 'HIGH'; // default CLOSE (use candle close as entry)
   strikeOffsetPoints?: number;       // ATM offset, default 0
   tradeWindowStartET?: number;       // minutes from midnight, default 570 (9:30)
@@ -123,6 +124,17 @@ interface OptionBacktestConfig {
   noNewEntryBeforeCloseMinutes?: number; // 收盘前N分钟禁开新仓, default 180
   forceCloseBeforeCloseMinutes?: number; // 收盘前N分钟强平, default 30
   vixAdjustThreshold?: boolean;         // 是否用VIX动态调整阈值, default true
+  positionSizing?: {                    // 仓位模式（从策略DB读取）
+    mode: 'FIXED_CONTRACTS' | 'MAX_PREMIUM';
+    fixedContracts?: number;
+    maxPremiumUsd?: number;
+  };
+  feeModel?: {                          // 手续费模型（从策略DB读取）
+    commissionPerContract?: number;
+    minCommissionPerOrder?: number;
+    platformFeePerContract?: number;
+  };
+  capitalBudget?: number;               // 策略可用资金预算（前端可传入，回测用）
 }
 
 // ============================================
@@ -726,6 +738,9 @@ class OptionBacktestService {
     noNewEntryBeforeCloseMinutes: number;
     forceCloseBeforeCloseMinutes: number;
     vixAdjustThreshold: boolean;
+    positionSizing: { mode: 'FIXED_CONTRACTS' | 'MAX_PREMIUM'; fixedContracts?: number; maxPremiumUsd?: number };
+    feeModel: { commissionPerContract: number; minCommissionPerOrder: number; platformFeePerContract: number };
+    capitalBudget: number;
   }> {
     const defaults = {
       baseThreshold: 15,
@@ -738,40 +753,111 @@ class OptionBacktestService {
       noNewEntryBeforeCloseMinutes: 180,
       forceCloseBeforeCloseMinutes: 30,
       vixAdjustThreshold: true,
+      positionSizing: { mode: 'FIXED_CONTRACTS' as const, fixedContracts: 1 },
+      feeModel: { commissionPerContract: 0.65, minCommissionPerOrder: 1.00, platformFeePerContract: 0.30 },
+      capitalBudget: 0,
     };
     try {
-      const res = await pool.query(`SELECT config FROM strategies WHERE id = $1`, [strategyId]);
+      const res = await pool.query(
+        `SELECT s.config, ca.allocation_type, ca.allocation_value
+         FROM strategies s
+         LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
+         WHERE s.id = $1`,
+        [strategyId]
+      );
       if (res.rows.length === 0) return defaults;
 
-      const stratConfig = typeof res.rows[0].config === 'string'
-        ? JSON.parse(res.rows[0].config)
-        : res.rows[0].config;
+      const row = res.rows[0];
+      const stratConfig = typeof row.config === 'string'
+        ? JSON.parse(row.config)
+        : row.config;
 
       const pref: 'AGGRESSIVE' | 'CONSERVATIVE' = stratConfig?.riskPreference || 'CONSERVATIVE';
       const tableBase = ENTRY_THRESHOLDS[pref] || ENTRY_THRESHOLDS.CONSERVATIVE;
       const override = stratConfig?.entryThresholdOverride;
       const baseThreshold = override?.directionalScoreMin ?? tableBase.directionalScoreMin;
 
+      // 仓位模式
+      const sizing = stratConfig?.positionSizing || defaults.positionSizing;
+
+      // 手续费模型
+      const feeModel = {
+        commissionPerContract: stratConfig?.feeModel?.commissionPerContract ?? defaults.feeModel.commissionPerContract,
+        minCommissionPerOrder: stratConfig?.feeModel?.minCommissionPerOrder ?? defaults.feeModel.minCommissionPerOrder,
+        platformFeePerContract: stratConfig?.feeModel?.platformFeePerContract ?? defaults.feeModel.platformFeePerContract,
+      };
+
+      // 资金预算：从 capital_allocations 表读取
+      let capitalBudget = 0;
+      if (row.allocation_type === 'FIXED_AMOUNT') {
+        capitalBudget = parseFloat(row.allocation_value) || 0;
+      } else if (row.allocation_type === 'PERCENTAGE') {
+        // 百分比模式：无法在回测中获取实时总资金，使用 maxPremiumUsd 或 0
+        capitalBudget = sizing.maxPremiumUsd || 0;
+      }
+
+      // tradeWindow: 策略DB使用 tradeWindow 嵌套结构
+      const tw = stratConfig?.tradeWindow || {};
+
       const resolved = {
         baseThreshold,
         riskPreference: pref,
-        positionContracts: stratConfig?.positionContracts ?? defaults.positionContracts,
+        positionContracts: sizing.fixedContracts ?? defaults.positionContracts,
         tradeWindowStartET: stratConfig?.tradeWindowStartET ?? defaults.tradeWindowStartET,
         tradeWindowEndET: stratConfig?.tradeWindowEndET ?? defaults.tradeWindowEndET,
         maxTradesPerDay: stratConfig?.maxTradesPerDay ?? defaults.maxTradesPerDay,
-        avoidFirstMinutes: stratConfig?.avoidFirstMinutes ?? defaults.avoidFirstMinutes,
-        noNewEntryBeforeCloseMinutes: stratConfig?.noNewEntryBeforeCloseMinutes ?? defaults.noNewEntryBeforeCloseMinutes,
-        forceCloseBeforeCloseMinutes: stratConfig?.forceCloseBeforeCloseMinutes ?? defaults.forceCloseBeforeCloseMinutes,
+        avoidFirstMinutes: tw.zdteCooldownMinutes ?? stratConfig?.avoidFirstMinutes ?? defaults.avoidFirstMinutes,
+        noNewEntryBeforeCloseMinutes: tw.noNewEntryBeforeCloseMinutes ?? stratConfig?.noNewEntryBeforeCloseMinutes ?? defaults.noNewEntryBeforeCloseMinutes,
+        forceCloseBeforeCloseMinutes: tw.forceCloseBeforeCloseMinutes ?? stratConfig?.forceCloseBeforeCloseMinutes ?? defaults.forceCloseBeforeCloseMinutes,
         vixAdjustThreshold: stratConfig?.vixAdjustThreshold ?? defaults.vixAdjustThreshold,
+        positionSizing: sizing,
+        feeModel,
+        capitalBudget,
       };
 
-      logger.info(`[期权回测] 策略#${strategyId} resolved config: threshold=${resolved.baseThreshold}, pref=${pref}, contracts=${resolved.positionContracts}, window=${resolved.tradeWindowStartET}-${resolved.tradeWindowEndET}`);
+      logger.info(`[期权回测] 策略#${strategyId} resolved: threshold=${resolved.baseThreshold}, pref=${pref}, sizing=${sizing.mode}, fixedContracts=${sizing.fixedContracts}, budget=${capitalBudget}, window=${resolved.tradeWindowStartET}-${resolved.tradeWindowEndET}`);
       return resolved;
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
       logger.warn(`[期权回测] 读取策略配置失败: ${errMsg}, 使用默认配置`);
       return defaults;
     }
+  }
+
+  /**
+   * 根据 positionSizing 模式计算入场合约数（对齐实盘 option-intraday-strategy.ts 逻辑）
+   */
+  private calculatePositionContracts(cfg: Required<OptionBacktestConfig>, entryPremium: number): number {
+    const sizing = cfg.positionSizing;
+    if (!sizing || sizing.mode === 'FIXED_CONTRACTS') {
+      return Math.max(1, Math.floor(sizing?.fixedContracts || cfg.positionContracts));
+    }
+
+    // MAX_PREMIUM 模式：根据预算计算能购买的最大合约数
+    let budget = sizing.maxPremiumUsd || 0;
+    if (budget === 0 && cfg.capitalBudget > 0) {
+      budget = cfg.capitalBudget;
+    }
+    if (budget <= 0) {
+      logger.warn(`[期权回测] MAX_PREMIUM 模式但无预算，使用 positionContracts=${cfg.positionContracts}`);
+      return Math.max(1, cfg.positionContracts);
+    }
+
+    // 逐张递增，找到预算内最大合约数（与实盘一致）
+    let contracts = 1;
+    for (let n = 1; n <= 50; n++) {
+      const est = estimateOptionOrderTotalCost({
+        premium: entryPremium,
+        contracts: n,
+        multiplier: 100,
+        feeModel: cfg.feeModel,
+      });
+      if (est.totalCost > budget) break;
+      contracts = n;
+    }
+
+    logger.debug(`[期权回测] MAX_PREMIUM: budget=${budget.toFixed(2)}, premium=${entryPremium.toFixed(2)}, contracts=${contracts}`);
+    return Math.max(1, contracts);
   }
 
   /**
@@ -799,6 +885,9 @@ class OptionBacktestService {
       noNewEntryBeforeCloseMinutes: config?.noNewEntryBeforeCloseMinutes ?? resolved.noNewEntryBeforeCloseMinutes,
       forceCloseBeforeCloseMinutes: config?.forceCloseBeforeCloseMinutes ?? resolved.forceCloseBeforeCloseMinutes,
       vixAdjustThreshold: config?.vixAdjustThreshold ?? resolved.vixAdjustThreshold,
+      positionSizing: config?.positionSizing ?? resolved.positionSizing,
+      feeModel: config?.feeModel ?? resolved.feeModel,
+      capitalBudget: config?.capitalBudget ?? resolved.capitalBudget,
     };
 
     const allTrades: BacktestTradeRecord[] = [];
@@ -929,6 +1018,7 @@ class OptionBacktestService {
     let holdingEntryUnderlyingPrice = 0;
     let holdingPeakPnLPercent = 0;
     let holdingEntryIV = 0;
+    let holdingQuantity = cfg.positionContracts; // 每笔交易的实际合约数
 
     // 期权合约 K-line 数据
     let optionKlines: CandlestickData[] = [];
@@ -1018,6 +1108,9 @@ class OptionBacktestService {
         const entryPrice = cfg.entryPriceMode === 'HIGH' ? optBar.high : optBar.close;
         if (entryPrice <= 0) continue;
 
+        // 动态计算合约数（对齐实盘 positionSizing 逻辑）
+        holdingQuantity = this.calculatePositionContracts(cfg, entryPrice);
+
         state = 'HOLDING';
         holdingDirection = direction;
         holdingOptionSymbol = optSymbol;
@@ -1049,7 +1142,7 @@ class OptionBacktestService {
         // 收盘前强平安全网（在 checkExitCondition 之前检查）
         if (etMin >= marketCloseET - cfg.forceCloseBeforeCloseMinutes) {
           const forcePrice = optBar.close;
-          const forceQty = cfg.positionContracts;
+          const forceQty = holdingQuantity;
           const forceMul = 100;
           const forceEntryFees = optionDynamicExitService.calculateFees(forceQty);
           const forceExitFees = optionDynamicExitService.calculateFees(forceQty);
@@ -1093,7 +1186,7 @@ class OptionBacktestService {
         }
 
         const currentPrice = optBar.close;
-        const quantity = cfg.positionContracts;
+        const quantity = holdingQuantity;
         const multiplier = 100;
         const entryFees = optionDynamicExitService.calculateFees(quantity);
         const exitFees = optionDynamicExitService.calculateFees(quantity);
@@ -1248,7 +1341,7 @@ class OptionBacktestService {
 
       if (lastOptBar) {
         const currentPrice = lastOptBar.close;
-        const quantity = cfg.positionContracts;
+        const quantity = holdingQuantity;
         const multiplier = 100;
         const entryFees = optionDynamicExitService.calculateFees(quantity);
         const exitFees = optionDynamicExitService.calculateFees(quantity);

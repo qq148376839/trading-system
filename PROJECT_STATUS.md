@@ -7,9 +7,9 @@
 
 ## 🆕 最近更新
 
-### 2026-02-26: 期权回测参数从策略DB完整读取
+### 2026-02-26: 期权回测对齐实盘仓位模式 — MAX_PREMIUM 动态合约数
 
-**变更内容**: `resolveBaseThreshold` → `resolveStrategyConfig`，从策略 DB 读取 `positionContracts`/`tradeWindowStartET`/`maxTradesPerDay` 等全部参数作为默认值，不再硬编码 `positionContracts=1`。前端不传 override 时回测使用策略实际仓位。
+**变更内容**: 回测引擎支持 `MAX_PREMIUM` 仓位模式 — 入场时根据策略资金预算和当前权利金动态计算合约数（对齐实盘逻辑）。从策略 DB 读取 `positionSizing`/`feeModel`/`capital_allocations`，不再硬编码 1 张。
 
 **修改文件**:
 - 📝 `api/src/services/option-backtest.service.ts`

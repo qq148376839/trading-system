@@ -2,14 +2,17 @@
 
 ## 2026-02-26
 
-### 期权回测参数从策略DB完整读取 — positionContracts等不再硬编码
+### 期权回测对齐实盘仓位模式 — MAX_PREMIUM 动态合约数
 
-**背景**: 回测引擎 `resolveBaseThreshold` 只从策略 DB 读取 `baseThreshold` 和 `riskPreference`，`positionContracts`/`tradeWindowStartET`/`maxTradesPerDay` 等全部 fallback 到硬编码默认值（合约数=1），导致回测结果显示的是单张盈亏而非策略实际仓位的整体盈亏。
+**背景**: 策略使用 `positionSizing.mode: "MAX_PREMIUM"` 模式，实盘根据可用资金和权利金动态计算合约数。但回测引擎硬编码 `positionContracts=1`，回测结果始终是单张盈亏。
 
-**修复**: 将 `resolveBaseThreshold` 扩展为 `resolveStrategyConfig`，从策略 DB 读取全部 10 个参数作为 fallback，前端不传 override 时使用策略自身配置。
+**修复**:
+1. `resolveStrategyConfig` 从策略 DB 读取 `positionSizing`（mode/fixedContracts/maxPremiumUsd）、`feeModel`、`capital_allocations`（资金预算），以及 `tradeWindow` 嵌套字段（zdteCooldownMinutes 等）
+2. 新增 `calculatePositionContracts(cfg, entryPremium)` 方法：`FIXED_CONTRACTS` 模式用 fixedContracts，`MAX_PREMIUM` 模式逐张递增找预算内最大合约数（对齐实盘 option-intraday-strategy.ts:648-682 逻辑）
+3. 每笔交易入场时动态计算 `holdingQuantity`，三个退出路径（强平/动态退出/收盘平仓）全部使用实际合约数
 
 **修改文件**:
-- 📝 `api/src/services/option-backtest.service.ts`（`resolveStrategyConfig` 全量读取 + `cfg` 构建全部走 `resolved.*` fallback）
+- 📝 `api/src/services/option-backtest.service.ts`（`OptionBacktestConfig` 扩展 + `resolveStrategyConfig` 完整读取 + `calculatePositionContracts` + `holdingQuantity` 替换固定值）
 
 ---
 
