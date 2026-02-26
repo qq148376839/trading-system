@@ -22,6 +22,10 @@ import { optionDynamicExitService, PositionContext, DEFAULT_FEE_CONFIG } from '.
 import { estimateOptionOrderTotalCost } from './options-fee.service';
 import { ENTRY_THRESHOLDS } from './strategies/option-intraday-strategy';
 import { logger } from '../utils/logger';
+import { RateLimiter, retryWithBackoff } from '../utils/longport-rate-limiter';
+
+// 回测专用 rate limiter（间隔比实盘更长，避免大批量请求触发限频）
+const backtestRateLimiter = new RateLimiter(200);
 
 // ============================================
 // 类型定义
@@ -119,6 +123,7 @@ export interface OptionBacktestResult {
       dynamicThreshold?: number;
     }>;
     crossSymbolFiltered?: number;  // R5: 被跨标的规则过滤的交易数
+    skippedNon0DTE?: number;       // 因非0DTE合约跳过的次数（weekly_friday标的的非周五日）
   };
 }
 
@@ -355,16 +360,76 @@ function etMinutesToTimeStr(etMinutes: number): string {
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
 }
 
-/** 构造 0DTE ATM 期权符号 */
+/**
+ * 期权到期日规则表
+ * 'daily' — 每个交易日都有 0DTE（SPY, QQQ 等主要 ETF）
+ * 'weekly_friday' — 仅周五到期（TSLA, NVDA 等个股 weekly options）
+ * 未在表中的标的默认 'daily'
+ */
+const OPTION_EXPIRY_SCHEDULE: Record<string, 'daily' | 'weekly_friday'> = {
+  'SPY.US': 'daily',
+  'QQQ.US': 'daily',
+  'IWM.US': 'daily',
+  'DIA.US': 'daily',
+  'TSLA.US': 'weekly_friday',
+  'NVDA.US': 'weekly_friday',
+  'AAPL.US': 'weekly_friday',
+  'AMZN.US': 'weekly_friday',
+  'GOOGL.US': 'weekly_friday',
+  'GOOG.US': 'weekly_friday',
+  'META.US': 'weekly_friday',
+  'MSFT.US': 'weekly_friday',
+  'AMD.US': 'weekly_friday',
+  'NFLX.US': 'weekly_friday',
+};
+
+/**
+ * 获取指定日期对应的期权到期日
+ * - daily 标的：返回当天日期（0DTE）
+ * - weekly_friday 标的：返回本周五日期（模拟实盘行为 — 任意日购买周五到期合约）
+ *   如果当天是周六/周日，返回下周五
+ */
+function getOptionExpiryDate(symbol: string, tradeDate: string): string {
+  const schedule = OPTION_EXPIRY_SCHEDULE[symbol] || 'daily';
+  if (schedule === 'daily') return tradeDate;
+
+  // weekly_friday: 找到本周五（或当天就是周五）
+  const d = new Date(`${tradeDate}T12:00:00-05:00`);
+  const dayOfWeek = d.getDay(); // 0=Sun, 1=Mon, ... 5=Fri, 6=Sat
+  let daysToFriday: number;
+  if (dayOfWeek <= 5) {
+    daysToFriday = 5 - dayOfWeek; // Mon→4, Tue→3, ..., Fri→0
+  } else {
+    // Saturday → next Friday = 6 days
+    daysToFriday = 6;
+  }
+  const friday = new Date(d);
+  friday.setDate(friday.getDate() + daysToFriday);
+  const yyyy = friday.getFullYear();
+  const mm = String(friday.getMonth() + 1).padStart(2, '0');
+  const dd = String(friday.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+/**
+ * 获取到期日距交易日的天数（DTE）
+ */
+function getDTE(tradeDate: string, expiryDate: string): number {
+  const trade = new Date(`${tradeDate}T12:00:00-05:00`);
+  const expiry = new Date(`${expiryDate}T12:00:00-05:00`);
+  return Math.round((expiry.getTime() - trade.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+/** 构造期权符号（使用实际到期日，非交易日） */
 function buildOptionSymbol(
   underlying: string,
-  date: string,          // YYYY-MM-DD
+  expiryDate: string,    // YYYY-MM-DD（到期日，非交易日）
   direction: 'CALL' | 'PUT',
   strikePrice: number
 ): string {
   // 格式: QQQ260218C480000.US
   const ticker = underlying.replace('.US', '');
-  const datePart = date.replace(/-/g, '').slice(2); // YYMMDD
+  const datePart = expiryDate.replace(/-/g, '').slice(2); // YYMMDD
   const cp = direction === 'CALL' ? 'C' : 'P';
   const strikePart = (strikePrice * 1000).toFixed(0);
   return `${ticker}${datePart}${cp}${strikePart}.US`;
@@ -557,7 +622,7 @@ function parseLongportCandlesticks(
     });
 }
 
-/** 从 Longport 获取历史 1m K-lines */
+/** 从 Longport 获取历史 1m K-lines（经过 rate limiter + retry backoff） */
 async function fetchLongportMinuteKlines(
   symbol: string,
   date: string,
@@ -580,15 +645,20 @@ async function fetchLongportMinuteKlines(
     try {
       // 方法1: historyCandlesticksByOffset — 以目标日期收盘时间为锚点，向前取 count 根
       const tradeSessions = TradeSessions?.All || 100;
-      const resp = await quoteCtx.historyCandlesticksByOffset(
-        symbol,
-        Period.Min_1,
-        AdjustType.NoAdjust,
-        false,             // forward = false (向历史回溯)
-        targetEndOfDay,    // 锚定到目标日期收盘时间
-        count,
-        tradeSessions
-      );
+      const resp = await backtestRateLimiter.execute(() =>
+        retryWithBackoff(() =>
+          quoteCtx.historyCandlesticksByOffset(
+            symbol,
+            Period.Min_1,
+            AdjustType.NoAdjust,
+            false,             // forward = false (向历史回溯)
+            targetEndOfDay,    // 锚定到目标日期收盘时间
+            count,
+            tradeSessions
+          ),
+          { maxRetries: 2, initialDelayMs: 1000, maxDelayMs: 5000 }
+        )
+      ) as Array<{ close: number; open: number; low: number; high: number; volume: number; turnover: number; timestamp: number | Date }>;
 
       if (resp && resp.length > 0) {
         candlesticks = parseLongportCandlesticks(resp, date);
@@ -599,7 +669,12 @@ async function fetchLongportMinuteKlines(
 
       try {
         // 方法2: candlesticks() — 通用方法，拉取最近 count 根
-        const resp = await quoteCtx.candlesticks(symbol, Period.Min_1, count, AdjustType.NoAdjust);
+        const resp = await backtestRateLimiter.execute(() =>
+          retryWithBackoff(() =>
+            quoteCtx.candlesticks(symbol, Period.Min_1, count, AdjustType.NoAdjust),
+            { maxRetries: 2, initialDelayMs: 1000, maxDelayMs: 5000 }
+          )
+        ) as Array<{ close: number; open: number; low: number; high: number; volume: number; turnover: number; timestamp: number | Date }>;
         if (resp && resp.length > 0) {
           candlesticks = parseLongportCandlesticks(resp, date);
         }
@@ -942,12 +1017,21 @@ class OptionBacktestService {
       signals: [],
     };
 
+    logger.info(`[期权回测] 启动: ${symbols.length} 标的 × ${dates.length} 天, rate limiter queue=${backtestRateLimiter.getQueueLength()}`);
+
     // ── 预获取日K数据（Moomoo API），整个回测只调用一次 ──
     // 日K数据从 API 直接获取（与实盘一致），无需从 DB 1m 数据聚合
     // 后续在 runSingleDay 中按回测日期截断，防止未来数据泄露
     const dailyKData = await this.prefetchDailyKData(dates, diagnosticLog);
 
-    for (const date of dates) {
+    for (let di = 0; di < dates.length; di++) {
+      const date = dates[di];
+
+      // 日间延迟：多日回测时在每天之间加缓冲，让 API 连接恢复
+      if (di > 0) {
+        await new Promise(r => setTimeout(r, 1000));
+      }
+
       // ── 日级预加载：SPX/USD/BTC 1m + VIX 1m，每天只加载一次，所有标的共享 ──
       const [spxData, usdData, btcData] = await Promise.all([
         this.loadDBKlines('SPX', date, diagnosticLog),
@@ -959,11 +1043,22 @@ class OptionBacktestService {
       const sharedDayData = { spxData, usdData, btcData, vixData };
 
       const dayTrades: BacktestTradeRecord[] = [];
-      for (const symbol of symbols) {
-        logger.info(`[期权回测] 开始回测 ${symbol} @ ${date}`);
-        const symbolTrades = await this.runSingleDay(date, symbol, cfg, diagnosticLog, dailyKData, sharedDayData);
+      for (let si = 0; si < symbols.length; si++) {
+        const symbol = symbols[si];
+        // 计算期权到期日（weekly_friday 标的用本周五，daily 标的用当天）
+        const expiryDate = getOptionExpiryDate(symbol, date);
+        const dte = getDTE(date, expiryDate);
+        const schedule = OPTION_EXPIRY_SCHEDULE[symbol] || 'daily';
+
+        logger.info(`[期权回测] 开始回测 ${symbol} @ ${date} (expiry=${expiryDate}, DTE=${dte}, schedule=${schedule})`);
+        const symbolTrades = await this.runSingleDay(date, symbol, cfg, diagnosticLog, dailyKData, sharedDayData, expiryDate);
         dayTrades.push(...symbolTrades);
         logger.info(`[期权回测] ${symbol} @ ${date} 完成: ${symbolTrades.length} 笔交易`);
+
+        // 标的间延迟：避免 Longport API 连续高频调用导致限频
+        if (si < symbols.length - 1) {
+          await new Promise(r => setTimeout(r, 500));
+        }
       }
 
       // R5: 应用跨标的入场保护过滤（多标的回测时生效）
@@ -1075,7 +1170,8 @@ class OptionBacktestService {
       usdData: CandlestickData[];
       btcData: CandlestickData[];
       vixData: CandlestickData[];
-    }
+    },
+    expiryDate?: string, // 期权到期日（weekly_friday 标的传入本周五日期）
   ): Promise<BacktestTradeRecord[]> {
     // ── 1. 预加载数据 ──
     // 1m 数据使用日级预加载的共享数据（每天只加载一次，所有标的复用）
@@ -1200,7 +1296,9 @@ class OptionBacktestService {
 
         const underlyingPrice = underlyingBar.close;
         const strike = roundToStrike(underlyingPrice + cfg.strikeOffsetPoints, symbol);
-        const optSymbol = buildOptionSymbol(symbol, date, direction, strike);
+        // 使用实际到期日构造期权符号（weekly_friday 标的用本周五）
+        const optionExpiry = expiryDate || date;
+        const optSymbol = buildOptionSymbol(symbol, optionExpiry, direction, strike);
 
         // 拉取期权合约 1m K-lines
         const optKlines = await this.loadOptionKlines(optSymbol, date, diagnosticLog);
@@ -1361,7 +1459,7 @@ class OptionBacktestService {
           currentIV: currentEstIV,
           entryFees,
           estimatedExitFees: exitFees,
-          is0DTE: true,
+          is0DTE: !expiryDate || expiryDate === date, // weekly_friday 标的非周五为 false
           midPrice: currentPrice, // 回测中 close ≈ mid
           optionDirection: holdingDirection,
           recentKlines: vwapData?.recentKlines || recentKlines,
