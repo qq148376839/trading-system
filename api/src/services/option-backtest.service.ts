@@ -5,17 +5,19 @@
  * 核心思路：不修改生产服务，新建独立引擎，复用评分/退出算法。
  *
  * 数据源：
+ * - SPX/USD/BTC 日K: Moomoo API（与实盘一致，回测按日期截断防止未来泄露）
  * - SPX/USD/BTC 1m K-lines: DB market_kline_history
  * - VIX 1m K-lines: Longport API (.VIX.US)
  * - 标的股票 1m K-lines: Longport API
  * - 期权合约 1m K-lines: Longport SDK
- * - 市场温度: 固定 50（中性）
+ * - 市场温度: 基于 VIX + SPX 近5日涨跌估算
  */
 
 import pool from '../config/database';
 import { getQuoteContext } from '../config/longport';
 import klineHistoryService from './kline-history.service';
 import intradayDataFilterService from './intraday-data-filter.service';
+import marketDataService from './market-data.service';
 import { optionDynamicExitService, PositionContext, DEFAULT_FEE_CONFIG } from './option-dynamic-exit.service';
 import { estimateOptionOrderTotalCost } from './options-fee.service';
 import { ENTRY_THRESHOLDS } from './strategies/option-intraday-strategy';
@@ -33,6 +35,13 @@ interface CandlestickData {
   volume: number;
   turnover: number;
   timestamp: number;
+}
+
+/** 预获取的 Moomoo API 日K全量数据（整个回测复用，按日期截断） */
+interface PrefetchedDailyK {
+  spxRaw: CandlestickData[];
+  usdRaw: CandlestickData[];
+  btcRaw: CandlestickData[];
 }
 
 interface MarketDataWindow {
@@ -96,7 +105,7 @@ export interface OptionBacktestResult {
     profitFactor: number;
   };
   diagnosticLog: {
-    dataFetch: Array<{ source: string; date: string; count: number; ok: boolean; error?: string }>;
+    dataFetch: Array<{ source: string; date: string; count: number; ok: boolean; error?: string; note?: string }>;
     signals: Array<{
       date: string;
       time: string;
@@ -931,10 +940,15 @@ class OptionBacktestService {
       signals: [],
     };
 
+    // ── 预获取日K数据（Moomoo API），整个回测只调用一次 ──
+    // 日K数据从 API 直接获取（与实盘一致），无需从 DB 1m 数据聚合
+    // 后续在 runSingleDay 中按回测日期截断，防止未来数据泄露
+    const dailyKData = await this.prefetchDailyKData(dates, diagnosticLog);
+
     for (const date of dates) {
       for (const symbol of symbols) {
         logger.info(`[期权回测] 开始回测 ${symbol} @ ${date}`);
-        const dayTrades = await this.runSingleDay(date, symbol, cfg, diagnosticLog);
+        const dayTrades = await this.runSingleDay(date, symbol, cfg, diagnosticLog, dailyKData);
         allTrades.push(...dayTrades);
         logger.info(`[期权回测] ${symbol} @ ${date} 完成: ${dayTrades.length} 笔交易`);
       }
@@ -954,37 +968,69 @@ class OptionBacktestService {
   }
 
   /**
-   * 加载多日 1m 数据并聚合为日级 bar（用于 analyzeMarketTrend 等日级指标）
-   * 从目标日期往前回溯 lookbackDays 个自然日
+   * 预获取日K数据（Moomoo API）
+   * 整个回测只调用一次，获取全量历史日K，后续按日期截断
+   * 与实盘 marketDataService.getAllMarketData() 数据源一致
    */
-  private async loadMultiDayDailyBars(
-    source: string,
-    targetDate: string,
-    lookbackDays: number,
+  private async prefetchDailyKData(
+    dates: string[],
     diagnosticLog: OptionBacktestResult['diagnosticLog']
-  ): Promise<CandlestickData[]> {
-    const endDate = new Date(`${targetDate}T23:59:59-05:00`);
-    const startDate = new Date(endDate.getTime() - lookbackDays * 24 * 3600 * 1000);
-    const startDateStr = startDate.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  ): Promise<PrefetchedDailyK> {
+    // 找到最早的回测日期，从该日期往前需要至少 100 根日K（满足 20MA + 余量）
+    const earliestDate = dates.sort()[0];
+    const latestDate = dates.sort()[dates.length - 1];
+    logger.info(`[期权回测] 预获取日K数据: ${earliestDate} ~ ${latestDate}, 从 Moomoo API 获取`);
+
+    const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
     try {
-      const startTs = new Date(`${startDateStr}T04:00:00-05:00`).getTime();
-      const endTs = new Date(`${targetDate}T20:00:00-05:00`).getTime();
-      const data = await klineHistoryService.getIntradayData(source, startTs, endTs);
-      const dailyBars = aggregateToDaily(data);
+      // 串行获取，避免 Moomoo API 限频 (800ms 间隔)
+      const spxRaw = await marketDataService.getSPXCandlesticks(500);
       diagnosticLog.dataFetch.push({
-        source: `${source}_daily`, date: targetDate,
-        count: dailyBars.length, ok: dailyBars.length > 0,
+        source: 'SPX_daily_api', date: earliestDate,
+        count: spxRaw.length, ok: spxRaw.length > 0,
       });
-      return dailyBars;
+      await delay(800);
+
+      const usdRaw = await marketDataService.getUSDIndexCandlesticks(500);
+      diagnosticLog.dataFetch.push({
+        source: 'USD_daily_api', date: earliestDate,
+        count: usdRaw.length, ok: usdRaw.length > 0,
+      });
+      await delay(800);
+
+      const btcRaw = await marketDataService.getBTCCandlesticks(500);
+      diagnosticLog.dataFetch.push({
+        source: 'BTC_daily_api', date: earliestDate,
+        count: btcRaw.length, ok: btcRaw.length > 0,
+      });
+
+      logger.info(`[期权回测] 日K预获取完成: SPX=${spxRaw.length}, USD=${usdRaw.length}, BTC=${btcRaw.length}`);
+
+      return { spxRaw, usdRaw, btcRaw };
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
+      logger.error(`[期权回测] 日K预获取失败: ${errMsg}`);
       diagnosticLog.dataFetch.push({
-        source: `${source}_daily`, date: targetDate,
+        source: 'daily_api_prefetch', date: earliestDate,
         count: 0, ok: false, error: errMsg,
       });
-      return [];
+      // 返回空数组，后续会走数据不足的跳过逻辑
+      return { spxRaw: [], usdRaw: [], btcRaw: [] };
     }
+  }
+
+  /**
+   * 从预获取的全量日K中按日期截断（不包含未来数据）
+   * 使用 marketDataService.filterDataBeforeDate 确保截断逻辑与实盘一致
+   */
+  private truncateDailyKForDate(
+    rawData: CandlestickData[],
+    targetDate: string,
+    maxCount: number = 100
+  ): CandlestickData[] {
+    const targetDateObj = new Date(`${targetDate}T23:59:59-05:00`);
+    return marketDataService.filterDataBeforeDate(rawData, targetDateObj, maxCount);
   }
 
   /**
@@ -994,7 +1040,8 @@ class OptionBacktestService {
     date: string,
     symbol: string,
     cfg: Required<OptionBacktestConfig>,
-    diagnosticLog: OptionBacktestResult['diagnosticLog']
+    diagnosticLog: OptionBacktestResult['diagnosticLog'],
+    dailyKData: PrefetchedDailyK
   ): Promise<BacktestTradeRecord[]> {
     // ── 1. 预加载数据 ──
     // 加载当日 1m 数据（用于分时评分、VWAP 计算等）
@@ -1004,13 +1051,17 @@ class OptionBacktestService {
       this.loadDBKlines('BTC', date, diagnosticLog),
     ]);
 
-    // 加载多日历史数据并聚合为日级 bar（用于 analyzeMarketTrend 等日级指标）
-    // 回溯 35 自然日 ≈ 20+ 交易日，满足 20-period MA 要求
-    const [spxDaily, usdDaily, btcDaily] = await Promise.all([
-      this.loadMultiDayDailyBars('SPX', date, 35, diagnosticLog),
-      this.loadMultiDayDailyBars('USD_INDEX', date, 35, diagnosticLog),
-      this.loadMultiDayDailyBars('BTC', date, 35, diagnosticLog),
-    ]);
+    // 从预获取的 Moomoo API 日K数据中按日期截断（与实盘数据源一致）
+    // 截断到回测当天（含），确保不泄露未来数据
+    const spxDaily = this.truncateDailyKForDate(dailyKData.spxRaw, date);
+    const usdDaily = this.truncateDailyKForDate(dailyKData.usdRaw, date);
+    const btcDaily = this.truncateDailyKForDate(dailyKData.btcRaw, date);
+
+    diagnosticLog.dataFetch.push({
+      source: 'daily_truncated', date,
+      count: spxDaily.length, ok: spxDaily.length >= 20,
+      note: `SPX=${spxDaily.length}, USD=${usdDaily.length}, BTC=${btcDaily.length}`,
+    });
 
     // 标的股票 1m K-lines (from Longport)
     const underlyingData = await this.loadLongportKlines(symbol, date, diagnosticLog);
