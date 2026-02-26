@@ -40,9 +40,34 @@ if ! kill -0 $FRONTEND_PID 2>/dev/null; then
   exit 1
 fi
 
+# 自动增量更新数据库表结构
+# 000_init_schema.sql 全部使用 IF NOT EXISTS，可安全重复执行
+# 已有表/索引会被跳过，新增的表会自动创建
+echo "执行数据库表结构自动更新..."
+cd /app/api
+if [ -f "migrations/000_init_schema.sql" ] && [ -n "$DATABASE_URL" ]; then
+  node -e "
+    const { Pool } = require('pg');
+    const fs = require('fs');
+    (async () => {
+      const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+      try {
+        const sql = fs.readFileSync('migrations/000_init_schema.sql', 'utf8');
+        await pool.query(sql);
+        console.log('数据库表结构更新完成');
+      } catch (err) {
+        console.warn('数据库表结构更新失败（非致命）:', err.message);
+      } finally {
+        await pool.end();
+      }
+    })();
+  "
+else
+  echo "跳过数据库更新（缺少迁移文件或 DATABASE_URL）"
+fi
+
 # 启动后端服务
 echo "启动后端服务 (端口 $PORT)..."
-cd /app/api
 
 # 如果存在 conditional-longport.js，使用它启动（兼容长桥SDK）
 if [ -f "conditional-longport.js" ]; then

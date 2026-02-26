@@ -132,6 +132,9 @@ RUN curl -sL https://registry.npmjs.org/longport-linux-x64-gnu/-/longport-linux-
 COPY --from=api-builder --chown=nodejs:nodejs /app/api/conditional-longport.js ./api/
 COPY --from=api-builder --chown=nodejs:nodejs /app/api/startup-check.js ./api/
 
+# 复制数据库迁移脚本（用于启动时自动增量更新表结构）
+COPY --from=api-builder --chown=nodejs:nodejs /app/api/migrations ./api/migrations
+
 # ============================================
 # 复制前端构建产物
 # ============================================
