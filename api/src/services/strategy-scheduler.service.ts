@@ -32,17 +32,19 @@ import longportOptionQuoteService from './longport-option-quote.service';
 import marketDataCacheService from './market-data-cache.service';
 import marketDataService from './market-data.service';
 import trailingStopProtectionService from './trailing-stop-protection.service';
+import { buildCorrelationMap } from '../utils/correlation';
 
-// R5v2: 相关性分组 — 高相关标的同组，竞价时互斥
-const SYMBOL_CORRELATION_GROUPS: Record<string, string> = {
+// R5v2: 默认相关性分组（策略无配置时的回退）
+const DEFAULT_CORRELATION_GROUPS: Record<string, string> = {
   'SPY.US': 'INDEX_ETF',
   'QQQ.US': 'INDEX_ETF',
   'IWM.US': 'INDEX_ETF',
   'DIA.US': 'INDEX_ETF',
 };
 
-function getCorrelationGroup(symbol: string): string {
-  return SYMBOL_CORRELATION_GROUPS[symbol] || symbol;
+function getCorrelationGroup(symbol: string, correlationMap?: Record<string, string>): string {
+  const map = correlationMap || DEFAULT_CORRELATION_GROUPS;
+  return map[symbol] || symbol;
 }
 
 // 定义执行汇总接口
@@ -544,6 +546,11 @@ class StrategyScheduler {
     const BATCH_SIZE = 10;
 
     if (isOptionStrategy) {
+      // R5v2: 从策略配置构建相关性映射（优先配置，回退默认）
+      const strategyConfig: Record<string, unknown> = (strategyInstance as any)?.config || {};
+      const correlationGroups = strategyConfig?.correlationGroups as { groups?: Record<string, string[]> } | undefined;
+      const correlationMap = buildCorrelationMap(correlationGroups?.groups) || DEFAULT_CORRELATION_GROUPS;
+
       // Phase A: 状态分类 — 区分 IDLE 和非 IDLE 标的
       const stateChecks = await Promise.all(
         effectiveSymbols.map(async (sym) => ({
@@ -566,7 +573,7 @@ class StrategyScheduler {
       for (let i = 0; i < idleSymbols.length; i += BATCH_SIZE) {
         const batch = idleSymbols.slice(i, i + BATCH_SIZE);
         const results = await Promise.all(
-          batch.map(sym => this.evaluateIdleSymbol(strategyInstance, strategyId, sym, summary))
+          batch.map(sym => this.evaluateIdleSymbol(strategyInstance, strategyId, sym, summary, correlationMap))
         );
         for (const r of results) {
           if (r) candidates.push(r);
@@ -579,12 +586,20 @@ class StrategyScheduler {
         `[R5v2] 策略 ${strategyId}: Phase B 完成, IDLE=${idleSymbols.length}, 候选=${candidates.length}` +
         (candidates.length > 0 ? `, 标的=[${candidates.map(c => `${c.symbol}(${c.finalScore.toFixed(1)})`).join(', ')}]` : '')
       );
-      const winners = this.scoringAuction(strategyId, candidates);
+      const winners = this.scoringAuction(strategyId, candidates, correlationMap);
+
+      // R5v2: 计算 survivorCount = 竞价胜者 + 当前 HOLDING 标的
+      const holdingCount = stateChecks.filter(s => s.state === 'HOLDING').length;
+      const survivorCount = Math.max(1, winners.length + holdingCount);
+      const maxConcentration = (strategyConfig?.maxConcentration as number) ?? 0.33;
 
       // Phase D: 顺序执行胜者（资金原子分配）
       for (const winner of winners) {
         summary.signals.push(winner.symbol);
-        await this.executeSymbolEntry(strategyInstance, strategyId, winner.symbol, winner.intent, summary);
+        await this.executeSymbolEntry(
+          strategyInstance, strategyId, winner.symbol, winner.intent, summary,
+          { survivorCount, maxConcentration }
+        );
       }
     } else {
       // 非期权策略：保持原有并行批处理
@@ -1722,11 +1737,7 @@ class StrategyScheduler {
           summary.holding.push(symbol);
         }
 
-        // ⚠️ 期权策略特殊处理：HOLDING状态下继续寻找新的交易机会
-        // 因为期权策略可能需要同时持有多个合约（不同到期日、不同行权价）
-        if (isOptionStrategy) {
-          await this.processOptionNewSignalWhileHolding(strategyInstance, strategyId, symbol, strategyConfig, summary);
-        }
+        // R5v2: 移除多仓模式 — 所有入场统一走竞价路径，消除绕过竞价的旁路
         return;
       } else if (currentState === 'SHORT') {
         // ⚠️ 新增：卖空持仓状态：检查是否需要平仓（止盈/止损）
@@ -2270,7 +2281,8 @@ class StrategyScheduler {
     strategyInstance: StrategyBase,
     strategyId: number,
     symbol: string,
-    summary: ExecutionSummary
+    summary: ExecutionSummary,
+    correlationMap?: Record<string, string>
   ): Promise<{ symbol: string; intent: TradingIntent; finalScore: number; group: string } | null> {
     try {
       const strategyConfig: any = (strategyInstance as any)?.config || {};
@@ -2443,14 +2455,14 @@ class StrategyScheduler {
 
       logger.info(
         `[R5v2_CANDIDATE] 策略 ${strategyId} 标的 ${symbol}: ` +
-        `finalScore=${finalScore.toFixed(2)}, group=${getCorrelationGroup(symbol)}`
+        `finalScore=${finalScore.toFixed(2)}, group=${getCorrelationGroup(symbol, correlationMap)}`
       );
 
       return {
         symbol,
         intent,
         finalScore,
-        group: getCorrelationGroup(symbol),
+        group: getCorrelationGroup(symbol, correlationMap),
       };
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -2468,7 +2480,8 @@ class StrategyScheduler {
    */
   private scoringAuction(
     strategyId: number,
-    candidates: Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string }>
+    candidates: Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string }>,
+    correlationMap?: Record<string, string>
   ): Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string }> {
     if (candidates.length === 0) {
       logger.info(`[R5v2_AUCTION] 策略 ${strategyId}: 无候选，跳过竞价`);
@@ -2505,7 +2518,7 @@ class StrategyScheduler {
       // 条件1: 并发入场 — activeEntries 中不同组有 3min 内入场则过滤
       let blockedByConcurrent = false;
       for (const [otherSym, entryTime] of crossState.activeEntries) {
-        const otherGroup = getCorrelationGroup(otherSym);
+        const otherGroup = getCorrelationGroup(otherSym, correlationMap);
         if (otherGroup !== candidateGroup && (now - entryTime) < 3 * 60000) {
           logger.info(
             `[R5v2_PHASE2_FILTERED] 策略 ${strategyId}: ${candidate.symbol} ` +
@@ -2579,7 +2592,8 @@ class StrategyScheduler {
     strategyId: number,
     symbol: string,
     intent: TradingIntent,
-    summary: ExecutionSummary
+    summary: ExecutionSummary,
+    capitalOptions?: { survivorCount?: number; maxConcentration?: number }
   ): Promise<void> {
     let allocationResult: { approved: boolean; allocatedAmount: number; reason?: string } | null = null;
     try {
@@ -2607,9 +2621,9 @@ class StrategyScheduler {
         return;
       }
 
-      // 计算数量
+      // 计算数量（传递 survivorCount + maxConcentration 给资金管理器）
       if (!intent.quantity && intent.entryPrice) {
-        const maxPositionPerSymbol = await capitalManager.getMaxPositionPerSymbol(strategyId);
+        const maxPositionPerSymbol = await capitalManager.getMaxPositionPerSymbol(strategyId, capitalOptions);
         const maxAmountForThisSymbol = Math.min(availableCapital, maxPositionPerSymbol);
         const maxAffordableQuantity = Math.floor(maxAmountForThisSymbol / intent.entryPrice);
         intent.quantity = Math.max(1, maxAffordableQuantity);
@@ -2622,7 +2636,7 @@ class StrategyScheduler {
 
       logger.info(`策略 ${strategyId} 标的 ${symbol}: 准备买入，数量=${intent.quantity}, 价格=${intent.entryPrice?.toFixed(2)}`);
 
-      // 申请资金
+      // 申请资金（传递 survivorCount + maxConcentration）
       const allocationAmountOverride = (intent.metadata as Record<string, unknown>)?.allocationAmountOverride;
       const requestedAmount = typeof allocationAmountOverride === 'number' && allocationAmountOverride > 0
         ? allocationAmountOverride
@@ -2631,6 +2645,8 @@ class StrategyScheduler {
         strategyId,
         amount: requestedAmount,
         symbol,
+        survivorCount: capitalOptions?.survivorCount,
+        maxConcentration: capitalOptions?.maxConcentration,
       });
 
       if (!allocationResult.approved) {
@@ -4155,219 +4171,8 @@ class StrategyScheduler {
     }
   }
 
-  /**
-   * 期权策略专用：HOLDING状态下继续寻找新的交易机会
-   * 允许期权策略同时持有多个合约（不同到期日、不同行权价、不同方向）
-   */
-  private async processOptionNewSignalWhileHolding(
-    strategyInstance: StrategyBase,
-    strategyId: number,
-    symbol: string,
-    strategyConfig: any,
-    summary: ExecutionSummary
-  ): Promise<void> {
-    // P0-1: 提升 allocationResult 和 newContractSymbol 到 try 外，catch 中可访问
-    let allocationResult: { approved: boolean; allocatedAmount: number; reason?: string } | null = null;
-    let newContractSymbol: string = symbol;
-    try {
-      // P0-3: 熔断检查 — 禁止在熔断状态下开新仓
-      const cbState = await stateManager.getInstanceState(strategyId, symbol);
-      const cbCtx = cbState?.context || {};
-      if (cbCtx.circuitBreakerActive) {
-        return;
-      }
-      if (this.isTslpBlocked(strategyId)) {
-        return;
-      }
-
-      // 1. 检查是否在交易窗口内
-      const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 120), 10) || 120);
-      const window = await getMarketCloseWindow({
-        market: 'US',
-        noNewEntryBeforeCloseMinutes: noNewEntryMins,
-        forceCloseBeforeCloseMinutes: 30,
-      });
-      if (window) {
-        const now = new Date();
-        if (now >= window.noNewEntryTimeUtc) {
-          // 不在交易窗口内，不寻找新机会
-          return;
-        }
-      }
-
-      // 2. 检查是否还有可用资金
-      const availableCapital = await capitalManager.getAvailableCapital(strategyId);
-      if (availableCapital <= 0) {
-        // 没有可用资金，不寻找新机会
-        return;
-      }
-
-      // 3. 获取当前持有或正在买入的期权合约列表（HOLDING + OPENING + CLOSING 都算已占用）
-      const currentPositionsResult = await pool.query(
-        `SELECT DISTINCT
-           COALESCE((context->>'tradedSymbol')::text, symbol) as traded_symbol,
-           current_state,
-           (context->>'quantity')::int as quantity
-         FROM strategy_instances
-         WHERE strategy_id = $1
-           AND current_state IN ('HOLDING', 'OPENING', 'CLOSING')
-           AND context->>'tradedSymbol' IS NOT NULL`,
-        [strategyId]
-      );
-      const heldContracts = new Set(
-        currentPositionsResult.rows.map((r: any) => r.traded_symbol)
-      );
-
-      // 4. 检查是否有未成交的订单
-      const hasPendingOrder = await this.checkPendingOptionOrderForUnderlying(strategyId, symbol);
-      if (hasPendingOrder) {
-        // 有未成交订单，等待处理完成
-        return;
-      }
-
-      // 5. 生成新的交易信号
-      const intent = await strategyInstance.generateSignal(symbol, undefined);
-
-      if (!intent || intent.action === 'HOLD') {
-        // 没有新信号
-        return;
-      }
-
-      // 6. 检查新信号的合约是否已经持有
-      const optionMeta = intent.metadata as any;
-      newContractSymbol = optionMeta?.optionSymbol || intent.symbol;
-      if (newContractSymbol && heldContracts.has(newContractSymbol)) {
-        // 已经持有这个合约，不重复买入
-        return;
-      }
-
-      // 7. 计算该标的剩余可用预算（多仓模式需扣除已持仓占用）
-      let remainingBudget = availableCapital;
-      try {
-        const maxPerSymbol = await capitalManager.getMaxPositionPerSymbol(strategyId);
-        // 查询该underlying已占用的资金
-        const prefixes = getOptionPrefixesForUnderlying(symbol);
-        const usedResult = await pool.query(
-          `SELECT COALESCE((context->>'tradedSymbol')::text, symbol) as traded_symbol,
-                  COALESCE((context->>'allocationAmount')::numeric, 0) as allocation_amount
-           FROM strategy_instances
-           WHERE strategy_id = $1 AND current_state IN ('HOLDING', 'OPENING')`,
-          [strategyId]
-        );
-        let usedForSymbol = 0;
-        for (const row of usedResult.rows) {
-          const tradedSym = String(row.traded_symbol || '').toUpperCase();
-          if (!isLikelyOptionSymbol(tradedSym)) continue;
-          if (prefixes.some((p: string) => tradedSym.toUpperCase().startsWith(p.toUpperCase()))) {
-            usedForSymbol += parseFloat(row.allocation_amount || '0');
-          }
-        }
-        remainingBudget = Math.min(availableCapital, Math.max(0, maxPerSymbol - usedForSymbol));
-        logger.debug(
-          `策略 ${strategyId} 标的 ${symbol}: (多仓模式) 单标的上限=${maxPerSymbol.toFixed(2)}, 已用=${usedForSymbol.toFixed(2)}, 剩余预算=${remainingBudget.toFixed(2)}`
-        );
-      } catch (budgetErr: any) {
-        logger.warn(`策略 ${strategyId} 标的 ${symbol}: 计算剩余预算失败: ${budgetErr.message}`);
-      }
-
-      if (remainingBudget <= 0) {
-        // 无剩余预算，不需要生成信号
-        return;
-      }
-
-      // 8. 记录信号并执行
-      logger.info(`策略 ${strategyId} 标的 ${symbol}: (多仓模式) 生成新信号 ${intent.action}, 合约=${newContractSymbol}, 价格=${intent.entryPrice?.toFixed(2) || 'N/A'}`);
-      summary.signals.push(`${symbol}(NEW_CONTRACT)`);
-
-      // 执行订单（BUY 信号）
-      if (intent.action === 'BUY') {
-        // 根据剩余预算重新计算合约数（策略生成信号时不知道已占用金额）
-        const premium = intent.entryPrice || 0;
-        if (premium > 0 && intent.quantity) {
-          const meta = intent.metadata as any;
-          const feeModel = meta?.feeModel;
-          let fittedContracts = intent.quantity;
-          for (let n = intent.quantity; n >= 1; n--) {
-            const est = estimateOptionOrderTotalCost({ premium, contracts: n, feeModel });
-            if (est.totalCost <= remainingBudget) {
-              fittedContracts = n;
-              break;
-            }
-            if (n === 1) {
-              // 即使1张也超预算
-              logger.info(
-                `策略 ${strategyId} 标的 ${symbol}: (多仓模式) 剩余预算${remainingBudget.toFixed(2)}不足以购买1张合约(需${est.totalCost.toFixed(2)})`
-              );
-              return;
-            }
-          }
-          if (fittedContracts !== intent.quantity) {
-            logger.info(
-              `策略 ${strategyId} 标的 ${symbol}: (多仓模式) 合约数调整 ${intent.quantity} → ${fittedContracts}（剩余预算=${remainingBudget.toFixed(2)}）`
-            );
-            intent.quantity = fittedContracts;
-            // 重新计算 allocationAmountOverride
-            const newEst = estimateOptionOrderTotalCost({ premium, contracts: fittedContracts, feeModel });
-            if (meta) {
-              meta.allocationAmountOverride = newEst.totalCost;
-              meta.estimatedCost = newEst.totalCost;
-            }
-          }
-        }
-
-        // 申请资金
-        const allocationAmountOverride = (intent.metadata as any)?.allocationAmountOverride;
-        const requestedAmount = typeof allocationAmountOverride === 'number' && allocationAmountOverride > 0
-          ? allocationAmountOverride
-          : intent.quantity! * (intent.entryPrice || 0);
-
-        allocationResult = await capitalManager.requestAllocation({
-          strategyId,
-          amount: requestedAmount,
-          symbol: newContractSymbol,
-        });
-
-        if (!allocationResult.approved) {
-          logger.info(`策略 ${strategyId} 标的 ${symbol}: (多仓模式) 资金申请被拒绝 - ${allocationResult.reason}`);
-          return;
-        }
-
-        // 更新状态为 OPENING（使用期权合约symbol作为key，允许多仓）
-        await strategyInstance.updateState(newContractSymbol, 'OPENING', {
-          intent,
-          allocationAmount: allocationResult.allocatedAmount,
-          underlyingSymbol: symbol, // 记录标的symbol用于后续映射
-        });
-
-        // 执行买入
-        const executionResult = await basicExecutionService.executeBuyIntent(intent, strategyId);
-
-        if (executionResult.success || executionResult.submitted) {
-          summary.actions.push(`${symbol}(NEW_POSITION)`);
-        } else {
-          // 失败，释放资金
-          await capitalManager.releaseAllocation(strategyId, allocationResult.allocatedAmount, newContractSymbol);
-          await strategyInstance.updateState(newContractSymbol, 'IDLE');
-        }
-      }
-    } catch (error: any) {
-      // 不中断主流程，仅记录错误
-      logger.warn(`策略 ${strategyId} 标的 ${symbol}: 多仓模式处理失败: ${error.message}`);
-
-      // P0-1: 异常后释放已分配资金（多仓路径）
-      if (allocationResult?.approved) {
-        try {
-          await capitalManager.releaseAllocation(strategyId, allocationResult.allocatedAmount, newContractSymbol);
-          await strategyInstance.updateState(newContractSymbol, 'IDLE');
-          logger.warn(`[CAPITAL_SAFETY] 多仓路径异常后释放资金: 策略${strategyId} 合约${newContractSymbol} 金额${allocationResult.allocatedAmount}`);
-        } catch (releaseErr: any) {
-          logger.error(`[CRITICAL] 多仓资金释放失败: ${releaseErr.message}`);
-        }
-      }
-    }
-  }
-
   // ... (其他方法保持不变)
+  // R5v2: processOptionNewSignalWhileHolding 已移除 — 所有入场统一走竞价路径
   private async processClosingPosition(
     strategyInstance: StrategyBase,
     strategyId: number,

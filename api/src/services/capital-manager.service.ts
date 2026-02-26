@@ -23,6 +23,8 @@ export interface AllocationRequest {
   strategyId: number;
   amount: number;
   symbol?: string; // 用于标的级限制
+  survivorCount?: number;       // 竞价存活者数量（替代 symbolCount）
+  maxConcentration?: number;    // 单标的最大集中度（默认 0.33）
 }
 
 export interface AllocationResult {
@@ -303,7 +305,10 @@ class CapitalManager {
   /**
    * 获取标的级限制（每个标的的最大持仓金额）
    */
-  async getMaxPositionPerSymbol(strategyId: number): Promise<number> {
+  async getMaxPositionPerSymbol(
+    strategyId: number,
+    options?: { survivorCount?: number; maxConcentration?: number }
+  ): Promise<number> {
     try {
       // 查询策略关联的资金分配账户
       const strategyResult = await pool.query(
@@ -319,7 +324,7 @@ class CapitalManager {
       }
 
       const strategy = strategyResult.rows[0];
-      
+
       // 计算策略总资金（与 requestAllocation 一致，应用资金保护）
       const totalCapital = await this.getTotalCapital();
       let allocatedAmount = 0;
@@ -330,21 +335,32 @@ class CapitalManager {
         allocatedAmount = Math.min(configuredAmount, totalCapital);
       }
 
-      // 获取标的池中的标的数量
-      let symbolCount = 1;
-      try {
-        const stockSelector = (await import('./stock-selector.service')).default;
-        const symbols = await stockSelector.getSymbolPool(strategy.symbol_pool_config || {});
-        symbolCount = Math.max(1, symbols.length);
-      } catch (error: any) {
-        logger.warn(`无法获取策略 ${strategyId} 的标的池，使用默认限制:`, error.message);
-        symbolCount = 20; // 假设20个标的
+      // R5v2: survivorCount 优先，向后兼容 symbolCount
+      let denominator: number;
+      if (options?.survivorCount && options.survivorCount > 0) {
+        denominator = options.survivorCount;
+      } else {
+        // 向后兼容：标的池总数
+        let symbolCount = 1;
+        try {
+          const stockSelector = (await import('./stock-selector.service')).default;
+          const symbols = await stockSelector.getSymbolPool(strategy.symbol_pool_config || {});
+          symbolCount = Math.max(1, symbols.length);
+        } catch (error: unknown) {
+          const errMsg = error instanceof Error ? error.message : String(error);
+          logger.warn(`无法获取策略 ${strategyId} 的标的池，使用默认限制:`, errMsg);
+          symbolCount = 20;
+        }
+        denominator = symbolCount;
       }
 
-      // 计算每个标的的最大持仓金额
-      return allocatedAmount / symbolCount;
-    } catch (error: any) {
-      logger.error(`获取标的级限制失败 (策略 ${strategyId}):`, error);
+      // 基础分配 + maxConcentration 封顶
+      const baseMax = allocatedAmount / denominator;
+      const concentration = options?.maxConcentration ?? 0.33;
+      return Math.min(baseMax, allocatedAmount * concentration);
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      logger.error(`获取标的级限制失败 (策略 ${strategyId}):`, errMsg);
       return 0;
     }
   }
@@ -476,20 +492,28 @@ class CapitalManager {
           positionValue = parseFloat(positionResult.rows[0]?.total_value || '0');
         }
 
-        // 动态计算标的级限制：策略总资金 / 标的数量
-        let symbolCount = 1;
-        try {
-          const stockSelector = (await import('./stock-selector.service')).default;
-          const symbols = await stockSelector.getSymbolPool(strategy.symbol_pool_config || {});
-          symbolCount = Math.max(1, symbols.length);
-        } catch (error: unknown) {
-          const errMsg = error instanceof Error ? error.message : String(error);
-          logger.warn(`无法获取策略 ${request.strategyId} 的标的池，使用默认限制:`, errMsg);
-          symbolCount = 20;
+        // R5v2: survivorCount 优先，向后兼容 symbolCount
+        let denominator: number;
+        if (request.survivorCount && request.survivorCount > 0) {
+          denominator = request.survivorCount;
+        } else {
+          let symbolCount = 1;
+          try {
+            const stockSelector = (await import('./stock-selector.service')).default;
+            const symbols = await stockSelector.getSymbolPool(strategy.symbol_pool_config || {});
+            symbolCount = Math.max(1, symbols.length);
+          } catch (error: unknown) {
+            const errMsg = error instanceof Error ? error.message : String(error);
+            logger.warn(`无法获取策略 ${request.strategyId} 的标的池，使用默认限制:`, errMsg);
+            symbolCount = 20;
+          }
+          denominator = symbolCount;
         }
 
-        // 动态分配：策略总资金平均分配给所有标的
-        const maxPositionPerSymbol = allocatedAmount / symbolCount;
+        // 基础分配 + maxConcentration 封顶
+        const baseMaxPerSymbol = allocatedAmount / denominator;
+        const concentration = request.maxConcentration ?? 0.33;
+        const maxPositionPerSymbol = Math.min(baseMaxPerSymbol, allocatedAmount * concentration);
         const newPositionValue = positionValue + request.amount;
 
         if (newPositionValue > maxPositionPerSymbol) {
@@ -498,7 +522,7 @@ class CapitalManager {
           return {
             approved: false,
             allocatedAmount: 0,
-            reason: `标的 ${request.symbol} 持仓超过限制: 已用${positionValue.toFixed(2)} + 申请${request.amount.toFixed(2)} = ${newPositionValue.toFixed(2)} > 上限${maxPositionPerSymbol.toFixed(2)} (策略总资金 ${allocatedAmount.toFixed(2)} / ${symbolCount} 个标的)`,
+            reason: `标的 ${request.symbol} 持仓超过限制: 已用${positionValue.toFixed(2)} + 申请${request.amount.toFixed(2)} = ${newPositionValue.toFixed(2)} > 上限${maxPositionPerSymbol.toFixed(2)} (策略总资金 ${allocatedAmount.toFixed(2)} / ${denominator} 个标的, 集中度上限${(concentration * 100).toFixed(0)}%)`,
           };
         }
       }

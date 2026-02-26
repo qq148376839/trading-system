@@ -389,21 +389,18 @@ const OPTION_EXPIRY_SCHEDULE: Record<string, 'daily' | 'weekly_friday'> = {
   'NFLX.US': 'weekly_friday',
 };
 
-/**
- * 标的相关性分组
- * 同组标的（相关系数 > 0.90）共享信号窗口，只允许最高分入场
- * 不同组标的保留原 R5 跨标的过滤逻辑
- */
-const SYMBOL_CORRELATION_GROUPS: Record<string, string> = {
+import { buildCorrelationMap } from '../utils/correlation';
+
+// R5v2: 默认相关性分组（策略无配置时的回退）
+const DEFAULT_BT_CORRELATION_GROUPS: Record<string, string> = {
   'SPY.US': 'INDEX_ETF',
   'QQQ.US': 'INDEX_ETF',
   'IWM.US': 'INDEX_ETF',
   'DIA.US': 'INDEX_ETF',
-  // 个股不分组，每个标的自成一组
 };
 
-function getCorrelationGroup(symbol: string): string {
-  return SYMBOL_CORRELATION_GROUPS[symbol] || symbol;
+function getCorrelationGroup(symbol: string, correlationMap: Record<string, string>): string {
+  return correlationMap[symbol] || symbol;
 }
 
 /**
@@ -883,6 +880,7 @@ class OptionBacktestService {
     positionSizing: { mode: 'FIXED_CONTRACTS' | 'MAX_PREMIUM'; fixedContracts?: number; maxPremiumUsd?: number };
     feeModel: { commissionPerContract: number; minCommissionPerOrder: number; platformFeePerContract: number };
     capitalBudget: number;
+    correlationGroups?: { groups: Record<string, string[]>; threshold: number };
   }> {
     const defaults = {
       baseThreshold: 15,
@@ -961,6 +959,9 @@ class OptionBacktestService {
         positionSizing: sizing,
         feeModel,
         capitalBudget,
+        correlationGroups: stratConfig?.correlationGroups?.groups
+          ? { groups: stratConfig.correlationGroups.groups, threshold: stratConfig.correlationGroups.threshold ?? 0.75 }
+          : undefined,
       };
 
       logger.info(`[期权回测] 策略#${strategyId} resolved: threshold=${resolved.baseThreshold}, pref=${pref}, sizing=${sizing.mode}, fixedContracts=${sizing.fixedContracts}, budget=${capitalBudget}, window=${resolved.tradeWindowStartET}-${resolved.tradeWindowEndET}`);
@@ -1038,6 +1039,9 @@ class OptionBacktestService {
       capitalBudget: config?.capitalBudget ?? resolved.capitalBudget,
     };
 
+    // R5v2: 从策略配置构建相关性映射（优先配置，回退默认）
+    const correlationMap = buildCorrelationMap(resolved.correlationGroups?.groups) || DEFAULT_BT_CORRELATION_GROUPS;
+
     const allTrades: BacktestTradeRecord[] = [];
     const diagnosticLog: OptionBacktestResult['diagnosticLog'] = {
       dataFetch: [],
@@ -1090,7 +1094,7 @@ class OptionBacktestService {
 
       // R5: 应用跨标的入场保护过滤（多标的回测时生效）
       if (symbols.length > 1) {
-        const { kept, filtered } = this.applyCrossSymbolFilter(dayTrades);
+        const { kept, filtered } = this.applyCrossSymbolFilter(dayTrades, correlationMap);
         allTrades.push(...kept);
         if (filtered.length > 0) {
           diagnosticLog.crossSymbolFiltered = (diagnosticLog.crossSymbolFiltered || 0) + filtered.length;
@@ -1837,7 +1841,10 @@ class OptionBacktestService {
    *
    * 排序从 entryTime 改为 |entryScore| 降序 → 高分者先占位
    */
-  private applyCrossSymbolFilter(dayTrades: BacktestTradeRecord[]): {
+  private applyCrossSymbolFilter(
+    dayTrades: BacktestTradeRecord[],
+    correlationMap: Record<string, string>
+  ): {
     kept: BacktestTradeRecord[];
     filtered: BacktestTradeRecord[];
   } {
@@ -1855,12 +1862,12 @@ class OptionBacktestService {
     const intraGroupFiltered: BacktestTradeRecord[] = [];
 
     for (const trade of sorted) {
-      const group = getCorrelationGroup(trade.symbol);
+      const group = getCorrelationGroup(trade.symbol, correlationMap);
       const entryTs = new Date(trade.entryTime).getTime();
       let blocked = false;
 
       for (const kept of intraGroupKept) {
-        if (getCorrelationGroup(kept.symbol) !== group) continue;
+        if (getCorrelationGroup(kept.symbol, correlationMap) !== group) continue;
         if (kept.symbol === trade.symbol) continue;
         const keptEntryTs = new Date(kept.entryTime).getTime();
         const keptExitTs = kept.exitTime ? new Date(kept.exitTime).getTime() : Infinity;
@@ -1890,13 +1897,13 @@ class OptionBacktestService {
     const lastExitByGroup = new Map<string, { exitTime: number; exitTag: string | undefined; symbol: string }>();
 
     for (const trade of crossSorted) {
-      const group = getCorrelationGroup(trade.symbol);
+      const group = getCorrelationGroup(trade.symbol, correlationMap);
       const entryTs = new Date(trade.entryTime).getTime();
       let filterReason: string | undefined;
 
       // 条件1: 跨组并发 — ±3min内不同组已有入场，或对方仍在持仓
       for (const k of kept) {
-        const kGroup = getCorrelationGroup(k.symbol);
+        const kGroup = getCorrelationGroup(k.symbol, correlationMap);
         if (kGroup === group) continue; // 同组已在 Phase 1 处理
         const kEntryTs = new Date(k.entryTime).getTime();
         const kExitTs = k.exitTime ? new Date(k.exitTime).getTime() : Infinity;

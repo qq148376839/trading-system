@@ -1298,6 +1298,52 @@ class MarketDataService {
       return null;
     }
   }
+
+  /**
+   * 获取标的日K收盘价历史（用于相关性计算）
+   * 使用 Longport SDK candlesticks 获取日级 K 线数据
+   * @param symbol - 标的代码（如 SPY.US）
+   * @param count - 获取天数（默认 60）
+   * @returns 日期 + 收盘价数组
+   */
+  async getDailyCloseHistory(symbol: string, count: number = 60): Promise<{ date: string; close: number }[]> {
+    try {
+      const quoteCtx = await getQuoteContext();
+      const longport = require('longport');
+      const { Period, AdjustType } = longport;
+      const { formatLongbridgeCandlestick } = require('../utils/candlestick-formatter');
+
+      let tradeSessionsAll = 100;
+      try {
+        const TradeSessions = (longport as any).TradeSessions;
+        if (TradeSessions && typeof TradeSessions.All === 'number') {
+          tradeSessionsAll = TradeSessions.All;
+        }
+      } catch {
+        // 使用默认值 100
+      }
+
+      const candlesticks = await quoteCtx.candlesticks(
+        symbol,
+        Period.Day,
+        count,
+        AdjustType.NoAdjust,
+        tradeSessionsAll
+      );
+
+      return candlesticks.map((c: any) => {
+        const formatted = formatLongbridgeCandlestick(c);
+        const ts = formatted.timestamp;
+        const d = new Date(typeof ts === 'number' ? ts * 1000 : ts);
+        const dateStr = d.toISOString().slice(0, 10);
+        return { date: dateStr, close: formatted.close };
+      });
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      logger.error(`获取 ${symbol} 日K历史失败:`, errMsg);
+      return [];
+    }
+  }
 }
 
 /**

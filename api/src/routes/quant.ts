@@ -2474,3 +2474,90 @@ quantRouter.post('/strategies/:id/simulate', async (req: Request, res: Response,
   }
 });
 
+/**
+ * POST /api/quant/strategies/:id/correlation-groups
+ * 计算标的池的相关性分组并保存到策略配置
+ */
+quantRouter.post('/strategies/:id/correlation-groups', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const strategyId = parseInt(req.params.id);
+    const { threshold = 0.75, days = 60 } = req.body || {};
+
+    // 1. 读取策略标的池
+    const strategyResult = await pool.query(
+      `SELECT symbol_pool_config FROM strategies WHERE id = $1`,
+      [strategyId]
+    );
+    if (strategyResult.rows.length === 0) {
+      return res.status(404).json({ success: false, error: '策略不存在' });
+    }
+
+    const symbolPoolConfig = strategyResult.rows[0].symbol_pool_config || {};
+    const symbols = await stockSelector.getSymbolPool(symbolPoolConfig);
+
+    if (symbols.length < 2) {
+      return res.status(400).json({ success: false, error: `标的池数量不足 (${symbols.length})，至少需要 2 个标的` });
+    }
+
+    // 2. 逐标的获取日K收盘价
+    const marketDataSvc = (await import('../services/market-data.service')).default;
+    const { computeCorrelationGroups } = await import('../utils/correlation');
+
+    const closePrices = new Map<string, number[]>();
+    for (let i = 0; i < symbols.length; i++) {
+      const symbol = symbols[i];
+      try {
+        const history = await marketDataSvc.getDailyCloseHistory(symbol, days);
+        if (history.length >= 10) {
+          closePrices.set(symbol, history.map(h => h.close));
+        } else {
+          logger.warn(`[相关性分组] ${symbol}: 日K数据不足 (${history.length} < 10)，跳过`);
+        }
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.warn(`[相关性分组] ${symbol}: 获取日K失败: ${errMsg}，跳过`);
+      }
+      // API 限速
+      if (i < symbols.length - 1) {
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+
+    if (closePrices.size < 2) {
+      return res.status(400).json({
+        success: false,
+        error: `有效标的不足 (${closePrices.size})，无法计算相关性`,
+      });
+    }
+
+    // 3. 计算分组
+    const { groups, matrix } = computeCorrelationGroups(closePrices, threshold);
+
+    // 4. JSONB 合并写入策略配置
+    const correlationGroupsConfig = {
+      threshold,
+      days,
+      calculatedAt: new Date().toISOString(),
+      groups,
+      matrix,
+    };
+
+    await pool.query(
+      `UPDATE strategies SET config = COALESCE(config, '{}'::jsonb) || $1::jsonb WHERE id = $2`,
+      [JSON.stringify({ correlationGroups: correlationGroupsConfig }), strategyId]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        strategyId,
+        symbolCount: closePrices.size,
+        ...correlationGroupsConfig,
+      },
+    });
+  } catch (error: unknown) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+

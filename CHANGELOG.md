@@ -2,6 +2,25 @@
 
 ## 2026-02-27
 
+### R5v2 竞价机制优化：移除多仓 + 自动分组 + 资金动态分配
+
+**四项改动**:
+
+1. **移除多仓模式**: 删除 `processOptionNewSignalWhileHolding` 方法及调用（-210 行），所有入场统一走竞价路径，消除绕过竞价的旁路
+2. **资金动态分配**: `survivorCount`（竞价胜者 + HOLDING）替代标的池总数作为资金分母，`maxConcentration`（默认 33%）封顶单标的集中度
+3. **自动相关性分组**: 新建 `correlation.ts` 工具模块（Pearson 相关系数 + Union-Find 分组），新增 `POST /strategies/:id/correlation-groups` API 自动计算并保存分组到策略 JSONB config
+4. **回测同步配置**: 回测 `applyCrossSymbolFilter` 从策略 config 读取 `correlationGroups`，不再硬编码
+
+**修改文件**:
+- 📝 `api/src/services/strategy-scheduler.service.ts`（移除多仓调用 + 传 survivorCount + 读配置分组）
+- 📝 `api/src/services/capital-manager.service.ts`（getMaxPositionPerSymbol + requestAllocation 支持 survivorCount/maxConcentration）
+- 📝 `api/src/services/option-backtest.service.ts`（移除硬编码分组，从策略 config 读取）
+- 📝 `api/src/services/market-data.service.ts`（新增 getDailyCloseHistory）
+- 🆕 `api/src/utils/correlation.ts`（Pearson 计算 + Union-Find 分组 + buildCorrelationMap）
+- 📝 `api/src/routes/quant.ts`（新增 POST /strategies/:id/correlation-groups）
+
+---
+
 ### 回测-实盘信号对齐：真实温度 + 日K分时修正
 
 **背景**: 回测 10:17 ET 入场但实盘 10:30 ET 才入场（晚 13 分钟），根因：(1) 回测用 `estimateMarketTemperature()` 估算温度与实盘 Longport API 真实温度差异大（68 → +9.0 贡献 vs 估算值）；(2) `calculateMarketScore()` 用日K当天 close 做趋势计算，日K缓存延迟导致 SPX 趋势在 -0.9 和 -22.1 之间跳动。

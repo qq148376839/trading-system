@@ -7,6 +7,25 @@
 
 ## 🆕 最近更新
 
+### 2026-02-27: R5v2 竞价机制优化 — 移除多仓 + 自动分组 + 资金动态分配
+
+**变更内容**:
+
+1. **移除多仓模式**: 删除 `processOptionNewSignalWhileHolding` 方法及调用，所有入场统一走竞价路径
+2. **资金动态分配**: `survivorCount` 替代标的池总数 + `maxConcentration` 封顶（默认 33%）
+3. **自动相关性分组**: 新建 `correlation.ts`（Pearson + Union-Find），新增 `POST /strategies/:id/correlation-groups` API
+4. **回测同步配置**: `applyCrossSymbolFilter` 从策略 `config.correlationGroups` 读取分组
+
+**修改文件**:
+- 📝 `api/src/services/strategy-scheduler.service.ts`
+- 📝 `api/src/services/capital-manager.service.ts`
+- 📝 `api/src/services/option-backtest.service.ts`
+- 📝 `api/src/services/market-data.service.ts`
+- 🆕 `api/src/utils/correlation.ts`
+- 📝 `api/src/routes/quant.ts`
+
+**验证**: 部署后 HOLDING 标的不再生成 `NEW_CONTRACT` 日志；资金分配日志中 `maxPositionPerSymbol` 应为 `allocatedAmount / survivorCount`（不超过 33%）；`POST /api/quant/strategies/1/correlation-groups` 返回分组结果
+
 ### 2026-02-27: 回测-实盘信号对齐 — 真实温度 + 日K分时修正
 
 **变更内容**:
@@ -986,6 +1005,6 @@
 
 ---
 
-**最后更新**: 2026-02-26（期权回测：交易窗口对齐 + 评分曲线修复 + 前端日期优化）
+**最后更新**: 2026-02-27（R5v2 竞价机制优化：移除多仓 + 自动分组 + 资金动态分配）
 **项目版本**: 1.0
 
