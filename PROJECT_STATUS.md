@@ -7,6 +7,21 @@
 
 ## 🆕 最近更新
 
+### 2026-02-26: 实盘同步 — 两阶段评分竞价 + 相关性分组 (R5v2)
+
+**变更内容**:
+
+1. **evaluate-then-execute**: 期权策略从并行先到先得改为 Phase A(状态分类) → Phase B(并行评估) → Phase C(两阶段竞价) → Phase D(顺序执行)
+2. **相关性分组竞价**: SPY/QQQ/IWM/DIA 归入 `INDEX_ETF` 组，同组 `|finalScore|` 竞价只取最高分，跨组并发/floor 保护
+3. **评分传递**: `generateSignal()` metadata 新增 `finalScore`/`marketScore`/`intradayScore`，供竞价使用
+4. **group-based floor**: `crossSymbolState.lastFloorExitByGroup` 替代原 per-symbol 的 `lastFloorExitTime/Symbol`
+
+**修改文件**:
+- 📝 `api/src/services/strategy-scheduler.service.ts`
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`
+
+**验证**: 部署后检查日志关键词 `R5v2_CANDIDATE` / `R5v2_PHASE1_FILTERED` / `R5v2_PHASE2_FILTERED` / `R5v2_AUCTION`
+
 ### 2026-02-26: 回测消除遍历顺序偏差 + 相关性分组竞价 + DQ 评分
 
 **变更内容**:

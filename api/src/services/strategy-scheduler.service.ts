@@ -33,6 +33,17 @@ import marketDataCacheService from './market-data-cache.service';
 import marketDataService from './market-data.service';
 import trailingStopProtectionService from './trailing-stop-protection.service';
 
+// R5v2: 相关性分组 — 高相关标的同组，竞价时互斥
+const SYMBOL_CORRELATION_GROUPS: Record<string, string> = {
+  'SPY.US': 'INDEX_ETF',
+  'QQQ.US': 'INDEX_ETF',
+  'IWM.US': 'INDEX_ETF',
+  'DIA.US': 'INDEX_ETF',
+};
+
+function getCorrelationGroup(symbol: string): string {
+  return SYMBOL_CORRELATION_GROUPS[symbol] || symbol;
+}
 
 // 定义执行汇总接口
 interface ExecutionSummary {
@@ -66,19 +77,17 @@ class StrategyScheduler {
   private readonly TSLP_FAILURE_THRESHOLD = 2; // 失败 >= 2 次禁止开仓
   // H2 修复：每日重置追踪（per strategy）
   private lastDailyResetDate: Map<number, string> = new Map();
-  // R5: 跨标的入场保护状态（策略级共享内存）
+  // R5v2: 跨标的入场保护状态（策略级共享内存）— 按相关性分组追踪 floor
   private crossSymbolState = new Map<number, {
-    lastFloorExitTime: number | null;
-    lastFloorExitSymbol: string | null;
+    lastFloorExitByGroup: Map<string, { exitTime: number; exitSymbol: string }>;
     activeEntries: Map<string, number>;  // symbol → entry timestamp (Date.now())
   }>();
 
-  /** R5: 获取或初始化策略的跨标的保护状态 */
+  /** R5v2: 获取或初始化策略的跨标的保护状态 */
   private getCrossSymbolState(strategyId: number) {
     if (!this.crossSymbolState.has(strategyId)) {
       this.crossSymbolState.set(strategyId, {
-        lastFloorExitTime: null,
-        lastFloorExitSymbol: null,
+        lastFloorExitByGroup: new Map(),
         activeEntries: new Map(),
       });
     }
@@ -531,17 +540,58 @@ class StrategyScheduler {
 
     summary.totalTargets = effectiveSymbols.length;
 
-    // 3. 分批并行处理多个股票（避免连接池耗尽）
-    // 每批处理10个标的，避免一次性占用过多数据库连接
+    // 3. R5v2: 期权策略使用 evaluate-then-execute 两阶段竞价架构
     const BATCH_SIZE = 10;
-    for (let i = 0; i < effectiveSymbols.length; i += BATCH_SIZE) {
-      const batch = effectiveSymbols.slice(i, i + BATCH_SIZE);
-      await Promise.all(
-        batch.map((symbol) => this.processSymbol(strategyInstance, strategyId, symbol, summary))
+
+    if (isOptionStrategy) {
+      // Phase A: 状态分类 — 区分 IDLE 和非 IDLE 标的
+      const stateChecks = await Promise.all(
+        effectiveSymbols.map(async (sym) => ({
+          symbol: sym,
+          state: await strategyInstance.getCurrentState(sym),
+        }))
       );
-      // 批次之间稍作延迟，避免数据库压力过大
-      if (i + BATCH_SIZE < effectiveSymbols.length) {
-        await new Promise(resolve => setTimeout(resolve, 100)); // 100ms延迟
+      const idleSymbols = stateChecks.filter(s => s.state === 'IDLE').map(s => s.symbol);
+      const nonIdleSymbols = stateChecks.filter(s => s.state !== 'IDLE').map(s => s.symbol);
+
+      // Phase A: 并行处理非 IDLE（HOLDING/CLOSING 等走原 processSymbol）
+      for (let i = 0; i < nonIdleSymbols.length; i += BATCH_SIZE) {
+        const batch = nonIdleSymbols.slice(i, i + BATCH_SIZE);
+        await Promise.all(batch.map(sym => this.processSymbol(strategyInstance, strategyId, sym, summary)));
+        if (i + BATCH_SIZE < nonIdleSymbols.length) await new Promise(r => setTimeout(r, 100));
+      }
+
+      // Phase B: 并行评估 IDLE → 收集候选
+      const candidates: Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string }> = [];
+      for (let i = 0; i < idleSymbols.length; i += BATCH_SIZE) {
+        const batch = idleSymbols.slice(i, i + BATCH_SIZE);
+        const results = await Promise.all(
+          batch.map(sym => this.evaluateIdleSymbol(strategyInstance, strategyId, sym, summary))
+        );
+        for (const r of results) {
+          if (r) candidates.push(r);
+        }
+        if (i + BATCH_SIZE < idleSymbols.length) await new Promise(r => setTimeout(r, 100));
+      }
+
+      // Phase C: 两阶段竞价
+      const winners = this.scoringAuction(strategyId, candidates);
+
+      // Phase D: 顺序执行胜者（资金原子分配）
+      for (const winner of winners) {
+        summary.signals.push(winner.symbol);
+        await this.executeSymbolEntry(strategyInstance, strategyId, winner.symbol, winner.intent, summary);
+      }
+    } else {
+      // 非期权策略：保持原有并行批处理
+      for (let i = 0; i < effectiveSymbols.length; i += BATCH_SIZE) {
+        const batch = effectiveSymbols.slice(i, i + BATCH_SIZE);
+        await Promise.all(
+          batch.map((symbol) => this.processSymbol(strategyInstance, strategyId, symbol, summary))
+        );
+        if (i + BATCH_SIZE < effectiveSymbols.length) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
       }
     }
 
@@ -1746,7 +1796,12 @@ class StrategyScheduler {
         return;
       }
 
-      // IDLE 状态：处理买入逻辑
+      // R5v2: IDLE 期权标的由 evaluateIdleSymbol + scoringAuction 处理
+      if (currentState === 'IDLE' && isOptionStrategy) {
+        return;
+      }
+
+      // IDLE 状态：处理买入逻辑（非期权策略）
       // V4: 恢复 TSLP 失败计数（进程重启后首次进入）
       await this.restoreTslpFailureCount(strategyId);
 
@@ -1875,27 +1930,8 @@ class StrategyScheduler {
         return;
       }
 
-      // R5: 跨标的入场保护（期权策略 — 防止并发入场 + floor 连锁）
-      if (isOptionStrategy) {
-        const crossState = this.getCrossSymbolState(strategyId);
-        const now = Date.now();
-
-        // 条件1: 并发入场 — 3min 内其他标的正在持仓
-        for (const [otherSym, entryTime] of crossState.activeEntries) {
-          if (otherSym !== symbol && (now - entryTime) < 3 * 60000) {
-            summary.idle.push(`${symbol}(CROSS_CONCURRENT:${otherSym})`);
-            return;
-          }
-        }
-
-        // 条件2: floor 连锁 — 其他标的刚 floor 退出（30min 窗口）
-        if (crossState.lastFloorExitTime &&
-            crossState.lastFloorExitSymbol !== symbol &&
-            (now - crossState.lastFloorExitTime) < 30 * 60000) {
-          summary.idle.push(`${symbol}(CROSS_FLOOR:${crossState.lastFloorExitSymbol})`);
-          return;
-        }
-      }
+      // R5v2: 期权策略的跨标的入场保护已移至 scoringAuction()
+      // 非期权策略不使用跨标的保护
 
       // 生成信号（marketData 参数可选，策略内部会自行获取）
       const intent = await strategyInstance.generateSignal(symbol, undefined);
@@ -2216,6 +2252,465 @@ class StrategyScheduler {
           logger.warn(`[CAPITAL_SAFETY] 策略${strategyId} 标的${symbol}: 异常后释放资金 ${allocationResult.allocatedAmount}`);
         } catch (releaseErr: any) {
           logger.error(`[CRITICAL] 资金释放失败! 策略${strategyId} 标的${symbol} 金额${allocationResult.allocatedAmount}: ${releaseErr.message}`);
+        }
+      }
+    }
+  }
+
+  /**
+   * R5v2 Phase B: 评估单个 IDLE 期权标的，收集候选信号
+   * 包含所有前置检查（收盘窗口/取消退避/熔断/冷却/持仓/订单/TSLP/信号抑制）
+   * 不包含 R5 跨标的检查（由 scoringAuction 取代）
+   */
+  private async evaluateIdleSymbol(
+    strategyInstance: StrategyBase,
+    strategyId: number,
+    symbol: string,
+    summary: ExecutionSummary
+  ): Promise<{ symbol: string; intent: TradingIntent; finalScore: number; group: string } | null> {
+    try {
+      const strategyConfig: any = (strategyInstance as any)?.config || {};
+
+      // V4: 恢复 TSLP 失败计数
+      await this.restoreTslpFailureCount(strategyId);
+
+      // 收盘前N分钟不再开新仓
+      const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 180), 10) || 180);
+      const window = await getMarketCloseWindow({
+        market: 'US',
+        noNewEntryBeforeCloseMinutes: noNewEntryMins,
+        forceCloseBeforeCloseMinutes: 30,
+      });
+      if (window) {
+        const now = new Date();
+        if (now >= window.noNewEntryTimeUtc) {
+          summary.idle.push(`${symbol}(NO_NEW_ENTRY_WINDOW)`);
+          return null;
+        }
+      }
+
+      // 取消退避
+      const instState = await stateManager.getInstanceState(strategyId, symbol);
+      const cancelCtx = instState?.context;
+      if (cancelCtx?.lastCancelTime) {
+        const elapsed = Date.now() - new Date(cancelCtx.lastCancelTime).getTime();
+        const cancelCount = cancelCtx.cancelCount || 1;
+        const backoffMs = Math.min(30, 5 * Math.pow(2, cancelCount - 1)) * 60000;
+        if (elapsed < backoffMs) {
+          summary.idle.push(`${symbol}(CANCEL_BACKOFF)`);
+          return null;
+        }
+      }
+
+      // 新交易日重置
+      const resetReferenceTime = cancelCtx?.lastExitTime || cancelCtx?.circuitBreakerTime;
+      if (resetReferenceTime) {
+        const etFormatter = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'America/New_York',
+          year: 'numeric', month: '2-digit', day: '2-digit',
+        });
+        const refETDate = etFormatter.format(new Date(resetReferenceTime));
+        const nowETDate = etFormatter.format(new Date());
+        if (refETDate !== nowETDate) {
+          await strategyInstance.updateState(symbol, 'IDLE', {
+            dailyTradeCount: 0,
+            dailyRealizedPnL: 0,
+            consecutiveLosses: 0,
+            lastTradeDirection: null,
+            lastTradePnL: 0,
+            circuitBreakerActive: false,
+            circuitBreakerReason: null,
+            circuitBreakerTime: null,
+            tslpFailureCount: 0,
+          });
+          this.tslpFailureCount.set(strategyId, 0);
+          const freshState = await stateManager.getInstanceState(strategyId, symbol);
+          Object.assign(cancelCtx || {}, freshState?.context || {});
+        }
+      }
+
+      // 日内熔断检查
+      if (cancelCtx?.circuitBreakerActive) {
+        summary.idle.push(`${symbol}(CIRCUIT_BREAKER:${cancelCtx.circuitBreakerReason || 'active'})`);
+        return null;
+      }
+
+      // 冷却期检查
+      const dailyTradeCount = cancelCtx?.dailyTradeCount ?? 0;
+      const consecLosses = cancelCtx?.consecutiveLosses ?? 0;
+      const is0DTEContext = cancelCtx?.optionMeta?.expirationMode === '0DTE'
+        || cancelCtx?.is0DTE === true;
+
+      let cooldownMinutes: number;
+      if (is0DTEContext) {
+        if (consecLosses >= 3) {
+          cooldownMinutes = 15;
+        } else if (consecLosses === 2) {
+          cooldownMinutes = 5;
+        } else if (consecLosses === 1) {
+          cooldownMinutes = 3;
+        } else {
+          if (dailyTradeCount <= 1) {
+            cooldownMinutes = 0;
+          } else if (dailyTradeCount <= 3) {
+            cooldownMinutes = 1;
+          } else {
+            cooldownMinutes = 3;
+          }
+        }
+      } else {
+        cooldownMinutes = strategyConfig?.latePeriod?.cooldownMinutes ?? 3;
+      }
+
+      if (cancelCtx?.lastExitTime && cooldownMinutes > 0) {
+        const exitElapsed = Date.now() - new Date(cancelCtx.lastExitTime).getTime();
+        if (exitElapsed < cooldownMinutes * 60000) {
+          const remainMin = Math.ceil((cooldownMinutes * 60000 - exitElapsed) / 60000);
+          summary.idle.push(`${symbol}(COOLDOWN_${remainMin}m_trade#${dailyTradeCount}${consecLosses > 0 ? `_consLoss${consecLosses}` : ''})`);
+          return null;
+        }
+      }
+
+      // 持仓检查
+      const hasPosition = await this.checkExistingOptionPositionForUnderlying(strategyId, symbol);
+      if (hasPosition) {
+        await this.syncPositionState(strategyInstance, strategyId, symbol);
+        summary.actions.push(`${symbol}(SYNC_HOLDING)`);
+        return null;
+      }
+
+      // 未成交订单检查
+      const hasPendingOrder = await this.checkPendingOptionOrderForUnderlying(strategyId, symbol);
+      if (hasPendingOrder) {
+        summary.idle.push(symbol);
+        return null;
+      }
+
+      // R5v2: 不在此处做跨标的检查 — 由 scoringAuction() 统一处理
+
+      // 生成信号
+      const intent = await strategyInstance.generateSignal(symbol, undefined);
+      if (!intent) {
+        summary.idle.push(symbol);
+        return null;
+      }
+      if (intent.action === 'HOLD') {
+        summary.idle.push(symbol);
+        return null;
+      }
+
+      // TSLP blocked 检查
+      if (intent.action === 'BUY' && this.isTslpBlocked(strategyId)) {
+        logger.warn(
+          `[IRON_DOME:TSLP_BLOCKED] 策略 ${strategyId} 标的 ${symbol}: ` +
+          `TSLPPCT 连续失败 ${this.tslpFailureCount.get(strategyId)} 次，禁止新开仓`
+        );
+        summary.idle.push(`${symbol}(TSLP_BLOCKED)`);
+        return null;
+      }
+
+      // 信号方向抑制
+      if (intent.action === 'BUY') {
+        const suppressState = await stateManager.getInstanceState(strategyId, symbol);
+        const suppressCtx = suppressState?.context;
+        const suppressConsecLosses = suppressCtx?.consecutiveLosses ?? 0;
+        const suppressLastDir = suppressCtx?.lastTradeDirection;
+        const intentDirection = (intent.metadata as Record<string, unknown>)?.optionDirection;
+
+        if (suppressConsecLosses >= 2 && suppressLastDir && intentDirection && suppressLastDir === intentDirection) {
+          logger.warn(
+            `[SIGNAL_SUPPRESSED] 策略 ${strategyId} 标的 ${symbol}: ` +
+            `信号方向 ${intentDirection} 与最近 ${suppressConsecLosses} 笔连亏方向一致，抑制信号`
+          );
+          summary.idle.push(`${symbol}(SIGNAL_SUPPRESSED_${intentDirection})`);
+          return null;
+        }
+      }
+
+      // 只处理 BUY 信号作为候选
+      if (intent.action !== 'BUY') {
+        summary.idle.push(symbol);
+        return null;
+      }
+
+      // 提取评分
+      const metadata = intent.metadata as Record<string, unknown> || {};
+      const finalScore = typeof metadata.finalScore === 'number' ? metadata.finalScore : 0;
+
+      logger.info(
+        `[R5v2_CANDIDATE] 策略 ${strategyId} 标的 ${symbol}: ` +
+        `finalScore=${finalScore.toFixed(2)}, group=${getCorrelationGroup(symbol)}`
+      );
+
+      return {
+        symbol,
+        intent,
+        finalScore,
+        group: getCorrelationGroup(symbol),
+      };
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error(`[R5v2_EVALUATE] 策略 ${strategyId} 标的 ${symbol} 评估异常: ${errorMessage}`);
+      summary.errors.push(`${symbol}(EVALUATE_EXCEPTION:${errorMessage.substring(0, 50)})`);
+      return null;
+    }
+  }
+
+  /**
+   * R5v2 Phase C: 两阶段评分竞价 — 与回测逻辑对齐
+   *
+   * Phase 1: 同组竞价 — 每个相关组只保留 |finalScore| 最高的候选
+   * Phase 2: 跨组 R5 — 并发入场保护 + floor 连锁保护
+   */
+  private scoringAuction(
+    strategyId: number,
+    candidates: Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string }>
+  ): Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string }> {
+    if (candidates.length === 0) return [];
+
+    const crossState = this.getCrossSymbolState(strategyId);
+    const now = Date.now();
+
+    // === Phase 1: 同组竞价 — 按 |finalScore| 降序，每组取最高 ===
+    const groupBest = new Map<string, { symbol: string; intent: TradingIntent; finalScore: number; group: string }>();
+    // 按 |finalScore| 降序排列
+    const sorted = [...candidates].sort((a, b) => Math.abs(b.finalScore) - Math.abs(a.finalScore));
+
+    for (const candidate of sorted) {
+      if (!groupBest.has(candidate.group)) {
+        groupBest.set(candidate.group, candidate);
+      } else {
+        logger.info(
+          `[R5v2_PHASE1_FILTERED] 策略 ${strategyId}: ${candidate.symbol} ` +
+          `(score=${candidate.finalScore.toFixed(2)}) 被同组 ${groupBest.get(candidate.group)!.symbol} 淘汰`
+        );
+      }
+    }
+
+    const phase1Winners = Array.from(groupBest.values());
+
+    // === Phase 2: 跨组 R5 保护 ===
+    const phase2Winners: typeof phase1Winners = [];
+
+    for (const candidate of phase1Winners) {
+      const candidateGroup = candidate.group;
+
+      // 条件1: 并发入场 — activeEntries 中不同组有 3min 内入场则过滤
+      let blockedByConcurrent = false;
+      for (const [otherSym, entryTime] of crossState.activeEntries) {
+        const otherGroup = getCorrelationGroup(otherSym);
+        if (otherGroup !== candidateGroup && (now - entryTime) < 3 * 60000) {
+          logger.info(
+            `[R5v2_PHASE2_FILTERED] 策略 ${strategyId}: ${candidate.symbol} ` +
+            `被跨组并发保护过滤 (activeEntry: ${otherSym}, ${Math.round((now - entryTime) / 1000)}s ago)`
+          );
+          blockedByConcurrent = true;
+          break;
+        }
+      }
+      if (blockedByConcurrent) continue;
+
+      // 条件2: floor 连锁 — 不同组 30min 内有 floor 退出则过滤
+      let blockedByFloor = false;
+      for (const [floorGroup, floorData] of crossState.lastFloorExitByGroup) {
+        if (floorGroup !== candidateGroup && (now - floorData.exitTime) < 30 * 60000) {
+          logger.info(
+            `[R5v2_PHASE2_FILTERED] 策略 ${strategyId}: ${candidate.symbol} ` +
+            `被跨组 floor 连锁过滤 (group=${floorGroup}, exitSymbol=${floorData.exitSymbol}, ` +
+            `${Math.round((now - floorData.exitTime) / 1000)}s ago)`
+          );
+          blockedByFloor = true;
+          break;
+        }
+      }
+      if (blockedByFloor) continue;
+
+      phase2Winners.push(candidate);
+    }
+
+    // 条件3: 同 cycle 内多个跨组候选视为并发 → 只保留最高分
+    if (phase2Winners.length > 1) {
+      const groups = new Set(phase2Winners.map(w => w.group));
+      if (groups.size > 1) {
+        // 跨组竞争：只保留 |finalScore| 最高的
+        phase2Winners.sort((a, b) => Math.abs(b.finalScore) - Math.abs(a.finalScore));
+        const winner = phase2Winners[0];
+        for (let i = 1; i < phase2Winners.length; i++) {
+          if (phase2Winners[i].group !== winner.group) {
+            logger.info(
+              `[R5v2_PHASE2_FILTERED] 策略 ${strategyId}: ${phase2Winners[i].symbol} ` +
+              `被同 cycle 跨组竞价淘汰 (winner: ${winner.symbol}, score=${winner.finalScore.toFixed(2)})`
+            );
+          }
+        }
+        // 保留同组的（可能有多个同组 winner，但 Phase 1 已去重），以及最高分跨组的
+        const finalWinners = phase2Winners.filter(w => w.group === winner.group);
+        if (!finalWinners.find(w => w.symbol === winner.symbol)) {
+          finalWinners.unshift(winner);
+        }
+        phase2Winners.length = 0;
+        phase2Winners.push(...finalWinners);
+      }
+    }
+
+    for (const winner of phase2Winners) {
+      logger.info(
+        `[R5v2_AUCTION] 策略 ${strategyId}: ${winner.symbol} 胜出竞价 ` +
+        `(score=${winner.finalScore.toFixed(2)}, group=${winner.group})`
+      );
+    }
+
+    return phase2Winners;
+  }
+
+  /**
+   * R5v2 Phase D: 执行胜出标的的入场
+   * 从 processSymbol() BUY 执行路径提取，保留所有安全检查
+   */
+  private async executeSymbolEntry(
+    strategyInstance: StrategyBase,
+    strategyId: number,
+    symbol: string,
+    intent: TradingIntent,
+    summary: ExecutionSummary
+  ): Promise<void> {
+    let allocationResult: { approved: boolean; allocatedAmount: number; reason?: string } | null = null;
+    try {
+      // 记录信号日志
+      logger.info(
+        `策略 ${strategyId} 标的 ${symbol}: 竞价胜出执行 ${intent.action}, ` +
+        `价格=${intent.entryPrice?.toFixed(2) || 'N/A'}, 原因=${intent.reason?.substring(0, 50) || 'N/A'}`
+      );
+
+      // 执行验证
+      const validation = await this.validateStrategyExecution(strategyId, symbol, intent);
+      if (!validation.valid) {
+        logger.warn(
+          `[策略执行验证] 策略 ${strategyId} 标的 ${symbol} 执行被阻止: ${validation.reason}`
+        );
+        summary.errors.push(`${symbol}(VALIDATION_FAILED)`);
+        return;
+      }
+
+      // 资金检查
+      const availableCapital = await capitalManager.getAvailableCapital(strategyId);
+      if (availableCapital <= 0) {
+        logger.info(`策略 ${strategyId} 标的 ${symbol}: 可用资金不足 (${availableCapital.toFixed(2)})，跳过买入`);
+        summary.errors.push(`${symbol}(NO_CAPITAL)`);
+        return;
+      }
+
+      // 计算数量
+      if (!intent.quantity && intent.entryPrice) {
+        const maxPositionPerSymbol = await capitalManager.getMaxPositionPerSymbol(strategyId);
+        const maxAmountForThisSymbol = Math.min(availableCapital, maxPositionPerSymbol);
+        const maxAffordableQuantity = Math.floor(maxAmountForThisSymbol / intent.entryPrice);
+        intent.quantity = Math.max(1, maxAffordableQuantity);
+      }
+
+      if (!intent.quantity || intent.quantity <= 0) {
+        summary.errors.push(`${symbol}(INVALID_QUANTITY)`);
+        return;
+      }
+
+      logger.info(`策略 ${strategyId} 标的 ${symbol}: 准备买入，数量=${intent.quantity}, 价格=${intent.entryPrice?.toFixed(2)}`);
+
+      // 申请资金
+      const allocationAmountOverride = (intent.metadata as Record<string, unknown>)?.allocationAmountOverride;
+      const requestedAmount = typeof allocationAmountOverride === 'number' && allocationAmountOverride > 0
+        ? allocationAmountOverride
+        : intent.quantity * (intent.entryPrice || 0);
+      allocationResult = await capitalManager.requestAllocation({
+        strategyId,
+        amount: requestedAmount,
+        symbol,
+      });
+
+      if (!allocationResult.approved) {
+        logger.info(`策略 ${strategyId} 标的 ${symbol}: 资金申请被拒绝 - ${allocationResult.reason || '未知原因'}`);
+        summary.errors.push(`${symbol}(CAPITAL_REJECTED)`);
+        return;
+      }
+
+      // 更新状态为 OPENING
+      await strategyInstance.updateState(symbol, 'OPENING', {
+        intent,
+        allocationAmount: allocationResult.allocatedAmount,
+      });
+
+      // 执行买入
+      const executionResult = await basicExecutionService.executeBuyIntent(intent, strategyId);
+
+      if (executionResult.submitted && executionResult.orderId) {
+        this.markOrderSubmitted(strategyId, symbol, 'BUY', executionResult.orderId);
+        summary.actions.push(`${symbol}(BUY_SUBMITTED)`);
+      }
+
+      if (executionResult.success) {
+        const marketEnv = await dynamicPositionManager.getCurrentMarketEnvironment(symbol);
+
+        let originalATR: number | undefined;
+        try {
+          const recommendation = await tradingRecommendationService.calculateRecommendation(symbol);
+          originalATR = recommendation.atr;
+        } catch {
+          // 忽略
+        }
+
+        const holdingContext = {
+          entryPrice: executionResult.avgPrice,
+          quantity: executionResult.filledQuantity,
+          entryTime: new Date().toISOString(),
+          originalStopLoss: intent.stopLoss,
+          originalTakeProfit: intent.takeProfit,
+          currentStopLoss: intent.stopLoss,
+          currentTakeProfit: intent.takeProfit,
+          entryMarketEnv: marketEnv.marketEnv,
+          entryMarketStrength: marketEnv.marketStrength,
+          previousMarketEnv: marketEnv.marketEnv,
+          previousMarketStrength: marketEnv.marketStrength,
+          originalATR: originalATR,
+          currentATR: originalATR,
+          adjustmentHistory: [] as unknown[],
+          orderId: executionResult.orderId,
+          allocationAmount: allocationResult.allocatedAmount,
+          tradedSymbol: intent.symbol,
+          optionMeta: intent.metadata || {},
+        };
+
+        await strategyInstance.updateState(symbol, 'HOLDING', holdingContext);
+        logger.log(`策略 ${strategyId} 标的 ${symbol} 买入成功，订单ID: ${executionResult.orderId}`);
+
+        // R5v2: 注册入场到跨标的保护状态
+        this.getCrossSymbolState(strategyId).activeEntries.set(symbol, Date.now());
+
+        summary.actions.push(`${symbol}(BUY_FILLED)`);
+      } else if (executionResult.submitted && executionResult.orderId) {
+        logger.log(`策略 ${strategyId} 标的 ${symbol} 订单已提交，等待成交`);
+      } else {
+        await capitalManager.releaseAllocation(
+          strategyId,
+          allocationResult.allocatedAmount,
+          symbol
+        );
+        await strategyInstance.updateState(symbol, 'IDLE');
+        logger.error(`策略 ${strategyId} 标的 ${symbol} 买入失败: ${executionResult.error}`);
+        summary.errors.push(`${symbol}(BUY_FAILED)`);
+      }
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error(`[R5v2_EXECUTE] 策略 ${strategyId} 标的 ${symbol} 执行异常: ${errorMessage}`);
+      summary.errors.push(`${symbol}(EXECUTE_EXCEPTION:${errorMessage.substring(0, 50)})`);
+
+      // 异常后释放已分配资金
+      if (allocationResult?.approved) {
+        try {
+          await capitalManager.releaseAllocation(strategyId, allocationResult.allocatedAmount, symbol);
+          await strategyInstance.updateState(symbol, 'IDLE');
+          logger.warn(`[CAPITAL_SAFETY] 策略${strategyId} 标的${symbol}: 竞价执行异常后释放资金 ${allocationResult.allocatedAmount}`);
+        } catch (releaseErr: unknown) {
+          const releaseMsg = releaseErr instanceof Error ? releaseErr.message : String(releaseErr);
+          logger.error(`[CRITICAL] 资金释放失败! 策略${strategyId} 标的${symbol} 金额${allocationResult.allocatedAmount}: ${releaseMsg}`);
         }
       }
     }
@@ -3534,13 +4029,16 @@ class StrategyScheduler {
           totalFees: pnl.totalFees,
         });
 
-        // R5: 更新跨标的保护状态 — 清除 activeEntry + 记录 floor 退出
+        // R5v2: 更新跨标的保护状态 — 清除 activeEntry + 按组记录 floor 退出
         {
           const crossState = this.getCrossSymbolState(strategyId);
           crossState.activeEntries.delete(symbol);
           if (exitTag === '0dte_pnl_floor') {
-            crossState.lastFloorExitTime = Date.now();
-            crossState.lastFloorExitSymbol = symbol;
+            const group = getCorrelationGroup(symbol);
+            crossState.lastFloorExitByGroup.set(group, {
+              exitTime: Date.now(),
+              exitSymbol: symbol,
+            });
           }
         }
 

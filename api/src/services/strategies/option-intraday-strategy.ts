@@ -723,6 +723,10 @@ export class OptionIntradayStrategy extends StrategyBase {
           // 新增：止盈止损配置
           exitRules: this.cfg.exitRules || DEFAULT_OPTION_STRATEGY_CONFIG.exitRules,
           selectedStrategy: selectedStrategy,
+          // R5v2: 评分信息 — 用于跨标的竞价排序
+          finalScore: optionRec.finalScore,
+          marketScore: optionRec.marketScore,
+          intradayScore: optionRec.intradayScore,
         },
       };
 

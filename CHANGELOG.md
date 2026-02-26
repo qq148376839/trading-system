@@ -2,6 +2,30 @@
 
 ## 2026-02-26
 
+### 实盘同步：两阶段评分竞价 + 相关性分组 (R5v2)
+
+**背景**: 回测已实现 `|entryScore|` 降序竞价 + 相关性分组，但实盘仍是先到先得 — `Promise.all` 中谁先跑完 R5 检查谁先入场，无相关性分组概念，回测和实盘行为不一致。
+
+**evaluate-then-execute 架构**（仅期权策略）:
+
+- **Phase A**: 状态分类 — IDLE 与非 IDLE 分开处理，非 IDLE 走原 `processSymbol()`
+- **Phase B**: `evaluateIdleSymbol()` — 并行评估所有 IDLE 标的，包含全部前置检查，不含 R5 检查，返回候选 `{ symbol, intent, finalScore, group }`
+- **Phase C**: `scoringAuction()` — 两阶段竞价：同组按 `|finalScore|` 只保留最高分 → 跨组并发/floor 保护 → 同 cycle 跨组取最高
+- **Phase D**: `executeSymbolEntry()` — 顺序执行胜者，资金原子分配
+
+**相关性分组**:
+- `SYMBOL_CORRELATION_GROUPS`: SPY/QQQ/IWM/DIA → `INDEX_ETF` 组
+- `crossSymbolState.lastFloorExitByGroup` 按组追踪 floor 连锁（替代原 per-symbol）
+
+**评分字段传递**:
+- `option-intraday-strategy.ts` metadata 新增 `finalScore`/`marketScore`/`intradayScore`
+
+**修改文件**:
+- 📝 `api/src/services/strategy-scheduler.service.ts`
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`
+
+---
+
 ### 回测消除遍历顺序偏差 + 相关性分组竞价 + DQ 评分
 
 **背景**: `applyCrossSymbolFilter()` 按 `entryTime` 排序后 first-come-first-served，同分钟内数组位置决定谁入场，导致回测结果依赖 `symbols` 数组顺序。QQQ/SPY/IWM/DIA 等高相关标的（相关系数 >0.90）应作为一组评分竞价。
