@@ -2,6 +2,31 @@
 
 ## 2026-02-26
 
+### R5 跨标的入场保护 + 回测性能优化
+
+**背景**: 回测 #93（4标的×7天）分析发现：多标的并发入场和 floor 连锁是亏损主因；同时回测耗时 279 秒，主要瓶颈为重复数据加载。
+
+**R5 跨标的保护规则（实盘+回测同步）**:
+
+规则定义（通用化，不区分 ETF/个股）：
+1. **并发入场** — 3分钟内有其他标的也在入场/持仓 → 拒绝入场
+2. **floor 连锁** — 前方最近一笔其他标的交易以 `0dte_pnl_floor` 退出（30分钟窗口）→ 拒绝入场
+
+- **回测实现**: 日级后过滤模式 — 每天所有标的独立模拟后，按 entryTime 排序合并过滤。新增 `applyCrossSymbolFilter()` 方法，被过滤交易带 `filterReason` 标记，`diagnosticLog.crossSymbolFiltered` 统计过滤数
+- **实盘实现**: 策略级共享内存 `crossSymbolState` — 入场前检查 `activeEntries`（并发）和 `lastFloorExit`（连锁），入场/退出时更新状态，`exitTag` 持久化到 CLOSING context
+
+**回测性能优化**:
+
+- SPX/USD/BTC 1m 数据每天加载一次，所有标的共享（原: 每标的独立加载 → 4标的×7天 = 84次 DB 查询，现: 21次）
+- VIX 1m 数据每天加载一次（原: 28次 API → 现: 7次）
+- 总计节省 ~63 次 DB 查询 + ~21 次 Longport API 调用
+
+**修改文件**:
+- 📝 `api/src/services/option-backtest.service.ts`（R5 后过滤 + 性能优化）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（R5 实盘跨标的保护）
+
+---
+
 ### 期权回测：交易窗口对齐 + 评分曲线修复 + 前端日期优化
 
 **背景**: 回测 #86 深度分析发现的 P2 问题（交易窗口、评分断崖、日期选择器），本次全部修复。

@@ -7,6 +7,20 @@
 
 ## 🆕 最近更新
 
+### 2026-02-26: R5 跨标的入场保护 + 回测性能优化
+
+**变更内容**:
+
+1. **R5 跨标的保护（回测）**: 新增 `applyCrossSymbolFilter()` 后过滤 — 并发入场(±3min) + floor 连锁(30min)，被过滤交易带 `filterReason` 标记，汇总排除被过滤交易
+2. **R5 跨标的保护（实盘）**: 新增 `crossSymbolState` 策略级共享内存 — IDLE 入场前检查 CROSS_CONCURRENT/CROSS_FLOOR，入场/退出时更新状态，exitTag 持久化，新交易日自动重置
+3. **回测性能优化**: SPX/USD/BTC 1m + VIX 1m 日级预加载，每天只加载一次所有标的共享（4标的×7天: 节省 ~63 DB + ~21 API 调用）
+
+**修改文件**:
+- 📝 `api/src/services/option-backtest.service.ts`
+- 📝 `api/src/services/strategy-scheduler.service.ts`
+
+**验证**: 部署后跑回测 #94（同 #93 参数），对比执行时间、交易数、`crossSymbolFiltered` 值、floor 数量
+
 ### 2026-02-26: 期权回测 — 交易窗口对齐 + 评分曲线修复 + 前端日期优化
 
 **变更内容**: 修复回测 #86 分析定位的 P2 问题（3项子任务全部完成）：
