@@ -53,6 +53,7 @@ export interface BacktestResult {
   dailyReturns?: Array<{ date: string; return: number; equity: number }>;
   diagnosticLog?: any; // 诊断日志
   config?: Record<string, unknown>; // 回测配置
+  result?: Record<string, unknown>; // 原始结果（列表视图去掉 trades）
 }
 
 class BacktestService {
@@ -1666,15 +1667,21 @@ class BacktestService {
         startedAt: row.started_at,
         completedAt: row.completed_at,
         config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-        totalReturn: resultData.totalReturn || 0,
-        totalTrades: resultData.totalTrades || 0,
-        winningTrades: resultData.winningTrades || 0,
-        losingTrades: resultData.losingTrades || 0,
-        winRate: resultData.winRate || 0,
-        avgReturn: resultData.avgReturn || 0,
-        maxDrawdown: resultData.maxDrawdown || 0,
+        // 期权回测 result 结构: { summary: {...}, trades: [...], ... }
+        // 股票回测 result 结构: { totalTrades, winRate, ... } (flat)
+        result: (() => {
+          const { trades: _t, dailyReturns: _d, ...rest } = resultData;
+          return rest;
+        })(),
+        totalReturn: resultData.totalReturn || resultData.summary?.totalReturn || 0,
+        totalTrades: resultData.totalTrades || resultData.summary?.totalTrades || 0,
+        winningTrades: resultData.winningTrades || resultData.summary?.winningTrades || 0,
+        losingTrades: resultData.losingTrades || resultData.summary?.losingTrades || 0,
+        winRate: resultData.winRate || resultData.summary?.winRate || 0,
+        avgReturn: resultData.avgReturn || resultData.summary?.avgGrossPnLPercent || 0,
+        maxDrawdown: resultData.maxDrawdown || resultData.summary?.maxDrawdownPercent || 0,
         sharpeRatio: resultData.sharpeRatio || 0,
-        avgHoldingTime: resultData.avgHoldingTime || 0,
+        avgHoldingTime: resultData.avgHoldingTime || resultData.summary?.avgHoldingMinutes || 0,
         trades: [], // 列表视图不包含交易详情
         dailyReturns: [], // 列表视图不包含每日收益
       };
