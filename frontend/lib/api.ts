@@ -707,6 +707,10 @@ export const optionBacktestApi = {
       tradeWindowStartET?: number;
       tradeWindowEndET?: number;
       maxTradesPerDay?: number;
+      avoidFirstMinutes?: number;
+      noNewEntryBeforeCloseMinutes?: number;
+      forceCloseBeforeCloseMinutes?: number;
+      vixAdjustThreshold?: boolean;
     };
   }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.post('/option-backtest', data);

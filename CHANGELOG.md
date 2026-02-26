@@ -2,6 +2,24 @@
 
 ## 2026-02-26
 
+### 前端期权回测页面优化 — 4项修复
+
+**背景**: 期权回测前端页面存在列表无数据、参数总是覆盖策略配置、新后端参数未体现、信号日志缺 VIX 列等问题。
+
+**修复内容**:
+1. **列表页无数据**: `getBacktestResultsByStrategy` 返回补上 `config`/`status`/`errorMessage`/`startedAt`/`completedAt` 字段，前端 `config?.type === 'OPTION_BACKTEST'` 过滤不再全部丢弃
+2. **参数覆盖改为可选**: 创建回测 Modal 新增「自定义参数覆盖」Checkbox，默认不勾选时 `config=undefined`，后端从策略 DB 读取配置；勾选后展开编辑面板
+3. **4 个新参数上线前端**: `avoidFirstMinutes`、`noNewEntryBeforeCloseMinutes`、`forceCloseBeforeCloseMinutes`、`vixAdjustThreshold` 加入 API 类型和表单
+4. **信号日志 VIX 列**: 详情页信号表新增「VIX因子」和「动态阈值」两列
+
+**修改文件**:
+- 🐛 `api/src/services/backtest.service.ts`（`BacktestResult` 接口 + `getBacktestResultsByStrategy` 补字段）
+- 📝 `frontend/lib/api.ts`（`optionBacktestApi.run` config 类型扩展）
+- 📝 `frontend/app/quant/backtest/page.tsx`（Modal 重构：策略参数只读卡 + 覆盖开关 + 新参数表单）
+- 📝 `frontend/app/quant/backtest/option/[id]/page.tsx`（信号表 VIX 列）
+
+---
+
 ### 回测引擎对齐实盘规则 — 4项修订
 
 **背景**: 回测引擎与实盘策略在入场/退出规则上存在差异，导致回测结果无法准确反映实盘表现。

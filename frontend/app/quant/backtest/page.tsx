@@ -785,6 +785,13 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
   const [optWindowStart, setOptWindowStart] = useState<number>(570);
   const [optWindowEnd, setOptWindowEnd] = useState<number>(630);
   const [optMaxTrades, setOptMaxTrades] = useState<number>(3);
+  const [optAvoidFirst, setOptAvoidFirst] = useState<number>(15);
+  const [optNoNewEntry, setOptNoNewEntry] = useState<number>(180);
+  const [optForceClose, setOptForceClose] = useState<number>(30);
+  const [optVixAdjust, setOptVixAdjust] = useState<boolean>(true);
+  const [overrideConfig, setOverrideConfig] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [strategyConfig, setStrategyConfig] = useState<Record<string, any> | null>(null);
 
   useEffect(() => {
     loadOptionData();
@@ -863,12 +870,26 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
   const handleStrategySelect = async (strategyId: number) => {
     setOptStrategyId(strategyId);
     setOptStrategySymbols([]);
+    setStrategyConfig(null);
     if (strategyId) {
       try {
         const res = await quantApi.getStrategy(strategyId);
         if (res.success && res.data) {
           const symbols = res.data.symbolPoolConfig?.symbols || [];
           setOptStrategySymbols(symbols);
+          const cfg = res.data.config || {};
+          setStrategyConfig(cfg);
+          // 用策略值初始化表单默认值
+          setOptRiskPref(cfg.riskPreference || 'CONSERVATIVE');
+          setOptEntryThreshold(cfg.entryThresholdOverride?.directionalScoreMin ?? cfg.entryThreshold ?? 15);
+          setOptContracts(cfg.positionContracts ?? 1);
+          setOptWindowStart(cfg.tradeWindowStartET ?? 570);
+          setOptWindowEnd(cfg.tradeWindowEndET ?? 630);
+          setOptMaxTrades(cfg.maxTradesPerDay ?? 3);
+          setOptAvoidFirst(cfg.avoidFirstMinutes ?? 15);
+          setOptNoNewEntry(cfg.noNewEntryBeforeCloseMinutes ?? 180);
+          setOptForceClose(cfg.forceCloseBeforeCloseMinutes ?? 30);
+          setOptVixAdjust(cfg.vixAdjustThreshold !== false);
         }
       } catch (err) {
         // 忽略
@@ -925,14 +946,18 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
       const res = await optionBacktestApi.run({
         strategyId: optStrategyId,
         dates,
-        config: {
+        config: overrideConfig ? {
           entryThreshold: optEntryThreshold,
           riskPreference: optRiskPref,
           positionContracts: optContracts,
           tradeWindowStartET: optWindowStart,
           tradeWindowEndET: optWindowEnd,
           maxTradesPerDay: optMaxTrades,
-        },
+          avoidFirstMinutes: optAvoidFirst,
+          noNewEntryBeforeCloseMinutes: optNoNewEntry,
+          forceCloseBeforeCloseMinutes: optForceClose,
+          vixAdjustThreshold: optVixAdjust,
+        } : undefined,
       });
 
       if (res.success && res.data?.id) {
@@ -1150,71 +1175,136 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
               />
             </div>
 
-            {/* 策略参数 */}
-            <Card size="small" title="策略参数（可选覆盖）">
-              <Row gutter={16}>
-                <Col xs={12}>
-                  <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>入场阈值</div>
-                  <InputNumber
-                    value={optEntryThreshold}
-                    onChange={v => setOptEntryThreshold(v ?? 15)}
-                    min={5}
-                    max={50}
-                    style={{ width: '100%' }}
-                  />
-                </Col>
-                <Col xs={12}>
-                  <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>风险偏好</div>
-                  <Select
-                    value={optRiskPref}
-                    onChange={setOptRiskPref}
-                    style={{ width: '100%' }}
-                  >
-                    <Select.Option value="CONSERVATIVE">保守</Select.Option>
-                    <Select.Option value="AGGRESSIVE">激进</Select.Option>
-                  </Select>
-                </Col>
-              </Row>
-              <Row gutter={16} style={{ marginTop: 12 }}>
-                <Col xs={8}>
-                  <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>合约数</div>
-                  <InputNumber
-                    value={optContracts}
-                    onChange={v => setOptContracts(v ?? 1)}
-                    min={1}
-                    max={10}
-                    style={{ width: '100%' }}
-                  />
-                </Col>
-                <Col xs={8}>
-                  <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>每日最大交易</div>
-                  <InputNumber
-                    value={optMaxTrades}
-                    onChange={v => setOptMaxTrades(v ?? 3)}
-                    min={1}
-                    max={10}
-                    style={{ width: '100%' }}
-                  />
-                </Col>
-                <Col xs={8}>
-                  <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>交易窗口</div>
-                  <Select
-                    value={`${optWindowStart}-${optWindowEnd}`}
-                    onChange={v => {
-                      const [s, e] = v.split('-').map(Number);
-                      setOptWindowStart(s);
-                      setOptWindowEnd(e);
-                    }}
-                    style={{ width: '100%' }}
-                  >
-                    <Select.Option value="570-630">9:30-10:30 (首小时)</Select.Option>
-                    <Select.Option value="570-720">9:30-12:00 (上午)</Select.Option>
-                    <Select.Option value="570-900">9:30-15:00 (全天)</Select.Option>
-                    <Select.Option value="570-960">9:30-16:00 (含尾盘)</Select.Option>
-                  </Select>
-                </Col>
-              </Row>
-            </Card>
+            {/* 策略当前参数（只读） */}
+            {optStrategyId && strategyConfig && (
+              <Card size="small" title="策略当前参数" style={{ background: '#fafafa' }}>
+                <Row gutter={[16, 8]}>
+                  <Col xs={8}><span style={{ fontSize: 12, color: '#999' }}>风险偏好:</span> <span style={{ fontSize: 12 }}>{strategyConfig.riskPreference || 'CONSERVATIVE'}</span></Col>
+                  <Col xs={8}><span style={{ fontSize: 12, color: '#999' }}>入场阈值:</span> <span style={{ fontSize: 12 }}>{strategyConfig.entryThresholdOverride?.directionalScoreMin ?? strategyConfig.entryThreshold ?? '-'}</span></Col>
+                  <Col xs={8}><span style={{ fontSize: 12, color: '#999' }}>合约数:</span> <span style={{ fontSize: 12 }}>{strategyConfig.positionContracts ?? 1}</span></Col>
+                  <Col xs={8}><span style={{ fontSize: 12, color: '#999' }}>每日最大交易:</span> <span style={{ fontSize: 12 }}>{strategyConfig.maxTradesPerDay ?? 3}</span></Col>
+                  <Col xs={8}><span style={{ fontSize: 12, color: '#999' }}>禁入窗口:</span> <span style={{ fontSize: 12 }}>{strategyConfig.avoidFirstMinutes ?? 15}分钟</span></Col>
+                  <Col xs={8}><span style={{ fontSize: 12, color: '#999' }}>VIX动态阈值:</span> <span style={{ fontSize: 12 }}>{strategyConfig.vixAdjustThreshold !== false ? '开启' : '关闭'}</span></Col>
+                </Row>
+              </Card>
+            )}
+
+            {/* 自定义参数覆盖 */}
+            <Checkbox
+              checked={overrideConfig}
+              onChange={e => setOverrideConfig(e.target.checked)}
+            >
+              自定义参数覆盖（不勾选则使用策略配置）
+            </Checkbox>
+
+            {overrideConfig && (
+              <Card size="small" title="覆盖参数">
+                <Row gutter={16}>
+                  <Col xs={12}>
+                    <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>入场阈值</div>
+                    <InputNumber
+                      value={optEntryThreshold}
+                      onChange={v => setOptEntryThreshold(v ?? 15)}
+                      min={5}
+                      max={50}
+                      style={{ width: '100%' }}
+                    />
+                  </Col>
+                  <Col xs={12}>
+                    <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>风险偏好</div>
+                    <Select
+                      value={optRiskPref}
+                      onChange={setOptRiskPref}
+                      style={{ width: '100%' }}
+                    >
+                      <Select.Option value="CONSERVATIVE">保守</Select.Option>
+                      <Select.Option value="AGGRESSIVE">激进</Select.Option>
+                    </Select>
+                  </Col>
+                </Row>
+                <Row gutter={16} style={{ marginTop: 12 }}>
+                  <Col xs={8}>
+                    <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>合约数</div>
+                    <InputNumber
+                      value={optContracts}
+                      onChange={v => setOptContracts(v ?? 1)}
+                      min={1}
+                      max={10}
+                      style={{ width: '100%' }}
+                    />
+                  </Col>
+                  <Col xs={8}>
+                    <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>每日最大交易</div>
+                    <InputNumber
+                      value={optMaxTrades}
+                      onChange={v => setOptMaxTrades(v ?? 3)}
+                      min={1}
+                      max={10}
+                      style={{ width: '100%' }}
+                    />
+                  </Col>
+                  <Col xs={8}>
+                    <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>交易窗口</div>
+                    <Select
+                      value={`${optWindowStart}-${optWindowEnd}`}
+                      onChange={v => {
+                        const [s, e] = v.split('-').map(Number);
+                        setOptWindowStart(s);
+                        setOptWindowEnd(e);
+                      }}
+                      style={{ width: '100%' }}
+                    >
+                      <Select.Option value="570-630">9:30-10:30 (首小时)</Select.Option>
+                      <Select.Option value="570-720">9:30-12:00 (上午)</Select.Option>
+                      <Select.Option value="570-900">9:30-15:00 (全天)</Select.Option>
+                      <Select.Option value="570-960">9:30-16:00 (含尾盘)</Select.Option>
+                    </Select>
+                  </Col>
+                </Row>
+                <Row gutter={16} style={{ marginTop: 12 }}>
+                  <Col xs={8}>
+                    <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>开盘禁入(分钟)</div>
+                    <InputNumber
+                      value={optAvoidFirst}
+                      onChange={v => setOptAvoidFirst(v ?? 15)}
+                      min={0}
+                      max={60}
+                      style={{ width: '100%' }}
+                    />
+                  </Col>
+                  <Col xs={8}>
+                    <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>收盘前禁开(分钟)</div>
+                    <InputNumber
+                      value={optNoNewEntry}
+                      onChange={v => setOptNoNewEntry(v ?? 180)}
+                      min={0}
+                      max={390}
+                      style={{ width: '100%' }}
+                    />
+                  </Col>
+                  <Col xs={8}>
+                    <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>收盘前强平(分钟)</div>
+                    <InputNumber
+                      value={optForceClose}
+                      onChange={v => setOptForceClose(v ?? 30)}
+                      min={0}
+                      max={120}
+                      style={{ width: '100%' }}
+                    />
+                  </Col>
+                </Row>
+                <Row gutter={16} style={{ marginTop: 12 }}>
+                  <Col xs={12}>
+                    <Checkbox
+                      checked={optVixAdjust}
+                      onChange={e => setOptVixAdjust(e.target.checked)}
+                    >
+                      VIX 动态阈值调整
+                    </Checkbox>
+                  </Col>
+                </Row>
+              </Card>
+            )}
           </Space>
           <div style={{ textAlign: 'right', marginTop: 24, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
             <Space>

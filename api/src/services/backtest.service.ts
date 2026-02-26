@@ -52,6 +52,7 @@ export interface BacktestResult {
   trades?: BacktestTrade[];
   dailyReturns?: Array<{ date: string; return: number; equity: number }>;
   diagnosticLog?: any; // 诊断日志
+  config?: Record<string, unknown>; // 回测配置
 }
 
 class BacktestService {
@@ -1660,6 +1661,11 @@ class BacktestService {
         strategyId: row.strategy_id,
         startDate: row.start_date,
         endDate: row.end_date,
+        status: row.status || 'COMPLETED',
+        errorMessage: row.error_message,
+        startedAt: row.started_at,
+        completedAt: row.completed_at,
+        config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
         totalReturn: resultData.totalReturn || 0,
         totalTrades: resultData.totalTrades || 0,
         winningTrades: resultData.winningTrades || 0,

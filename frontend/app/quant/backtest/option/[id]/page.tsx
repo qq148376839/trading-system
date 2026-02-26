@@ -75,6 +75,8 @@ interface OptionBacktestResult {
       intradayScore: number;
       direction: string;
       action: string;
+      vixFactor?: number;
+      dynamicThreshold?: number;
     }>;
   };
 }
@@ -310,6 +312,20 @@ export default function OptionBacktestDetailPage() {
       key: 'intradayScore',
       width: 80,
       render: (s: number) => s.toFixed(1),
+    },
+    {
+      title: 'VIX因子',
+      dataIndex: 'vixFactor',
+      key: 'vixFactor',
+      width: 80,
+      render: (v: number | undefined) => v != null ? v.toFixed(2) : '-',
+    },
+    {
+      title: '动态阈值',
+      dataIndex: 'dynamicThreshold',
+      key: 'dynamicThreshold',
+      width: 80,
+      render: (v: number | undefined) => v != null ? String(v) : '-',
     },
     {
       title: '动作',

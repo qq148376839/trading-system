@@ -7,6 +7,20 @@
 
 ## 🆕 最近更新
 
+### 2026-02-26: 前端期权回测页面优化 — 4项修复
+
+**变更内容**:
+1. **列表页无数据修复**: 后端 `getBacktestResultsByStrategy` 补返回 `config`/`status` 等字段，前端过滤逻辑恢复正常
+2. **参数覆盖改为可选**: 选策略后显示只读参数卡，默认使用策略 DB 配置，勾选覆盖后才展开编辑面板
+3. **4 个新参数**: `avoidFirstMinutes`/`noNewEntryBeforeCloseMinutes`/`forceCloseBeforeCloseMinutes`/`vixAdjustThreshold` 加入前端表单
+4. **信号日志 VIX 列**: 详情页信号表新增 VIX因子、动态阈值 两列
+
+**修改文件**:
+- 🐛 `api/src/services/backtest.service.ts`
+- 📝 `frontend/lib/api.ts`
+- 📝 `frontend/app/quant/backtest/page.tsx`
+- 📝 `frontend/app/quant/backtest/option/[id]/page.tsx`
+
 ### 2026-02-26: 回测引擎对齐实盘规则 — 4项修订
 
 **变更内容**:
