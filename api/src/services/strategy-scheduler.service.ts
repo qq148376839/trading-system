@@ -66,6 +66,24 @@ class StrategyScheduler {
   private readonly TSLP_FAILURE_THRESHOLD = 2; // 失败 >= 2 次禁止开仓
   // H2 修复：每日重置追踪（per strategy）
   private lastDailyResetDate: Map<number, string> = new Map();
+  // R5: 跨标的入场保护状态（策略级共享内存）
+  private crossSymbolState = new Map<number, {
+    lastFloorExitTime: number | null;
+    lastFloorExitSymbol: string | null;
+    activeEntries: Map<string, number>;  // symbol → entry timestamp (Date.now())
+  }>();
+
+  /** R5: 获取或初始化策略的跨标的保护状态 */
+  private getCrossSymbolState(strategyId: number) {
+    if (!this.crossSymbolState.has(strategyId)) {
+      this.crossSymbolState.set(strategyId, {
+        lastFloorExitTime: null,
+        lastFloorExitSymbol: null,
+        activeEntries: new Map(),
+      });
+    }
+    return this.crossSymbolState.get(strategyId)!;
+  }
 
   /**
    * 启动策略调度器
@@ -414,6 +432,7 @@ class StrategyScheduler {
         }
         this.lastDailyResetDate.set(strategyId, todayET);
         this.tslpFailureCount.set(strategyId, 0);
+        this.crossSymbolState.delete(strategyId); // R5: 新交易日重置跨标的保护状态
       }
     }
 
@@ -1856,6 +1875,28 @@ class StrategyScheduler {
         return;
       }
 
+      // R5: 跨标的入场保护（期权策略 — 防止并发入场 + floor 连锁）
+      if (isOptionStrategy) {
+        const crossState = this.getCrossSymbolState(strategyId);
+        const now = Date.now();
+
+        // 条件1: 并发入场 — 3min 内其他标的正在持仓
+        for (const [otherSym, entryTime] of crossState.activeEntries) {
+          if (otherSym !== symbol && (now - entryTime) < 3 * 60000) {
+            summary.idle.push(`${symbol}(CROSS_CONCURRENT:${otherSym})`);
+            return;
+          }
+        }
+
+        // 条件2: floor 连锁 — 其他标的刚 floor 退出（30min 窗口）
+        if (crossState.lastFloorExitTime &&
+            crossState.lastFloorExitSymbol !== symbol &&
+            (now - crossState.lastFloorExitTime) < 30 * 60000) {
+          summary.idle.push(`${symbol}(CROSS_FLOOR:${crossState.lastFloorExitSymbol})`);
+          return;
+        }
+      }
+
       // 生成信号（marketData 参数可选，策略内部会自行获取）
       const intent = await strategyInstance.generateSignal(symbol, undefined);
 
@@ -2135,6 +2176,11 @@ class StrategyScheduler {
           
           await strategyInstance.updateState(symbol, 'HOLDING', holdingContext);
           logger.log(`策略 ${strategyId} 标的 ${symbol} 买入成功，订单ID: ${executionResult.orderId}`);
+
+          // R5: 注册入场到跨标的保护状态
+          if (isOptionStrategy) {
+            this.getCrossSymbolState(strategyId).activeEntries.set(symbol, Date.now());
+          }
 
           summary.actions.push(`${symbol}(BUY_FILLED)`);
         } else if (executionResult.submitted && executionResult.orderId) {
@@ -3073,6 +3119,8 @@ class StrategyScheduler {
               protectionOrderId: undefined,
               protectionTrailingPct: undefined,
             });
+            // R5: 清除跨标的入场状态
+            this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
             // 释放资金
             if (context.allocationAmount) {
               await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
@@ -3459,6 +3507,8 @@ class StrategyScheduler {
                 protectionOrderId: undefined,
                 protectionTrailingPct: undefined,
               });
+              // R5: 清除跨标的入场状态
+              this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
               if (context.allocationAmount) {
                 await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
               }
@@ -3477,11 +3527,22 @@ class StrategyScheduler {
           ...context,
           exitReason: action,
           exitReasonDetail: reason,
+          exitTag,  // R5: 保存 exitTag 用于跨标的 floor 连锁检测
           exitPrice: currentPrice,
           exitPnL: pnl.netPnL,
           exitPnLPercent: pnl.grossPnLPercent, // Fix 9: 使用 grossPnLPercent 避免 NaN
           totalFees: pnl.totalFees,
         });
+
+        // R5: 更新跨标的保护状态 — 清除 activeEntry + 记录 floor 退出
+        {
+          const crossState = this.getCrossSymbolState(strategyId);
+          crossState.activeEntries.delete(symbol);
+          if (exitTag === '0dte_pnl_floor') {
+            crossState.lastFloorExitTime = Date.now();
+            crossState.lastFloorExitSymbol = symbol;
+          }
+        }
 
         // 执行卖出
         // ⚠️ 期权止盈止损统一使用市价单（快进快出），避免限价单无法成交导致亏损扩大

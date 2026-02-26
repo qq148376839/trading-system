@@ -81,6 +81,7 @@ interface BacktestTradeRecord {
   timeWindowAdjustment: number;
   holdingMinutes: number;
   peakPnLPercent: number;
+  filterReason?: string;  // R5 跨标的过滤原因: 'CROSS_CONCURRENT:SPY.US' | 'CROSS_FLOOR:QQQ.US'
 }
 
 export interface OptionBacktestResult {
@@ -117,6 +118,7 @@ export interface OptionBacktestResult {
       vixFactor?: number;
       dynamicThreshold?: number;
     }>;
+    crossSymbolFiltered?: number;  // R5: 被跨标的规则过滤的交易数
   };
 }
 
@@ -946,16 +948,42 @@ class OptionBacktestService {
     const dailyKData = await this.prefetchDailyKData(dates, diagnosticLog);
 
     for (const date of dates) {
+      // ── 日级预加载：SPX/USD/BTC 1m + VIX 1m，每天只加载一次，所有标的共享 ──
+      const [spxData, usdData, btcData] = await Promise.all([
+        this.loadDBKlines('SPX', date, diagnosticLog),
+        this.loadDBKlines('USD_INDEX', date, diagnosticLog),
+        this.loadDBKlines('BTC', date, diagnosticLog),
+      ]);
+      const vixData = await this.loadLongportKlines('.VIX.US', date, diagnosticLog);
+
+      const sharedDayData = { spxData, usdData, btcData, vixData };
+
+      const dayTrades: BacktestTradeRecord[] = [];
       for (const symbol of symbols) {
         logger.info(`[期权回测] 开始回测 ${symbol} @ ${date}`);
-        const dayTrades = await this.runSingleDay(date, symbol, cfg, diagnosticLog, dailyKData);
+        const symbolTrades = await this.runSingleDay(date, symbol, cfg, diagnosticLog, dailyKData, sharedDayData);
+        dayTrades.push(...symbolTrades);
+        logger.info(`[期权回测] ${symbol} @ ${date} 完成: ${symbolTrades.length} 笔交易`);
+      }
+
+      // R5: 应用跨标的入场保护过滤（多标的回测时生效）
+      if (symbols.length > 1) {
+        const { kept, filtered } = this.applyCrossSymbolFilter(dayTrades);
+        allTrades.push(...kept);
+        if (filtered.length > 0) {
+          diagnosticLog.crossSymbolFiltered = (diagnosticLog.crossSymbolFiltered || 0) + filtered.length;
+          // 将被过滤的交易也加入结果（带 filterReason 标记），供前端展示
+          allTrades.push(...filtered);
+          logger.info(`[期权回测] R5 跨标的过滤 @ ${date}: 过滤 ${filtered.length} 笔, 保留 ${kept.length} 笔`);
+        }
+      } else {
         allTrades.push(...dayTrades);
-        logger.info(`[期权回测] ${symbol} @ ${date} 完成: ${dayTrades.length} 笔交易`);
       }
     }
 
-    // 计算汇总
-    const summary = this.calculateSummary(allTrades);
+    // 计算汇总（排除被过滤的交易）
+    const activeTrades = allTrades.filter(t => !t.filterReason);
+    const summary = this.calculateSummary(activeTrades);
 
     return {
       status: 'COMPLETED',
@@ -1041,15 +1069,17 @@ class OptionBacktestService {
     symbol: string,
     cfg: Required<OptionBacktestConfig>,
     diagnosticLog: OptionBacktestResult['diagnosticLog'],
-    dailyKData: PrefetchedDailyK
+    dailyKData: PrefetchedDailyK,
+    sharedDayData: {
+      spxData: CandlestickData[];
+      usdData: CandlestickData[];
+      btcData: CandlestickData[];
+      vixData: CandlestickData[];
+    }
   ): Promise<BacktestTradeRecord[]> {
     // ── 1. 预加载数据 ──
-    // 加载当日 1m 数据（用于分时评分、VWAP 计算等）
-    const [spxData, usdData, btcData] = await Promise.all([
-      this.loadDBKlines('SPX', date, diagnosticLog),
-      this.loadDBKlines('USD_INDEX', date, diagnosticLog),
-      this.loadDBKlines('BTC', date, diagnosticLog),
-    ]);
+    // 1m 数据使用日级预加载的共享数据（每天只加载一次，所有标的复用）
+    const { spxData, usdData, btcData, vixData } = sharedDayData;
 
     // 从预获取的 Moomoo API 日K数据中按日期截断（与实盘数据源一致）
     // 截断到回测当天（含），确保不泄露未来数据
@@ -1065,9 +1095,6 @@ class OptionBacktestService {
 
     // 标的股票 1m K-lines (from Longport)
     const underlyingData = await this.loadLongportKlines(symbol, date, diagnosticLog);
-
-    // VIX 1m K-lines (from Longport)
-    const vixData = await this.loadLongportKlines('.VIX.US', date, diagnosticLog);
 
     // 验证数据充足性
     if (spxData.length < 20) {
@@ -1625,6 +1652,83 @@ class OptionBacktestService {
       spxIntraday: spxIntra.slice(-60),       // 最近 60 根 1m bar（1小时窗口）
       underlying: underlyingIntra.slice(-240), // 全天 1m bar（用于 VWAP 从开盘累计）
     };
+  }
+
+  // ── R5 跨标的入场保护过滤 ──
+
+  /**
+   * 跨标的入场保护（后过滤模式）
+   *
+   * 规则：
+   * 1. 并发入场 — 3分钟内有其他标的也在入场/持仓
+   * 2. floor 连锁 — 前方最近一笔其他标的交易以 0dte_pnl_floor 退出
+   *
+   * 按 entryTime 排序逐笔处理，保留最早的交易，过滤后入场的。
+   */
+  private applyCrossSymbolFilter(dayTrades: BacktestTradeRecord[]): {
+    kept: BacktestTradeRecord[];
+    filtered: BacktestTradeRecord[];
+  } {
+    if (dayTrades.length <= 1) {
+      return { kept: [...dayTrades], filtered: [] };
+    }
+
+    // 按 entryTime 排序
+    const sorted = [...dayTrades].sort((a, b) =>
+      new Date(a.entryTime).getTime() - new Date(b.entryTime).getTime()
+    );
+
+    const kept: BacktestTradeRecord[] = [];
+    const filtered: BacktestTradeRecord[] = [];
+
+    // 追踪已保留交易的退出状态
+    const lastExitBySymbol = new Map<string, { exitTime: number; exitTag: string | undefined }>();
+
+    for (const trade of sorted) {
+      const entryTs = new Date(trade.entryTime).getTime();
+      let filterReason: string | undefined;
+
+      // 条件1: 并发入场 — 3分钟内其他标的已有入场
+      for (const keptTrade of kept) {
+        if (keptTrade.symbol === trade.symbol) continue;
+        const keptEntryTs = new Date(keptTrade.entryTime).getTime();
+        const keptExitTs = keptTrade.exitTime ? new Date(keptTrade.exitTime).getTime() : Infinity;
+        // 检查是否在 ±3 分钟内入场，或对方仍在持仓
+        if (Math.abs(entryTs - keptEntryTs) < 3 * 60 * 1000 || (entryTs >= keptEntryTs && entryTs <= keptExitTs)) {
+          filterReason = `CROSS_CONCURRENT:${keptTrade.symbol}`;
+          break;
+        }
+      }
+
+      // 条件2: floor 连锁 — 最近一笔其他标的退出为 0dte_pnl_floor
+      if (!filterReason) {
+        for (const [sym, exitInfo] of lastExitBySymbol) {
+          if (sym === trade.symbol) continue;
+          if (exitInfo.exitTag === '0dte_pnl_floor' && entryTs > exitInfo.exitTime) {
+            // 同日内 floor 退出后的入场都应被过滤（30分钟窗口）
+            if (entryTs - exitInfo.exitTime < 30 * 60 * 1000) {
+              filterReason = `CROSS_FLOOR:${sym}`;
+              break;
+            }
+          }
+        }
+      }
+
+      if (filterReason) {
+        filtered.push({ ...trade, filterReason });
+      } else {
+        kept.push(trade);
+        // 更新退出状态
+        if (trade.exitTime) {
+          lastExitBySymbol.set(trade.symbol, {
+            exitTime: new Date(trade.exitTime).getTime(),
+            exitTag: trade.exitTag,
+          });
+        }
+      }
+    }
+
+    return { kept, filtered };
   }
 
   // ── 统计汇总 ──
