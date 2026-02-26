@@ -103,6 +103,8 @@ export interface OptionBacktestResult {
       intradayScore: number;
       direction: 'CALL' | 'PUT' | 'HOLD';
       action: string;
+      vixFactor?: number;
+      dynamicThreshold?: number;
     }>;
   };
 }
@@ -116,6 +118,10 @@ interface OptionBacktestConfig {
   tradeWindowStartET?: number;       // minutes from midnight, default 570 (9:30)
   tradeWindowEndET?: number;         // default 630 (10:30) — first hour only
   maxTradesPerDay?: number;          // default 3
+  avoidFirstMinutes?: number;           // 开盘禁入分钟数, default 15
+  noNewEntryBeforeCloseMinutes?: number; // 收盘前N分钟禁开新仓, default 180
+  forceCloseBeforeCloseMinutes?: number; // 收盘前N分钟强平, default 30
+  vixAdjustThreshold?: boolean;         // 是否用VIX动态调整阈值, default true
 }
 
 // ============================================
@@ -719,6 +725,10 @@ class OptionBacktestService {
       tradeWindowStartET: config?.tradeWindowStartET ?? 570, // 9:30
       tradeWindowEndET: config?.tradeWindowEndET ?? 630,     // 10:30
       maxTradesPerDay: config?.maxTradesPerDay ?? 3,
+      avoidFirstMinutes: config?.avoidFirstMinutes ?? 15,
+      noNewEntryBeforeCloseMinutes: config?.noNewEntryBeforeCloseMinutes ?? 180,
+      forceCloseBeforeCloseMinutes: config?.forceCloseBeforeCloseMinutes ?? 30,
+      vixAdjustThreshold: config?.vixAdjustThreshold ?? true,
     };
 
     const allTrades: BacktestTradeRecord[] = [];
@@ -857,9 +867,24 @@ class OptionBacktestService {
     // 市场收盘时间
     const marketCloseET = 960; // 16:00
 
+    // VIX 动态阈值调整（与实盘 getVixThresholdFactor 对齐）
+    let dynamicEntryThreshold = cfg.entryThreshold;
+    let vixFactor = 1.0;
+    if (cfg.vixAdjustThreshold && vixData.length > 0) {
+      // 取当日 VIX 开盘值（9:30 ET 附近最早的 bar）
+      const vixClose = vixData[0]?.close || 20;
+      vixFactor = Math.max(0.5, Math.min(2.5, vixClose / 20));
+      dynamicEntryThreshold = Math.round(cfg.entryThreshold * vixFactor);
+      logger.info(`[期权回测] ${date} VIX因子: vix=${vixClose.toFixed(1)}, factor=${vixFactor.toFixed(2)}, 动态阈值=${dynamicEntryThreshold} (原始=${cfg.entryThreshold})`);
+    }
+
+    // 有效入场窗口（综合开盘禁入 + 收盘前禁入 + tradeWindow）
+    const effectiveStartET = cfg.tradeWindowStartET + cfg.avoidFirstMinutes;
+    const effectiveEndET = Math.min(cfg.tradeWindowEndET, marketCloseET - cfg.noNewEntryBeforeCloseMinutes);
+
     for (let etMin = cfg.tradeWindowStartET; etMin <= marketCloseET; etMin++) {
       // ── IDLE: 评分 + 入场 ──
-      if (state === 'IDLE' && etMin <= cfg.tradeWindowEndET && dayTradeCount < cfg.maxTradesPerDay) {
+      if (state === 'IDLE' && etMin >= effectiveStartET && etMin <= effectiveEndET && dayTradeCount < cfg.maxTradesPerDay) {
         // 构建滑动窗口 market data（日级 + 小时级）
         const window = this.buildMarketDataWindow(
           spxDaily, usdDaily, btcDaily, vixData, btcHourly, usdHourly, etMin, date,
@@ -876,8 +901,8 @@ class OptionBacktestService {
 
         // 方向判定
         let direction: 'CALL' | 'PUT' | 'HOLD' = 'HOLD';
-        if (finalScore > cfg.entryThreshold) direction = 'CALL';
-        else if (finalScore < -cfg.entryThreshold) direction = 'PUT';
+        if (finalScore > dynamicEntryThreshold) direction = 'CALL';
+        else if (finalScore < -dynamicEntryThreshold) direction = 'PUT';
 
         diagnosticLog.signals.push({
           date, time: etMinutesToTimeStr(etMin),
@@ -886,6 +911,8 @@ class OptionBacktestService {
           intradayScore: parseFloat(intradayScore.toFixed(2)),
           direction,
           action: direction === 'HOLD' ? 'SKIP' : 'ENTRY',
+          vixFactor: parseFloat(vixFactor.toFixed(2)),
+          dynamicThreshold: dynamicEntryThreshold,
         });
 
         if (direction === 'HOLD') continue;
@@ -944,6 +971,52 @@ class OptionBacktestService {
       if (state === 'HOLDING') {
         const optBar = optionByMinute.get(etMin);
         if (!optBar) continue; // 该分钟无数据，跳过
+
+        // 收盘前强平安全网（在 checkExitCondition 之前检查）
+        if (etMin >= marketCloseET - cfg.forceCloseBeforeCloseMinutes) {
+          const forcePrice = optBar.close;
+          const forceQty = cfg.positionContracts;
+          const forceMul = 100;
+          const forceEntryFees = optionDynamicExitService.calculateFees(forceQty);
+          const forceExitFees = optionDynamicExitService.calculateFees(forceQty);
+          const forceCost = holdingEntryPrice * forceQty * forceMul + forceEntryFees;
+          const forceGrossPnL = (forcePrice - holdingEntryPrice) * forceQty * forceMul;
+          const forceNetPnL = forceGrossPnL - forceEntryFees - forceExitFees;
+          const forceGrossPnLPct = forceCost > 0 ? (forceGrossPnL / forceCost) * 100 : 0;
+          const forceNetPnLPct = forceCost > 0 ? (forceNetPnL / forceCost) * 100 : 0;
+          const forceHoldMin = etMin - holdingEntryTime;
+
+          trades.push({
+            date,
+            symbol,
+            optionSymbol: holdingOptionSymbol,
+            direction: holdingDirection,
+            entryTime: `${date}T${etMinutesToTimeStr(holdingEntryTime)}:00-05:00`,
+            exitTime: `${date}T${etMinutesToTimeStr(etMin)}:00-05:00`,
+            entryPrice: holdingEntryPrice,
+            exitPrice: forcePrice,
+            quantity: forceQty,
+            grossPnL: forceGrossPnL,
+            netPnL: forceNetPnL,
+            grossPnLPercent: forceGrossPnLPct,
+            netPnLPercent: forceNetPnLPct,
+            entryReason: holdingEntryReason,
+            exitReason: `FORCE_CLOSE: 收盘前${cfg.forceCloseBeforeCloseMinutes}分钟强平`,
+            entryScore: holdingEntryScore,
+            marketScore: holdingMarketScore,
+            intradayScore: holdingIntradayScore,
+            timeWindowAdjustment: holdingTimeAdj,
+            holdingMinutes: forceHoldMin,
+            peakPnLPercent: holdingPeakPnLPercent,
+          });
+          state = 'IDLE';
+
+          logger.info(
+            `[期权回测] 强平: ${holdingOptionSymbol} @ $${forcePrice.toFixed(2)} | ` +
+            `PnL=${forceGrossPnLPct.toFixed(1)}% | 收盘前${cfg.forceCloseBeforeCloseMinutes}分钟强平`
+          );
+          continue;
+        }
 
         const currentPrice = optBar.close;
         const quantity = cfg.positionContracts;

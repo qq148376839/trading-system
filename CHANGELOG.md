@@ -2,6 +2,21 @@
 
 ## 2026-02-26
 
+### 回测引擎对齐实盘规则 — 4项修订
+
+**背景**: 回测引擎与实盘策略在入场/退出规则上存在差异，导致回测结果无法准确反映实盘表现。
+
+**修订内容**:
+1. **开盘禁入窗口**: 新增 `avoidFirstMinutes`（默认 15），最早入场 9:45 ET，对齐实盘 `zdteCooldownMinutes` 机制
+2. **收盘前禁止开新仓**: 新增 `noNewEntryBeforeCloseMinutes`（默认 180），13:00 后禁入，与 `tradeWindowEndET` 取较严限制
+3. **收盘前强平安全网**: 新增 `forceCloseBeforeCloseMinutes`（默认 30），15:30 后强制平仓，在 `checkExitCondition` 之前检查
+4. **动态 VIX 阈值**: 新增 `vixAdjustThreshold`（默认 true），`dynamicThreshold = entryThreshold * clamp(VIX/20, 0.5, 2.5)`，与实盘 `getVixThresholdFactor` 对齐
+
+**修改文件**:
+- 📝 `api/src/services/option-backtest.service.ts`（`OptionBacktestConfig` 4字段 + 入场窗口 + 强平 + VIX因子 + 信号日志增强）
+
+---
+
 ### 生死审查 — P0安全修复 + 日内评分系统重写 + VIX自适应入场 + 诊断API升级
 
 **Audit**: 全面审计交易系统后发现多项关键缺陷，4次提交完成修复。
