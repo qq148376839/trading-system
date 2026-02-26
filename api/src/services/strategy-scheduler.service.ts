@@ -3326,17 +3326,9 @@ class StrategyScheduler {
         // 6d. 获取 VWAP 数据（仅在有标的 symbol 时）
         if (resolvedUnderlyingSymbol) {
           vwapData = await marketDataService.getIntradayVWAP(resolvedUnderlyingSymbol);
-          if (vwapData) {
-            // 波动率分桶确定 timeStopMinutes（rangePct 为百分比，如 0.65 表示 0.65%）
-            const { rangePct } = vwapData;
-            if (rangePct >= 0.65) {
-              timeStopMinutes = 3;   // 高波动：3 分钟
-            } else if (rangePct >= 0.45) {
-              timeStopMinutes = 5;   // 中波动：5 分钟
-            } else {
-              timeStopMinutes = 8;   // 低波动：8 分钟
-            }
-          }
+          // 时间止损已禁用（回测#87分析：13笔触发全部亏损，0%胜率，贡献72%总亏损）
+          // 现有多重保障（0DTE兜底-25%、移动止损、止盈、收盘强平）已覆盖所有场景
+          // 保留 vwapData 获取用于其他用途（rangePct 用于追踪止盈动态化），仅不计算 timeStopMinutes
         }
       } catch (vwapErr: unknown) {
         // VWAP 获取失败不影响核心止盈止损逻辑

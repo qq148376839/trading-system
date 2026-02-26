@@ -1258,14 +1258,10 @@ class OptionBacktestService {
         // 计算 VWAP 和 rangePct（与生产 strategy-scheduler 对齐）
         const vwapData = calculateVWAPFromMinuteData(underlyingByMinute, etMin);
 
-        // 波动率分桶确定 timeStopMinutes（与生产逻辑对齐）
-        let timeStopMinutes: number | undefined;
-        if (vwapData) {
-          const { rangePct: rp } = vwapData;
-          if (rp >= 0.65) timeStopMinutes = 3;       // 高波动：3 分钟
-          else if (rp >= 0.45) timeStopMinutes = 5;   // 中波动：5 分钟
-          else timeStopMinutes = 8;                    // 低波动：8 分钟
-        }
+        // 时间止损已禁用（回测#87分析：13笔触发全部亏损，0%胜率，贡献72%总亏损）
+        // 现有多重保障（0DTE兜底-25%、移动止损、止盈、收盘强平）已覆盖所有场景
+        // 保留 rangePct 计算用于其他用途（如追踪止盈动态化），仅不传 timeStopMinutes
+        const timeStopMinutes: number | undefined = undefined;
 
         // 估算 IV（从期权 1m bar 波动推导）
         const optBarsUpToNow = optionKlines.filter(b => {
