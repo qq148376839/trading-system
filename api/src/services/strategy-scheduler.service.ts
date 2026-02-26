@@ -575,6 +575,10 @@ class StrategyScheduler {
       }
 
       // Phase C: 两阶段竞价
+      logger.info(
+        `[R5v2] 策略 ${strategyId}: Phase B 完成, IDLE=${idleSymbols.length}, 候选=${candidates.length}` +
+        (candidates.length > 0 ? `, 标的=[${candidates.map(c => `${c.symbol}(${c.finalScore.toFixed(1)})`).join(', ')}]` : '')
+      );
       const winners = this.scoringAuction(strategyId, candidates);
 
       // Phase D: 顺序执行胜者（资金原子分配）
@@ -2466,7 +2470,10 @@ class StrategyScheduler {
     strategyId: number,
     candidates: Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string }>
   ): Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string }> {
-    if (candidates.length === 0) return [];
+    if (candidates.length === 0) {
+      logger.info(`[R5v2_AUCTION] 策略 ${strategyId}: 无候选，跳过竞价`);
+      return [];
+    }
 
     const crossState = this.getCrossSymbolState(strategyId);
     const now = Date.now();
