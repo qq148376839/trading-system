@@ -394,8 +394,11 @@ function getOptionExpiryDate(symbol: string, tradeDate: string): string {
   if (schedule === 'daily') return tradeDate;
 
   // weekly_friday: 找到本周五（或当天就是周五）
-  const d = new Date(`${tradeDate}T12:00:00-05:00`);
-  const dayOfWeek = d.getDay(); // 0=Sun, 1=Mon, ... 5=Fri, 6=Sat
+  // 注意：必须用纯字符串计算避免时区问题
+  // （服务器在 UTC+8，new Date('...T12:00:00-05:00').getDay() 返回本地时区的星期，会偏移一天）
+  const [year, month, day] = tradeDate.split('-').map(Number);
+  const d = new Date(Date.UTC(year, month - 1, day, 12, 0, 0)); // UTC noon，确保 getUTCDay 正确
+  const dayOfWeek = d.getUTCDay(); // 0=Sun, 1=Mon, ... 5=Fri, 6=Sat
   let daysToFriday: number;
   if (dayOfWeek <= 5) {
     daysToFriday = 5 - dayOfWeek; // Mon→4, Tue→3, ..., Fri→0
@@ -403,11 +406,10 @@ function getOptionExpiryDate(symbol: string, tradeDate: string): string {
     // Saturday → next Friday = 6 days
     daysToFriday = 6;
   }
-  const friday = new Date(d);
-  friday.setDate(friday.getDate() + daysToFriday);
-  const yyyy = friday.getFullYear();
-  const mm = String(friday.getMonth() + 1).padStart(2, '0');
-  const dd = String(friday.getDate()).padStart(2, '0');
+  const friday = new Date(Date.UTC(year, month - 1, day + daysToFriday, 12, 0, 0));
+  const yyyy = friday.getUTCFullYear();
+  const mm = String(friday.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(friday.getUTCDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
 }
 
@@ -415,9 +417,11 @@ function getOptionExpiryDate(symbol: string, tradeDate: string): string {
  * 获取到期日距交易日的天数（DTE）
  */
 function getDTE(tradeDate: string, expiryDate: string): number {
-  const trade = new Date(`${tradeDate}T12:00:00-05:00`);
-  const expiry = new Date(`${expiryDate}T12:00:00-05:00`);
-  return Math.round((expiry.getTime() - trade.getTime()) / (1000 * 60 * 60 * 24));
+  const [ty, tm, td] = tradeDate.split('-').map(Number);
+  const [ey, em, ed] = expiryDate.split('-').map(Number);
+  const trade = Date.UTC(ty, tm - 1, td);
+  const expiry = Date.UTC(ey, em - 1, ed);
+  return Math.round((expiry - trade) / (1000 * 60 * 60 * 24));
 }
 
 /** 构造期权符号（使用实际到期日，非交易日） */
