@@ -17,6 +17,7 @@ import { getQuoteContext } from '../config/longport';
 import klineHistoryService from './kline-history.service';
 import intradayDataFilterService from './intraday-data-filter.service';
 import { optionDynamicExitService, PositionContext, DEFAULT_FEE_CONFIG } from './option-dynamic-exit.service';
+import { ENTRY_THRESHOLDS } from './strategies/option-intraday-strategy';
 import { logger } from '../utils/logger';
 
 // ============================================
@@ -692,13 +693,14 @@ class OptionBacktestService {
    */
   async executeAsync(
     id: number,
+    strategyId: number,
     dates: string[],
     symbols: string[],
     config?: OptionBacktestConfig
   ): Promise<void> {
     try {
       await this.updateStatus(id, 'RUNNING');
-      const result = await this.runBacktest(dates, symbols, config);
+      const result = await this.runBacktest(strategyId, dates, symbols, config);
       result.id = id;
       await this.saveResult(id, result);
     } catch (error: unknown) {
@@ -709,16 +711,48 @@ class OptionBacktestService {
   }
 
   /**
+   * 从策略 DB 配置中解析入场 base threshold
+   * 对齐实盘 OptionIntradayStrategy.getThresholds() 逻辑：
+   *   entryThresholdOverride.directionalScoreMin ?? ENTRY_THRESHOLDS[riskPreference].directionalScoreMin
+   */
+  private async resolveBaseThreshold(strategyId: number): Promise<{ baseThreshold: number; riskPreference: 'AGGRESSIVE' | 'CONSERVATIVE' }> {
+    try {
+      const res = await pool.query(`SELECT config FROM strategies WHERE id = $1`, [strategyId]);
+      if (res.rows.length === 0) return { baseThreshold: 15, riskPreference: 'CONSERVATIVE' };
+
+      const stratConfig = typeof res.rows[0].config === 'string'
+        ? JSON.parse(res.rows[0].config)
+        : res.rows[0].config;
+
+      const pref: 'AGGRESSIVE' | 'CONSERVATIVE' = stratConfig?.riskPreference || 'CONSERVATIVE';
+      const tableBase = ENTRY_THRESHOLDS[pref] || ENTRY_THRESHOLDS.CONSERVATIVE;
+      const override = stratConfig?.entryThresholdOverride;
+      const baseThreshold = override?.directionalScoreMin ?? tableBase.directionalScoreMin;
+
+      logger.info(`[期权回测] 策略#${strategyId} base threshold: ${baseThreshold} (pref=${pref}, override=${JSON.stringify(override)})`);
+      return { baseThreshold, riskPreference: pref };
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      logger.warn(`[期权回测] 读取策略配置失败: ${errMsg}, 使用默认 threshold=15`);
+      return { baseThreshold: 15, riskPreference: 'CONSERVATIVE' };
+    }
+  }
+
+  /**
    * 核心回测逻辑
    */
   async runBacktest(
+    strategyId: number,
     dates: string[],
     symbols: string[],
     config?: OptionBacktestConfig
   ): Promise<OptionBacktestResult> {
+    // 从策略 DB 配置解析 base threshold（与实盘对齐）
+    const resolved = await this.resolveBaseThreshold(strategyId);
+
     const cfg: Required<OptionBacktestConfig> = {
-      entryThreshold: config?.entryThreshold ?? 15,
-      riskPreference: config?.riskPreference ?? 'CONSERVATIVE',
+      entryThreshold: config?.entryThreshold ?? resolved.baseThreshold,
+      riskPreference: config?.riskPreference ?? resolved.riskPreference,
       positionContracts: config?.positionContracts ?? 1,
       entryPriceMode: config?.entryPriceMode ?? 'CLOSE',
       strikeOffsetPoints: config?.strikeOffsetPoints ?? 0,
@@ -867,16 +901,8 @@ class OptionBacktestService {
     // 市场收盘时间
     const marketCloseET = 960; // 16:00
 
-    // VIX 动态阈值调整（与实盘 getVixThresholdFactor 对齐）
-    let dynamicEntryThreshold = cfg.entryThreshold;
-    let vixFactor = 1.0;
-    if (cfg.vixAdjustThreshold && vixData.length > 0) {
-      // 取当日 VIX 开盘值（9:30 ET 附近最早的 bar）
-      const vixClose = vixData[0]?.close || 20;
-      vixFactor = Math.max(0.5, Math.min(2.5, vixClose / 20));
-      dynamicEntryThreshold = Math.round(cfg.entryThreshold * vixFactor);
-      logger.info(`[期权回测] ${date} VIX因子: vix=${vixClose.toFixed(1)}, factor=${vixFactor.toFixed(2)}, 动态阈值=${dynamicEntryThreshold} (原始=${cfg.entryThreshold})`);
-    }
+    // VIX 按分钟索引（用于逐分钟动态阈值，与实盘每周期重新计算对齐）
+    const vixByMinute = this.buildMinuteMap(vixData);
 
     // 有效入场窗口（综合开盘禁入 + 收盘前禁入 + tradeWindow）
     const effectiveStartET = cfg.tradeWindowStartET + cfg.avoidFirstMinutes;
@@ -898,6 +924,18 @@ class OptionBacktestService {
         const intradayScore = calculateIntradayScore(window);
         const timeAdj = calculateTimeWindowAdjustment(etMin);
         const finalScore = marketScore * 0.2 + intradayScore * 0.6 + timeAdj * 0.2; // 与实盘对齐（大盘20% + 日内60% + 时间20%）
+
+        // VIX 动态阈值（逐分钟，与实盘每周期重新计算对齐）
+        let vixFactor = 1.0;
+        let dynamicEntryThreshold = cfg.entryThreshold;
+        if (cfg.vixAdjustThreshold) {
+          // 取当前分钟或最近可用的 VIX close
+          const vixBar = vixByMinute.get(etMin) || vixByMinute.get(etMin - 1) || vixByMinute.get(etMin - 2);
+          if (vixBar) {
+            vixFactor = Math.max(0.5, Math.min(2.5, vixBar.close / 20));
+            dynamicEntryThreshold = Math.round(cfg.entryThreshold * vixFactor);
+          }
+        }
 
         // 方向判定
         let direction: 'CALL' | 'PUT' | 'HOLD' = 'HOLD';

@@ -115,7 +115,7 @@ optionBacktestRouter.post('/', async (req: Request, res: Response, next: NextFun
     const taskId = await optionBacktestService.createTask(strategyId, dates, symbols, config);
 
     // 异步执行
-    optionBacktestService.executeAsync(taskId, dates, symbols, config)
+    optionBacktestService.executeAsync(taskId, strategyId, dates, symbols, config)
       .catch((error: unknown) => {
         const errMsg = error instanceof Error ? error.message : String(error);
         logger.error(`[期权回测] 任务 ${taskId} 执行异常: ${errMsg}`);
