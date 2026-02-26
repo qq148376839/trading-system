@@ -7,6 +7,18 @@
 
 ## 🆕 最近更新
 
+### 2026-02-26: 回测支持周期权到期日 + API限频防超时
+
+**变更内容**:
+
+1. **周期权到期日规则**: 新增 `OPTION_EXPIRY_SCHEDULE` — TSLA/NVDA 等 weekly_friday 标的自动用本周五到期合约（与实盘对齐），SPY/QQQ 等保持每日 0DTE
+2. **API 限频**: 引入 `backtestRateLimiter`(200ms) + `retryWithBackoff`(1-5s)，标的间 500ms / 日间 1000ms 延迟，防止多标的回测 API 超时卡死
+
+**修改文件**:
+- 📝 `api/src/services/option-backtest.service.ts`
+
+**验证**: 回测 TSLA/NVDA 应生成含周五到期日的期权符号（如 `TSLA260221C...`），非周五日 DTE>0
+
 ### 2026-02-26: R5 跨标的入场保护 + 回测性能优化
 
 **变更内容**:

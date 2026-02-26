@@ -2,6 +2,29 @@
 
 ## 2026-02-26
 
+### 回测支持周期权到期日 + API限频防超时
+
+**背景**: TSLA/NVDA 等个股只有周五到期的周期权，回测盲目用交易日构造期权符号（如周三构造 `TSLA260219C260000.US`），Longport API 可能返回错误合约数据。同时多标的回测大量 API 调用无限频，导致系统卡死超时。
+
+**周期权到期日规则**:
+
+- 新增 `OPTION_EXPIRY_SCHEDULE` 配置表 — `daily`（SPY/QQQ/IWM/DIA）和 `weekly_friday`（TSLA/NVDA/AAPL/AMZN/GOOGL/META/MSFT/AMD/NFLX）
+- `getOptionExpiryDate()` — weekly_friday 标的自动计算本周五日期（周一买 = 周五到期合约，DTE=4，与实盘行为一致）
+- `buildOptionSymbol()` 改用实际到期日构造符号
+- `PositionContext.is0DTE` 根据 DTE 动态设置（非周五的 TSLA 为 false）
+
+**API 限频防超时**:
+
+- 引入 `backtestRateLimiter`（200ms 间隔）包裹所有 Longport API 调用
+- `fetchLongportMinuteKlines` 增加 `retryWithBackoff`（max 2次, 1-5s 退避）
+- 标的间延迟 500ms、日间延迟 1000ms，防止连续高频请求耗尽连接
+- 启动时记录 rate limiter 队列深度
+
+**修改文件**:
+- 📝 `api/src/services/option-backtest.service.ts`
+
+---
+
 ### R5 跨标的入场保护 + 回测性能优化
 
 **背景**: 回测 #93（4标的×7天）分析发现：多标的并发入场和 floor 连锁是亏损主因；同时回测耗时 279 秒，主要瓶颈为重复数据加载。
