@@ -7,6 +7,19 @@
 
 ## 🆕 最近更新
 
+### 2026-02-26: 回测消除遍历顺序偏差 + 相关性分组竞价 + DQ 评分
+
+**变更内容**:
+
+1. **相关性分组**: SPY/QQQ/IWM/DIA 归入 `INDEX_ETF` 组，同组标的评分竞价只允许最高分入场，消除 `symbols` 数组顺序对结果的影响
+2. **两阶段竞价**: `applyCrossSymbolFilter()` 从 entryTime 先到先得改为 `|entryScore|` 降序竞价 — Phase 1 同组竞价 + Phase 2 跨组 R5
+3. **DQ 评分**: `diagnosticLog.dqScore` 追踪数据质量 — `totalSlots`(日期×标的)、`validSlots`、`score`(%)、`missingOptionData`
+
+**修改文件**:
+- 📝 `api/src/services/option-backtest.service.ts`
+
+**验证**: 回测 QQQ+SPY 7天，无论 `symbols` 顺序如何结果应一致；检查 `CORR_GROUP:` filterReason 和 `dqScore`
+
 ### 2026-02-26: 回测支持周期权到期日 + API限频防超时
 
 **变更内容**:

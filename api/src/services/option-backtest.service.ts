@@ -124,6 +124,12 @@ export interface OptionBacktestResult {
     }>;
     crossSymbolFiltered?: number;  // R5: 被跨标的规则过滤的交易数
     skippedNon0DTE?: number;       // 因非0DTE合约跳过的次数（weekly_friday标的的非周五日）
+    dqScore?: {
+      totalSlots: number;       // 日期×标的 总槽位
+      validSlots: number;       // 有有效数据的槽位
+      score: number;            // validSlots / totalSlots × 100
+      missingOptionData: number; // 期权K线数据缺失次数
+    };
   };
 }
 
@@ -382,6 +388,23 @@ const OPTION_EXPIRY_SCHEDULE: Record<string, 'daily' | 'weekly_friday'> = {
   'AMD.US': 'weekly_friday',
   'NFLX.US': 'weekly_friday',
 };
+
+/**
+ * 标的相关性分组
+ * 同组标的（相关系数 > 0.90）共享信号窗口，只允许最高分入场
+ * 不同组标的保留原 R5 跨标的过滤逻辑
+ */
+const SYMBOL_CORRELATION_GROUPS: Record<string, string> = {
+  'SPY.US': 'INDEX_ETF',
+  'QQQ.US': 'INDEX_ETF',
+  'IWM.US': 'INDEX_ETF',
+  'DIA.US': 'INDEX_ETF',
+  // 个股不分组，每个标的自成一组
+};
+
+function getCorrelationGroup(symbol: string): string {
+  return SYMBOL_CORRELATION_GROUPS[symbol] || symbol;
+}
 
 /**
  * 获取指定日期对应的期权到期日
@@ -1080,6 +1103,21 @@ class OptionBacktestService {
       }
     }
 
+    // 计算 DQ Score（数据质量评分）
+    const totalSlots = dates.length * symbols.length;
+    const missingOptionData = diagnosticLog.dataFetch
+      .filter(d => d.source.startsWith('option:') && !d.ok).length;
+    // longport 标的数据缺失 → 该 slot 无效
+    const invalidSlots = diagnosticLog.dataFetch
+      .filter(d => d.source.startsWith('longport:') && !d.ok).length;
+    const validSlots = Math.max(0, totalSlots - invalidSlots);
+    diagnosticLog.dqScore = {
+      totalSlots,
+      validSlots,
+      score: totalSlots > 0 ? Math.round((validSlots / totalSlots) * 1000) / 10 : 0,
+      missingOptionData,
+    };
+
     // 计算汇总（排除被过滤的交易）
     const activeTrades = allTrades.filter(t => !t.filterReason);
     const summary = this.calculateSummary(activeTrades);
@@ -1756,16 +1794,18 @@ class OptionBacktestService {
     };
   }
 
-  // ── R5 跨标的入场保护过滤 ──
+  // ── R5 跨标的入场保护过滤（两阶段评分竞价） ──
 
   /**
-   * 跨标的入场保护（后过滤模式）
+   * 跨标的入场保护（两阶段评分竞价模式）
    *
-   * 规则：
-   * 1. 并发入场 — 3分钟内有其他标的也在入场/持仓
-   * 2. floor 连锁 — 前方最近一笔其他标的交易以 0dte_pnl_floor 退出
+   * Phase 1: 同组竞价 — 同一相关组（如 SPY/QQQ/IWM/DIA）+ 同一时间窗口（±3min 或持仓重叠），
+   *          仅保留 |entryScore| 最高者，消除遍历顺序偏差
    *
-   * 按 entryTime 排序逐笔处理，保留最早的交易，过滤后入场的。
+   * Phase 2: 跨组 R5 — 不同组之间保留原并发检测 + floor 连锁，
+   *          冲突时用 |entryScore| 决定保留谁（而非先到先得）
+   *
+   * 排序从 entryTime 改为 |entryScore| 降序 → 高分者先占位
    */
   private applyCrossSymbolFilter(dayTrades: BacktestTradeRecord[]): {
     kept: BacktestTradeRecord[];
@@ -1775,41 +1815,74 @@ class OptionBacktestService {
       return { kept: [...dayTrades], filtered: [] };
     }
 
-    // 按 entryTime 排序
+    // ── Phase 1: 同组竞价 ──
+    // 按 |entryScore| 降序排序（分数高的优先），打破遍历顺序偏差
     const sorted = [...dayTrades].sort((a, b) =>
-      new Date(a.entryTime).getTime() - new Date(b.entryTime).getTime()
+      Math.abs(b.entryScore) - Math.abs(a.entryScore)
+    );
+
+    const intraGroupKept: BacktestTradeRecord[] = [];
+    const intraGroupFiltered: BacktestTradeRecord[] = [];
+
+    for (const trade of sorted) {
+      const group = getCorrelationGroup(trade.symbol);
+      const entryTs = new Date(trade.entryTime).getTime();
+      let blocked = false;
+
+      for (const kept of intraGroupKept) {
+        if (getCorrelationGroup(kept.symbol) !== group) continue;
+        if (kept.symbol === trade.symbol) continue;
+        const keptEntryTs = new Date(kept.entryTime).getTime();
+        const keptExitTs = kept.exitTime ? new Date(kept.exitTime).getTime() : Infinity;
+        // 同组 ±3min 或持仓重叠 → 低分者被过滤
+        if (Math.abs(entryTs - keptEntryTs) < 3 * 60 * 1000 || (entryTs >= keptEntryTs && entryTs <= keptExitTs)) {
+          intraGroupFiltered.push({
+            ...trade,
+            filterReason: `CORR_GROUP:${kept.symbol}(score:${Math.abs(kept.entryScore).toFixed(1)}>${Math.abs(trade.entryScore).toFixed(1)})`,
+          });
+          blocked = true;
+          break;
+        }
+      }
+      if (!blocked) {
+        intraGroupKept.push(trade);
+      }
+    }
+
+    // ── Phase 2: 跨组 R5（不同组之间） ──
+    // 同样按 |entryScore| 降序处理，高分者优先占位
+    const crossSorted = [...intraGroupKept].sort((a, b) =>
+      Math.abs(b.entryScore) - Math.abs(a.entryScore)
     );
 
     const kept: BacktestTradeRecord[] = [];
     const filtered: BacktestTradeRecord[] = [];
+    const lastExitByGroup = new Map<string, { exitTime: number; exitTag: string | undefined; symbol: string }>();
 
-    // 追踪已保留交易的退出状态
-    const lastExitBySymbol = new Map<string, { exitTime: number; exitTag: string | undefined }>();
-
-    for (const trade of sorted) {
+    for (const trade of crossSorted) {
+      const group = getCorrelationGroup(trade.symbol);
       const entryTs = new Date(trade.entryTime).getTime();
       let filterReason: string | undefined;
 
-      // 条件1: 并发入场 — 3分钟内其他标的已有入场
-      for (const keptTrade of kept) {
-        if (keptTrade.symbol === trade.symbol) continue;
-        const keptEntryTs = new Date(keptTrade.entryTime).getTime();
-        const keptExitTs = keptTrade.exitTime ? new Date(keptTrade.exitTime).getTime() : Infinity;
-        // 检查是否在 ±3 分钟内入场，或对方仍在持仓
-        if (Math.abs(entryTs - keptEntryTs) < 3 * 60 * 1000 || (entryTs >= keptEntryTs && entryTs <= keptExitTs)) {
-          filterReason = `CROSS_CONCURRENT:${keptTrade.symbol}`;
+      // 条件1: 跨组并发 — ±3min内不同组已有入场，或对方仍在持仓
+      for (const k of kept) {
+        const kGroup = getCorrelationGroup(k.symbol);
+        if (kGroup === group) continue; // 同组已在 Phase 1 处理
+        const kEntryTs = new Date(k.entryTime).getTime();
+        const kExitTs = k.exitTime ? new Date(k.exitTime).getTime() : Infinity;
+        if (Math.abs(entryTs - kEntryTs) < 3 * 60 * 1000 || (entryTs >= kEntryTs && entryTs <= kExitTs)) {
+          filterReason = `CROSS_CONCURRENT:${k.symbol}`;
           break;
         }
       }
 
-      // 条件2: floor 连锁 — 最近一笔其他标的退出为 0dte_pnl_floor
+      // 条件2: floor 连锁 — 不同组 0dte_pnl_floor 退出后 30min 内
       if (!filterReason) {
-        for (const [sym, exitInfo] of lastExitBySymbol) {
-          if (sym === trade.symbol) continue;
+        for (const [grp, exitInfo] of lastExitByGroup) {
+          if (grp === group) continue;
           if (exitInfo.exitTag === '0dte_pnl_floor' && entryTs > exitInfo.exitTime) {
-            // 同日内 floor 退出后的入场都应被过滤（30分钟窗口）
             if (entryTs - exitInfo.exitTime < 30 * 60 * 1000) {
-              filterReason = `CROSS_FLOOR:${sym}`;
+              filterReason = `CROSS_FLOOR:${exitInfo.symbol}`;
               break;
             }
           }
@@ -1820,15 +1893,18 @@ class OptionBacktestService {
         filtered.push({ ...trade, filterReason });
       } else {
         kept.push(trade);
-        // 更新退出状态
         if (trade.exitTime) {
-          lastExitBySymbol.set(trade.symbol, {
+          lastExitByGroup.set(group, {
             exitTime: new Date(trade.exitTime).getTime(),
             exitTag: trade.exitTag,
+            symbol: trade.symbol,
           });
         }
       }
     }
+
+    // 合并 Phase 1 过滤 + Phase 2 过滤
+    filtered.push(...intraGroupFiltered);
 
     return { kept, filtered };
   }

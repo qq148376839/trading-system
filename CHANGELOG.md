@@ -2,6 +2,28 @@
 
 ## 2026-02-26
 
+### 回测消除遍历顺序偏差 + 相关性分组竞价 + DQ 评分
+
+**背景**: `applyCrossSymbolFilter()` 按 `entryTime` 排序后 first-come-first-served，同分钟内数组位置决定谁入场，导致回测结果依赖 `symbols` 数组顺序。QQQ/SPY/IWM/DIA 等高相关标的（相关系数 >0.90）应作为一组评分竞价。
+
+**相关性分组竞价**:
+
+- 新增 `SYMBOL_CORRELATION_GROUPS` 常量 — SPY/QQQ/IWM/DIA 归入 `INDEX_ETF` 组，个股自成一组
+- `applyCrossSymbolFilter()` 重写为两阶段评分竞价：
+  - **Phase 1 (同组)**: 按 `|entryScore|` 降序排序，同组 ±3min 或持仓重叠时仅保留最高分者，新增 `CORR_GROUP:` filterReason
+  - **Phase 2 (跨组 R5)**: 不同组之间保留原并发+floor逻辑，同样基于 `|entryScore|` 竞价（非先到先得）
+- `lastExitBySymbol` 改为 `lastExitByGroup`（按组追踪 floor 连锁）
+
+**DQ 评分 (Data Quality Score)**:
+
+- `diagnosticLog` 新增 `dqScore` 字段: `totalSlots`(日期×标的)、`validSlots`、`score`(百分比)、`missingOptionData`(期权K线缺失次数)
+- 从 `dataFetch` 中统计 `longport:*` 缺失为无效 slot，`option:*` 缺失单独计数
+
+**修改文件**:
+- 📝 `api/src/services/option-backtest.service.ts`
+
+---
+
 ### 回测支持周期权到期日 + API限频防超时
 
 **背景**: TSLA/NVDA 等个股只有周五到期的周期权，回测盲目用交易日构造期权符号（如周三构造 `TSLA260219C260000.US`），Longport API 可能返回错误合约数据。同时多标的回测大量 API 调用无限频，导致系统卡死超时。
