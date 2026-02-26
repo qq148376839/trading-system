@@ -692,6 +692,12 @@ export const backtestApi = {
   },
 };
 
+// 交易日 API
+export const tradingDaysApi = {
+  getTradingDays: (startDate: string, endDate: string, market = 'US'): Promise<{ success: boolean; data?: { tradingDays: string[]; count: number }; error?: { message: string } }> =>
+    api.get('/trading-days/get-trading-days', { params: { startDate, endDate, market } }),
+};
+
 // 期权回测 API
 export const optionBacktestApi = {
   /**

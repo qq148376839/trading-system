@@ -7,6 +7,31 @@
 
 ## 🆕 最近更新
 
+### 2026-02-26: 期权回测 — 交易窗口对齐 + 评分曲线修复 + 前端日期优化
+
+**变更内容**: 修复回测 #86 分析定位的 P2 问题（3项子任务全部完成）：
+
+1. **交易窗口对齐**: `resolveStrategyConfig` 从 `tradeWindow.firstHourOnly` 推导窗口（`true`→10:30, `false`→全天），不再读不存在的字段
+2. **评分曲线平滑**: `calculateTimeWindowAdjustment` 从阶梯改为渐变，10:30不再断崖（旧: +20→0 跌4分, 新: +5→0 跌1分），中等强度信号10:30后仍可入场
+3. **前端日期优化**: `DatePicker multiple` → `RangePicker` + 交易日API自动过滤非交易日 + 列表展示区间格式 + 策略窗口自动联动
+
+**修改文件**:
+- 📝 `api/src/services/option-backtest.service.ts`
+- 📝 `frontend/app/quant/backtest/page.tsx`
+- 📝 `frontend/lib/api.ts`
+
+### 2026-02-26: 期权回测数据分析 — 交易窗口 + 评分曲线问题定位
+
+**分析内容**: 对回测 #86 进行深度分析，定位以下问题（已在上方修复中全部解决）：
+
+1. **交易窗口未对齐实盘**: 回测 `resolveStrategyConfig` 读 `tradeWindowStartET/EndET`（策略 DB 不存在此字段），永远 fallback 到 630（10:30 ET）。实盘用 `tradeWindow.firstHourOnly` 布尔值控制，`firstHourOnly=false` 时全天可交易
+2. **timeWindowAdjustment 断崖**: 10:30 从 +20 直降到 0，加权后 -4 分，导致扩展窗口后大部分时段评分不够
+3. **前端日期选择器不过滤非交易日**: 用户误选总统日等假日，浪费回测时间
+4. **阈值已确认对齐**: 实盘 `option-intraday-strategy.ts:264-269` 和回测都用 `directionalScoreMin × vixFactor`
+5. **120%+ 止盈属正常行为**: 0DTE gamma 效应 + 1min 分辨率，TAKE_PROFIT 在下一个 candle close 触发时已超调
+
+**状态**: ~~P2 待优化~~ → ✅ 已修复（交易窗口+评分曲线+日期选择器），仅 marketScore 数据源仍为 P2
+
 ### 2026-02-26: 期权回测对齐实盘仓位模式 — MAX_PREMIUM 动态合约数
 
 **变更内容**: 回测引擎支持 `MAX_PREMIUM` 仓位模式 — 入场时根据策略资金预算和当前权利金动态计算合约数（对齐实盘逻辑）。从策略 DB 读取 `positionSizing`/`feeModel`/`capital_allocations`，不再硬编码 1 张。
@@ -822,19 +847,38 @@
 
 ---
 
+## ⏳ P2 待优化
+
+### 1. 期权回测 marketScore 数据源
+
+**优先级**: P2 | **影响**: 回测准确性 | **来源**: 回测 #86 深度分析
+
+- **问题**: `marketTemperature` 回测中固定50 → 贡献恒为0；SPX趋势放大不足（偏离<1%）
+- **影响**: 评分几乎完全靠 intradayScore(60%) + timeAdj(20%)，大盘方向(20%)形同虚设
+- **待设计**: 需要为回测引擎提供历史 marketTemperature 数据源，或调整计算方式
+- **文件**: `api/src/services/option-backtest.service.ts` (~line 203-237, `calculateMarketScore`)
+
+> **已完成子项** (2026-02-26):
+> - ~~1a. 交易窗口对齐实盘 `firstHourOnly`~~ ✅
+> - ~~1b. timeWindowAdjustment 平滑曲线~~ ✅
+> - ~~2. 前端日期选择器 RangePicker + 交易日过滤~~ ✅
+
+---
+
 ## 🚀 下一步计划
 
 ### 短期优化（1-2周）
 1. 监控资金使用差异，确保持续减少
 2. 检查买入逻辑，确保context中保存allocationAmount
-3. 添加修复历史记录
-4. 优化修复性能（批量更新）
+3. **P2 期权回测 marketScore 数据源**（历史 marketTemperature 接入）
+4. 添加修复历史记录
 
 ### 中期优化（1-2月）
 1. 实现预防机制（避免状态不一致）
-2. 添加修复报告（定期生成修复报告）
-3. 完善监控告警
-4. 添加单元测试覆盖
+2. **P2 marketScore 数据源**（回测引擎 marketTemperature 历史数据）
+3. 添加修复报告（定期生成修复报告）
+4. 完善监控告警
+5. 添加单元测试覆盖
 
 ### 长期优化（3-6月）
 1. 完善API文档
@@ -871,6 +915,6 @@
 
 ---
 
-**最后更新**: 2026-02-26（生死审查 — P0安全修复 + 日内评分系统重写 + VIX自适应入场 + 诊断API升级）
+**最后更新**: 2026-02-26（期权回测：交易窗口对齐 + 评分曲线修复 + 前端日期优化）
 **项目版本**: 1.0
 

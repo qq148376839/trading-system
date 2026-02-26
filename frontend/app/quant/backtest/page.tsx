@@ -2,10 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { backtestApi, quantApi, optionBacktestApi } from '@/lib/api';
+import { backtestApi, quantApi, optionBacktestApi, tradingDaysApi } from '@/lib/api';
 import Link from 'next/link';
 import AppLayout from '@/components/AppLayout';
-import { DatePicker, Button, Table, Card, Space, Modal, message, Alert, Tag, Spin, Select, Checkbox, Row, Col, Tabs, InputNumber, Input } from 'antd';
+import { DatePicker, Button, Table, Card, Space, Modal, message, Alert, Tag, Spin, Select, Checkbox, Row, Col, Tabs, InputNumber, Input, Typography } from 'antd';
+const { Text } = Typography;
 import { useIsMobile } from '@/hooks/useIsMobile';
 import type { Dayjs } from 'dayjs';
 import dayjs from 'dayjs';
@@ -778,7 +779,8 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
   // 表单状态
   const [optStrategyId, setOptStrategyId] = useState<number | null>(null);
   const [optStrategySymbols, setOptStrategySymbols] = useState<string[]>([]);
-  const [optDates, setOptDates] = useState<Dayjs[]>([]);
+  const [optDateRange, setOptDateRange] = useState<[Dayjs | null, Dayjs | null]>([null, null]);
+  const [tradingDays, setTradingDays] = useState<string[]>([]);
   const [optEntryThreshold, setOptEntryThreshold] = useState<number>(15);
   const [optRiskPref, setOptRiskPref] = useState<'AGGRESSIVE' | 'CONSERVATIVE'>('CONSERVATIVE');
   const [optContracts, setOptContracts] = useState<number>(1);
@@ -796,6 +798,21 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
   useEffect(() => {
     loadOptionData();
   }, []);
+
+  // 选日期区间后调用后端获取交易日
+  useEffect(() => {
+    const [start, end] = optDateRange;
+    if (!start || !end) { setTradingDays([]); return; }
+    tradingDaysApi.getTradingDays(start.format('YYYY-MM-DD'), end.format('YYYY-MM-DD'), 'US')
+      .then(data => {
+        // API 返回 YYYYMMDD 格式，转为 YYYY-MM-DD
+        const days = (data.data?.tradingDays || []).map((d: string) =>
+          d.includes('-') ? d : `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`
+        );
+        setTradingDays(days);
+      })
+      .catch(() => setTradingDays([]));
+  }, [optDateRange]);
 
   // 页面加载时检查是否有进行中的任务
   useEffect(() => {
@@ -883,8 +900,17 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
           setOptRiskPref(cfg.riskPreference || 'CONSERVATIVE');
           setOptEntryThreshold(cfg.entryThresholdOverride?.directionalScoreMin ?? cfg.entryThreshold ?? 15);
           setOptContracts(cfg.positionContracts ?? 1);
-          setOptWindowStart(cfg.tradeWindowStartET ?? 570);
-          setOptWindowEnd(cfg.tradeWindowEndET ?? 630);
+          setOptWindowStart(570);
+          // 对齐实盘: tradeWindow.firstHourOnly 决定窗口
+          const tw = cfg?.tradeWindow || {};
+          if (tw.firstHourOnly === false) {
+            const endMin = 960 - (tw.noNewEntryBeforeCloseMinutes || 0);
+            if (endMin >= 900) setOptWindowEnd(960);
+            else if (endMin >= 720) setOptWindowEnd(endMin);
+            else setOptWindowEnd(630);
+          } else {
+            setOptWindowEnd(630);
+          }
           setOptMaxTrades(cfg.maxTradesPerDay ?? 3);
           setOptAvoidFirst(cfg.avoidFirstMinutes ?? 15);
           setOptNoNewEntry(cfg.noNewEntryBeforeCloseMinutes ?? 180);
@@ -934,12 +960,12 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
       message.warning('请选择策略');
       return;
     }
-    if (optDates.length === 0) {
-      message.warning('请选择回测日期');
+    if (tradingDays.length === 0) {
+      message.error('所选区间无交易日');
       return;
     }
 
-    const dates = optDates.map(d => d.format('YYYY-MM-DD'));
+    const dates = tradingDays;
 
     try {
       setRunning(true);
@@ -1008,7 +1034,12 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
     {
       title: '回测日期',
       key: 'dates',
-      render: (_: unknown, record: OptionBacktestResultItem) => record.dates?.join(', ') || '-',
+      render: (_: unknown, record: OptionBacktestResultItem) => {
+        const dates = record.dates || [];
+        if (dates.length === 0) return '-';
+        if (dates.length === 1) return dates[0];
+        return `${dates[0]} ~ ${dates[dates.length - 1]} (${dates.length}天)`;
+      },
     },
     {
       title: '标的',
@@ -1164,15 +1195,26 @@ function OptionBacktestTab({ isMobile }: { isMobile: boolean }) {
 
             {/* 回测日期 */}
             <div>
-              <div style={{ marginBottom: 8, fontWeight: 500 }}>回测日期 *（可多选）</div>
-              <DatePicker
-                multiple
-                value={optDates}
-                onChange={(dates) => setOptDates(dates || [])}
+              <div style={{ marginBottom: 8, fontWeight: 500 }}>回测日期 *</div>
+              <DatePicker.RangePicker
+                value={optDateRange}
+                onChange={(dates) => setOptDateRange(dates ? [dates[0], dates[1]] : [null, null])}
                 format="YYYY-MM-DD"
                 style={{ width: '100%' }}
-                placeholder="选择交易日"
+                placeholder={['开始日期', '结束日期']}
+                disabledDate={(current) => current && current > dayjs().endOf('day')}
+                presets={[
+                  { label: '最近一周', value: [dayjs().subtract(1, 'week'), dayjs()] },
+                  { label: '最近两周', value: [dayjs().subtract(2, 'week'), dayjs()] },
+                  { label: '最近一个月', value: [dayjs().subtract(1, 'month'), dayjs()] },
+                  { label: '最近三个月', value: [dayjs().subtract(3, 'month'), dayjs()] },
+                ]}
               />
+              {tradingDays.length > 0 && (
+                <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 12 }}>
+                  {`共 ${tradingDays.length} 个交易日`}
+                </Text>
+              )}
             </div>
 
             {/* 策略当前参数（只读） */}

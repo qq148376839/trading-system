@@ -291,16 +291,45 @@ function calculateIntradayScore(md: MarketDataWindow): number {
   return Math.max(-100, Math.min(100, score));
 }
 
-/** 复制自 option-recommendation.service.ts calculateTimeWindowAdjustment */
+/** 时间窗口评分调整 — 平滑曲线版（对齐实盘阶梯逻辑但消除断崖） */
 function calculateTimeWindowAdjustment(etMinutes: number): number {
   const marketOpen = 570;   // 9:30
   const marketClose = 960;  // 16:00
   const forceCloseTime = marketClose - 30; // 15:30
 
-  if (etMinutes < marketOpen + 60) return 20;
+  // 最后30min: 严格惩罚(theta加速衰减)
   if (etMinutes > forceCloseTime) return -50;
-  if (etMinutes > forceCloseTime - 60) return -30;
-  if (etMinutes > marketOpen + 120) return -10;
+
+  // 收盘前60-30min (14:30→15:30): 从-15线性到-50
+  if (etMinutes >= forceCloseTime - 60) {
+    const t = (etMinutes - (forceCloseTime - 60)) / 60;
+    return Math.round(-15 + t * (-50 - (-15)));
+  }
+
+  // 开盘首30min: 最佳窗口(高动量+高gamma)
+  if (etMinutes <= marketOpen + 30) return 15;
+
+  // 30-60min (10:00-10:30): 渐退 15→5
+  if (etMinutes <= marketOpen + 60) {
+    const t = (etMinutes - (marketOpen + 30)) / 30;
+    return Math.round(15 + t * (5 - 15));
+  }
+
+  // 60-120min (10:30-11:30): 微正→中性 5→0
+  if (etMinutes <= marketOpen + 120) {
+    const t = (etMinutes - (marketOpen + 60)) / 60;
+    return Math.round(5 + t * (0 - 5));
+  }
+
+  // 11:30-13:00: 午间平台(低波动)
+  if (etMinutes <= marketOpen + 210) return 0;
+
+  // 13:00-14:30: 午后渐降 0→-15
+  if (etMinutes < forceCloseTime - 60) {
+    const t = (etMinutes - (marketOpen + 210)) / 90;
+    return Math.round(t * -15);
+  }
+
   return 0;
 }
 
@@ -799,12 +828,18 @@ class OptionBacktestService {
       // tradeWindow: 策略DB使用 tradeWindow 嵌套结构
       const tw = stratConfig?.tradeWindow || {};
 
+      // 对齐实盘 option-intraday-strategy.ts:306
+      // firstHourOnly=true(默认) → 10:30; false → 全天(受 noNewEntryBeforeCloseMinutes 约束)
+      const resolvedWindowEnd = (tw.firstHourOnly === false)
+        ? Math.min(960, 960 - (tw.noNewEntryBeforeCloseMinutes || 0))  // 全天模式
+        : 630;  // 首小时模式(默认)
+
       const resolved = {
         baseThreshold,
         riskPreference: pref,
         positionContracts: sizing.fixedContracts ?? defaults.positionContracts,
-        tradeWindowStartET: stratConfig?.tradeWindowStartET ?? defaults.tradeWindowStartET,
-        tradeWindowEndET: stratConfig?.tradeWindowEndET ?? defaults.tradeWindowEndET,
+        tradeWindowStartET: defaults.tradeWindowStartET,           // 始终 570
+        tradeWindowEndET: resolvedWindowEnd,                        // 从策略DB推导
         maxTradesPerDay: stratConfig?.maxTradesPerDay ?? defaults.maxTradesPerDay,
         avoidFirstMinutes: tw.zdteCooldownMinutes ?? stratConfig?.avoidFirstMinutes ?? defaults.avoidFirstMinutes,
         noNewEntryBeforeCloseMinutes: tw.noNewEntryBeforeCloseMinutes ?? stratConfig?.noNewEntryBeforeCloseMinutes ?? defaults.noNewEntryBeforeCloseMinutes,
