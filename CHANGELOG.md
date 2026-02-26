@@ -2,6 +2,17 @@
 
 ## 2026-02-26
 
+### 期权回测参数从策略DB完整读取 — positionContracts等不再硬编码
+
+**背景**: 回测引擎 `resolveBaseThreshold` 只从策略 DB 读取 `baseThreshold` 和 `riskPreference`，`positionContracts`/`tradeWindowStartET`/`maxTradesPerDay` 等全部 fallback 到硬编码默认值（合约数=1），导致回测结果显示的是单张盈亏而非策略实际仓位的整体盈亏。
+
+**修复**: 将 `resolveBaseThreshold` 扩展为 `resolveStrategyConfig`，从策略 DB 读取全部 10 个参数作为 fallback，前端不传 override 时使用策略自身配置。
+
+**修改文件**:
+- 📝 `api/src/services/option-backtest.service.ts`（`resolveStrategyConfig` 全量读取 + `cfg` 构建全部走 `resolved.*` fallback）
+
+---
+
 ### 前端期权回测页面优化 — 4项修复
 
 **背景**: 期权回测前端页面存在列表无数据、参数总是覆盖策略配置、新后端参数未体现、信号日志缺 VIX 列等问题。

@@ -7,6 +7,13 @@
 
 ## 🆕 最近更新
 
+### 2026-02-26: 期权回测参数从策略DB完整读取
+
+**变更内容**: `resolveBaseThreshold` → `resolveStrategyConfig`，从策略 DB 读取 `positionContracts`/`tradeWindowStartET`/`maxTradesPerDay` 等全部参数作为默认值，不再硬编码 `positionContracts=1`。前端不传 override 时回测使用策略实际仓位。
+
+**修改文件**:
+- 📝 `api/src/services/option-backtest.service.ts`
+
 ### 2026-02-26: 前端期权回测页面优化 — 4项修复
 
 **变更内容**:

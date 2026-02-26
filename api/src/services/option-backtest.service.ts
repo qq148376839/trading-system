@@ -711,14 +711,37 @@ class OptionBacktestService {
   }
 
   /**
-   * 从策略 DB 配置中解析入场 base threshold
+   * 从策略 DB 配置中解析完整回测参数
    * 对齐实盘 OptionIntradayStrategy.getThresholds() 逻辑：
    *   entryThresholdOverride.directionalScoreMin ?? ENTRY_THRESHOLDS[riskPreference].directionalScoreMin
    */
-  private async resolveBaseThreshold(strategyId: number): Promise<{ baseThreshold: number; riskPreference: 'AGGRESSIVE' | 'CONSERVATIVE' }> {
+  private async resolveStrategyConfig(strategyId: number): Promise<{
+    baseThreshold: number;
+    riskPreference: 'AGGRESSIVE' | 'CONSERVATIVE';
+    positionContracts: number;
+    tradeWindowStartET: number;
+    tradeWindowEndET: number;
+    maxTradesPerDay: number;
+    avoidFirstMinutes: number;
+    noNewEntryBeforeCloseMinutes: number;
+    forceCloseBeforeCloseMinutes: number;
+    vixAdjustThreshold: boolean;
+  }> {
+    const defaults = {
+      baseThreshold: 15,
+      riskPreference: 'CONSERVATIVE' as const,
+      positionContracts: 1,
+      tradeWindowStartET: 570,
+      tradeWindowEndET: 630,
+      maxTradesPerDay: 3,
+      avoidFirstMinutes: 15,
+      noNewEntryBeforeCloseMinutes: 180,
+      forceCloseBeforeCloseMinutes: 30,
+      vixAdjustThreshold: true,
+    };
     try {
       const res = await pool.query(`SELECT config FROM strategies WHERE id = $1`, [strategyId]);
-      if (res.rows.length === 0) return { baseThreshold: 15, riskPreference: 'CONSERVATIVE' };
+      if (res.rows.length === 0) return defaults;
 
       const stratConfig = typeof res.rows[0].config === 'string'
         ? JSON.parse(res.rows[0].config)
@@ -729,12 +752,25 @@ class OptionBacktestService {
       const override = stratConfig?.entryThresholdOverride;
       const baseThreshold = override?.directionalScoreMin ?? tableBase.directionalScoreMin;
 
-      logger.info(`[期权回测] 策略#${strategyId} base threshold: ${baseThreshold} (pref=${pref}, override=${JSON.stringify(override)})`);
-      return { baseThreshold, riskPreference: pref };
+      const resolved = {
+        baseThreshold,
+        riskPreference: pref,
+        positionContracts: stratConfig?.positionContracts ?? defaults.positionContracts,
+        tradeWindowStartET: stratConfig?.tradeWindowStartET ?? defaults.tradeWindowStartET,
+        tradeWindowEndET: stratConfig?.tradeWindowEndET ?? defaults.tradeWindowEndET,
+        maxTradesPerDay: stratConfig?.maxTradesPerDay ?? defaults.maxTradesPerDay,
+        avoidFirstMinutes: stratConfig?.avoidFirstMinutes ?? defaults.avoidFirstMinutes,
+        noNewEntryBeforeCloseMinutes: stratConfig?.noNewEntryBeforeCloseMinutes ?? defaults.noNewEntryBeforeCloseMinutes,
+        forceCloseBeforeCloseMinutes: stratConfig?.forceCloseBeforeCloseMinutes ?? defaults.forceCloseBeforeCloseMinutes,
+        vixAdjustThreshold: stratConfig?.vixAdjustThreshold ?? defaults.vixAdjustThreshold,
+      };
+
+      logger.info(`[期权回测] 策略#${strategyId} resolved config: threshold=${resolved.baseThreshold}, pref=${pref}, contracts=${resolved.positionContracts}, window=${resolved.tradeWindowStartET}-${resolved.tradeWindowEndET}`);
+      return resolved;
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
-      logger.warn(`[期权回测] 读取策略配置失败: ${errMsg}, 使用默认 threshold=15`);
-      return { baseThreshold: 15, riskPreference: 'CONSERVATIVE' };
+      logger.warn(`[期权回测] 读取策略配置失败: ${errMsg}, 使用默认配置`);
+      return defaults;
     }
   }
 
@@ -747,22 +783,22 @@ class OptionBacktestService {
     symbols: string[],
     config?: OptionBacktestConfig
   ): Promise<OptionBacktestResult> {
-    // 从策略 DB 配置解析 base threshold（与实盘对齐）
-    const resolved = await this.resolveBaseThreshold(strategyId);
+    // 从策略 DB 配置解析完整参数（与实盘对齐）
+    const resolved = await this.resolveStrategyConfig(strategyId);
 
     const cfg: Required<OptionBacktestConfig> = {
       entryThreshold: config?.entryThreshold ?? resolved.baseThreshold,
       riskPreference: config?.riskPreference ?? resolved.riskPreference,
-      positionContracts: config?.positionContracts ?? 1,
+      positionContracts: config?.positionContracts ?? resolved.positionContracts,
       entryPriceMode: config?.entryPriceMode ?? 'CLOSE',
       strikeOffsetPoints: config?.strikeOffsetPoints ?? 0,
-      tradeWindowStartET: config?.tradeWindowStartET ?? 570, // 9:30
-      tradeWindowEndET: config?.tradeWindowEndET ?? 630,     // 10:30
-      maxTradesPerDay: config?.maxTradesPerDay ?? 3,
-      avoidFirstMinutes: config?.avoidFirstMinutes ?? 15,
-      noNewEntryBeforeCloseMinutes: config?.noNewEntryBeforeCloseMinutes ?? 180,
-      forceCloseBeforeCloseMinutes: config?.forceCloseBeforeCloseMinutes ?? 30,
-      vixAdjustThreshold: config?.vixAdjustThreshold ?? true,
+      tradeWindowStartET: config?.tradeWindowStartET ?? resolved.tradeWindowStartET,
+      tradeWindowEndET: config?.tradeWindowEndET ?? resolved.tradeWindowEndET,
+      maxTradesPerDay: config?.maxTradesPerDay ?? resolved.maxTradesPerDay,
+      avoidFirstMinutes: config?.avoidFirstMinutes ?? resolved.avoidFirstMinutes,
+      noNewEntryBeforeCloseMinutes: config?.noNewEntryBeforeCloseMinutes ?? resolved.noNewEntryBeforeCloseMinutes,
+      forceCloseBeforeCloseMinutes: config?.forceCloseBeforeCloseMinutes ?? resolved.forceCloseBeforeCloseMinutes,
+      vixAdjustThreshold: config?.vixAdjustThreshold ?? resolved.vixAdjustThreshold,
     };
 
     const allTrades: BacktestTradeRecord[] = [];
