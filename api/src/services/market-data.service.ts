@@ -10,6 +10,7 @@ import { moomooProxy, getProxyMode } from '../utils/moomoo-proxy';
 import { getQuoteContext } from '../config/longport';
 import { retryWithBackoff } from '../utils/longport-rate-limiter';
 import { logger } from '../utils/logger';
+import pool from '../config/database';
 
 interface CandlestickData {
   close: number;
@@ -639,7 +640,13 @@ class MarketDataService {
       temperature = Math.max(0, Math.min(100, temperature));
 
       // 更新缓存
-      this.temperatureCache = { value: temperature, timestamp: Date.now() };
+      const now = Date.now();
+      this.temperatureCache = { value: temperature, timestamp: now };
+
+      // 异步存储到 DB（不阻塞主流程，供回测读取真实温度）
+      this.saveTemperatureToDb(temperature, now).catch(err => {
+        logger.warn('[MarketData] 温度写入DB失败:', err.message);
+      });
 
       logger.info(`[市场温度] 获取成功: ${temperature}`);
       return temperature;
@@ -663,6 +670,21 @@ class MarketDataService {
       // 无缓存可用
       return null;
     }
+  }
+
+  /**
+   * 异步保存温度到 DB（供回测读取真实温度）
+   * 5分钟窗口去重，ON CONFLICT DO NOTHING
+   */
+  private async saveTemperatureToDb(value: number, timestampMs: number): Promise<void> {
+    const windowMs = 5 * 60 * 1000;
+    const windowStart = Math.floor(timestampMs / windowMs) * windowMs;
+    await pool.query(
+      `INSERT INTO market_temperature_history (timestamp, value, source)
+       VALUES ($1, $2, 'longport')
+       ON CONFLICT (timestamp) DO NOTHING`,
+      [windowStart, value]
+    );
   }
 
   /**

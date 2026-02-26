@@ -1289,7 +1289,7 @@ class OptionBacktestService {
       // ── IDLE: 评分 + 入场 ──
       if (state === 'IDLE' && etMin >= effectiveStartET && etMin <= effectiveEndET && dayTradeCount < cfg.maxTradesPerDay) {
         // 构建滑动窗口 market data（日级 + 小时级）
-        const window = this.buildMarketDataWindow(
+        const window = await this.buildMarketDataWindow(
           spxDaily, usdDaily, btcDaily, vixData, btcHourly, usdHourly, etMin, date,
           spxData, underlyingData,
         );
@@ -1719,6 +1719,30 @@ class OptionBacktestService {
   }
 
   /**
+   * 从 DB 加载真实市场温度（±5分钟窗口内最近的一条）
+   * 无数据时返回 null（调用方回退到估算）
+   */
+  private async loadRealTemperature(date: string, timeMinutes: number): Promise<number | null> {
+    try {
+      // timeMinutes = 从 00:00 ET 起的分钟数（如 10:17 = 617）
+      const dateObj = new Date(date + 'T00:00:00-05:00');  // ET
+      const centerMs = dateObj.getTime() + timeMinutes * 60 * 1000;
+      const windowMs = 5 * 60 * 1000;
+
+      const result = await pool.query(
+        `SELECT value FROM market_temperature_history
+         WHERE timestamp BETWEEN $1 AND $2
+         ORDER BY ABS(timestamp - $3)
+         LIMIT 1`,
+        [centerMs - windowMs, centerMs + windowMs, centerMs]
+      );
+      return result.rows.length > 0 ? Number(result.rows[0].value) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * 构建当前时刻的 MarketDataWindow（滑动窗口）
    * 取截止到 currentETMin 的数据
    */
@@ -1729,7 +1753,7 @@ class OptionBacktestService {
    * 与生产 marketDataCacheService.getMarketData() 返回的日级数据一致，
    * 确保 analyzeMarketTrend 的 20-period MA 是真正的 20 交易日均线。
    */
-  private buildMarketDataWindow(
+  private async buildMarketDataWindow(
     spxDaily: CandlestickData[],
     usdDaily: CandlestickData[],
     btcDaily: CandlestickData[],
@@ -1740,7 +1764,7 @@ class OptionBacktestService {
     date: string,
     spxIntraday?: CandlestickData[],
     underlyingIntraday?: CandlestickData[],
-  ): MarketDataWindow | null {
+  ): Promise<MarketDataWindow | null> {
     const etHour = Math.floor(currentETMin / 60);
     const etMinute = currentETMin % 60;
     const cutoffStr = `${date}T${etHour.toString().padStart(2, '0')}:${etMinute.toString().padStart(2, '0')}:59-05:00`;
@@ -1778,8 +1802,14 @@ class OptionBacktestService {
     const btcH = btcHourly.filter(d => d.timestamp <= cutoffTs);
     const usdH = usdHourly.filter(d => d.timestamp <= cutoffTs);
 
-    // 估算市场温度（替代硬编码 50）
-    const marketTemp = estimateMarketTemperature(vixDaily, spx);
+    // 优先使用真实温度（DB），无数据时回退到估算
+    let marketTemp: number;
+    const realTemp = await this.loadRealTemperature(date, currentETMin);
+    if (realTemp !== null) {
+      marketTemp = realTemp;
+    } else {
+      marketTemp = estimateMarketTemperature(vixDaily, spx);
+    }
 
     return {
       spx: spx.slice(-30),       // 最近 30 日级 bar（满足 20MA + 余量）

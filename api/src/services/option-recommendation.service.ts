@@ -304,6 +304,11 @@ class OptionRecommendationService {
     let score = 0;
     const components: string[] = [];
 
+    // 用分时/时K最新价修正当天日K的close，消除日K缓存延迟
+    this.correctDailyCloseWithIntraday(marketData.spx, marketData.spxHourly);
+    this.correctDailyCloseWithIntraday(marketData.usdIndex, marketData.usdIndexHourly);
+    this.correctDailyCloseWithIntraday(marketData.btc, marketData.btcHourly);
+
     // 1. SPX趋势分析 (权重40%)
     const spxAnalysis = this.analyzeMarketTrend(marketData.spx, 'SPX');
     score += spxAnalysis.trendStrength * 0.4;
@@ -372,6 +377,33 @@ class OptionRecommendationService {
     logger.info(`[大盘评分明细] 总分=${finalMarketScore.toFixed(1)} | ${components.join(' | ')}`);
 
     return finalMarketScore;
+  }
+
+  /**
+   * 用分时K线最新价修正日K当天最后一根bar的close
+   * 解决日K数据缓存延迟导致趋势计算滞后的问题
+   */
+  private correctDailyCloseWithIntraday(
+    dailyBars: CandlestickData[] | undefined,
+    intradayBars: CandlestickData[] | undefined
+  ): void {
+    if (!dailyBars || dailyBars.length === 0) return;
+    if (!intradayBars || intradayBars.length === 0) return;
+
+    const latestIntraday = intradayBars[intradayBars.length - 1];
+    const lastDaily = dailyBars[dailyBars.length - 1];
+
+    // 仅当分时数据比日K更新时才修正
+    if (latestIntraday.timestamp >= lastDaily.timestamp) {
+      lastDaily.close = latestIntraday.close;
+      // 同步更新 high/low（如果分时突破了日K范围）
+      if (latestIntraday.high > lastDaily.high) {
+        lastDaily.high = latestIntraday.high;
+      }
+      if (latestIntraday.low < lastDaily.low) {
+        lastDaily.low = latestIntraday.low;
+      }
+    }
   }
 
   /**

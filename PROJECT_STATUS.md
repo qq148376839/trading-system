@@ -1,11 +1,28 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-26
+**更新时间**: 2026-02-27
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-02-27: 回测-实盘信号对齐 — 真实温度 + 日K分时修正
+
+**变更内容**:
+
+1. **温度历史表**: `market_temperature_history` 存储实盘 Longport API 真实温度（5 分钟去重 + BRIN 索引）
+2. **实盘写温度**: `getMarketTemperature()` 异步写 DB，不阻塞返回
+3. **回测读真实温度**: `buildMarketDataWindow()` 优先 DB 读取 ±5min 窗口真实温度，回退到 `estimateMarketTemperature()`
+4. **日K close 分时修正**: `calculateMarketScore()` 用 hourly K 最新价修正 SPX/USD/BTC 日K 当天 close，消除缓存延迟导致趋势跳动
+
+**修改文件**:
+- 🆕 `api/migrations/014_add_market_temperature_history.sql`
+- 📝 `api/src/services/market-data.service.ts`
+- 📝 `api/src/services/option-backtest.service.ts`
+- 📝 `api/src/services/option-recommendation.service.ts`
+
+**验证**: 部署后检查 `market_temperature_history` 表有数据写入；实盘日志 `[大盘评分明细]` SPX趋势应保持稳定（不再 -0.9 ↔ -22.1 跳动）
 
 ### 2026-02-26: 实盘同步 — 两阶段评分竞价 + 相关性分组 (R5v2)
 
