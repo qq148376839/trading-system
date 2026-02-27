@@ -2,11 +2,15 @@
 
 ## 2026-02-27
 
-### 修复：长桥 Token 错误信息引导至 .env 而非数据库配置
+### 修复：手动更新 access_token 后过期时间不同步 + 错误信息引导至 .env
 
-**问题**: 系统已支持通过数据库（system_config 表）管理长桥 Token，但错误提示仍引导用户去"更新 .env 文件"，导致前端更新 token 后刷新报错时产生困惑。
+**问题 1**: 在配置页面手动更新 `longport_access_token` 后，token 状态中的过期日期不会联动更新，缓存的 Context 也不会清除。只有"刷新 Token"按钮会同步这些信息。
 
-**修复**: 将 `api/src/config/longport.ts` 中 6 处错误信息从"更新 .env 文件"改为"在系统配置页面更新"。
+**修复 1**: `PUT /config/:key` 和 `POST /config/batch` 检测到更新 `longport_access_token` 时，自动联动设置 `expired_at`（+90天）、`issued_at`（当前时间），并清除 QuoteContext/TradeContext 缓存。
+
+**问题 2**: 错误提示仍引导用户去"更新 .env 文件"。
+
+**修复 2**: `errors.ts` + `longport.ts` 中所有错误信息从"更新 .env 文件"改为"在系统配置页面更新"。
 
 ---
 

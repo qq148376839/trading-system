@@ -9,6 +9,7 @@ import bcrypt from 'bcryptjs';
 import pool from '../config/database';
 import { ErrorFactory, normalizeError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { clearQuoteContext, clearTradeContext } from '../config/longport';
 
 export const configRouter = Router();
 
@@ -356,10 +357,22 @@ configRouter.put('/:key', requireAdmin, async (req: Request, res: Response, next
       : ['longport_app_key', 'longport_app_secret', 'longport_access_token', 'futunn_csrf_token', 'futunn_cookies', 'moomoo_guest_cookies'].includes(key);
 
     await configService.setConfig(key, String(value), shouldEncrypt, adminUsername);
-    
-    res.json({ 
-      success: true, 
-      data: { message: '配置更新成功' } 
+
+    // 手动更新 access_token 时，联动更新过期时间 + 清除缓存
+    if (key === 'longport_access_token') {
+      const now = new Date();
+      const expiredAt = new Date();
+      expiredAt.setDate(expiredAt.getDate() + 90);
+      await configService.setConfig('longport_token_expired_at', expiredAt.toISOString(), false, adminUsername);
+      await configService.setConfig('longport_token_issued_at', now.toISOString(), false, adminUsername);
+      clearQuoteContext();
+      clearTradeContext();
+      logger.info(`access_token 手动更新，过期时间已同步为 ${expiredAt.toISOString()}，Context 缓存已清除`);
+    }
+
+    res.json({
+      success: true,
+      data: { message: '配置更新成功' }
     });
   } catch (error: any) {
     const appError = normalizeError(error);
@@ -390,10 +403,23 @@ configRouter.post('/batch', requireAdmin, async (req: Request, res: Response, ne
     }));
 
     await configService.setConfigs(configsWithEncryption, adminUsername);
-    
-    res.json({ 
-      success: true, 
-      data: { message: '批量配置更新成功' } 
+
+    // 批量更新中包含 access_token 时，联动更新过期时间 + 清除缓存
+    const hasTokenUpdate = configsWithEncryption.some((c: { key: string }) => c.key === 'longport_access_token');
+    if (hasTokenUpdate) {
+      const now = new Date();
+      const expiredAt = new Date();
+      expiredAt.setDate(expiredAt.getDate() + 90);
+      await configService.setConfig('longport_token_expired_at', expiredAt.toISOString(), false, adminUsername);
+      await configService.setConfig('longport_token_issued_at', now.toISOString(), false, adminUsername);
+      clearQuoteContext();
+      clearTradeContext();
+      logger.info(`access_token 批量更新，过期时间已同步为 ${expiredAt.toISOString()}，Context 缓存已清除`);
+    }
+
+    res.json({
+      success: true,
+      data: { message: '批量配置更新成功' }
     });
   } catch (error: any) {
     const appError = normalizeError(error);
