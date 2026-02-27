@@ -866,6 +866,25 @@ export const quantApi = {
   }) => {
     return api.post('/quant/institutions/calculate-allocation', data)
   },
+
+  /**
+   * 计算标的池相关性分组
+   */
+  computeCorrelationGroups: (strategyId: number, params?: { threshold?: number; days?: number }): Promise<{
+    success: boolean;
+    data?: {
+      strategyId: number;
+      symbolCount: number;
+      threshold: number;
+      days: number;
+      calculatedAt: string;
+      groups: Record<string, string[]>;
+      matrix: Record<string, number>;
+    };
+    error?: { message: string };
+  }> => {
+    return api.post(`/quant/strategies/${strategyId}/correlation-groups`, params || {})
+  },
 }
 
 // 日志查询 API

@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { quantApi, watchlistApi, quoteApi } from '@/lib/api';
 import AppLayout from '@/components/AppLayout';
 import EditStrategyModal from '@/components/EditStrategyModal';
-import { Card, Table, Tag, Space, Button, Alert, Spin, Row, Col, Descriptions, Modal, message, Typography } from 'antd';
+import { Card, Table, Tag, Space, Button, Alert, Spin, Row, Col, Descriptions, Modal, message, Typography, Collapse, InputNumber } from 'antd';
 
 interface Strategy {
   id: number;
@@ -51,6 +51,11 @@ export default function StrategyDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [pricesLoading, setPricesLoading] = useState(false);
+
+  // 相关性分组
+  const [corrThreshold, setCorrThreshold] = useState(0.75);
+  const [corrDays, setCorrDays] = useState(60);
+  const [corrComputing, setCorrComputing] = useState(false);
 
   useEffect(() => {
     if (strategyId) {
@@ -220,6 +225,27 @@ export default function StrategyDetailPage() {
         }
       },
     });
+  };
+
+  const handleComputeCorrelation = async () => {
+    try {
+      setCorrComputing(true);
+      const res = await quantApi.computeCorrelationGroups(strategyId, {
+        threshold: corrThreshold,
+        days: corrDays,
+      });
+      if (res.success) {
+        message.success(`分组计算完成，共 ${res.data?.symbolCount} 个标的`);
+        await loadData(); // 重新加载策略数据以获取最新 config
+      } else {
+        message.error(res.error?.message || '计算失败');
+      }
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : '计算失败';
+      message.error(errMsg);
+    } finally {
+      setCorrComputing(false);
+    }
   };
 
   const getStatusTag = (status: string) => {
@@ -462,6 +488,171 @@ export default function StrategyDetailPage() {
             }}
           />
         </Card>
+
+        {/* R5v2: 相关性分组 */}
+        {strategy.type === 'OPTION_INTRADAY_V1' && (
+          <Card style={{ marginTop: 16 }}>
+            <Collapse
+              ghost
+              items={[{
+                key: 'correlation',
+                label: <Typography.Title level={4} style={{ margin: 0 }}>相关性分组</Typography.Title>,
+                children: (
+                  <div>
+                    {/* 参数 + 计算按钮 */}
+                    <Space style={{ marginBottom: 16 }} wrap>
+                      <span>相关系数阈值:</span>
+                      <InputNumber
+                        value={corrThreshold}
+                        onChange={(v) => v !== null && setCorrThreshold(v)}
+                        min={0.5}
+                        max={1.0}
+                        step={0.05}
+                        style={{ width: 100 }}
+                      />
+                      <span>历史天数:</span>
+                      <InputNumber
+                        value={corrDays}
+                        onChange={(v) => v !== null && setCorrDays(v)}
+                        min={20}
+                        max={250}
+                        step={10}
+                        style={{ width: 80 }}
+                      />
+                      <Button
+                        type="primary"
+                        loading={corrComputing}
+                        onClick={handleComputeCorrelation}
+                      >
+                        {corrComputing ? '计算中...' : '计算分组'}
+                      </Button>
+                    </Space>
+
+                    {/* 已有分组结果展示 */}
+                    {strategy.config?.correlationGroups ? (() => {
+                      const cg = strategy.config.correlationGroups;
+                      const groups: Record<string, string[]> = cg.groups || {};
+                      const matrix: Record<string, number> = cg.matrix || {};
+
+                      // 构建矩阵表格数据
+                      const allSymbols = Array.from(
+                        new Set(Object.values(groups).flat())
+                      ).sort();
+                      const matrixRows = allSymbols.map((sym) => {
+                        const row: Record<string, string | number> = { symbol: sym };
+                        for (const other of allSymbols) {
+                          if (sym === other) {
+                            row[other] = 1;
+                          } else {
+                            const key1 = `${sym}|${other}`;
+                            const key2 = `${other}|${sym}`;
+                            row[other] = matrix[key1] ?? matrix[key2] ?? '-';
+                          }
+                        }
+                        return row;
+                      });
+
+                      const matrixColumns = [
+                        {
+                          title: '',
+                          dataIndex: 'symbol',
+                          key: 'symbol',
+                          fixed: 'left' as const,
+                          width: 100,
+                          render: (t: string) => <strong>{t.replace('.US', '')}</strong>,
+                        },
+                        ...allSymbols.map((sym) => ({
+                          title: sym.replace('.US', ''),
+                          dataIndex: sym,
+                          key: sym,
+                          width: 80,
+                          render: (val: string | number) => {
+                            if (val === '-') return <span style={{ color: '#ccc' }}>-</span>;
+                            const n = typeof val === 'number' ? val : parseFloat(String(val));
+                            if (isNaN(n)) return '-';
+                            const abs = Math.abs(n);
+                            let color = '#333';
+                            let bg = 'transparent';
+                            if (n === 1) {
+                              color = '#999';
+                              bg = '#f5f5f5';
+                            } else if (abs >= (cg.threshold || 0.75)) {
+                              color = '#fff';
+                              bg = '#ff4d4f';
+                            } else if (abs >= 0.5) {
+                              color = '#333';
+                              bg = '#fff7e6';
+                            }
+                            return (
+                              <span style={{
+                                color,
+                                background: bg,
+                                padding: '2px 6px',
+                                borderRadius: 3,
+                                fontFamily: 'monospace',
+                                fontSize: 12,
+                              }}>
+                                {n === 1 ? '1.00' : n.toFixed(2)}
+                              </span>
+                            );
+                          },
+                        })),
+                      ];
+
+                      return (
+                        <div>
+                          <Descriptions column={3} size="small" style={{ marginBottom: 16 }}>
+                            <Descriptions.Item label="阈值">{cg.threshold}</Descriptions.Item>
+                            <Descriptions.Item label="天数">{cg.days}</Descriptions.Item>
+                            <Descriptions.Item label="计算时间">
+                              {cg.calculatedAt ? new Date(cg.calculatedAt).toLocaleString('zh-CN') : '-'}
+                            </Descriptions.Item>
+                          </Descriptions>
+
+                          <Typography.Title level={5}>分组结果</Typography.Title>
+                          <Space wrap style={{ marginBottom: 16 }}>
+                            {Object.entries(groups).map(([groupName, members]) => (
+                              <Tag
+                                key={groupName}
+                                color={members.length > 1 ? 'volcano' : 'default'}
+                                style={{ padding: '4px 8px' }}
+                              >
+                                <strong>{groupName}:</strong>{' '}
+                                {(members as string[]).map((s: string) => s.replace('.US', '')).join(', ')}
+                              </Tag>
+                            ))}
+                          </Space>
+
+                          {allSymbols.length > 1 && (
+                            <>
+                              <Typography.Title level={5}>相关性矩阵</Typography.Title>
+                              <Table
+                                dataSource={matrixRows}
+                                columns={matrixColumns}
+                                rowKey="symbol"
+                                pagination={false}
+                                size="small"
+                                bordered
+                                scroll={{ x: 100 + allSymbols.length * 80 }}
+                              />
+                            </>
+                          )}
+                        </div>
+                      );
+                    })() : (
+                      <Alert
+                        message="尚未计算相关性分组"
+                        description="点击上方「计算分组」按钮，根据标的池的日K收盘价自动计算 Pearson 相关系数并分组。"
+                        type="info"
+                        showIcon
+                      />
+                    )}
+                  </div>
+                ),
+              }]}
+            />
+          </Card>
+        )}
       </Card>
 
       {showEditModal && strategy && (

@@ -14,6 +14,13 @@
 
 ---
 
+### 前端：策略详情页新增相关性分组 section
+
+- 仅 `OPTION_INTRADAY_V1` 策略显示
+- 折叠面板展示分组结果（Tag 标签）+ 相关性矩阵表格（高相关标红）
+- 可调参数（阈值 / 天数）+ 「计算分组」按钮触发 API
+- `frontend/lib/api.ts` 新增 `computeCorrelationGroups` 方法
+
 ### R5v2 竞价机制优化：移除多仓 + 自动分组 + 资金动态分配
 
 **四项改动**:
