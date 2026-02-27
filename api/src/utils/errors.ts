@@ -320,7 +320,7 @@ export function normalizeError(error: any): AppError {
   }
 
   if (error.message && (error.message.includes('401003') || error.message.includes('token expired'))) {
-    return ErrorFactory.tokenExpired('访问令牌已过期，请更新.env文件中的LONGPORT_ACCESS_TOKEN');
+    return ErrorFactory.tokenExpired('访问令牌已过期，请在系统配置页面更新 longport_access_token');
   }
 
   if (error.message && error.message.includes('401004')) {
