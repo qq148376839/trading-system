@@ -284,6 +284,10 @@ function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSu
   const [availableCapital, setAvailableCapital] = useState(0);
   const [stockPoolMode, setStockPoolMode] = useState<'STATIC' | 'INSTITUTION'>('STATIC');
   const [totalCapital, setTotalCapital] = useState(0);
+  const [optionRankList, setOptionRankList] = useState<Array<{ symbol: string; name: string; optionVolume: string; optionPosition: string; price: string; changeRate: string }>>([]);
+  const [optionRankLoading, setOptionRankLoading] = useState(false);
+  const [optionRankType, setOptionRankType] = useState<'total-volume' | 'total-turnover'>('total-volume');
+  const [optionRankOpen, setOptionRankOpen] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -438,9 +442,25 @@ function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSu
     });
   };
 
+  const handleLoadOptionRank = async (rankType: 'total-volume' | 'total-turnover') => {
+    setOptionRankLoading(true);
+    setOptionRankType(rankType);
+    try {
+      const res = await quantApi.getOptionRank({ rankType, count: 20 });
+      if (res.success && res.data) {
+        setOptionRankList(res.data);
+        setOptionRankOpen(true);
+      }
+    } catch {
+      // silently fail, user can retry
+    } finally {
+      setOptionRankLoading(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     // 验证至少有一个股票
     if (formData.symbolPoolConfig.symbols.length === 0) {
       message.warning('请至少添加一个股票到股票池');
@@ -642,6 +662,85 @@ function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSu
               </Space>
             </div>
           )}
+
+          {/* 期权热门股快速添加 */}
+          <div style={{ marginBottom: 8 }}>
+            <Space size="small">
+              <Button
+                size="small"
+                onClick={() => {
+                  if (optionRankOpen) {
+                    setOptionRankOpen(false);
+                  } else {
+                    handleLoadOptionRank(optionRankType);
+                  }
+                }}
+                loading={optionRankLoading}
+                style={{ background: '#f3e8ff', color: '#7c3aed', borderColor: '#d8b4fe' }}
+              >
+                {optionRankOpen ? '收起期权热门股' : '加载期权热门股'}
+              </Button>
+              {optionRankOpen && (
+                <>
+                  <Button
+                    size="small"
+                    type={optionRankType === 'total-volume' ? 'primary' : 'default'}
+                    onClick={() => handleLoadOptionRank('total-volume')}
+                    style={optionRankType === 'total-volume' ? { background: '#7c3aed', borderColor: '#7c3aed' } : {}}
+                  >
+                    总成交量
+                  </Button>
+                  <Button
+                    size="small"
+                    type={optionRankType === 'total-turnover' ? 'primary' : 'default'}
+                    onClick={() => handleLoadOptionRank('total-turnover')}
+                    style={optionRankType === 'total-turnover' ? { background: '#7c3aed', borderColor: '#7c3aed' } : {}}
+                  >
+                    成交额
+                  </Button>
+                </>
+              )}
+            </Space>
+            {optionRankOpen && optionRankList.length > 0 && (
+              <div style={{ marginTop: 8, maxHeight: 200, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 6 }}>
+                <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                  <thead style={{ background: '#fafafa', position: 'sticky', top: 0 }}>
+                    <tr>
+                      <th style={{ padding: '4px 8px', textAlign: 'left' }}>#</th>
+                      <th style={{ padding: '4px 8px', textAlign: 'left' }}>代码</th>
+                      <th style={{ padding: '4px 8px', textAlign: 'left' }}>名称</th>
+                      <th style={{ padding: '4px 8px', textAlign: 'right' }}>价格</th>
+                      <th style={{ padding: '4px 8px', textAlign: 'right' }}>期权成交量</th>
+                      <th style={{ padding: '4px 8px', textAlign: 'center' }}>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {optionRankList.map((item, idx) => {
+                      const alreadyAdded = formData.symbolPoolConfig.symbols.includes(item.symbol);
+                      return (
+                        <tr key={item.symbol} style={{ borderTop: '1px solid #f0f0f0' }}>
+                          <td style={{ padding: '4px 8px', color: '#999' }}>{idx + 1}</td>
+                          <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontWeight: 500 }}>{item.symbol}</td>
+                          <td style={{ padding: '4px 8px', color: '#666', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</td>
+                          <td style={{ padding: '4px 8px', textAlign: 'right', color: '#666' }}>{item.price}</td>
+                          <td style={{ padding: '4px 8px', textAlign: 'right', color: '#666' }}>{item.optionVolume}</td>
+                          <td style={{ padding: '4px 8px', textAlign: 'center' }}>
+                            {alreadyAdded ? (
+                              <span style={{ color: '#999' }}>已添加</span>
+                            ) : (
+                              <a onClick={() => handleAddFromWatchlist(item.symbol)} style={{ color: '#7c3aed', cursor: 'pointer', fontWeight: 500 }}>
+                                + 添加
+                              </a>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
 
           {/* 已添加的股票列表 */}
           <Card style={{ minHeight: 60, maxHeight: 200, overflowY: 'auto' }}>
