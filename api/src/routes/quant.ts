@@ -2561,3 +2561,55 @@ quantRouter.post('/strategies/:id/correlation-groups', async (req: Request, res:
   }
 });
 
+// ==================== 期权排行 API ====================
+
+/**
+ * GET /api/quant/option-rank
+ * 获取 Moomoo 期权成交量/成交额排行榜（用于快速选股）
+ */
+quantRouter.get('/option-rank', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { moomooProxy } = await import('../utils/moomoo-proxy');
+    const { generateQuoteToken } = await import('../utils/moomoo-quote-token');
+    const { getFutunnConfig } = await import('../config/futunn');
+
+    const rankType = String(req.query.rankType || 'total-volume');
+    const subRankType = String(req.query.subRankType || 'stock');
+    const count = String(req.query.count || '20');
+    const marketType = String(req.query.marketType || '2');
+
+    const config = getFutunnConfig();
+    // quote-token 基于实际查询参数计算（所有值转字符串）
+    const params: Record<string, string> = { rankType, subRankType, iterator: '0', count, marketType };
+    const quoteToken = generateQuoteToken(params);
+
+    const result = await moomooProxy({
+      path: '/quote-api/quote-v2/get-option-rank',
+      params,
+      cookies: config.cookies,
+      csrfToken: config.csrfToken,
+      quoteToken,
+      referer: 'https://www.moomoo.com/hans/quote/options-us/total-volume/stock',
+    });
+
+    // 解析返回数据 — 实际字段: data.items[], symbol="SPY.US", stockCode="SPY", name, optionTradingVolume(中文字符串)
+    const rawList = result?.data?.items || result?.items || [];
+    const list = rawList.map((item: Record<string, unknown>) => {
+      const symbol = String(item.symbol || (item.stockCode ? `${item.stockCode}.US` : '') || '');
+      return {
+        symbol,
+        name: String(item.name || item.stockName || ''),
+        optionVolume: String(item.optionTradingVolume || ''),
+        optionPosition: String(item.optionPositionVolume || ''),
+        price: String(item.priceNominal || ''),
+        changeRate: String(item.amplitudePrice || ''),
+      };
+    });
+
+    res.json({ success: true, data: list });
+  } catch (error: unknown) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+

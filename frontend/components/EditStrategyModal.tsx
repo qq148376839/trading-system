@@ -118,6 +118,10 @@ export default function EditStrategyModal({
   const [symbolError, setSymbolError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [availableCapital, setAvailableCapital] = useState(0);
+  const [optionRankList, setOptionRankList] = useState<Array<{ symbol: string; name: string; optionVolume: string; optionPosition: string; price: string; changeRate: string }>>([]);
+  const [optionRankLoading, setOptionRankLoading] = useState(false);
+  const [optionRankType, setOptionRankType] = useState<'total-volume' | 'total-turnover'>('total-volume');
+  const [optionRankOpen, setOptionRankOpen] = useState(false);
   const [stockPoolMode, setStockPoolMode] = useState<'STATIC' | 'INSTITUTION'>(
     strategy.symbolPoolConfig?.mode === 'INSTITUTION' ? 'INSTITUTION' : 'STATIC'
   );
@@ -362,6 +366,22 @@ export default function EditStrategyModal({
     }
   };
 
+  const handleLoadOptionRank = async (rankType: 'total-volume' | 'total-turnover') => {
+    setOptionRankLoading(true);
+    setOptionRankType(rankType);
+    try {
+      const res = await quantApi.getOptionRank({ rankType, count: 20 });
+      if (res.success && res.data) {
+        setOptionRankList(res.data);
+        setOptionRankOpen(true);
+      }
+    } catch {
+      // silently fail, user can retry
+    } finally {
+      setOptionRankLoading(false);
+    }
+  };
+
   const handleRemoveSymbol = (symbol: string) => {
     setFormData({
       ...formData,
@@ -574,6 +594,87 @@ export default function EditStrategyModal({
                       </div>
                     </div>
                   )}
+
+                  {/* 期权热门股快速添加 */}
+                  <div className="mb-2">
+                    <div className="flex items-center gap-2 mb-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (optionRankOpen) {
+                            setOptionRankOpen(false);
+                          } else {
+                            handleLoadOptionRank(optionRankType);
+                          }
+                        }}
+                        disabled={optionRankLoading}
+                        className="text-xs px-2 py-1 bg-purple-100 hover:bg-purple-200 text-purple-700 rounded disabled:opacity-50"
+                      >
+                        {optionRankLoading ? '加载中...' : optionRankOpen ? '收起期权热门股' : '加载期权热门股'}
+                      </button>
+                      {optionRankOpen && (
+                        <div className="flex gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleLoadOptionRank('total-volume')}
+                            className={`text-xs px-2 py-0.5 rounded ${optionRankType === 'total-volume' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                          >
+                            总成交量
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleLoadOptionRank('total-turnover')}
+                            className={`text-xs px-2 py-0.5 rounded ${optionRankType === 'total-turnover' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                          >
+                            成交额
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    {optionRankOpen && optionRankList.length > 0 && (
+                      <div className="border rounded max-h-[200px] overflow-y-auto">
+                        <table className="w-full text-xs">
+                          <thead className="bg-gray-50 sticky top-0">
+                            <tr>
+                              <th className="text-left px-2 py-1">#</th>
+                              <th className="text-left px-2 py-1">代码</th>
+                              <th className="text-left px-2 py-1">名称</th>
+                              <th className="text-right px-2 py-1">价格</th>
+                              <th className="text-right px-2 py-1">期权成交量</th>
+                              <th className="text-center px-2 py-1">操作</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {optionRankList.map((item, idx) => {
+                              const alreadyAdded = formData.symbolPoolConfig.symbols.includes(item.symbol);
+                              return (
+                                <tr key={item.symbol} className="border-t hover:bg-gray-50">
+                                  <td className="px-2 py-1 text-gray-400">{idx + 1}</td>
+                                  <td className="px-2 py-1 font-mono font-medium">{item.symbol}</td>
+                                  <td className="px-2 py-1 text-gray-600 truncate max-w-[120px]">{item.name}</td>
+                                  <td className="px-2 py-1 text-right text-gray-600">{item.price}</td>
+                                  <td className="px-2 py-1 text-right text-gray-600">{item.optionVolume}</td>
+                                  <td className="px-2 py-1 text-center">
+                                    {alreadyAdded ? (
+                                      <span className="text-gray-400">已添加</span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleAddFromWatchlist(item.symbol)}
+                                        className="text-purple-600 hover:text-purple-800 font-medium"
+                                      >
+                                        + 添加
+                                      </button>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
 
                   <div className="border rounded p-2 min-h-[60px] max-h-[200px] overflow-y-auto">
                     {formData.symbolPoolConfig.symbols.length === 0 ? (

@@ -7,6 +7,22 @@
 
 ## 🆕 最近更新
 
+### 2026-02-27: 期权成交量排行快速选股
+
+**变更内容**:
+
+1. **边缘函数**: Vercel + CF Worker 新增 `get-option-rank` 路径支持，quote-token 基于全部查询参数计算，排除 `_` 时间戳自动补充
+2. **后端路由**: `GET /quant/option-rank` 通过 `moomooProxy` 调用 Moomoo API，返回标准化的排行数据
+3. **前端 API**: `quantApi.getOptionRank()` 支持 rankType / count 参数
+4. **前端 UI**: EditStrategyModal 手动输入模式新增「期权热门股」可折叠区块，支持总成交量/成交额切换，已添加标的灰显
+
+**修改文件**:
+- 📝 `edge-functions/vercel-moomoo-proxy/api/moomooapi.js`
+- 📝 `edge-functions/moomoo-proxy/src/index.js`
+- 📝 `api/src/routes/quant.ts`
+- 📝 `frontend/lib/api.ts`
+- 📝 `frontend/components/EditStrategyModal.tsx`
+
 ### 2026-02-27: R5v2 竞价机制优化 — 移除多仓 + 自动分组 + 资金动态分配
 
 **变更内容**:

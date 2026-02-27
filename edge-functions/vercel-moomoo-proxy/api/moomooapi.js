@@ -99,6 +99,7 @@ const QUOTE_TOKEN_REQUIRED_PATHS = [
   '/quote-api/quote-v2/get-popular-position',
   '/quote-api/quote-v2/get-share-holding-list',
   '/quote-api/quote-v2/get-owner-position-list',
+  '/quote-api/quote-v2/get-option-rank',
 ];
 
 // -------------------- quote-token 计算（Web Crypto API） --------------------
@@ -192,6 +193,13 @@ function extractTokenParams(queryParams, apiPath) {
     if (Object.keys(tokenParams).length === 0) {
       tokenParams['_'] = '';
     }
+  } else if (apiPath.includes('get-option-rank')) {
+    const keys = ['rankType', 'subRankType', 'iterator', 'count', 'marketType'];
+    for (const key of keys) {
+      if (queryParams[key] !== undefined && queryParams[key] !== null && queryParams[key] !== '') {
+        tokenParams[key] = String(queryParams[key]);
+      }
+    }
   }
 
   return tokenParams;
@@ -249,8 +257,9 @@ async function handleGet(queryParams, request) {
   }
 
   const executeRequest = async () => {
-  // 自动补 _ 时间戳（kline/quote 等接口需要）
-  if (!requestParams['_'] && requiresQuoteToken(apiPath)) {
+  // 自动补 _ 时间戳（kline/quote 等接口需要，option-rank 和 popular-position 除外）
+  const SKIP_TIMESTAMP_PATHS = ['get-option-rank', 'get-popular-position'];
+  if (!requestParams['_'] && requiresQuoteToken(apiPath) && !SKIP_TIMESTAMP_PATHS.some(p => apiPath.includes(p))) {
     requestParams['_'] = String(Date.now());
   }
 

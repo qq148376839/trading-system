@@ -2,6 +2,23 @@
 
 ## 2026-02-27
 
+### 新功能：期权成交量排行快速选股
+
+在策略编辑弹窗的手动输入模式下，新增「期权热门股」快速选股功能，调用 Moomoo `get-option-rank` API 获取期权成交量/成交额排行榜，一键添加到标的池。
+
+**修改文件**:
+- `edge-functions/vercel-moomoo-proxy/api/moomooapi.js` — 新增 `get-option-rank` 路径支持 + quote-token 参数提取
+- `edge-functions/moomoo-proxy/src/index.js` — 同上（CF Worker）
+- `api/src/routes/quant.ts` — 新增 `GET /quant/option-rank` 路由
+- `frontend/lib/api.ts` — 新增 `quantApi.getOptionRank()` 方法
+- `frontend/components/EditStrategyModal.tsx` — 手动输入模式新增可折叠排行榜表格 + 排行类型切换
+
+**技术细节**:
+- quote-token 必须基于实际查询参数（rankType/subRankType/iterator/count/marketType）计算，不能用空对象
+- `get-option-rank` 不需要 `_` 时间戳参数，边缘函数已排除自动补时间戳
+
+---
+
 ### 修复：手动更新 access_token 后过期时间不同步 + 错误信息引导至 .env
 
 **问题 1**: 在配置页面手动更新 `longport_access_token` 后，token 状态中的过期日期不会联动更新，缓存的 Context 也不会清除。只有"刷新 Token"按钮会同步这些信息。

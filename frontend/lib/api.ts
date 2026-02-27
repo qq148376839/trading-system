@@ -868,6 +868,20 @@ export const quantApi = {
   },
 
   /**
+   * 获取期权成交量/成交额排行榜（快速选股）
+   */
+  getOptionRank: (params?: {
+    rankType?: string;
+    count?: number;
+  }): Promise<{
+    success: boolean;
+    data?: Array<{ symbol: string; name: string; optionVolume: string; optionPosition: string; price: string; changeRate: string }>;
+    error?: { message: string };
+  }> => {
+    return api.get('/quant/option-rank', { params });
+  },
+
+  /**
    * 计算标的池相关性分组
    */
   computeCorrelationGroups: (strategyId: number, params?: { threshold?: number; days?: number }): Promise<{
