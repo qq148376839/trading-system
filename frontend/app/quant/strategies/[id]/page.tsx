@@ -54,7 +54,7 @@ export default function StrategyDetailPage() {
 
   // 相关性分组
   const [corrThreshold, setCorrThreshold] = useState(0.75);
-  const [corrDays, setCorrDays] = useState(60);
+  const [corrDays, setCorrDays] = useState(120);
   const [corrComputing, setCorrComputing] = useState(false);
 
   useEffect(() => {
