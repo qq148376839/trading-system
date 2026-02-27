@@ -161,10 +161,8 @@ export async function getQuoteContext(): Promise<QuoteContextType> {
 
     if (!appKey || !appSecret || !accessToken) {
       quoteContextInitializing = null;
-      const envPathForError = path.resolve(__dirname, '../../.env');
       throw new Error(
-        'LongPort credentials not configured. Please set LONGPORT_APP_KEY, LONGPORT_APP_SECRET, and LONGPORT_ACCESS_TOKEN in database or .env file.\n' +
-        `当前.env文件路径: ${envPathForError}\n` +
+        '长桥API凭证未配置。请在系统配置页面设置 longport_app_key、longport_app_secret 和 longport_access_token。\n' +
         `LONGPORT_APP_KEY: ${appKey ? '已设置' : '未设置'} (来源: ${appKeySource})\n` +
         `LONGPORT_APP_SECRET: ${appSecret ? '已设置' : '未设置'} (来源: ${appSecretSource})\n` +
         `LONGPORT_ACCESS_TOKEN: ${accessToken ? '已设置' : '未设置'} (来源: ${accessTokenSource})`
@@ -233,7 +231,7 @@ export async function getQuoteContext(): Promise<QuoteContextType> {
           '解决方案：\n' +
           '1. 访问 https://open.longportapp.com/ 登录开发者中心\n' +
           '2. 确认当前使用的App Key是否正确\n' +
-          '3. 重新生成Access Token并更新.env文件中的LONGPORT_ACCESS_TOKEN\n' +
+          '3. 重新生成Access Token并在系统配置页面更新longport_access_token\n' +
           '4. 确保账户已开通行情权限\n\n' +
           `当前配置的App Key: configured: true, length: ${appKey.length}\n` +
           `当前Token长度: ${accessToken.length}字符`
@@ -304,7 +302,7 @@ export async function getTradeContext(): Promise<TradeContextType> {
     if (!appKey || !appSecret || !accessToken) {
       tradeContextInitializing = null;
       throw new Error(
-        'LongPort credentials not configured. Please set LONGPORT_APP_KEY, LONGPORT_APP_SECRET, and LONGPORT_ACCESS_TOKEN in database or .env file.\n' +
+        '长桥API凭证未配置。请在系统配置页面设置 longport_app_key、longport_app_secret 和 longport_access_token。\n' +
         `LONGPORT_APP_KEY: ${appKey ? '已设置' : '未设置'} (来源: ${appKeySource})\n` +
         `LONGPORT_APP_SECRET: ${appSecret ? '已设置' : '未设置'} (来源: ${appSecretSource})\n` +
         `LONGPORT_ACCESS_TOKEN: ${accessToken ? '已设置' : '未设置'} (来源: ${accessTokenSource})`
@@ -395,14 +393,14 @@ export async function getTradeContext(): Promise<TradeContextType> {
           errorMessage += '1. 访问 https://open.longportapp.com/ 登录开发者中心\n';
           errorMessage += '2. 确认当前使用的App Key是否正确\n';
           errorMessage += '3. 重新生成Access Token（确保有交易权限）\n';
-          errorMessage += '4. 更新.env文件中的LONGPORT_ACCESS_TOKEN\n';
+          errorMessage += '4. 在系统配置页面更新longport_access_token\n';
           errorMessage += '5. 确保账户已开通交易权限（不仅仅是行情权限）\n';
         } else if (error.message.includes('401004')) {
           errorMessage += '错误码401004: Token无效\n';
-          errorMessage += '请重新生成Access Token并更新.env文件\n';
+          errorMessage += '请重新生成Access Token并在系统配置页面更新\n';
         } else if (error.message.includes('401003')) {
           errorMessage += '错误码401003: App Key或App Secret无效\n';
-          errorMessage += '请检查.env文件中的LONGPORT_APP_KEY和LONGPORT_APP_SECRET\n';
+          errorMessage += '请在系统配置页面检查longport_app_key和longport_app_secret\n';
         } else if (error.message.includes('error sending request') || 
                    error.message.includes('socket') ||
                    error.code === 'GenericFailure') {
