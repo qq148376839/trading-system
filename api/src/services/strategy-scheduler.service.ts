@@ -1012,13 +1012,16 @@ class StrategyScheduler {
                   if (isOption) {
                     // 优先使用 intent 中的 allocationAmountOverride
                     if (context.intent?.metadata?.allocationAmountOverride) {
-                      allocationAmount = parseFloat(String(context.intent.metadata.allocationAmountOverride));
+                      const rawOverride = Number(context.intent.metadata.allocationAmountOverride);
+                      allocationAmount = isNaN(rawOverride) ? 0 : rawOverride;
                     } else if (context.allocationAmount) {
                       // 降级使用 context.allocationAmount
-                      allocationAmount = parseFloat(String(context.allocationAmount));
+                      const rawAlloc = Number(context.allocationAmount);
+                      allocationAmount = isNaN(rawAlloc) ? 0 : rawAlloc;
                     } else {
                       // 最后降级：计算 premium * multiplier * contracts（缺少手续费）
-                      const multiplier = context.optionMeta?.multiplier || context.intent?.metadata?.multiplier || 100;
+                      const rawMul = Number(context.optionMeta?.multiplier || context.intent?.metadata?.multiplier || 100);
+                      const multiplier = isNaN(rawMul) ? 100 : rawMul;
                       allocationAmount = avgPrice * filledQuantity * multiplier;
                       logger.warn(
                         `策略 ${strategyId} 期权 ${dbOrder.symbol}: allocationAmountOverride缺失，使用fallback计算=${allocationAmount.toFixed(2)} USD（缺少手续费）`
@@ -1193,13 +1196,17 @@ class StrategyScheduler {
                   const prevDailyTradeCount = context.dailyTradeCount ?? 0;
 
                   // Fix 12 + V6: 计算本笔交易 PnL 并追踪日内累计亏损
-                  const sellEntryPrice = parseFloat(String(context.entryPrice || 0));
-                  const sellQty = parseFloat(String(context.quantity || context.optionMeta?.quantity || 1));
-                  const sellMultiplier = Number(context.optionMeta?.multiplier) || 100;
+                  const rawSellEntryPrice = Number(context.entryPrice);
+                  const sellEntryPrice = isNaN(rawSellEntryPrice) ? 0 : rawSellEntryPrice;
+                  const rawSellQty = Number(context.quantity || context.optionMeta?.quantity || 1);
+                  const sellQty = isNaN(rawSellQty) ? 1 : rawSellQty;
+                  const rawSellMultiplier = Number(context.optionMeta?.multiplier);
+                  const sellMultiplier = isNaN(rawSellMultiplier) ? 100 : rawSellMultiplier;
                   const isOptionAssetSell = context.optionMeta?.assetClass === 'OPTION';
 
                   // V6: 用实际手续费替代 sellEntryFees * 2 估算
-                  const buyFees = parseFloat(String(context.entryFees || 0));
+                  const rawBuyFees = Number(context.entryFees);
+                  const buyFees = isNaN(rawBuyFees) ? 0 : rawBuyFees;
                   const sellFees = currentOrderFees;
                   // 总手续费: 优先用两端实际值，回退到已知一端 × 2
                   const totalFees = (buyFees > 0 && sellFees > 0)
@@ -1301,7 +1308,8 @@ class StrategyScheduler {
                       let maxDailyLoss = riskLimits.maxDailyLoss ?? 300; // fallback 固定值
                       try {
                         const availableCapital = await capitalManager.getAvailableCapital(strategyId);
-                        const totalAllocated = availableCapital + parseFloat(String(context.allocationAmount || 0));
+                        const rawCtxAlloc = Number(context.allocationAmount || 0);
+                        const totalAllocated = availableCapital + (isNaN(rawCtxAlloc) ? 0 : rawCtxAlloc);
                         if (totalAllocated > 0) {
                           maxDailyLoss = Math.round(totalAllocated * circuitBreakerPct / 100);
                           // 最低 $100 防止资金池很小时阈值太低
@@ -3044,8 +3052,9 @@ class StrategyScheduler {
                 orderId: row.order_id,
               };
               if (recovered.entryPrice && recovered.quantity) {
-                await strategyInstance.updateState(symbol, 'HOLDING', recovered);
-                context = recovered;
+                const safeRecovered = { ...POSITION_CONTEXT_RESET, ...recovered };
+                await strategyInstance.updateState(symbol, 'HOLDING', safeRecovered);
+                context = safeRecovered;
                 logger.log(`策略 ${strategyId} 标的 ${symbol}: 已从订单历史恢复context (orderId=${row.order_id})`);
               } else {
                 throw new Error('Recovered context missing entryPrice/quantity');
@@ -3965,8 +3974,8 @@ class StrategyScheduler {
 
       // 7. 检查是否应该平仓（传入用户配置的止盈止损比例）
       const exitRulesOverride = strategyConfig?.exitRules ? {
-        takeProfitPercent: parseFloat(String(strategyConfig.exitRules.takeProfitPercent || 0)) || undefined,
-        stopLossPercent: parseFloat(String(strategyConfig.exitRules.stopLossPercent || 0)) || undefined,
+        takeProfitPercent: (() => { const v = Number(strategyConfig.exitRules.takeProfitPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
+        stopLossPercent: (() => { const v = Number(strategyConfig.exitRules.stopLossPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
       } : undefined;
       const exitCondition = optionDynamicExitService.checkExitCondition(positionCtx, undefined, exitRulesOverride);
 

@@ -674,17 +674,24 @@ class MarketDataService {
 
   /**
    * 异步保存温度到 DB（供回测读取真实温度）
-   * 5分钟窗口去重，ON CONFLICT DO NOTHING
+   * 5分钟窗口去重，ON CONFLICT DO NOTHING，失败重试1次
    */
   private async saveTemperatureToDb(value: number, timestampMs: number): Promise<void> {
     const windowMs = 5 * 60 * 1000;
     const windowStart = Math.floor(timestampMs / windowMs) * windowMs;
-    await pool.query(
-      `INSERT INTO market_temperature_history (timestamp, value, source)
+    const sql = `INSERT INTO market_temperature_history (timestamp, value, source)
        VALUES ($1, $2, 'longport')
-       ON CONFLICT (timestamp) DO NOTHING`,
-      [windowStart, value]
-    );
+       ON CONFLICT (timestamp) DO NOTHING`;
+    const params = [windowStart, value];
+    try {
+      await pool.query(sql, params);
+    } catch (err: unknown) {
+      // 重试1次（覆盖瞬时连接抖动）
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logger.warn(`[MarketData] 温度写入DB失败，1秒后重试: ${errMsg}`);
+      await new Promise(r => setTimeout(r, 1000));
+      await pool.query(sql, params);
+    }
   }
 
   /**

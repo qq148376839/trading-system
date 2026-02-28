@@ -9,7 +9,9 @@
  * 方案：独立定时器（每60秒）扫描所有当日到期的 HOLDING 持仓，直接执行强制平仓。
  * 作为策略调度器的安全网，确保 0DTE 期权在收盘前被平仓。
  *
- * 活跃窗口：2:00 PM ET ~ 4:00 PM ET（收盘前120分钟）
+ * 活跃窗口：3:00 PM ET ~ 4:00 PM ET（收盘前60分钟）
+ * 定位：策略调度器 forceCloseBeforeCloseMinutes=30（3:30 PM）的安全网，
+ * 比主逻辑晚 30 分钟启动，确保主逻辑有机会先正常平仓。
  */
 
 import pool from '../config/database';
@@ -36,8 +38,8 @@ const MAX_RETRIES = 3;
 /** 重试间隔（毫秒） */
 const RETRY_DELAY_MS = 10_000;
 
-/** 强平开始时间（美东时间 13:00，即收盘前180分钟） */
-const FORCE_CLOSE_HOUR_ET = 13;
+/** 强平开始时间（美东时间 15:00，即收盘前60分钟 — 作为策略主逻辑 3:30PM 强平的安全网） */
+const FORCE_CLOSE_HOUR_ET = 15;
 const FORCE_CLOSE_MINUTE_ET = 0;
 
 /** 市场收盘时间（美东时间 16:00） */
@@ -75,7 +77,7 @@ class ZeroDTEWatchdogService {
   }
 
   /**
-   * 判断当前是否在活跃窗口内（2:00 PM ET ~ 4:00 PM ET）
+   * 判断当前是否在活跃窗口内（3:00 PM ET ~ 4:00 PM ET）
    */
   private isInActiveWindow(): boolean {
     const { hour, minute } = this.getCurrentETTime();
@@ -307,7 +309,7 @@ class ZeroDTEWatchdogService {
     }
 
     this.isRunning = true;
-    logger.log('[0DTE看门狗] 服务已启动 (扫描间隔: 60秒, 活跃窗口: 2:00 PM - 4:00 PM ET)');
+    logger.log('[0DTE看门狗] 服务已启动 (扫描间隔: 60秒, 活跃窗口: 3:00 PM - 4:00 PM ET)');
 
     // 立即执行一次扫描
     this.runScanCycle().catch(err => {
