@@ -34,6 +34,20 @@ import marketDataService from './market-data.service';
 import trailingStopProtectionService from './trailing-stop-protection.service';
 import { buildCorrelationMap } from '../utils/correlation';
 
+/** 每笔新交易必须重置的持仓级 context 字段 — 防止 JSONB || 合并导致跨交易污染 */
+const POSITION_CONTEXT_RESET = {
+  peakPnLPercent: 0,
+  peakPrice: null as null,
+  emergencyStopLoss: null as null,
+  tslpRetryPending: null as null,
+  tslpRetryParams: null as null,
+  tslpRetryAfter: null as null,
+  lastCheckTime: null as null,
+  lastBrokerCheckTime: null as null,
+  protectionOrderId: null as null,
+  protectionTrailingPct: null as null,
+};
+
 // R5v2: 默认相关性分组（策略无配置时的回退）
 const DEFAULT_CORRELATION_GROUPS: Record<string, string> = {
   'SPY.US': 'INDEX_ETF',
@@ -1042,7 +1056,9 @@ class StrategyScheduler {
                     );
                   } else {
                     await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
+                      ...POSITION_CONTEXT_RESET,
                       entryPrice: avgPrice,
+                      entryTime: new Date().toISOString(),
                       quantity: filledQuantity,
                       stopLoss: context.stopLoss,
                       takeProfit: context.takeProfit,
@@ -1230,6 +1246,7 @@ class StrategyScheduler {
                   }
 
                   // 260225 Fix B: protectionOrderId 无条件清除（不再依赖 isTslpFill 条件分支）
+                  // 260228 Fix: 清除所有持仓级字段，防止 JSONB || 合并导致下一笔交易继承旧值
                   await strategyInstance.updateState(instanceKeySymbol, 'IDLE', {
                     lastExitTime: new Date().toISOString(),
                     dailyTradeCount: prevDailyTradeCount + 1,
@@ -1242,6 +1259,15 @@ class StrategyScheduler {
                     protectionOrderId: null,
                     protectionTrailingPct: null,
                     exitReason: isTslpFill ? 'TSLPPCT_FILLED' : null,
+                    // 持仓级字段归零 — 防止跨交易污染
+                    peakPnLPercent: null,
+                    peakPrice: null,
+                    emergencyStopLoss: null,
+                    tslpRetryPending: null,
+                    tslpRetryParams: null,
+                    tslpRetryAfter: null,
+                    lastCheckTime: null,
+                    lastBrokerCheckTime: null,
                   });
 
                   if (tradePnL !== 0) {
@@ -2204,6 +2230,7 @@ class StrategyScheduler {
           }
 
           const holdingContext = {
+            ...POSITION_CONTEXT_RESET,
             entryPrice: executionResult.avgPrice,
             quantity: executionResult.filledQuantity,
             entryTime: new Date().toISOString(),
@@ -2224,7 +2251,7 @@ class StrategyScheduler {
             tradedSymbol: isOptionStrategy ? intent.symbol : undefined,
             optionMeta: isOptionStrategy ? (intent.metadata || {}) : undefined,
           };
-          
+
           await strategyInstance.updateState(symbol, 'HOLDING', holdingContext);
           logger.log(`策略 ${strategyId} 标的 ${symbol} 买入成功，订单ID: ${executionResult.orderId}`);
 
@@ -2681,6 +2708,7 @@ class StrategyScheduler {
         }
 
         const holdingContext = {
+          ...POSITION_CONTEXT_RESET,
           entryPrice: executionResult.avgPrice,
           quantity: executionResult.filledQuantity,
           entryTime: new Date().toISOString(),
@@ -3932,7 +3960,7 @@ class StrategyScheduler {
         entryUnderlyingPrice,
         timeStopMinutes,
         rangePct: vwapData?.rangePct,
-        peakPnLPercent: context.peakPnLPercent || 0,
+        peakPnLPercent: (context.peakPnLPercent && context.entryTime) ? context.peakPnLPercent : 0,
       };
 
       // 7. 检查是否应该平仓（传入用户配置的止盈止损比例）
@@ -4141,7 +4169,7 @@ class StrategyScheduler {
       // 记录当前最高盈利（用于移动止损，使用 grossPnLPercent 避免 NaN）
       const currentPnL = optionDynamicExitService.calculatePnL(positionCtx);
       const dynamicParams = optionDynamicExitService.getDynamicExitParams(positionCtx, exitRulesOverride);
-      const peakPnLPercent = context.peakPnLPercent || 0;
+      const peakPnLPercent = (context.peakPnLPercent && context.entryTime) ? context.peakPnLPercent : 0;
 
       // 输出持仓监控状态日志（使用毛盈亏避免 T+1 手续费数据不完整导致 NaN）
       const pnlSign = currentPnL.grossPnLPercent >= 0 ? '+' : '';
@@ -4572,6 +4600,7 @@ class StrategyScheduler {
         } catch { /* ignore */ }
 
         await strategyInstance.updateState(symbol, 'HOLDING', {
+          ...POSITION_CONTEXT_RESET,
           entryPrice,
           quantity: qty,
           entryTime: preservedEntryTime || new Date().toISOString(),
@@ -4634,6 +4663,7 @@ class StrategyScheduler {
       if (quantity > 0) {
         // 做多持仓：同步到 HOLDING 状态
         const updatedContext = {
+          ...POSITION_CONTEXT_RESET,
           entryPrice: actualPosition?.costPrice || actualPosition?.avgPrice || costPrice,
           quantity: quantity,
           entryTime: preservedEntryTimeForSync || new Date().toISOString(),

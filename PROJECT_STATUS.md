@@ -7,6 +7,23 @@
 
 ## 🆕 最近更新
 
+### 2026-02-28: 修复 peakPnLPercent 跨交易继承 Bug（P0 资金安全）
+
+**问题**: JSONB `||` 浅合并导致 10 个持仓级字段（peakPnLPercent、emergencyStopLoss、tslpRetry* 等）在交易结束后未清除，下一笔交易继承旧峰值盈利，触发虚假尾部止损造成秒级平仓。
+
+**修复内容**:
+
+1. **POSITION_CONTEXT_RESET 常量**: 定义 10 个持仓级字段的初始值
+2. **6 个入场路径注入重置**: Path A(Fill处理) + Path B(executeSymbolEntry) + Path C(executeSymbolEntryR5v2) + Path D(syncBrokerPosition 期权/股票)
+3. **退出路径补充清除**: CLOSING→IDLE 时显式设 8 个持仓级字段为 null
+4. **防御性校验**: peakPnLPercent 读取点检查 entryTime 存在性，残留数据强制归零
+5. **Path A 补充缺失 entryTime**: Fill 处理路径原来未设 entryTime，冷却期逻辑失效
+
+**修改文件**:
+- 📝 `api/src/services/strategy-scheduler.service.ts`
+
+**修复文档**: [peakPnLPercent跨交易继承修复](docs/fixes/260228-peakPnLPercent跨交易继承修复.md)
+
 ### 2026-02-27: 期权成交量排行快速选股
 
 **变更内容**:
@@ -1021,6 +1038,6 @@
 
 ---
 
-**最后更新**: 2026-02-27（R5v2 竞价机制优化：移除多仓 + 自动分组 + 资金动态分配）
+**最后更新**: 2026-02-28（修复 peakPnLPercent 跨交易继承 Bug — P0 资金安全）
 **项目版本**: 1.0
 

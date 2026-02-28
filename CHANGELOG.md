@@ -1,5 +1,18 @@
 # 更新日志
 
+## 2026-02-28
+
+### 修复：peakPnLPercent 跨交易继承 Bug（P0 资金安全）
+
+JSONB `||` 浅合并导致持仓级字段（peakPnLPercent、emergencyStopLoss、tslpRetry* 等 10 个）在交易结束后未被清除，下一笔交易继承旧值，触发虚假尾部止损造成秒级平仓。
+
+**修改文件**:
+- `api/src/services/strategy-scheduler.service.ts` — 新增 `POSITION_CONTEXT_RESET` 常量，6 个入场路径注入重置 + 退出路径补充清除 + 2 处防御性校验
+
+**修复文档**: [peakPnLPercent跨交易继承修复](docs/fixes/260228-peakPnLPercent跨交易继承修复.md)
+
+---
+
 ## 2026-02-27
 
 ### 新功能：期权成交量排行快速选股
