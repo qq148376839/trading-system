@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "rm": {
+      "command": "npx",
+      "args": ["tsx", "mcp-servers/role-memory/src/index.ts"],
+      "env": {
+        "PROJECT_ROOT": "/Users/rio/Documents/trading-system"
+      }
+    }
+  }
+}

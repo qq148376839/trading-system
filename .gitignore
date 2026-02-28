@@ -43,3 +43,16 @@ coverage/
 
 logs-*.json
 **@eaDir/
+
+# Claude Code session state
+claude-progress.json
+
+# TypeScript build cache
+frontend/tsconfig.tsbuildinfo
+
+# Trading data exports (sensitive)
+trading-app-*.csv
+trading-app-log.csv
+
+# Moomoo cookies output (sensitive)
+scripts/moomoo-cookies-output.json

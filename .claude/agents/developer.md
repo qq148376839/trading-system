@@ -30,6 +30,28 @@ model: sonnet
 4. **等待确认** — 用户回答所有问题后再开发
 5. **执行中发现新问题** — 立即停下再问
 
+## 会话管理
+
+### 会话开始
+1. 读取 `claude-progress.json`（如存在）— 检查是否有未完成的任务
+2. 如有未完成任务，向用户确认是继续还是开始新任务
+
+### 开发过程中的进度追踪
+- 涉及 3+ 文件的变更，先拆解子任务写入 `claude-progress.json`
+- 每完成一个子任务：commit 代码 + 更新进度文件中的 `status` 和 `currentSubtask`
+- 遇到 blocker 时记录到进度文件的 `blockers` 数组
+
+### 任务完成验证
+- 所有子任务完成后，运行 `pnpm run build` 确认编译通过
+- 运行相关测试确认无回归
+- 清理或归档 `claude-progress.json`
+
+### 上下文压缩后恢复
+1. 恢复团队身份（teammate-mode）— 调用 `mcp__rm__get_active_team`
+2. 读取 `claude-progress.json` — 恢复任务状态
+3. 运行 `git log --oneline -10` — 了解最近提交
+4. 基于 `currentSubtask` 继续未完成的工作
+
 ## 开发工作流
 
 ### 1. 需求理解
