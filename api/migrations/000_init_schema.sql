@@ -933,6 +933,28 @@ COMMENT ON COLUMN market_temperature_history.value IS '温度值 0-100';
 COMMENT ON COLUMN market_temperature_history.source IS '数据来源（longport）';
 
 -- ============================================================================
+-- 第十三部分：IV 历史表（015_iv_history.sql）
+-- ============================================================================
+
+-- IV 历史表：存储标的的 ATM 隐含波动率历史数据
+-- 用途：Schwartz 策略计算 IV Rank，判断当前 IV 在历史中的相对位置
+CREATE TABLE IF NOT EXISTS iv_history (
+    id BIGSERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL,         -- 标的代码 (QQQ.US)
+    atm_iv DECIMAL(10, 6),               -- ATM 期权隐含波动率
+    vix_value DECIMAL(10, 4),            -- 当时 VIX 值
+    recorded_date DATE NOT NULL,         -- 记录日期
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(symbol, recorded_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_iv_history_symbol_date ON iv_history(symbol, recorded_date DESC);
+
+COMMENT ON TABLE iv_history IS 'IV 历史表，存储标的 ATM 隐含波动率，供 Schwartz 策略计算 IV Rank';
+COMMENT ON COLUMN iv_history.atm_iv IS 'ATM 期权隐含波动率';
+COMMENT ON COLUMN iv_history.vix_value IS '记录时的 VIX 值';
+
+-- ============================================================================
 -- 完成
 -- ============================================================================
 -- 脚本执行完成！

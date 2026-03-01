@@ -7,6 +7,7 @@ import pool from '../config/database';
 import { StrategyBase, TradingIntent } from './strategies/strategy-base';
 import { RecommendationStrategy } from './strategies/recommendation-strategy';
 import { OptionIntradayStrategy } from './strategies/option-intraday-strategy';
+import { SchwartzOptionStrategy } from './strategies/schwartz-option-strategy';
 import stockSelector from './stock-selector.service';
 import capitalManager from './capital-manager.service';
 import stateManager from './state-manager.service';
@@ -5186,6 +5187,8 @@ class StrategyScheduler {
         return new RecommendationStrategy(strategyId, config);
       case 'OPTION_INTRADAY_V1':
         return new OptionIntradayStrategy(strategyId, config);
+      case 'OPTION_SCHWARTZ_V1':
+        return new SchwartzOptionStrategy(strategyId, config);
       default:
         throw new Error(`未知的策略类型: ${strategyType}`);
     }

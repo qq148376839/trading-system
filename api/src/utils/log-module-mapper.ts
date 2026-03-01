@@ -45,6 +45,18 @@ const MODULE_MAPPINGS: ModuleMapping[] = [
     description: '期权策略：末日期权交易策略，支持单边、跨式、价差等多种策略类型',
   },
   {
+    pattern: /strategies\/schwartz-option-strategy\.ts$/,
+    module: 'Strategy.Schwartz',
+    chineseName: '舒华兹策略',
+    description: '舒华兹期权策略：10EMA硬过滤 + IV Rank + 震荡区间检测',
+  },
+  {
+    pattern: /schwartz-signal-filter\.service\.ts$/,
+    module: 'Strategy.Schwartz.Filter',
+    chineseName: '舒华兹过滤器',
+    description: '舒华兹信号过滤器：EMA/IV/CHOP/仓位缩减过滤',
+  },
+  {
     pattern: /strategies\//,
     module: 'Strategy',
     chineseName: '策略实现',

@@ -1815,6 +1815,151 @@ quantRouter.get('/dashboard/stats', async (req: Request, res: Response, next: Ne
   }
 });
 
+// ==================== 策略对比 API ====================
+
+/**
+ * GET /api/quant/dashboard/strategy-comparison
+ * 返回各策略的对比数据（按 strategy_id 分组）
+ */
+quantRouter.get('/dashboard/strategy-comparison', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // 获取所有 RUNNING 策略
+    const strategiesResult = await pool.query(
+      `SELECT id, name, type, config FROM strategies WHERE status = 'RUNNING' ORDER BY id`
+    );
+
+    const strategies = [];
+
+    for (const strategy of strategiesResult.rows) {
+      // 今日 PnL 和交易数
+      const todayResult = await pool.query(
+        `SELECT
+           COALESCE(SUM(pnl), 0) as total_pnl,
+           COUNT(*) as trade_count,
+           COUNT(CASE WHEN pnl > 0 THEN 1 END) as win_count,
+           MIN(pnl) as max_loss
+         FROM auto_trades
+         WHERE strategy_id = $1
+           AND DATE(close_time) = CURRENT_DATE
+           AND status = 'FILLED'
+           AND pnl IS NOT NULL`,
+        [strategy.id]
+      );
+
+      const todayRow = todayResult.rows[0];
+      const todayTrades = parseInt(todayRow.trade_count) || 0;
+      const todayWins = parseInt(todayRow.win_count) || 0;
+
+      // 本周 PnL 和交易数
+      const weekResult = await pool.query(
+        `SELECT
+           COALESCE(SUM(pnl), 0) as total_pnl,
+           COUNT(*) as trade_count,
+           COUNT(CASE WHEN pnl > 0 THEN 1 END) as win_count
+         FROM auto_trades
+         WHERE strategy_id = $1
+           AND close_time >= DATE_TRUNC('week', CURRENT_DATE)
+           AND status = 'FILLED'
+           AND pnl IS NOT NULL`,
+        [strategy.id]
+      );
+
+      const weekRow = weekResult.rows[0];
+      const weekTrades = parseInt(weekRow.trade_count) || 0;
+      const weekWins = parseInt(weekRow.win_count) || 0;
+
+      // 均笔盈亏
+      const avgResult = await pool.query(
+        `SELECT COALESCE(AVG(pnl), 0) as avg_pnl
+         FROM auto_trades
+         WHERE strategy_id = $1
+           AND status = 'FILLED'
+           AND pnl IS NOT NULL
+           AND close_time >= CURRENT_DATE - INTERVAL '30 days'`,
+        [strategy.id]
+      );
+
+      strategies.push({
+        strategyId: strategy.id,
+        strategyName: strategy.name,
+        strategyType: strategy.type,
+        todayPnl: parseFloat(todayRow.total_pnl) || 0,
+        todayTrades,
+        todayWinRate: todayTrades > 0 ? Math.round((todayWins / todayTrades) * 100) : 0,
+        weekPnl: parseFloat(weekRow.total_pnl) || 0,
+        weekTrades,
+        weekWinRate: weekTrades > 0 ? Math.round((weekWins / weekTrades) * 100) : 0,
+        avgPnlPerTrade: parseFloat(avgResult.rows[0]?.avg_pnl) || 0,
+        maxDrawdown: parseFloat(todayRow.max_loss) || 0,
+      });
+    }
+
+    res.json({ success: true, data: { strategies } });
+  } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
+ * GET /api/quant/dashboard/strategy-comparison/detail?period=7d|30d|90d
+ * 返回详细对比数据（日维度时间序列）
+ */
+quantRouter.get('/dashboard/strategy-comparison/detail', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const period = (req.query.period as string) || '7d';
+    const days = period === '90d' ? 90 : period === '30d' ? 30 : 7;
+
+    // 获取所有 RUNNING 策略
+    const strategiesResult = await pool.query(
+      `SELECT id, name, type FROM strategies WHERE status = 'RUNNING' ORDER BY id`
+    );
+
+    // 查询日维度数据
+    const seriesResult = await pool.query(
+      `SELECT
+         DATE(close_time) as trade_date,
+         strategy_id,
+         COALESCE(SUM(pnl), 0) as daily_pnl,
+         COUNT(*) as trade_count,
+         COUNT(CASE WHEN pnl > 0 THEN 1 END) as win_count
+       FROM auto_trades
+       WHERE close_time >= CURRENT_DATE - $1::int * INTERVAL '1 day'
+         AND status = 'FILLED'
+         AND pnl IS NOT NULL
+         AND strategy_id IN (SELECT id FROM strategies WHERE status = 'RUNNING')
+       GROUP BY DATE(close_time), strategy_id
+       ORDER BY trade_date`,
+      [days]
+    );
+
+    // 按日期分组
+    const dateMap = new Map<string, any[]>();
+    for (const row of seriesResult.rows) {
+      const dateStr = row.trade_date.toISOString().slice(0, 10);
+      if (!dateMap.has(dateStr)) dateMap.set(dateStr, []);
+      const tradeCount = parseInt(row.trade_count) || 0;
+      const winCount = parseInt(row.win_count) || 0;
+      dateMap.get(dateStr)!.push({
+        strategyId: row.strategy_id,
+        strategyName: strategiesResult.rows.find((s: any) => s.id === row.strategy_id)?.name || '',
+        pnl: parseFloat(row.daily_pnl) || 0,
+        trades: tradeCount,
+        winRate: tradeCount > 0 ? Math.round((winCount / tradeCount) * 100) : 0,
+      });
+    }
+
+    const series = Array.from(dateMap.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, strategies]) => ({ date, strategies }));
+
+    res.json({ success: true, data: { period, series } });
+  } catch (error: any) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
 // ==================== 机构选股 API ====================
 
 /**
