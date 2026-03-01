@@ -48,6 +48,25 @@ const POSITION_CONTEXT_RESET = {
   protectionTrailingPct: null as null,
 };
 
+/**
+ * 260301 Fix: HOLDING→IDLE 退出时必须清除的持仓级字段
+ * 所有退出路径（正常卖出/TSLPPCT/broker无持仓/过期/Iron Dome）必须统一使用
+ * 防止 `...context` 将旧 peak/protection 字段带入 IDLE context，污染下一笔交易
+ */
+const POSITION_EXIT_CLEANUP = {
+  peakPnLPercent: null as null,
+  peakPrice: null as null,
+  emergencyStopLoss: null as null,
+  tslpRetryPending: null as null,
+  tslpRetryParams: null as null,
+  tslpRetryAfter: null as null,
+  lastCheckTime: null as null,
+  lastBrokerCheckTime: null as null,
+  protectionOrderId: null as null,
+  protectionTrailingPct: null as null,
+  takeProfitOrderId: null as null,
+};
+
 // R5v2: 默认相关性分组（策略无配置时的回退）
 const DEFAULT_CORRELATION_GROUPS: Record<string, string> = {
   'SPY.US': 'INDEX_ETF',
@@ -1937,13 +1956,14 @@ class StrategyScheduler {
           } else if (consecLosses === 1) {
             cooldownMinutes = 3;   // 1笔亏损：短冷却
           } else {
-            // 无连续亏损：沿用原有基于交易次数的逻辑
-            if (dailyTradeCount <= 1) {
-              cooldownMinutes = 0;
+            // 无连续亏损：基于交易次数递增冷却
+            // 260301 Fix: dailyTradeCount>=1 时至少冷却1分钟，防止 peakPnL 残留导致秒级重入循环
+            if (dailyTradeCount === 0) {
+              cooldownMinutes = 0;  // 当日首笔：无冷却
             } else if (dailyTradeCount <= 3) {
-              cooldownMinutes = 1;
+              cooldownMinutes = 1;  // 第2-4笔：1分钟冷却
             } else {
-              cooldownMinutes = 3;
+              cooldownMinutes = 3;  // 第5笔起：3分钟冷却
             }
           }
         } else {
@@ -2401,7 +2421,8 @@ class StrategyScheduler {
         } else if (consecLosses === 1) {
           cooldownMinutes = 3;
         } else {
-          if (dailyTradeCount <= 1) {
+          // 260301 Fix: dailyTradeCount>=1 时至少冷却1分钟，防止 peakPnL 残留导致秒级重入循环
+          if (dailyTradeCount === 0) {
             cooldownMinutes = 0;
           } else if (dailyTradeCount <= 3) {
             cooldownMinutes = 1;
@@ -3386,11 +3407,21 @@ class StrategyScheduler {
               logger.warn(
                 `策略 ${strategyId} 期权 ${effectiveSymbol}: 已过期+价格获取失败+券商无持仓，自动转为IDLE`
               );
+              // 260301 Fix: 过期退出也必须清除持仓级字段 + 递增 trade counters
+              const expNpPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
+              const expNpPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
+              const expNpAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
+              const expNpPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
               await strategyInstance.updateState(symbol, 'IDLE', {
-                ...context,
+                ...POSITION_EXIT_CLEANUP,
+                lastExitTime: new Date().toISOString(),
                 autoClosedReason: 'option_expired_no_price',
                 autoClosedAt: new Date().toISOString(),
                 previousState: 'HOLDING',
+                dailyTradeCount: expNpPrevTradeCount + 1,
+                consecutiveLosses: expNpPrevConsecLosses + 1,
+                dailyRealizedPnL: expNpPrevDailyPnL + (expNpAllocAmt > 0 ? -expNpAllocAmt : 0),
+                lastTradePnL: expNpAllocAmt > 0 ? -expNpAllocAmt : 0,
               });
               return { actionTaken: true };
             }
@@ -3666,13 +3697,19 @@ class StrategyScheduler {
             logger.log(
               `策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT保护单已触发成交(${context.protectionOrderId})，券商已平仓，更新状态为IDLE`
             );
+            // 260301 Fix: TSLPPCT 退出也必须递增 trade counters + 清除持仓级字段
+            const tslpPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
+            const tslpPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
+            const tslpPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
             await strategyInstance.updateState(symbol, 'IDLE', {
-              ...context,
+              ...POSITION_EXIT_CLEANUP,
               lastExitTime: new Date().toISOString(),
               exitReason: 'TSLPPCT_FILLED',
               exitReasonDetail: `TSLPPCT保护单${context.protectionOrderId}已触发`,
-              protectionOrderId: undefined,
-              protectionTrailingPct: undefined,
+              dailyTradeCount: tslpPrevTradeCount + 1,
+              consecutiveLosses: tslpPrevConsecLosses,  // TSLPPCT 无法判断盈亏，保持现有值
+              dailyRealizedPnL: tslpPrevDailyPnL,       // 实际 PnL 由订单回调更新
+              lastTradeDirection: context.optionMeta?.optionDirection || context.intent?.metadata?.optionDirection || null,
             });
             // R5: 清除跨标的入场状态
             this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
@@ -3878,11 +3915,21 @@ class StrategyScheduler {
           logger.warn(
             `策略 ${strategyId} 期权 ${effectiveSymbol}: 已过期且券商无持仓，自动转为IDLE`
           );
+          // 260301 Fix: 过期退出同样需要清除持仓级字段 + 递增 trade counters
+          const expPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
+          const expPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
+          const expAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
+          const expPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
           await strategyInstance.updateState(symbol, 'IDLE', {
-            ...context,
+            ...POSITION_EXIT_CLEANUP,
+            lastExitTime: new Date().toISOString(),
             autoClosedReason: 'option_expired',
             autoClosedAt: new Date().toISOString(),
             previousState: 'HOLDING',
+            dailyTradeCount: expPrevTradeCount + 1,
+            consecutiveLosses: expPrevConsecLosses + 1,
+            dailyRealizedPnL: expPrevDailyPnL + (expAllocAmt > 0 ? -expAllocAmt : 0),
+            lastTradePnL: expAllocAmt > 0 ? -expAllocAmt : 0,
           });
           return { actionTaken: true };
         }
@@ -4002,11 +4049,21 @@ class StrategyScheduler {
           logger.warn(
             `策略 ${strategyId} 期权 ${effectiveSymbol}: 券商报告无持仓，自动转为IDLE`
           );
+          // 260301 Fix: broker_position_zero 退出清除持仓级字段 + 递增 trade counters
+          const bpzPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
+          const bpzPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
+          const bpzAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
+          const bpzPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
           await strategyInstance.updateState(symbol, 'IDLE', {
-            ...context,
+            ...POSITION_EXIT_CLEANUP,
+            lastExitTime: new Date().toISOString(),
             autoClosedReason: 'broker_position_zero',
             autoClosedAt: new Date().toISOString(),
             previousState: 'HOLDING',
+            dailyTradeCount: bpzPrevTradeCount + 1,
+            consecutiveLosses: bpzPrevConsecLosses + 1,
+            dailyRealizedPnL: bpzPrevDailyPnL + (bpzAllocAmt > 0 ? -bpzAllocAmt : 0),
+            lastTradePnL: bpzAllocAmt > 0 ? -bpzAllocAmt : 0,
           });
           return { actionTaken: true };
         }
@@ -4054,13 +4111,19 @@ class StrategyScheduler {
               logger.log(
                 `策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT已触发成交，跳过软件卖出`
               );
+              // 260301 Fix: 软件退出发现 TSLPPCT 已成交 — 同样需要 trade counters + cleanup
+              const tslpSwPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
+              const tslpSwPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
+              const tslpSwPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
               await strategyInstance.updateState(symbol, 'IDLE', {
-                ...context,
+                ...POSITION_EXIT_CLEANUP,
                 lastExitTime: new Date().toISOString(),
                 exitReason: 'TSLPPCT_FILLED',
                 exitReasonDetail: `软件退出时发现TSLPPCT(${context.protectionOrderId})已成交`,
-                protectionOrderId: undefined,
-                protectionTrailingPct: undefined,
+                dailyTradeCount: tslpSwPrevTradeCount + 1,
+                consecutiveLosses: tslpSwPrevConsecLosses,
+                dailyRealizedPnL: tslpSwPrevDailyPnL,
+                lastTradeDirection: context.optionMeta?.optionDirection || context.intent?.metadata?.optionDirection || null,
               });
               // R5: 清除跨标的入场状态
               this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
@@ -4162,11 +4225,21 @@ class StrategyScheduler {
           logger.warn(
             `策略 ${strategyId} 期权 ${effectiveSymbol}: 定期核对发现券商无持仓，自动转为IDLE`
           );
+          // 260301 Fix: 定期核对退出也清除持仓级字段 + 递增 trade counters
+          const bpzpPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
+          const bpzpPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
+          const bpzpAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
+          const bpzpPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
           await strategyInstance.updateState(symbol, 'IDLE', {
-            ...context,
+            ...POSITION_EXIT_CLEANUP,
+            lastExitTime: new Date().toISOString(),
             autoClosedReason: 'broker_position_zero_periodic',
             autoClosedAt: new Date().toISOString(),
             previousState: 'HOLDING',
+            dailyTradeCount: bpzpPrevTradeCount + 1,
+            consecutiveLosses: bpzpPrevConsecLosses + 1,
+            dailyRealizedPnL: bpzpPrevDailyPnL + (bpzpAllocAmt > 0 ? -bpzpAllocAmt : 0),
+            lastTradePnL: bpzpAllocAmt > 0 ? -bpzpAllocAmt : 0,
           });
           return { actionTaken: true };
         }
@@ -4993,12 +5066,11 @@ class StrategyScheduler {
           );
 
           // 标记为 BROKER_TERMINATED 并释放资金
+          // 260301 Fix: 同时清除持仓级字段，防止下一笔交易继承 peakPnLPercent 等
           const allocationAmount = parseFloat(String(ctx.allocationAmount || 0));
           await stateManager.updateState(strategyId, row.symbol, 'IDLE', {
+            ...POSITION_EXIT_CLEANUP,
             exitReason: 'BROKER_TERMINATED',
-            protectionOrderId: null,
-            protectionTrailingPct: null,
-            takeProfitOrderId: null,
             lastExitTime: new Date().toISOString(),
             // 记录虚拟 PnL = -100%（最坏情况估算）
             lastTradePnL: allocationAmount > 0 ? -allocationAmount : 0,
