@@ -7,6 +7,33 @@
 
 ## 🆕 最近更新
 
+### 2026-03-01: 舒华兹期权策略模式 (OPTION_SCHWARTZ_V1)
+
+**变更内容**:
+
+1. **新策略类型**: `OPTION_SCHWARTZ_V1` 作为独立策略，与 `OPTION_INTRADAY_V1` 并列
+2. **4 个核心过滤器**: 10 EMA 硬过滤 + IV Rank + 震荡区间检测 + 大赚后仓位缩减
+3. **EMA 计算工具**: `api/src/utils/ema.ts`（EMA/SMA 计算，供趋势过滤使用）
+4. **IV 历史采集**: `iv_history` 表 + 每日首次评估时自动采集 ATM IV
+5. **策略对比 API**: `GET /quant/dashboard/strategy-comparison` + `/detail`
+6. **前端**: 创建/编辑策略支持 Schwartz 类型 + 策略对比页面 (`/quant/compare`)
+
+**新增文件**:
+- 🆕 `api/src/utils/ema.ts`
+- 🆕 `api/src/services/schwartz-signal-filter.service.ts`
+- 🆕 `api/src/services/strategies/schwartz-option-strategy.ts`
+- 🆕 `api/migrations/015_iv_history.sql`
+- 🆕 `frontend/app/quant/compare/page.tsx`
+
+**修改文件**:
+- 📝 `api/migrations/000_init_schema.sql`（新增 iv_history 表）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（注册 OPTION_SCHWARTZ_V1）
+- 📝 `api/src/utils/log-module-mapper.ts`（Strategy.Schwartz 映射）
+- 📝 `api/src/routes/quant.ts`（策略对比 API）
+- 📝 `frontend/lib/api.ts`、`frontend/app/quant/strategies/page.tsx`、`frontend/components/EditStrategyModal.tsx`、`frontend/app/quant/page.tsx`、`frontend/app/quant/strategies/[id]/page.tsx`
+
+**设计文档**: [舒华兹期权策略模式](docs/features/260301-舒华兹期权策略模式.md)
+
 ### 2026-02-28: 修复 peakPnLPercent 跨交易继承 Bug（P0 资金安全）
 
 **问题**: JSONB `||` 浅合并导致 10 个持仓级字段（peakPnLPercent、emergencyStopLoss、tslpRetry* 等）在交易结束后未清除，下一笔交易继承旧峰值盈利，触发虚假尾部止损造成秒级平仓。

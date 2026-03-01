@@ -1,5 +1,35 @@
 # 更新日志
 
+## 2026-03-01
+
+### 新功能：舒华兹期权策略模式 (OPTION_SCHWARTZ_V1)
+
+基于马丁·舒华兹 (Pit Bull) 交易哲学的独立期权策略，与 OPTION_INTRADAY_V1 并列。
+
+**核心过滤器**:
+- 10 EMA 硬过滤 — 逆趋势无例外拒绝
+- IV Rank 过滤 — 高 IV 拒绝买方（渐进式 FALLBACK→FULL）
+- 震荡区间检测 — MA 缠绕时入场门槛翻倍
+- 仓位缩减 — 大赚后自动缩减 50%
+
+**后端**:
+- 新增 EMA/SMA 计算工具 (`api/src/utils/ema.ts`)
+- 新增 IV 历史表 (`iv_history`) + migration
+- 新增 Schwartz 信号过滤服务 + 策略类
+- 注册 `OPTION_SCHWARTZ_V1` 到调度器
+- 新增策略对比统计 API（summary + detail）
+
+**前端**:
+- 创建策略弹窗新增 Schwartz 类型
+- 编辑策略弹窗新增 Schwartz 参数配置区
+- 策略详情页新增 Schwartz 参数展示
+- 量化首页新增策略对比摘要卡片
+- 新增独立策略对比页面 (`/quant/compare`)：累计 PnL 走势图 + 统计 + 每日明细
+
+**设计文档**: [舒华兹期权策略模式](docs/features/260301-舒华兹期权策略模式.md)
+
+---
+
 ## 2026-02-28
 
 ### 修复：peakPnLPercent 跨交易继承 Bug（P0 资金安全）
