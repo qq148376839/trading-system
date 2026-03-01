@@ -276,3 +276,109 @@ UPDATE strategies SET config = config || $1::jsonb WHERE id = $2
 - 不要只写桌面端样式而跳过移动端适配
 - 不要用固定宽度（`width: 800px`）替代响应式布局
 - 不要假设"用户只会用电脑看"
+
+### 规则 12：所有 HOLDING→IDLE 退出路径必须统一清除持仓级字段
+
+**背景**：`strategy-scheduler.service.ts` 有 **7+ 条** HOLDING→IDLE 退出路径（正常卖出、TSLPPCT成交、券商无持仓、期权过期、Iron Dome、超时等）。其中多条路径使用 `...context` 扩展 context，导致 `peakPnLPercent`、`peakPrice`、`emergencyStopLoss` 等持仓级字段泄露到 IDLE context，被下一笔交易继承。2月27日 TSLA 后3笔交易因继承了第1笔的 `peakPnLPercent=16.7%` 而被移动止损秒杀（P0 事故）。
+
+**正确做法**：
+```typescript
+// 所有 HOLDING→IDLE 转换必须使用 POSITION_EXIT_CLEANUP 常量
+await strategyInstance.updateState(symbol, 'IDLE', {
+  ...POSITION_EXIT_CLEANUP,   // ← 必须在第一位，清除所有持仓级字段
+  lastExitTime: new Date().toISOString(),
+  dailyTradeCount: prevTradeCount + 1,
+  consecutiveLosses: newConsecLosses,
+  dailyRealizedPnL: newDailyPnL,
+  exitReason: '...',
+});
+```
+
+**检查清单**（新增/修改退出路径时逐条核对）：
+1. ✅ 使用 `...POSITION_EXIT_CLEANUP` 替代 `...context`
+2. ✅ 设置 `lastExitTime`（冷却期依赖此字段）
+3. ✅ 递增 `dailyTradeCount`（冷却时间与交易次数挂钩）
+4. ✅ 更新 `consecutiveLosses`（连亏冷却依赖此字段）
+5. ✅ 更新 `dailyRealizedPnL`（日内熔断依赖此字段）
+6. ✅ 清除 `crossSymbolState.activeEntries`（R5v2 跨标的保护）
+
+**禁止**：
+- 不要在 HOLDING→IDLE 转换中使用 `...context`（会泄露持仓级字段）
+- 不要遗漏任何一个退出路径的 trade counter 递增
+- 不要假设"这条路径不常走"而省略清理逻辑
+
+### 规则 13：0DTE 冷却时间必须 ≥ 1 分钟（首笔除外）
+
+**背景**：0DTE 冷却规则中，当 `consecutiveLosses=0 && dailyTradeCount<=1` 时冷却为 0 分钟，允许退出后秒级重入。当叠加 peakPnLPercent 泄露 bug 时，形成"秒入→秒杀→秒入"的致命循环。即使 peakPnLPercent 已修复，0 秒冷却仍然是不安全的（期权价格波动大，需要至少 1 分钟让市场稳定）。
+
+**正确做法**：
+```typescript
+// 0DTE 无连亏时的冷却规则
+if (dailyTradeCount === 0) cooldownMinutes = 0;     // 当日首笔：无冷却
+else if (dailyTradeCount <= 3) cooldownMinutes = 1;  // 第2-4笔：至少1分钟
+else cooldownMinutes = 3;                             // 第5笔起：3分钟
+```
+
+**禁止**：
+- 不要将非首笔交易的冷却设为 0
+- 不要仅依赖 `consecutiveLosses` 来决定冷却（盈利退出后 consecLosses=0 但仍需冷却）
+
+---
+
+## 策略核心逻辑保护清单
+
+> 修改 `strategy-scheduler.service.ts` 时必须确认不会破坏以下核心机制。
+
+### 1. POSITION_CONTEXT_RESET — 跨交易隔离屏障
+
+**作用**：在每次 IDLE→HOLDING 转换时重置 10 个持仓级字段，防止上一笔交易的 peak/stop/protection 数据污染新交易。
+
+**关键使用点**（6处，缺一不可）：
+- Line ~1062: 买入成交后
+- Line ~2241: 执行买入后
+- Line ~2719: Phase D 执行后
+- Line ~3055: 恢复持仓路径
+- Line ~4612: HOLDING context 初始化
+- Line ~4675: 同步更新
+
+**危险操作**：任何重构如果移除或跳过了某个使用点，都会导致跨交易字段泄露。
+
+### 2. POSITION_EXIT_CLEANUP — 退出清理屏障
+
+**作用**：在每次 HOLDING→IDLE 转换时清除 11 个持仓级字段 + 更新 trade counters。
+
+**必须覆盖的退出路径**（7条）：
+1. 正常卖出成交回调（line ~1257）
+2. TSLPPCT 保护单状态检查成交（line ~3671）
+3. TSLPPCT 软件退出时发现成交（line ~4059）
+4. 期权过期+无价格+券商无持仓（line ~3391）
+5. 期权过期+券商无持仓（line ~3883）
+6. 券商无持仓 — 退出时检查（line ~4007）
+7. 券商无持仓 — 定期核对（line ~4167）
+8. Iron Dome BROKER_TERMINATED（line ~5070）
+
+**危险操作**：新增退出路径时如果忘记使用 POSITION_EXIT_CLEANUP，会导致字段泄露。
+
+### 3. 冷却期机制 — 防止快速重入
+
+**作用**：退出后基于 `dailyTradeCount` 和 `consecutiveLosses` 计算冷却时间，阻止同标的快速重入。
+
+**代码位置**：两处（非期权 line ~1931，期权 line ~2395），逻辑必须同步。
+
+**依赖链**：`lastExitTime` → 冷却判断 → `dailyTradeCount` / `consecutiveLosses` → 冷却时长。任何一环缺失都会导致冷却失效。
+
+### 4. R5v2 竞价机制 — 跨标的保护
+
+**作用**：Phase A→B→C→D 四阶段竞价，确保同组/跨组只选最强信号执行，防止集中暴露。
+
+**关键状态**：`crossSymbolState` (activeEntries + lastFloorExitByGroup)，退出时必须 `delete(symbol)`。
+
+**危险操作**：修改 Phase C/D 逻辑时如果破坏了组内/跨组淘汰规则，会导致同时持有多个同组标的。
+
+### 5. 日内熔断 — 亏损安全阀
+
+**作用**：策略级日内聚合 PnL 超过阈值时触发全标的熔断，当日不再交易。
+
+**依赖链**：每条退出路径正确更新 `dailyRealizedPnL` → 卖出回调聚合查询 → 阈值判断 → `circuitBreakerActive=true`。
+
+**危险操作**：如果某条退出路径不更新 `dailyRealizedPnL`，熔断阈值计算会低估实际亏损。
