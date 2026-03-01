@@ -41,7 +41,7 @@ const DEFAULT_SCHWARTZ_CONFIG: Partial<SchwartzOptionStrategyConfig> = {
   ...DEFAULT_OPTION_STRATEGY_CONFIG,
   riskPreference: 'CONSERVATIVE',
   entryThresholdOverride: {
-    directionalScoreMin: 30, // Schwartz 门槛更高
+    directionalScoreMin: 12, // 回测校准：实际 finalScore 范围 0~15，30 永远不入场
   },
 };
 
@@ -72,10 +72,10 @@ export class SchwartzOptionStrategy extends StrategyBase {
   }
 
   /**
-   * 获取入场阈值（Schwartz 默认 30，CHOP 时 60）
+   * 获取入场阈值（Schwartz 默认 12，CHOP 时 24）
    */
   private getEntryScoreMin(isChop: boolean): number {
-    const baseMin = this.cfg.entryThresholdOverride?.directionalScoreMin ?? 30;
+    const baseMin = this.cfg.entryThresholdOverride?.directionalScoreMin ?? 12;
     const vixFactor = this.getVixThresholdFactor(this.currentCycleVix);
     const adjusted = Math.round(baseMin * vixFactor);
     return isChop ? adjusted * 2 : adjusted;

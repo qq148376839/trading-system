@@ -277,7 +277,7 @@ function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSu
       greekFilters: { deltaMin: 0.25, deltaMax: 0.6 },
       tradeWindow: { noNewEntryBeforeCloseMinutes: 120, forceCloseBeforeCloseMinutes: 30 },
       feeModel: { commissionPerContract: 0.1, minCommissionPerOrder: 0.99, platformFeePerContract: 0.3 },
-      entryThresholdOverride: { directionalScoreMin: 30 },
+      entryThresholdOverride: { directionalScoreMin: 12 },
       schwartz: {
         emaPeriod: 10,
         chopThreshold: 0.5,
