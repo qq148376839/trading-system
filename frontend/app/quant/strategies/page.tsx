@@ -150,30 +150,30 @@ export default function StrategiesPage() {
     {
       title: '操作',
       key: 'actions',
-      width: isMobile ? 100 : undefined,
+      width: isMobile ? 80 : undefined,
       render: (_: any, record: Strategy) => (
-        <Space>
+        <Space direction={isMobile ? 'vertical' : 'horizontal'} size="small">
           {record.status === 'STOPPED' && (
-            <Button type="link" onClick={() => handleStart(record.id)} style={{ color: '#52c41a' }}>
+            <Button type="link" onClick={() => handleStart(record.id)} style={{ color: '#52c41a', padding: isMobile ? '0 4px' : undefined }}>
               启动
             </Button>
           )}
           {record.status === 'RUNNING' && (
-            <Button type="link" danger onClick={() => handleStop(record.id)}>
+            <Button type="link" danger onClick={() => handleStop(record.id)} style={{ padding: isMobile ? '0 4px' : undefined }}>
               停止
             </Button>
           )}
-          {record.status === 'STOPPED' && (
+          {!isMobile && record.status === 'STOPPED' && (
             <Button type="link" onClick={() => handleEdit(record)}>
               编辑
             </Button>
           )}
-          {record.status === 'STOPPED' && (
+          {!isMobile && record.status === 'STOPPED' && (
             <Button type="link" danger onClick={() => handleDelete(record.id)}>
               删除
             </Button>
           )}
-          <Link href={`/quant/strategies/${record.id}`} style={{ color: '#1890ff' }}>
+          <Link href={`/quant/strategies/${record.id}`} style={{ color: '#1890ff', padding: isMobile ? '0 4px' : undefined }}>
             详情
           </Link>
         </Space>
@@ -254,6 +254,7 @@ export default function StrategiesPage() {
 }
 
 function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+  const isMobile = useIsMobile();
   const DEFAULT_CONFIGS: Record<string, any> = {
     RECOMMENDATION_V1: { atrPeriod: 14, atrMultiplier: 2.0, riskRewardRatio: 1.5 },
     OPTION_INTRADAY_V1: {
@@ -487,12 +488,30 @@ function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSu
       message.warning('请至少添加一个股票到股票池');
       return;
     }
-    
+
     setLoading(true);
     try {
-      await quantApi.createStrategy(formData);
+      const res = await quantApi.createStrategy(formData);
       message.success('策略创建成功');
       onSuccess();
+
+      // 期权类型策略：fire-and-forget 计算相关性分组
+      const createdId = res?.data?.id;
+      if (
+        createdId &&
+        (formData.type === 'OPTION_INTRADAY_V1' || formData.type === 'OPTION_SCHWARTZ_V1')
+      ) {
+        message.info('正在后台计算相关性分组...');
+        quantApi.computeCorrelationGroups(createdId, { threshold: 0.75, days: 120 })
+          .then((r) => {
+            if (r.success) {
+              message.success('相关性分组计算完成');
+            }
+          })
+          .catch(() => {
+            // 非阻塞，静默失败
+          });
+      }
     } catch (err: any) {
       message.error(err.message || '创建策略失败');
     } finally {
@@ -505,7 +524,7 @@ function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSu
       title="创建策略"
       open={true}
       onCancel={onClose}
-      width={800}
+      width={isMobile ? '95vw' : 800}
       footer={null}
       styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
     >

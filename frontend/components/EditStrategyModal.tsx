@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { quantApi, watchlistApi } from '@/lib/api';
+import { message } from 'antd';
 import InstitutionStockSelector from '@/components/InstitutionStockSelector';
 
 interface Strategy {
@@ -135,6 +136,9 @@ export default function EditStrategyModal({
     state: string;
     context: any;
   }>>([]);
+  const originalSymbolsRef = useRef<string[]>(
+    [...(Array.isArray(strategy.symbolPoolConfig?.symbols) ? strategy.symbolPoolConfig.symbols : [])].sort()
+  );
 
   useEffect(() => {
     Promise.all([
@@ -395,16 +399,44 @@ export default function EditStrategyModal({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (formData.symbolPoolConfig.symbols.length === 0) {
-      alert('请至少添加一个股票到股票池');
+      message.warning('请至少添加一个股票到股票池');
       return;
     }
     setLoading(true);
     try {
       await quantApi.updateStrategy(strategy.id, formData);
-      alert('策略已更新');
+      message.success('策略已更新');
       onSuccess();
+
+      // 期权类型 + 标的变动 → fire-and-forget 重算相关性分组
+      if (
+        formData.type === 'OPTION_INTRADAY_V1' ||
+        formData.type === 'OPTION_SCHWARTZ_V1'
+      ) {
+        const newSymbols = [...formData.symbolPoolConfig.symbols].sort();
+        const oldSymbols = originalSymbolsRef.current;
+        const symbolsChanged =
+          newSymbols.length !== oldSymbols.length ||
+          newSymbols.some((s, i) => s !== oldSymbols[i]);
+
+        if (symbolsChanged) {
+          const cg = strategy.config?.correlationGroups;
+          const threshold = cg?.threshold ?? 0.75;
+          const days = cg?.days ?? 120;
+          message.info('标的变动，正在后台重算相关性分组...');
+          quantApi.computeCorrelationGroups(strategy.id, { threshold, days })
+            .then((r) => {
+              if (r.success) {
+                message.success('相关性分组重算完成');
+              }
+            })
+            .catch(() => {
+              // 非阻塞，静默失败
+            });
+        }
+      }
     } catch (err: any) {
-      alert(err.message || '更新策略失败');
+      message.error(err.message || '更新策略失败');
     } finally {
       setLoading(false);
     }

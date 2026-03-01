@@ -515,6 +515,7 @@ export default function StrategyDetailPage() {
           <Card style={{ marginTop: 16 }}>
             <Collapse
               ghost
+              defaultActiveKey={['correlation']}
               items={[{
                 key: 'correlation',
                 label: <Typography.Title level={4} style={{ margin: 0 }}>相关性分组</Typography.Title>,
