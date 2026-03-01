@@ -818,6 +818,14 @@ export const quantApi = {
     return api.get('/quant/dashboard/stats')
   },
 
+  // 策略对比
+  getStrategyComparison: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
+    return api.get('/quant/dashboard/strategy-comparison')
+  },
+  getStrategyComparisonDetail: (period: string = '7d'): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
+    return api.get(`/quant/dashboard/strategy-comparison/detail?period=${period}`)
+  },
+
   // 订单价格审查
   reviewOrders: (params: {
     startDate: string;

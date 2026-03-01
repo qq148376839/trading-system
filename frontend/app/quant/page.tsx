@@ -10,9 +10,21 @@ interface Overview {
   runningStrategies: number;
   totalCapital: number;
   todayTrades: number;
-  todayBuyOrders?: number;  // 新增：今日买入订单数量
-  todaySellOrders?: number; // 新增：今日卖出订单数量
+  todayBuyOrders?: number;
+  todaySellOrders?: number;
   todayPnl: number;
+}
+
+interface StrategyComparisonItem {
+  strategyId: number;
+  strategyName: string;
+  strategyType: string;
+  todayPnl: number;
+  todayTrades: number;
+  todayWinRate: number;
+  weekPnl: number;
+  weekTrades: number;
+  weekWinRate: number;
 }
 
 interface Signal {
@@ -28,6 +40,7 @@ interface Signal {
 export default function QuantTradingPage() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [recentSignals, setRecentSignals] = useState<Signal[]>([]);
+  const [strategyComparison, setStrategyComparison] = useState<StrategyComparisonItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -61,6 +74,16 @@ export default function QuantTradingPage() {
         todaySellOrders,
         todayPnl,
       });
+
+      // 加载策略对比数据
+      try {
+        const compRes = await quantApi.getStrategyComparison();
+        if (compRes.success && compRes.data?.strategies) {
+          setStrategyComparison(compRes.data.strategies);
+        }
+      } catch {
+        // 对比数据非关键，静默失败
+      }
 
       // 加载最近信号
       const signalsRes = await quantApi.getSignals({ limit: 10 });
@@ -189,6 +212,52 @@ export default function QuantTradingPage() {
             </Card>
           </Col>
         </Row>
+
+        {/* 策略对比摘要 */}
+        {strategyComparison.length > 1 && (
+          <Card style={{ marginBottom: 24 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>策略对比</h2>
+              <Link href="/quant/compare">
+                <Button type="link" size="small">详情 &rarr;</Button>
+              </Link>
+            </div>
+            <Row gutter={[16, 16]}>
+              {strategyComparison.map((s) => {
+                const typeLabel = s.strategyType === 'OPTION_SCHWARTZ_V1' ? '舒华兹' :
+                  s.strategyType === 'OPTION_INTRADAY_V1' ? 'Momentum' :
+                  s.strategyType === 'RECOMMENDATION_V1' ? '推荐' : s.strategyType;
+                return (
+                  <Col xs={24} sm={12} md={Math.min(12, Math.floor(24 / strategyComparison.length))} key={s.strategyId}>
+                    <Card size="small" style={{ borderLeft: `3px solid ${s.strategyType === 'OPTION_SCHWARTZ_V1' ? '#52c41a' : '#1890ff'}` }}>
+                      <div style={{ marginBottom: 8 }}>
+                        <Tag color={s.strategyType === 'OPTION_SCHWARTZ_V1' ? 'green' : 'blue'}>{typeLabel}</Tag>
+                        <span style={{ fontSize: 13, fontWeight: 500 }}>{s.strategyName}</span>
+                      </div>
+                      <Row gutter={8}>
+                        <Col span={8}>
+                          <Statistic
+                            title="今日 PnL"
+                            value={s.todayPnl}
+                            precision={2}
+                            prefix="$"
+                            valueStyle={{ fontSize: 16, color: s.todayPnl >= 0 ? '#52c41a' : '#ff4d4f' }}
+                          />
+                        </Col>
+                        <Col span={8}>
+                          <Statistic title="交易" value={s.todayTrades} suffix="笔" valueStyle={{ fontSize: 16 }} />
+                        </Col>
+                        <Col span={8}>
+                          <Statistic title="胜率" value={s.todayWinRate} suffix="%" valueStyle={{ fontSize: 16 }} />
+                        </Col>
+                      </Row>
+                    </Card>
+                  </Col>
+                );
+              })}
+            </Row>
+          </Card>
+        )}
 
         {/* 实时信号流 */}
         <Card>

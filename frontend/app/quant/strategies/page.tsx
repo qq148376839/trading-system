@@ -267,6 +267,27 @@ function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSu
       tradeWindow: { noNewEntryBeforeCloseMinutes: 60, forceCloseBeforeCloseMinutes: 30 },
       feeModel: { commissionPerContract: 0.1, minCommissionPerOrder: 0.99, platformFeePerContract: 0.3 },
     },
+    OPTION_SCHWARTZ_V1: {
+      assetClass: 'OPTION',
+      expirationMode: '0DTE',
+      directionMode: 'FOLLOW_SIGNAL',
+      entryPriceMode: 'ASK',
+      positionSizing: { mode: 'FIXED_CONTRACTS', fixedContracts: 1 },
+      liquidityFilters: { minOpenInterest: 500, maxBidAskSpreadAbs: 0.3, maxBidAskSpreadPct: 25 },
+      greekFilters: { deltaMin: 0.25, deltaMax: 0.6 },
+      tradeWindow: { noNewEntryBeforeCloseMinutes: 120, forceCloseBeforeCloseMinutes: 30 },
+      feeModel: { commissionPerContract: 0.1, minCommissionPerOrder: 0.99, platformFeePerContract: 0.3 },
+      entryThresholdOverride: { directionalScoreMin: 30 },
+      schwartz: {
+        emaPeriod: 10,
+        chopThreshold: 0.5,
+        emaWrapThreshold: 0.3,
+        ivRankRejectThreshold: 60,
+        ivFallbackRejectIV: 0.8,
+        positionShrinkAfterBigWin: true,
+        bigWinThreshold: 30,
+      },
+    },
   };
 
   const [formData, setFormData] = useState({
@@ -517,6 +538,7 @@ function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSu
           >
             <Select.Option value="RECOMMENDATION_V1">推荐策略 V1（股票）</Select.Option>
             <Select.Option value="OPTION_INTRADAY_V1">期权日内策略 V1（买方）</Select.Option>
+            <Select.Option value="OPTION_SCHWARTZ_V1">期权-舒华兹趋势 V1</Select.Option>
           </Select>
         </div>
         
@@ -526,6 +548,14 @@ function CreateStrategyModal({ onClose, onSuccess }: { onClose: () => void; onSu
             message="推荐策略 V1"
             description="基于市场趋势和ATR（平均真实波幅）的智能推荐策略。系统会分析SPX、USD指数、BTC等市场指标，结合ATR计算止损止盈价格，智能生成买卖信号。适合趋势跟踪和风险控制的量化交易场景。"
             type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+          />
+        ) : formData.type === 'OPTION_SCHWARTZ_V1' ? (
+          <Alert
+            message="期权-舒华兹趋势 V1"
+            description="基于马丁·舒华兹 Pit Bull 交易哲学的期权策略。使用 10 日 EMA 硬过滤（逆趋势无例外拒绝）+ IV Rank 过滤（高IV拒绝买方）+ 震荡区间检测（MA缠绕时提高门槛2x）+ 大赚后仓位缩减。入场门槛更高（得分>=30），适合趋势明确的市场。"
+            type="success"
             showIcon
             style={{ marginBottom: 16 }}
           />

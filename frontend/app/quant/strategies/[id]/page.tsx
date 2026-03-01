@@ -489,8 +489,29 @@ export default function StrategyDetailPage() {
           />
         </Card>
 
+        {/* Schwartz 参数展示 */}
+        {strategy.type === 'OPTION_SCHWARTZ_V1' && strategy.config?.schwartz && (
+          <Card style={{ marginTop: 16 }}>
+            <Typography.Title level={4}>舒华兹策略参数</Typography.Title>
+            <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
+              <Descriptions.Item label="EMA 周期">{strategy.config.schwartz.emaPeriod ?? 10}</Descriptions.Item>
+              <Descriptions.Item label="EMA 缠绕阈值">{strategy.config.schwartz.emaWrapThreshold ?? 0.3}%</Descriptions.Item>
+              <Descriptions.Item label="震荡阈值">{strategy.config.schwartz.chopThreshold ?? 0.5}%</Descriptions.Item>
+              <Descriptions.Item label="IV Rank 拒绝">{strategy.config.schwartz.ivRankRejectThreshold ?? 60}</Descriptions.Item>
+              <Descriptions.Item label="降级 IV 阈值">{strategy.config.schwartz.ivFallbackRejectIV ?? 0.8}</Descriptions.Item>
+              <Descriptions.Item label="大赚后缩仓">
+                {strategy.config.schwartz.positionShrinkAfterBigWin !== false ? (
+                  <Tag color="green">开启 (&gt;{strategy.config.schwartz.bigWinThreshold ?? 30}%)</Tag>
+                ) : (
+                  <Tag>关闭</Tag>
+                )}
+              </Descriptions.Item>
+            </Descriptions>
+          </Card>
+        )}
+
         {/* R5v2: 相关性分组 */}
-        {strategy.type === 'OPTION_INTRADAY_V1' && (
+        {(strategy.type === 'OPTION_INTRADAY_V1' || strategy.type === 'OPTION_SCHWARTZ_V1') && (
           <Card style={{ marginTop: 16 }}>
             <Collapse
               ghost

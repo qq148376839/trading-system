@@ -742,12 +742,12 @@ export default function EditStrategyModal({
               </div>
               
               <label className="block text-sm font-medium mb-2">
-                {formData.type === 'OPTION_INTRADAY_V1' ? '期权策略参数' : '策略参数配置'}
+                {(formData.type === 'OPTION_INTRADAY_V1' || formData.type === 'OPTION_SCHWARTZ_V1') ? '期权策略参数' : '策略参数配置'}
                 <span className="text-xs text-gray-500 ml-2">
-                  {formData.type === 'OPTION_INTRADAY_V1' ? '' : '（用于计算止损止盈价格）'}
+                  {(formData.type === 'OPTION_INTRADAY_V1' || formData.type === 'OPTION_SCHWARTZ_V1') ? '' : '（用于计算止损止盈价格）'}
                 </span>
               </label>
-              {formData.type === 'OPTION_INTRADAY_V1' ? (
+              {(formData.type === 'OPTION_INTRADAY_V1' || formData.type === 'OPTION_SCHWARTZ_V1') ? (
                 <>
                   {/* 策略类型选择（多选） */}
                   <div className="mb-4 p-4 border rounded bg-gray-50">
@@ -1103,6 +1103,68 @@ export default function EditStrategyModal({
                       </p>
                     </div>
                   </div>
+
+                  {/* Schwartz 专属配置区（仅 OPTION_SCHWARTZ_V1 显示） */}
+                  {formData.type === 'OPTION_SCHWARTZ_V1' && (
+                    <div className="mb-4 p-4 border rounded bg-green-50 border-green-200">
+                      <label className="block text-xs text-gray-700 mb-3 font-semibold">舒华兹策略参数</label>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                        <div>
+                          <label className="block text-xs text-gray-700 mb-1 font-medium">EMA 周期</label>
+                          <input {...numberInputProps('schwartz_emaPeriod', { path: ['schwartz', 'emaPeriod'], defaultValue: 10, min: 5, max: 50 })} />
+                          <p className="text-xs text-gray-400 mt-1">趋势过滤周期，默认10</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-700 mb-1 font-medium">EMA 缠绕阈值(%)</label>
+                          <input {...numberInputProps('schwartz_emaWrap', { path: ['schwartz', 'emaWrapThreshold'], defaultValue: 0.3, min: 0.1, max: 2, step: 0.1, isFloat: true })} />
+                          <p className="text-xs text-gray-400 mt-1">价格偏离EMA小于此值拒绝</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-700 mb-1 font-medium">震荡阈值(%)</label>
+                          <input {...numberInputProps('schwartz_chop', { path: ['schwartz', 'chopThreshold'], defaultValue: 0.5, min: 0.1, max: 3, step: 0.1, isFloat: true })} />
+                          <p className="text-xs text-gray-400 mt-1">MA10/20偏离低于此值为震荡</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-700 mb-1 font-medium">IV Rank 拒绝阈值</label>
+                          <input {...numberInputProps('schwartz_ivRank', { path: ['schwartz', 'ivRankRejectThreshold'], defaultValue: 60, min: 30, max: 90 })} />
+                          <p className="text-xs text-gray-400 mt-1">IV Rank高于此值拒绝买方</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-700 mb-1 font-medium">降级IV阈值</label>
+                          <input {...numberInputProps('schwartz_ivFallback', { path: ['schwartz', 'ivFallbackRejectIV'], defaultValue: 0.8, min: 0.3, max: 1.5, step: 0.05, isFloat: true })} />
+                          <p className="text-xs text-gray-400 mt-1">数据不足时的IV拒绝阈值</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-700 mb-1 font-medium">大赚阈值(%)</label>
+                          <input {...numberInputProps('schwartz_bigWin', { path: ['schwartz', 'bigWinThreshold'], defaultValue: 30, min: 10, max: 100 })} />
+                          <p className="text-xs text-gray-400 mt-1">盈利超此值后缩减仓位</p>
+                        </div>
+                      </div>
+                      <div className="mt-3">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.config?.schwartz?.positionShrinkAfterBigWin !== false}
+                            onChange={(e) => {
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  schwartz: {
+                                    ...(formData.config?.schwartz || {}),
+                                    positionShrinkAfterBigWin: e.target.checked,
+                                  },
+                                },
+                              });
+                            }}
+                            className="w-4 h-4"
+                          />
+                          <span className="text-xs text-gray-700 font-medium">大赚后缩减仓位</span>
+                        </label>
+                        <p className="text-xs text-gray-400 mt-1 ml-6">上笔盈利超阈值时缩减50%仓位，连胜2笔缩至1张</p>
+                      </div>
+                    </div>
+                  )}
                 </>
               ) : (
                 <>
