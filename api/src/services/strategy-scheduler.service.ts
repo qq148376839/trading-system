@@ -2818,9 +2818,12 @@ class StrategyScheduler {
       const positions = await tradeCtx.stockPositions();
       
       let allPositions: any[] = [];
-      
+
+      // 处理不同的数据结构：可能是 positions.positions 或 positions.channels[].positions
       if (positions && typeof positions === 'object') {
-        if (positions.channels && Array.isArray(positions.channels)) {
+        if (positions.positions && Array.isArray(positions.positions)) {
+          allPositions = positions.positions;
+        } else if (positions.channels && Array.isArray(positions.channels)) {
           for (const channel of positions.channels) {
             if (channel.positions && Array.isArray(channel.positions)) {
               allPositions.push(...channel.positions);

@@ -147,12 +147,14 @@ export class SchwartzOptionStrategy extends StrategyBase {
         return null;
       }
 
-      if (optionRec.direction === 'HOLD') {
-        logger.debug(`[SCHWARTZ][${symbol}] 基础信号HOLD，跳过`);
+      // Schwartz 自行根据 finalScore 符号决定方向（绕过 recommendation 的 HOLD 门槛 15）
+      // EMA 硬过滤会在下一步拦截逆趋势信号，这才是 Schwartz 哲学的方向权威
+      if (optionRec.finalScore === 0) {
+        logger.debug(`[SCHWARTZ][${symbol}] finalScore=0，无方向，跳过`);
         return null;
       }
 
-      const direction: 'CALL' | 'PUT' = optionRec.direction === 'CALL' ? 'CALL' : 'PUT';
+      const direction: 'CALL' | 'PUT' = optionRec.finalScore > 0 ? 'CALL' : 'PUT';
 
       // === 3. 【Schwartz 过滤层】EMA 硬过滤 ===
       const emaResult = await schwartzSignalFilter.checkEMAFilter(symbol, direction, this.schwartzCfg);
