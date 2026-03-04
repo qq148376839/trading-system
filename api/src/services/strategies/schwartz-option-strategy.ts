@@ -73,12 +73,59 @@ export class SchwartzOptionStrategy extends StrategyBase {
 
   /**
    * 获取入场阈值（Schwartz 默认 12，CHOP 时 24）
+   * 260304: 加入 0DTE 尾盘时间衰减因子，越接近收盘阈值越高
    */
   private getEntryScoreMin(isChop: boolean): number {
     const baseMin = this.cfg.entryThresholdOverride?.directionalScoreMin ?? 12;
     const vixFactor = this.getVixThresholdFactor(this.currentCycleVix);
-    const adjusted = Math.round(baseMin * vixFactor);
+    const timeFactor = this.getTimeDecayThresholdFactor();
+    const adjusted = Math.round(baseMin * vixFactor * timeFactor);
     return isChop ? adjusted * 2 : adjusted;
+  }
+
+  /**
+   * 0DTE 尾盘阈值递增因子
+   * 9:30-12:00: 1.0（不调整）
+   * 12:00-14:00: 1.0→1.3（线性递增）
+   * 14:00-15:00: 1.3→1.8（加速递增）
+   * 15:00-15:30: 1.8→2.5（急速递增）
+   * 15:30+: 3.0（极高阈值，几乎禁入）
+   */
+  private getTimeDecayThresholdFactor(): number {
+    const expirationMode = this.cfg.expirationMode || '0DTE';
+    if (expirationMode !== '0DTE') return 1.0;
+
+    const now = new Date();
+    const etFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false,
+    });
+    const etParts = etFormatter.formatToParts(now);
+    const etHour = parseInt(etParts.find(p => p.type === 'hour')?.value || '0');
+    const etMinute = parseInt(etParts.find(p => p.type === 'minute')?.value || '0');
+    const etMinutes = etHour * 60 + etMinute;
+
+    const midDay = 12 * 60;            // 720
+    const afternoon = 14 * 60;         // 840
+    const lateAfternoon = 15 * 60;     // 900
+    const finalWindow = 15 * 60 + 30;  // 930
+
+    if (etMinutes <= midDay) {
+      return 1.0;
+    } else if (etMinutes <= afternoon) {
+      const progress = (etMinutes - midDay) / (afternoon - midDay);
+      return 1.0 + progress * 0.3;
+    } else if (etMinutes <= lateAfternoon) {
+      const progress = (etMinutes - afternoon) / (lateAfternoon - afternoon);
+      return 1.3 + progress * 0.5;
+    } else if (etMinutes <= finalWindow) {
+      const progress = (etMinutes - lateAfternoon) / (finalWindow - lateAfternoon);
+      return 1.8 + progress * 0.7;
+    } else {
+      return 3.0;
+    }
   }
 
   /**
@@ -179,8 +226,9 @@ export class SchwartzOptionStrategy extends StrategyBase {
       const absScore = Math.abs(optionRec.finalScore);
 
       if (absScore < scoreMin) {
+        const timeFactor = this.getTimeDecayThresholdFactor();
         logger.info(
-          `[SCHWARTZ][${symbol}] 得分不足: |${optionRec.finalScore.toFixed(1)}|<${scoreMin}${isChop ? '(CHOP×2)' : ''}`,
+          `[SCHWARTZ][${symbol}] 得分不足: |${optionRec.finalScore.toFixed(1)}|<${scoreMin}${isChop ? '(CHOP×2)' : ''}${timeFactor > 1.0 ? ` timeFactor=${timeFactor.toFixed(2)}` : ''}`,
           { module: 'Strategy.Schwartz', strategyId: this.strategyId }
         );
         return null;

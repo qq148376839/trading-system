@@ -1962,7 +1962,9 @@ class StrategyScheduler {
             if (dailyTradeCount === 0) {
               cooldownMinutes = 0;  // 当日首笔：无冷却
             } else if (dailyTradeCount <= 3) {
-              cooldownMinutes = 1;  // 第2-4笔：1分钟冷却
+              // 260304 Fix: 盈利退出后冷却加倍到3分钟，防止同底层换行权价秒级重入
+              const lastPnL = Number(cancelCtx?.lastTradePnL ?? 0);
+              cooldownMinutes = (!isNaN(lastPnL) && lastPnL > 0) ? 3 : 1;
             } else {
               cooldownMinutes = 3;  // 第5笔起：3分钟冷却
             }
@@ -1975,7 +1977,9 @@ class StrategyScheduler {
           const exitElapsed = Date.now() - new Date(cancelCtx.lastExitTime).getTime();
           if (exitElapsed < cooldownMinutes * 60000) {
             const remainMin = Math.ceil((cooldownMinutes * 60000 - exitElapsed) / 60000);
-            summary.idle.push(`${symbol}(COOLDOWN_${remainMin}m_trade#${dailyTradeCount}${consecLosses > 0 ? `_consLoss${consecLosses}` : ''})`);
+            const lastPnL = Number(cancelCtx?.lastTradePnL ?? 0);
+            const profitTag = (!isNaN(lastPnL) && lastPnL > 0) ? '_profitExit' : '';
+            summary.idle.push(`${symbol}(COOLDOWN_${remainMin}m_trade#${dailyTradeCount}${consecLosses > 0 ? `_consLoss${consecLosses}` : ''}${profitTag})`);
             return;
           }
         }
@@ -2426,7 +2430,9 @@ class StrategyScheduler {
           if (dailyTradeCount === 0) {
             cooldownMinutes = 0;
           } else if (dailyTradeCount <= 3) {
-            cooldownMinutes = 1;
+            // 260304 Fix: 盈利退出后冷却加倍到3分钟，防止同底层换行权价秒级重入
+            const lastPnL = Number(cancelCtx?.lastTradePnL ?? 0);
+            cooldownMinutes = (!isNaN(lastPnL) && lastPnL > 0) ? 3 : 1;
           } else {
             cooldownMinutes = 3;
           }
@@ -2439,7 +2445,9 @@ class StrategyScheduler {
         const exitElapsed = Date.now() - new Date(cancelCtx.lastExitTime).getTime();
         if (exitElapsed < cooldownMinutes * 60000) {
           const remainMin = Math.ceil((cooldownMinutes * 60000 - exitElapsed) / 60000);
-          summary.idle.push(`${symbol}(COOLDOWN_${remainMin}m_trade#${dailyTradeCount}${consecLosses > 0 ? `_consLoss${consecLosses}` : ''})`);
+          const lastPnL = Number(cancelCtx?.lastTradePnL ?? 0);
+          const profitTag = (!isNaN(lastPnL) && lastPnL > 0) ? '_profitExit' : '';
+          summary.idle.push(`${symbol}(COOLDOWN_${remainMin}m_trade#${dailyTradeCount}${consecLosses > 0 ? `_consLoss${consecLosses}` : ''}${profitTag})`);
           return null;
         }
       }

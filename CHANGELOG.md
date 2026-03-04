@@ -1,5 +1,25 @@
 # 更新日志
 
+## 2026-03-04
+
+### 改进：0DTE 盈利退出冷却 + 尾盘动态入场阈值
+
+**背景**: 3月3日实盘 — 同底层盈利退出后秒级换行权价重入全亏 (SLV 74P→71P)，15:30后密集开Put被theta秒杀 (QQQ/SPY)。
+
+**改进 1: 盈利退出冷却加倍**
+- 0DTE 无连亏、第 2-4 笔交易，若上笔盈利退出 (`lastTradePnL > 0`)，冷却从 1 分钟提升到 3 分钟
+- 修改 `strategy-scheduler.service.ts` 两处冷却块
+- 冷却日志新增 `_profitExit` 标记
+
+**改进 2: 尾盘动态阈值**
+- Schwartz 策略 `getEntryScoreMin()` 乘以时间衰减因子 `timeFactor`（12:00 起递增，15:30+ 阈值 ×3）
+- `option-recommendation.service.ts` 方向判定阈值从固定 15 改为 `15 × entryTimeFactor`（同曲线）
+- 新增 `getTimeDecayThresholdFactor()` / `get0DTETimeThresholdFactor()` 方法
+
+**设计文档**: [0DTE盈利退出冷却与尾盘动态阈值](docs/features/260304-0DTE盈利退出冷却与尾盘动态阈值.md)
+
+---
+
 ## 2026-03-01
 
 ### 新功能：舒华兹期权策略模式 (OPTION_SCHWARTZ_V1)

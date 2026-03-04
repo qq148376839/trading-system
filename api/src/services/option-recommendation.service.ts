@@ -167,27 +167,31 @@ class OptionRecommendationService {
       let direction: 'CALL' | 'PUT' | 'HOLD' = 'HOLD';
       let confidence = 0;
 
-      if (finalScore > 15) {
-        // 从30降低到15，增加交易频率
+      // 260304: 动态阈值 — 基础 15，0DTE 尾盘递增
+      const baseThreshold = 15;
+      const entryTimeFactor = this.get0DTETimeThresholdFactor();
+      const dynamicThreshold = baseThreshold * entryTimeFactor;
+
+      if (finalScore > dynamicThreshold) {
         direction = 'CALL';
         confidence = Math.min(Math.round((finalScore / 100) * 100), 100);
         // [检查点2] 方向判定 - CALL
         logger.info(
-          `[${underlyingSymbol}信号] BUY_CALL | 得分=${finalScore.toFixed(1)} (市场${marketScore.toFixed(1)}*0.2 + 日内${intradayScore.toFixed(1)}*0.6 + 时间${timeWindowAdjustment.toFixed(1)}*0.2) | 置信度=${confidence}%`
+          `[${underlyingSymbol}信号] BUY_CALL | 得分=${finalScore.toFixed(1)} (市场${marketScore.toFixed(1)}*0.2 + 日内${intradayScore.toFixed(1)}*0.6 + 时间${timeWindowAdjustment.toFixed(1)}*0.2) | 阈值=${dynamicThreshold.toFixed(1)}${entryTimeFactor > 1.0 ? ` timeFactor=${entryTimeFactor.toFixed(2)}` : ''} | 置信度=${confidence}%`
         );
-      } else if (finalScore < -15) {
+      } else if (finalScore < -dynamicThreshold) {
         direction = 'PUT';
         confidence = Math.min(Math.round((Math.abs(finalScore) / 100) * 100), 100);
         // [检查点2] 方向判定 - PUT
         logger.info(
-          `[${underlyingSymbol}信号] BUY_PUT | 得分=${finalScore.toFixed(1)} (市场${marketScore.toFixed(1)}*0.2 + 日内${intradayScore.toFixed(1)}*0.6 + 时间${timeWindowAdjustment.toFixed(1)}*0.2) | 置信度=${confidence}%`
+          `[${underlyingSymbol}信号] BUY_PUT | 得分=${finalScore.toFixed(1)} (市场${marketScore.toFixed(1)}*0.2 + 日内${intradayScore.toFixed(1)}*0.6 + 时间${timeWindowAdjustment.toFixed(1)}*0.2) | 阈值=${dynamicThreshold.toFixed(1)}${entryTimeFactor > 1.0 ? ` timeFactor=${entryTimeFactor.toFixed(2)}` : ''} | 置信度=${confidence}%`
         );
       } else {
         direction = 'HOLD';
         confidence = Math.round(100 - Math.abs(finalScore) * 2);
         // [检查点2] 方向判定 - HOLD
         logger.debug(
-          `[${underlyingSymbol}信号] HOLD | 得分=${finalScore.toFixed(1)} 处于中性区间[-15, 15] | 置信度=${confidence}%`
+          `[${underlyingSymbol}信号] HOLD | 得分=${finalScore.toFixed(1)} 处于中性区间[-${dynamicThreshold.toFixed(1)}, ${dynamicThreshold.toFixed(1)}]${entryTimeFactor > 1.0 ? ` timeFactor=${entryTimeFactor.toFixed(2)}` : ''} | 置信度=${confidence}%`
         );
       }
 
@@ -875,6 +879,45 @@ class OptionRecommendationService {
     if (avgLoss === 0) return 100;
     const rs = avgGain / avgLoss;
     return 100 - (100 / (1 + rs));
+  }
+
+  /**
+   * 0DTE 尾盘阈值递增因子（与 Schwartz 策略同曲线）
+   * 9:30-12:00: 1.0 | 12:00-14:00: 1.0→1.3 | 14:00-15:00: 1.3→1.8
+   * 15:00-15:30: 1.8→2.5 | 15:30+: 3.0
+   */
+  private get0DTETimeThresholdFactor(): number {
+    const now = new Date();
+    const etFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false,
+    });
+    const etParts = etFormatter.formatToParts(now);
+    const etHour = parseInt(etParts.find(p => p.type === 'hour')?.value || '0');
+    const etMinute = parseInt(etParts.find(p => p.type === 'minute')?.value || '0');
+    const etMinutes = etHour * 60 + etMinute;
+
+    const midDay = 12 * 60;
+    const afternoon = 14 * 60;
+    const lateAfternoon = 15 * 60;
+    const finalWindow = 15 * 60 + 30;
+
+    if (etMinutes <= midDay) {
+      return 1.0;
+    } else if (etMinutes <= afternoon) {
+      const progress = (etMinutes - midDay) / (afternoon - midDay);
+      return 1.0 + progress * 0.3;
+    } else if (etMinutes <= lateAfternoon) {
+      const progress = (etMinutes - afternoon) / (lateAfternoon - afternoon);
+      return 1.3 + progress * 0.5;
+    } else if (etMinutes <= finalWindow) {
+      const progress = (etMinutes - lateAfternoon) / (finalWindow - lateAfternoon);
+      return 1.8 + progress * 0.7;
+    } else {
+      return 3.0;
+    }
   }
 }
 

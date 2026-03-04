@@ -1,11 +1,25 @@
 # 项目进度总结
 
-**更新时间**: 2026-02-27
+**更新时间**: 2026-03-04
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-03-04: 0DTE 盈利退出冷却 + 尾盘动态入场阈值
+
+**变更内容**:
+
+1. **盈利退出冷却加倍**: 0DTE 盈利退出后冷却从 1 分钟提升到 3 分钟，防止同底层换行权价秒级重入
+2. **尾盘动态阈值**: Schwartz 策略 + Recommendation 方向判定阈值引入时间衰减因子（12:00 起递增，15:30+ ×3）
+
+**修改文件**:
+- 📝 `api/src/services/strategy-scheduler.service.ts`（两处冷却块）
+- 📝 `api/src/services/strategies/schwartz-option-strategy.ts`（`getEntryScoreMin` + 新增 `getTimeDecayThresholdFactor`）
+- 📝 `api/src/services/option-recommendation.service.ts`（动态阈值 + 新增 `get0DTETimeThresholdFactor`）
+
+**设计文档**: [0DTE盈利退出冷却与尾盘动态阈值](docs/features/260304-0DTE盈利退出冷却与尾盘动态阈值.md)
 
 ### 2026-03-01: 舒华兹期权策略模式 (OPTION_SCHWARTZ_V1)
 
