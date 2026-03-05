@@ -2,6 +2,23 @@
 
 ## 2026-03-05
 
+### 修复：持仓 API 异常误判为无持仓（P0）
+
+**实盘案例**: TSLA260306C410000.US 入场 $2.72，API 返回 `GenericFailure` 后系统误判"券商无持仓"，转 IDLE 放弃跟踪，持仓孤儿化。
+
+**根因**: `calculateAvailablePosition` 内部 catch 异常后静默返回 `availableQuantity=0`，调用方无法区分"真正无持仓"和"API 查询失败"。
+
+**修复**:
+- `basic-execution.service.ts`: `calculateAvailablePosition` 异常时重新抛出，不再返回假数据
+- `strategy-scheduler.service.ts`: `checkAvailablePosition` catch 分支返回 `hasPending=true` + `availableQuantity=undefined`，跳过本轮核对
+- 4 处券商持仓核对统一改为 `availableQuantity !== undefined && <= 0` 模式，`undefined` 不触发 IDLE
+
+**修改文件**:
+- `api/src/services/basic-execution.service.ts`
+- `api/src/services/strategy-scheduler.service.ts`
+
+---
+
 ### 修复：结构失效 Grace Period + LIT 保护单同步提交
 
 **Fix 1: 结构失效 Grace Period**

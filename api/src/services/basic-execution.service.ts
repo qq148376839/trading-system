@@ -423,13 +423,9 @@ class BasicExecutionService {
       };
     } catch (error: any) {
       logger.error(`计算可用持仓失败 (${symbol}):`, error);
-      // ⚠️ 修复：查询失败时返回0，但不阻止卖空（由其他验证逻辑处理）
-      return {
-        actualQuantity: 0,
-        pendingQuantity: 0,
-        availableQuantity: 0,
-        positionType: 'NONE'
-      };
+      // 重新抛出异常，让调用方区分"API失败"和"真正无持仓"
+      // 如果静默返回 0，定期核对会误判为券商无持仓而转 IDLE（P0 事故）
+      throw error;
     }
   }
 

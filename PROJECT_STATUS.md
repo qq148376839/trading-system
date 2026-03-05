@@ -7,6 +7,17 @@
 
 ## 🆕 最近更新
 
+### 2026-03-05: 持仓 API 异常误判修复（P0）
+
+**变更内容**:
+
+1. **P0 修复**: `calculateAvailablePosition` API 异常时重新抛出（不再静默返回 0），防止误判无持仓
+2. **防御加固**: 4 处券商核对逻辑统一为 `availableQuantity !== undefined` 守卫
+
+**修改文件**:
+- `api/src/services/basic-execution.service.ts`
+- `api/src/services/strategy-scheduler.service.ts`
+
 ### 2026-03-05: 结构失效 Grace Period + LIT 保护单同步提交修复
 
 **变更内容**:

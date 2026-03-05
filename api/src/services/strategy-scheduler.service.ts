@@ -3406,7 +3406,8 @@ class StrategyScheduler {
             // 已过期期权：核对券商持仓后自动清理
             const positionCheck = await this.checkAvailablePosition(strategyId, effectiveSymbol);
             if (!positionCheck.hasPending &&
-                (positionCheck.availableQuantity === undefined || positionCheck.availableQuantity <= 0)) {
+                positionCheck.availableQuantity !== undefined &&
+                positionCheck.availableQuantity <= 0) {
               logger.warn(
                 `策略 ${strategyId} 期权 ${effectiveSymbol}: 已过期+价格获取失败+券商无持仓，自动转为IDLE`
               );
@@ -3951,7 +3952,8 @@ class StrategyScheduler {
         );
         const positionCheck = await this.checkAvailablePosition(strategyId, effectiveSymbol);
         if (!positionCheck.hasPending &&
-            (positionCheck.availableQuantity === undefined || positionCheck.availableQuantity <= 0)) {
+            positionCheck.availableQuantity !== undefined &&
+            positionCheck.availableQuantity <= 0) {
           logger.warn(
             `策略 ${strategyId} 期权 ${effectiveSymbol}: 已过期且券商无持仓，自动转为IDLE`
           );
@@ -4860,8 +4862,11 @@ class StrategyScheduler {
         actualQuantity: positionInfo.actualQuantity,
         pendingQuantity: positionInfo.pendingQuantity
       };
-    } catch (error: any) {
-      return { hasPending: true, availableQuantity: 0 };
+    } catch (error: unknown) {
+      // API 查询失败时：hasPending=true 阻止误判为无持仓，availableQuantity=undefined 表示未知
+      const errMsg = error instanceof Error ? error.message : String(error);
+      logger.warn(`[POSITION_CHECK] 策略 ${strategyId} 标的 ${symbol}: 持仓查询失败(${errMsg})，跳过本轮核对`);
+      return { hasPending: true };
     }
   }
 
