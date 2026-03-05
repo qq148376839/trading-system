@@ -7,6 +7,25 @@
 
 ## 🆕 最近更新
 
+### 2026-03-05: Fast Momentum Gate — 快动量防追高
+
+**变更内容**:
+
+1. **新服务**: `FastMomentumService` — 12 点环形缓冲区 + 线性回归，检测实时报价方向一致性和减速信号
+2. **Schwartz 集成**: 步骤 5.5 快动量 gate（得分阈值后、合约选择前），拦截追高信号
+3. **调度器集成**: Phase A.5 批量报价采集 → feedQuotes + 策略停止/日重置时 reset
+4. **降级机制**: 数据不足（<6 点）或报价获取失败时自动放行，不影响正常交易
+
+**新增文件**:
+- 🆕 `api/src/services/fast-momentum.service.ts`
+- 🆕 `api/src/__tests__/fast-momentum.test.ts`（27 个测试）
+
+**修改文件**:
+- 📝 `api/src/services/strategies/schwartz-option-strategy.ts`
+- 📝 `api/src/services/strategy-scheduler.service.ts`
+
+**设计文档**: [快慢双动量-FastMomentumGate防追高](docs/features/260305-快慢双动量-FastMomentumGate防追高.md)
+
 ### 2026-03-05: TSLPPCT → LIT 止损替换 + 三项 Bug 修复
 
 **变更内容**:

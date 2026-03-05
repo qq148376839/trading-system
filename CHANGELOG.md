@@ -2,6 +2,25 @@
 
 ## 2026-03-05
 
+### 新功能：Fast Momentum Gate — 快动量防追高
+
+**背景**: 0DTE 期权入场信号基于 1 分钟 K 线动量（10 根回看 = 10 分钟历史），延迟链 2-11 分钟，导致信号确认时价格已在局部顶部 → "追高入场"。
+
+**方案**: 在现有慢动量（EMA/CHOP/得分）基础上，新增实时报价快动量层：
+- 12 点环形缓冲区（~60s 窗口），线性回归检测方向一致性 + 减速
+- 数据不足时优雅降级放行，不影响正常交易流程
+- 在合约选择之前拦截，节省期权链查询 API 配额
+
+**新增文件**:
+- `api/src/services/fast-momentum.service.ts` — FastMomentumService（环形缓冲区 + 线性回归 + gate 逻辑）
+- `api/src/__tests__/fast-momentum.test.ts` — 27 个单元测试
+
+**修改文件**:
+- `api/src/services/strategies/schwartz-option-strategy.ts` — 步骤 5.5 快动量 gate + metadata
+- `api/src/services/strategy-scheduler.service.ts` — Phase A.5 批量报价采集 + reset 调用
+
+---
+
 ### 修复：TSLPPCT → LIT 止损替换 + 三项 Bug 修复
 
 **背景**: 3月4日实盘 — 策略11(Schwartz) TSLA C410 买入后 5.5 小时未平仓、过期归零（-$158）。根因：SchwartzOptionStrategy 不被识别为期权策略，走错代码路径；TSLPPCT trailing 45% 对 0DTE 深度 OTM 无效；Watchdog 被持仓验证阻塞；股票路径无券商无持仓清理。

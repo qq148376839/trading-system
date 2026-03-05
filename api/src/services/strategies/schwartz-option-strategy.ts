@@ -28,6 +28,7 @@ import {
   DEFAULT_OPTION_STRATEGY_CONFIG,
   ExitRulesConfig,
 } from './option-intraday-strategy';
+import fastMomentumService from '../fast-momentum.service';
 
 // ============================================
 // Schwartz 专属配置
@@ -234,6 +235,20 @@ export class SchwartzOptionStrategy extends StrategyBase {
         return null;
       }
 
+      // === 5.5. 【Schwartz 过滤层】快动量 Gate ===
+      const fastMoResult = fastMomentumService.checkGate(symbol, direction);
+      if (!fastMoResult.pass) {
+        logger.info(
+          `[SCHWARTZ][${symbol}] FastMo过滤: ✗ ${fastMoResult.reason} slope=${fastMoResult.slope?.toFixed(6) ?? 'N/A'} decel=${fastMoResult.deceleration?.toFixed(3) ?? 'N/A'}`,
+          { module: 'Strategy.Schwartz.Filter', strategyId: this.strategyId }
+        );
+        return null;
+      }
+      logger.info(
+        `[SCHWARTZ][${symbol}] FastMo过滤: ✓ (${fastMoResult.dataPoints}pts, slope=${fastMoResult.slope?.toFixed(6) ?? 'N/A'})`,
+        { module: 'Strategy.Schwartz.Filter', strategyId: this.strategyId }
+      );
+
       // === 6. 0DTE 禁入窗口检查 ===
       const expirationMode = this.cfg.expirationMode || '0DTE';
       const zdteCooldownMinutes = this.cfg.tradeWindow?.zdteCooldownMinutes ?? 0;
@@ -418,6 +433,12 @@ export class SchwartzOptionStrategy extends StrategyBase {
             ema: { pass: emaResult.pass, value: emaResult.emaValue, price: emaResult.currentPrice },
             chop: { isChop, deviation: chopResult.deviation },
             iv: { pass: ivResult.pass, rank: ivResult.ivRank, mode: ivResult.mode },
+            fastMomentum: {
+              slope: fastMoResult.slope,
+              rSquared: fastMoResult.rSquared,
+              deceleration: fastMoResult.deceleration,
+              dataPoints: fastMoResult.dataPoints,
+            },
             scoreMin,
           },
         },

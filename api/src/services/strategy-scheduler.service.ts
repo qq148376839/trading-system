@@ -34,6 +34,7 @@ import marketDataCacheService from './market-data-cache.service';
 import marketDataService from './market-data.service';
 import trailingStopProtectionService from './trailing-stop-protection.service';
 import { buildCorrelationMap } from '../utils/correlation';
+import fastMomentumService from './fast-momentum.service';
 
 /** 每笔新交易必须重置的持仓级 context 字段 — 防止 JSONB || 合并导致跨交易污染 */
 const POSITION_CONTEXT_RESET = {
@@ -351,6 +352,9 @@ class StrategyScheduler {
       this.ironDomeIntervals.delete(strategyId);
     }
 
+    // 清理快动量缓冲区
+    fastMomentumService.reset();
+
     logger.log(`策略 ${strategyId} 已停止`, { dbWrite: false });
 
     // 更新数据库状态
@@ -476,6 +480,7 @@ class StrategyScheduler {
         this.lastDailyResetDate.set(strategyId, todayET);
         this.protectionFailureCount.set(strategyId, 0);
         this.crossSymbolState.delete(strategyId); // R5: 新交易日重置跨标的保护状态
+        fastMomentumService.reset(); // 新交易日重置快动量缓冲区
       }
     }
 
@@ -598,6 +603,28 @@ class StrategyScheduler {
         const batch = nonIdleSymbols.slice(i, i + BATCH_SIZE);
         await Promise.all(batch.map(sym => this.processSymbol(strategyInstance, strategyId, sym, summary)));
         if (i + BATCH_SIZE < nonIdleSymbols.length) await new Promise(r => setTimeout(r, 100));
+      }
+
+      // Phase A.5: 批量获取实时报价 → 喂入快动量服务
+      if (idleSymbols.length > 0) {
+        try {
+          const { getQuoteContext } = await import('../config/longport');
+          const quoteCtx = await getQuoteContext();
+          const quotes = await quoteCtx.quote(idleSymbols);
+          const priceMap = new Map<string, number>();
+          for (const q of quotes) {
+            const price = Number(q.lastDone?.toString() || '0');
+            if (isNaN(price) || price <= 0) continue;
+            priceMap.set(q.symbol, price);
+          }
+          if (priceMap.size > 0) {
+            fastMomentumService.feedQuotes(priceMap);
+          }
+        } catch (err: unknown) {
+          // 降级：快动量 gate 会因数据不足自动跳过
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.debug(`[FAST_MOMENTUM] 批量报价获取失败: ${msg}`);
+        }
       }
 
       // Phase B: 并行评估 IDLE → 收集候选
