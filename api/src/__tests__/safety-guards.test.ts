@@ -6,7 +6,7 @@
  * B. 分时评分系统 — 5组件权重 / 动量计算 / VWAP位置 / 数据缺失降级
  * C. 结构一致性检查 — VWAP方向 vs 信号方向冲突降级
  * D. VIX自适应阈值 — factor 计算 / 上下限 / 回退
- * E. TSLP计数器持久化 (V4) — DB 写入 / 恢复 / 新日重置
+ * E. 保护单计数器持久化 (V4) — DB 写入 / 恢复 / 新日重置
  * F. 手续费计算 (V6) — 实际值 / 回退 / 零值
  */
 
@@ -355,10 +355,10 @@ describe('D. VIX 自适应阈值', () => {
 });
 
 // ============================================
-// E. TSLP 计数器持久化 (V4)
+// E. 保护单计数器持久化 (V4)
 // ============================================
 
-describe('E. TSLP 计数器持久化 (V4)', () => {
+describe('E. 保护单计数器持久化 (V4)', () => {
   let mockQuery: jest.Mock;
 
   beforeEach(() => {
@@ -368,139 +368,139 @@ describe('E. TSLP 计数器持久化 (V4)', () => {
   });
 
   /**
-   * 模拟 StrategyScheduler TSLP 计数器逻辑（简化提取版）
+   * 模拟 StrategyScheduler 保护单计数器逻辑（简化提取版）
    * 实际代码在 strategy-scheduler.service.ts
    */
-  class TslpCounterSimulator {
-    private tslpFailureCount = new Map<number, number>();
-    private readonly TSLP_FAILURE_THRESHOLD = 2;
+  class ProtectionCounterSimulator {
+    private protectionFailureCount = new Map<number, number>();
+    private readonly PROTECTION_FAILURE_THRESHOLD = 2;
 
-    async recordTslpFailure(strategyId: number): Promise<void> {
-      const count = (this.tslpFailureCount.get(strategyId) || 0) + 1;
-      this.tslpFailureCount.set(strategyId, count);
+    async recordProtectionFailure(strategyId: number): Promise<void> {
+      const count = (this.protectionFailureCount.get(strategyId) || 0) + 1;
+      this.protectionFailureCount.set(strategyId, count);
       await pool.query(
         `UPDATE strategy_instances
          SET context = context || $1::jsonb
          WHERE strategy_id = $2`,
-        [JSON.stringify({ tslpFailureCount: count }), strategyId]
+        [JSON.stringify({ protectionFailureCount: count }), strategyId]
       );
     }
 
-    async resetTslpFailure(strategyId: number): Promise<void> {
-      this.tslpFailureCount.set(strategyId, 0);
+    async resetProtectionFailure(strategyId: number): Promise<void> {
+      this.protectionFailureCount.set(strategyId, 0);
       await pool.query(
         `UPDATE strategy_instances
-         SET context = context || '{"tslpFailureCount": 0}'::jsonb
+         SET context = context || '{"protectionFailureCount": 0}'::jsonb
          WHERE strategy_id = $1`,
         [strategyId]
       );
     }
 
-    isTslpBlocked(strategyId: number): boolean {
-      return (this.tslpFailureCount.get(strategyId) || 0) >= this.TSLP_FAILURE_THRESHOLD;
+    isProtectionBlocked(strategyId: number): boolean {
+      return (this.protectionFailureCount.get(strategyId) || 0) >= this.PROTECTION_FAILURE_THRESHOLD;
     }
 
-    async restoreTslpFailureCount(strategyId: number): Promise<void> {
-      if (this.tslpFailureCount.has(strategyId)) return;
+    async restoreProtectionFailureCount(strategyId: number): Promise<void> {
+      if (this.protectionFailureCount.has(strategyId)) return;
       const result = await pool.query(
-        `SELECT MAX((context->>'tslpFailureCount')::int) as count
+        `SELECT MAX(COALESCE((context->>'protectionFailureCount')::int, (context->>'tslpFailureCount')::int, 0)) as count
          FROM strategy_instances WHERE strategy_id = $1`,
         [strategyId]
       );
       const count = result.rows[0]?.count || 0;
-      this.tslpFailureCount.set(strategyId, count);
+      this.protectionFailureCount.set(strategyId, count);
     }
   }
 
-  test('recordTslpFailure 写入 DB context', async () => {
+  test('recordProtectionFailure 写入 DB context', async () => {
     mockQuery.mockResolvedValue({ rows: [] });
-    const sim = new TslpCounterSimulator();
+    const sim = new ProtectionCounterSimulator();
 
-    await sim.recordTslpFailure(10);
+    await sim.recordProtectionFailure(10);
 
     expect(mockQuery).toHaveBeenCalledWith(
       expect.stringContaining('UPDATE strategy_instances'),
-      [JSON.stringify({ tslpFailureCount: 1 }), 10]
+      [JSON.stringify({ protectionFailureCount: 1 }), 10]
     );
   });
 
-  test('recordTslpFailure 连续调用递增计数', async () => {
+  test('recordProtectionFailure 连续调用递增计数', async () => {
     mockQuery.mockResolvedValue({ rows: [] });
-    const sim = new TslpCounterSimulator();
+    const sim = new ProtectionCounterSimulator();
 
-    await sim.recordTslpFailure(10);
-    await sim.recordTslpFailure(10);
+    await sim.recordProtectionFailure(10);
+    await sim.recordProtectionFailure(10);
 
     expect(mockQuery).toHaveBeenLastCalledWith(
       expect.stringContaining('UPDATE strategy_instances'),
-      [JSON.stringify({ tslpFailureCount: 2 }), 10]
+      [JSON.stringify({ protectionFailureCount: 2 }), 10]
     );
   });
 
-  test('restoreTslpFailureCount 从 DB 恢复', async () => {
+  test('restoreProtectionFailureCount 从 DB 恢复', async () => {
     mockQuery.mockResolvedValue({ rows: [{ count: 2 }] });
-    const sim = new TslpCounterSimulator();
+    const sim = new ProtectionCounterSimulator();
 
-    await sim.restoreTslpFailureCount(10);
+    await sim.restoreProtectionFailureCount(10);
 
-    expect(sim.isTslpBlocked(10)).toBe(true);
+    expect(sim.isProtectionBlocked(10)).toBe(true);
   });
 
-  test('restoreTslpFailureCount — DB返回0时不阻塞', async () => {
+  test('restoreProtectionFailureCount — DB返回0时不阻塞', async () => {
     mockQuery.mockResolvedValue({ rows: [{ count: 0 }] });
-    const sim = new TslpCounterSimulator();
+    const sim = new ProtectionCounterSimulator();
 
-    await sim.restoreTslpFailureCount(10);
+    await sim.restoreProtectionFailureCount(10);
 
-    expect(sim.isTslpBlocked(10)).toBe(false);
+    expect(sim.isProtectionBlocked(10)).toBe(false);
   });
 
-  test('restoreTslpFailureCount — 已恢复时不重复查询', async () => {
+  test('restoreProtectionFailureCount — 已恢复时不重复查询', async () => {
     mockQuery.mockResolvedValue({ rows: [{ count: 1 }] });
-    const sim = new TslpCounterSimulator();
+    const sim = new ProtectionCounterSimulator();
 
-    await sim.restoreTslpFailureCount(10);
-    await sim.restoreTslpFailureCount(10); // 第二次
+    await sim.restoreProtectionFailureCount(10);
+    await sim.restoreProtectionFailureCount(10); // 第二次
 
     expect(mockQuery).toHaveBeenCalledTimes(1); // 只查一次
   });
 
-  test('isTslpBlocked 在恢复后正确判断', async () => {
+  test('isProtectionBlocked 在恢复后正确判断', async () => {
     mockQuery.mockResolvedValue({ rows: [{ count: 3 }] });
-    const sim = new TslpCounterSimulator();
+    const sim = new ProtectionCounterSimulator();
 
-    await sim.restoreTslpFailureCount(10);
+    await sim.restoreProtectionFailureCount(10);
 
-    expect(sim.isTslpBlocked(10)).toBe(true);
+    expect(sim.isProtectionBlocked(10)).toBe(true);
   });
 
-  test('resetTslpFailure 重置后不再阻塞', async () => {
+  test('resetProtectionFailure 重置后不再阻塞', async () => {
     mockQuery.mockResolvedValue({ rows: [] });
-    const sim = new TslpCounterSimulator();
+    const sim = new ProtectionCounterSimulator();
 
-    await sim.recordTslpFailure(10);
-    await sim.recordTslpFailure(10);
-    expect(sim.isTslpBlocked(10)).toBe(true);
+    await sim.recordProtectionFailure(10);
+    await sim.recordProtectionFailure(10);
+    expect(sim.isProtectionBlocked(10)).toBe(true);
 
-    await sim.resetTslpFailure(10);
-    expect(sim.isTslpBlocked(10)).toBe(false);
+    await sim.resetProtectionFailure(10);
+    expect(sim.isProtectionBlocked(10)).toBe(false);
   });
 
-  test('新交易日重置 tslpFailureCount', async () => {
+  test('新交易日重置 protectionFailureCount', async () => {
     mockQuery.mockResolvedValue({ rows: [] });
-    const sim = new TslpCounterSimulator();
+    const sim = new ProtectionCounterSimulator();
 
-    await sim.recordTslpFailure(10);
-    await sim.recordTslpFailure(10);
-    expect(sim.isTslpBlocked(10)).toBe(true);
+    await sim.recordProtectionFailure(10);
+    await sim.recordProtectionFailure(10);
+    expect(sim.isProtectionBlocked(10)).toBe(true);
 
     // 模拟新交易日重置
-    await sim.resetTslpFailure(10);
+    await sim.resetProtectionFailure(10);
 
-    expect(sim.isTslpBlocked(10)).toBe(false);
+    expect(sim.isProtectionBlocked(10)).toBe(false);
     // 验证 DB 也被重置
     expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('"tslpFailureCount": 0'),
+      expect.stringContaining('"protectionFailureCount": 0'),
       [10]
     );
   });

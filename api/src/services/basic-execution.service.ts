@@ -567,7 +567,8 @@ class BasicExecutionService {
    */
   async executeSellIntent(
     intent: TradingIntent,
-    strategyId: number
+    strategyId: number,
+    options?: { skipPositionValidation?: boolean }
   ): Promise<ExecutionResult> {
     // 验证必要参数
     if (!intent.quantity) {
@@ -621,6 +622,14 @@ class BasicExecutionService {
         `做空价=${sellPrice.toFixed(2)}, ` +
         `市场价格=${currentPrice?.toFixed(2) || 'N/A'}, ` +
         `原因=${intent.reason}`);
+    } else if (options?.skipPositionValidation) {
+      // Watchdog 强制平仓等场景：跳过持仓验证（券商可能尚未同步）
+      logger.log(`策略 ${strategyId} 执行卖出意图(跳过持仓验证): ` +
+        `标的=${intent.symbol}, ` +
+        `数量=${intent.quantity}, ` +
+        `卖出价=${sellPrice.toFixed(2)}, ` +
+        `市场价格=${currentPrice?.toFixed(2) || 'N/A'}, ` +
+        `原因=${intent.reason}`);
     } else {
       // 平仓订单：需要持仓验证
       const positionValidation = await this.validateSellPosition(
@@ -628,7 +637,7 @@ class BasicExecutionService {
         intent.quantity,
         strategyId
       );
-      
+
       if (!positionValidation.valid) {
         logger.error(`策略 ${strategyId} 标的 ${intent.symbol}: 持仓验证失败 - ${positionValidation.reason}`);
         // 如果订单提交失败，更新信号状态为REJECTED

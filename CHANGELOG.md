@@ -1,5 +1,38 @@
 # 更新日志
 
+## 2026-03-05
+
+### 修复：TSLPPCT → LIT 止损替换 + 三项 Bug 修复
+
+**背景**: 3月4日实盘 — 策略11(Schwartz) TSLA C410 买入后 5.5 小时未平仓、过期归零（-$158）。根因：SchwartzOptionStrategy 不被识别为期权策略，走错代码路径；TSLPPCT trailing 45% 对 0DTE 深度 OTM 无效；Watchdog 被持仓验证阻塞；股票路径无券商无持仓清理。
+
+**Fix A (P0): isOptionStrategy 判定修复**
+- `strategy-scheduler.service.ts` 4 处 `isOptionStrategy` 判定加上 `SchwartzOptionStrategy` 支持
+- 修复 Schwartz 策略误走股票路径、无法进入期权动态退出/0DTE TIME_STOP 等问题
+
+**Fix B (P0): TSLPPCT → LIT 止损单替换**
+- `trailing-stop-protection.service.ts` 新增 `submitStopLossProtection()`（LIT 触价限价单，trigger = entryPrice × 0.5）
+- 移除 `submitProtection()`(TSLPPCT)、`adjustProtection()`、`getTrailingPercentForPhase()` 及相关常量
+- `strategy-scheduler.service.ts` 全部调用方替换 + context 字段重命名（tslpRetry* → protectionRetry*）
+- Iron Dome 方法/字段重命名（tslpFailureCount → protectionFailureCount，兼容读旧字段名）
+- 熔断收紧改为 cancel + resubmit LIT（stopLossPct=15）
+
+**Fix C (P1): Watchdog 强制平仓绕过持仓验证**
+- `basic-execution.service.ts` `executeSellIntent` 新增 `skipPositionValidation` 参数
+- `0dte-watchdog.service.ts` 调用时传 `{ skipPositionValidation: true }`
+
+**Fix D (P1): 股票路径券商无持仓清理**
+- `strategy-scheduler.service.ts` `availableQuantity <= 0` 时走 `POSITION_EXIT_CLEANUP` → IDLE，释放资金
+
+**修改文件**:
+- `api/src/services/trailing-stop-protection.service.ts`
+- `api/src/services/strategy-scheduler.service.ts`
+- `api/src/services/basic-execution.service.ts`
+- `api/src/services/0dte-watchdog.service.ts`
+- `api/src/__tests__/safety-guards.test.ts`
+
+---
+
 ## 2026-03-04
 
 ### 改进：0DTE 盈利退出冷却 + 尾盘动态入场阈值

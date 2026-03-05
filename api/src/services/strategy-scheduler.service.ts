@@ -40,31 +40,29 @@ const POSITION_CONTEXT_RESET = {
   peakPnLPercent: 0,
   peakPrice: null as null,
   emergencyStopLoss: null as null,
-  tslpRetryPending: null as null,
-  tslpRetryParams: null as null,
-  tslpRetryAfter: null as null,
+  protectionRetryPending: null as null,
+  protectionRetryParams: null as null,
+  protectionRetryAfter: null as null,
   lastCheckTime: null as null,
   lastBrokerCheckTime: null as null,
   protectionOrderId: null as null,
-  protectionTrailingPct: null as null,
 };
 
 /**
  * 260301 Fix: HOLDING→IDLE 退出时必须清除的持仓级字段
- * 所有退出路径（正常卖出/TSLPPCT/broker无持仓/过期/Iron Dome）必须统一使用
+ * 所有退出路径（正常卖出/保护单触发/broker无持仓/过期/Iron Dome）必须统一使用
  * 防止 `...context` 将旧 peak/protection 字段带入 IDLE context，污染下一笔交易
  */
 const POSITION_EXIT_CLEANUP = {
   peakPnLPercent: null as null,
   peakPrice: null as null,
   emergencyStopLoss: null as null,
-  tslpRetryPending: null as null,
-  tslpRetryParams: null as null,
-  tslpRetryAfter: null as null,
+  protectionRetryPending: null as null,
+  protectionRetryParams: null as null,
+  protectionRetryAfter: null as null,
   lastCheckTime: null as null,
   lastBrokerCheckTime: null as null,
   protectionOrderId: null as null,
-  protectionTrailingPct: null as null,
   takeProfitOrderId: null as null,
 };
 
@@ -108,9 +106,9 @@ class StrategyScheduler {
   private strategyExecutionLocks: Map<number, boolean> = new Map();
   // 260225 Iron Dome: 防御系统
   private ironDomeIntervals: Map<number, NodeJS.Timeout> = new Map();
-  // TSLPPCT 连续失败计数（per strategy，内存级，进程重启归零 = 安全）
-  private tslpFailureCount: Map<number, number> = new Map();
-  private readonly TSLP_FAILURE_THRESHOLD = 2; // 失败 >= 2 次禁止开仓
+  // 保护单连续失败计数（per strategy，内存级，进程重启归零 = 安全）
+  private protectionFailureCount: Map<number, number> = new Map();
+  private readonly PROTECTION_FAILURE_THRESHOLD = 2; // 失败 >= 2 次禁止开仓
   // H2 修复：每日重置追踪（per strategy）
   private lastDailyResetDate: Map<number, string> = new Map();
   // R5v2: 跨标的入场保护状态（策略级共享内存）— 按相关性分组追踪 floor
@@ -268,7 +266,7 @@ class StrategyScheduler {
     // - 期权策略（OPTION_INTRADAY_V1）：5秒，期权市场需要快速响应
     // - 其他策略：60秒（默认）
     // 注意：期权链数据有缓存，不会每次都请求API
-    const isOptionStrategy = strategy.type === 'OPTION_INTRADAY_V1';
+    const isOptionStrategy = strategy.type === 'OPTION_INTRADAY_V1' || strategy.type === 'OPTION_SCHWARTZ_V1';
 
     // 根据策略类型确定执行间隔
     // - 期权策略（OPTION_INTRADAY_V1）：5秒，期权市场需要快速响应
@@ -438,7 +436,7 @@ class StrategyScheduler {
     }
 
     // 期权策略：收盘前180分钟（1:00 PM ET）且无持仓时，跳过本周期（避免资源浪费）
-    const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy;
+    const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy || strategyInstance instanceof SchwartzOptionStrategy;
 
     // H2 修复：策略级别每日重置（不依赖IDLE状态）
     if (isOptionStrategy) {
@@ -470,13 +468,13 @@ class StrategyScheduler {
                 circuitBreakerActive: false,
                 circuitBreakerReason: null,
                 circuitBreakerTime: null,
-                tslpFailureCount: 0,
+                protectionFailureCount: 0,
               });
             }
           }
         }
         this.lastDailyResetDate.set(strategyId, todayET);
-        this.tslpFailureCount.set(strategyId, 0);
+        this.protectionFailureCount.set(strategyId, 0);
         this.crossSymbolState.delete(strategyId); // R5: 新交易日重置跨标的保护状态
       }
     }
@@ -945,7 +943,7 @@ class StrategyScheduler {
             if (avgPrice > 0 && filledQuantity > 0) {
               try {
                 // Fix 4b+260225 Fix E: 立即标记 fill_processed + current_status，防止下个周期重复处理
-                // 必须在 TSLPPCT 提交之前完成，避免 TSLPPCT 耗时导致重入
+                // 必须在保护单提交之前完成，避免保护单耗时导致重入
                 await pool.query(
                   `UPDATE execution_orders SET current_status = 'FILLED', fill_processed = TRUE, updated_at = NOW() WHERE order_id = $1`,
                   [dbOrder.order_id]
@@ -1094,84 +1092,64 @@ class StrategyScheduler {
 
                     logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol} 买入订单已成交，更新状态为HOLDING，订单ID: ${dbOrder.order_id}`);
 
-                    // === TSLPPCT 保护单提交 ===
-                    // 期权买入成交后自动挂出跟踪止损保护单
+                    // === LIT 止损保护单提交 ===
+                    // 期权买入成交后自动挂出 LIT 止损保护单（trigger = entryPrice × 0.5）
                     const optMeta = context.optionMeta || context.intent?.metadata;
                     const isOptionAsset = optMeta?.assetClass === 'OPTION' || optMeta?.optionType;
-                    if (isOptionAsset && !context.protectionOrderId) {
+                    if (isOptionAsset && !context.protectionOrderId && avgPrice > 0) {
                       try {
                         const tradedSym = context.tradedSymbol || dbOrder.symbol;
                         const expDate = trailingStopProtectionService.extractOptionExpireDate(tradedSym, optMeta);
-                        const is0DTE = (() => {
-                          const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-                          return expDate === today;
-                        })();
-                        let trailingPct = trailingStopProtectionService.getTrailingPercentForPhase({
-                          phase: 'EARLY',
-                          is0DTE,
-                        });
+                        const stopLossPct = 50; // 止损 50%（trigger = entryPrice × 0.5）
 
-                        // deviation 动态调整已删除 (260225二次审查 Fix A)
-                        // TSLPPCT 是崩溃保护安全网，固定使用 getTrailingPercentForPhase 返回值
-                        // 0DTE=45%, 非0DTE EARLY=60%。不因信号偏差收紧。
-
-                        const tslpResult = await trailingStopProtectionService.submitProtection(
+                        const slResult = await trailingStopProtectionService.submitStopLossProtection(
                           tradedSym,
                           filledQuantity,
-                          trailingPct,
-                          0.10,
+                          avgPrice,
+                          stopLossPct,
                           expDate,
                           strategyId,
                         );
-                        if (tslpResult.success && tslpResult.orderId) {
-                          // 保存 protectionOrderId 到 context
+                        if (slResult.success && slResult.orderId) {
                           await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
-                            protectionOrderId: tslpResult.orderId,
-                            protectionTrailingPct: trailingPct,
+                            protectionOrderId: slResult.orderId,
                           });
-                          logger.log(`策略 ${strategyId} 期权 ${tradedSym}: TSLPPCT保护单已提交 orderId=${tslpResult.orderId}, trailing=${trailingPct}%`);
-                          // 260225 Iron Dome: TSLPPCT 成功，重置失败计数
-                          await this.resetTslpFailure(strategyId);
+                          logger.log(`策略 ${strategyId} 期权 ${tradedSym}: LIT止损保护单已提交 orderId=${slResult.orderId}, trigger=${(avgPrice * 0.5).toFixed(2)}`);
+                          await this.resetProtectionFailure(strategyId);
                         } else {
-                          logger.warn(`策略 ${strategyId} 期权 ${tradedSym}: TSLPPCT提交失败(${tslpResult.error})，降级到纯监控模式`);
-                          // 260225 Iron Dome: 记录 TSLPPCT 失败
-                          await this.recordTslpFailure(strategyId);
+                          logger.warn(`策略 ${strategyId} 期权 ${tradedSym}: LIT止损单提交失败(${slResult.error})，降级到纯监控模式`);
+                          await this.recordProtectionFailure(strategyId);
 
-                          // C1 修复：将重试标记写入DB context（替代不可靠的setTimeout）
-                          // 下一个HOLDING周期会检测此标记并重试
-                          if (avgPrice > 0) {
-                            const emergencyStopLoss = avgPrice * 0.5;
-                            await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
-                              emergencyStopLoss,
-                              tslpRetryPending: true,
-                              tslpRetryParams: {
-                                tradedSymbol: tradedSym,
-                                quantity: filledQuantity,
-                                trailingPct,
-                                limitOffset: 0.10,
-                                expireDate: expDate,
-                              },
-                              tslpRetryAfter: new Date(Date.now() + 30000).toISOString(),
-                            });
-                            logger.warn(`[TSLP_EMERGENCY] 策略${strategyId} ${tradedSym}: 设置紧急止损 $${emergencyStopLoss.toFixed(2)} + 30秒后DB重试`);
-                          }
+                          // 将重试标记写入DB context，下一个HOLDING周期重试
+                          const emergencyStopLoss = avgPrice * 0.5;
+                          await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
+                            emergencyStopLoss,
+                            protectionRetryPending: true,
+                            protectionRetryParams: {
+                              tradedSymbol: tradedSym,
+                              quantity: filledQuantity,
+                              entryPrice: avgPrice,
+                              stopLossPct,
+                              expireDate: expDate,
+                            },
+                            protectionRetryAfter: new Date(Date.now() + 30000).toISOString(),
+                          });
+                          logger.warn(`[PROTECTION_EMERGENCY] 策略${strategyId} ${tradedSym}: 设置紧急止损 $${emergencyStopLoss.toFixed(2)} + 30秒后DB重试`);
                         }
 
-                      } catch (tslpErr: any) {
-                        logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: TSLPPCT提交异常(${tslpErr?.message})，降级到纯监控模式`);
-                        // 260225 Iron Dome: 异常也计入失败
-                        await this.recordTslpFailure(strategyId);
+                      } catch (protErr: any) {
+                        logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: LIT止损单提交异常(${protErr?.message})，降级到纯监控模式`);
+                        await this.recordProtectionFailure(strategyId);
 
-                        // P1-4: 异常时也设置紧急止损
                         if (avgPrice > 0) {
                           try {
                             const emergencyStopLoss = avgPrice * 0.5;
                             await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
                               emergencyStopLoss,
                             });
-                            logger.warn(`[TSLP_EMERGENCY] 策略${strategyId} ${instanceKeySymbol}: 异常后设置紧急止损 $${emergencyStopLoss.toFixed(2)}`);
+                            logger.warn(`[PROTECTION_EMERGENCY] 策略${strategyId} ${instanceKeySymbol}: 异常后设置紧急止损 $${emergencyStopLoss.toFixed(2)}`);
                           } catch (eErr: any) {
-                            logger.error(`[TSLP_EMERGENCY] 设置紧急止损失败: ${eErr.message}`);
+                            logger.error(`[PROTECTION_EMERGENCY] 设置紧急止损失败: ${eErr.message}`);
                           }
                         }
                       }
@@ -1203,13 +1181,13 @@ class StrategyScheduler {
                     }
                   }
                   
-                  // 检测是否为 TSLPPCT 自动成交 (260225 Fix D: 用 protectionOrderId 匹配 + execution_stage 辅助)
+                  // 检测是否为保护单自动成交（protectionOrderId 匹配 + execution_stage 辅助）
                   const isTslpFill = Boolean(
                     (context.protectionOrderId && dbOrder.order_id === context.protectionOrderId) ||
                     (dbOrder.execution_stage === 1 && dbOrder.side === 'SELL')
                   );
                   if (isTslpFill) {
-                    logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol}: 卖出订单为TSLPPCT自动触发成交 (orderId=${dbOrder.order_id}, protectionOrderId=${context.protectionOrderId})`);
+                    logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol}: 卖出订单为保护单自动触发成交 (orderId=${dbOrder.order_id}, protectionOrderId=${context.protectionOrderId})`);
                   }
 
                   // Fix 11: 递增 dailyTradeCount 供动态冷却期使用
@@ -1256,7 +1234,7 @@ class StrategyScheduler {
                     || context.intent?.metadata?.optionDirection
                     || null;
 
-                  // 260225 Fix C: 软件退出时取消 broker 端残留 TSLPPCT 保护单
+                  // 软件退出时取消 broker 端残留保护单
                   if (context.protectionOrderId && !isTslpFill) {
                     try {
                       const cancelResult = await trailingStopProtectionService.cancelProtection(
@@ -1265,10 +1243,10 @@ class StrategyScheduler {
                         context.tradedSymbol || dbOrder.symbol,
                       );
                       if (cancelResult.alreadyFilled) {
-                        logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: TSLPPCT在软件退出前已触发成交！需要检查仓位一致性`);
+                        logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: 保护单在软件退出前已触发成交！需要检查仓位一致性`);
                       }
                     } catch (cancelErr: any) {
-                      logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: 取消残留TSLPPCT失败: ${cancelErr?.message}`);
+                      logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: 取消残留保护单失败: ${cancelErr?.message}`);
                     }
                   }
 
@@ -1284,15 +1262,14 @@ class StrategyScheduler {
                     lastTradePnL: tradePnL,
                     takeProfitOrderId: null,
                     protectionOrderId: null,
-                    protectionTrailingPct: null,
-                    exitReason: isTslpFill ? 'TSLPPCT_FILLED' : null,
+                    exitReason: isTslpFill ? 'PROTECTION_LIT_FILLED' : null,
                     // 持仓级字段归零 — 防止跨交易污染
                     peakPnLPercent: null,
                     peakPrice: null,
                     emergencyStopLoss: null,
-                    tslpRetryPending: null,
-                    tslpRetryParams: null,
-                    tslpRetryAfter: null,
+                    protectionRetryPending: null,
+                    protectionRetryParams: null,
+                    protectionRetryAfter: null,
                     lastCheckTime: null,
                     lastBrokerCheckTime: null,
                   });
@@ -1362,7 +1339,7 @@ class StrategyScheduler {
                           ]
                         );
 
-                        // V3: 熔断后对所有 HOLDING 仓位收紧 TSLPPCT 保护
+                        // V3: 熔断后对所有 HOLDING 仓位收紧保护单（cancel old → submit tighter LIT）
                         try {
                           const holdingInstances = await pool.query(
                             `SELECT symbol, context FROM strategy_instances
@@ -1374,25 +1351,35 @@ class StrategyScheduler {
                             const tradedSymbol = hCtx.tradedSymbol || row.symbol;
                             const protectionId = hCtx.protectionOrderId;
                             const qty = parseInt(String(hCtx.quantity || 1));
+                            const hEntryPrice = parseFloat(String(hCtx.entryPrice || 0));
 
-                            if (protectionId) {
+                            if (protectionId && hEntryPrice > 0) {
                               try {
-                                await trailingStopProtectionService.adjustProtection(
-                                  protectionId, 15, 0.10, qty, strategyId, tradedSymbol
+                                // 取消旧保护单
+                                await trailingStopProtectionService.cancelProtection(protectionId, strategyId, tradedSymbol);
+                                // 提交更紧的 LIT 止损（15% 替代 50%）
+                                const expDate = trailingStopProtectionService.extractOptionExpireDate(tradedSymbol, hCtx.optionMeta);
+                                const tighterResult = await trailingStopProtectionService.submitStopLossProtection(
+                                  tradedSymbol, qty, hEntryPrice, 15, expDate, strategyId
                                 );
+                                if (tighterResult.success && tighterResult.orderId) {
+                                  await strategyInstance.updateState(row.symbol, 'HOLDING', {
+                                    protectionOrderId: tighterResult.orderId,
+                                  });
+                                }
                                 logger.warn(
-                                  `[CIRCUIT_BREAKER] 策略 ${strategyId} 标的 ${row.symbol}: HOLDING仓位TSLPPCT已收紧至15%`
+                                  `[CIRCUIT_BREAKER] 策略 ${strategyId} 标的 ${row.symbol}: HOLDING仓位保护单已收紧至-15%`
                                 );
                               } catch (replaceErr: unknown) {
                                 logger.warn(
                                   `[CIRCUIT_BREAKER] 策略 ${strategyId} 标的 ${row.symbol}: ` +
-                                  `收紧TSLPPCT失败: ${replaceErr instanceof Error ? replaceErr.message : replaceErr}`
+                                  `收紧保护单失败: ${replaceErr instanceof Error ? replaceErr.message : replaceErr}`
                                 );
                               }
                             } else {
                               logger.warn(
                                 `[CIRCUIT_BREAKER] 策略 ${strategyId} 标的 ${row.symbol}: ` +
-                                `HOLDING仓位无保护单，熔断后无法收紧`
+                                `HOLDING仓位无保护单或无入场价，熔断后无法收紧`
                               );
                             }
                           }
@@ -1777,7 +1764,7 @@ class StrategyScheduler {
     try {
       // 检查当前状态
       const currentState = await strategyInstance.getCurrentState(symbol);
-      const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy;
+      const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy || strategyInstance instanceof SchwartzOptionStrategy;
       const strategyConfig: any = (strategyInstance as any)?.config || {};
 
       // 根据状态进行不同处理
@@ -1871,8 +1858,8 @@ class StrategyScheduler {
       }
 
       // IDLE 状态：处理买入逻辑（非期权策略）
-      // V4: 恢复 TSLP 失败计数（进程重启后首次进入）
-      await this.restoreTslpFailureCount(strategyId);
+      // V4: 恢复保护单失败计数（进程重启后首次进入）
+      await this.restoreProtectionFailureCount(strategyId);
 
       // 期权策略：收盘前N分钟不再开新仓（默认180分钟，可配置）
       if (isOptionStrategy) {
@@ -1926,10 +1913,10 @@ class StrategyScheduler {
               circuitBreakerActive: false,
               circuitBreakerReason: null,
               circuitBreakerTime: null,
-              tslpFailureCount: 0,  // V4: 新交易日重置 TSLP 失败计数
+              protectionFailureCount: 0,  // V4: 新交易日重置保护单失败计数
             });
             // V4: 同步重置内存计数
-            this.tslpFailureCount.set(strategyId, 0);
+            this.protectionFailureCount.set(strategyId, 0);
             // 重新读取 context（已重置）
             const freshState = await stateManager.getInstanceState(strategyId, symbol);
             Object.assign(cancelCtx || {}, freshState?.context || {});
@@ -2020,14 +2007,13 @@ class StrategyScheduler {
         return;
       }
 
-      // 260225 Iron Dome Layer 3: TSLPPCT 连续失败 → 禁止开仓
-      if (intent.action === 'BUY' && isOptionStrategy && this.isTslpBlocked(strategyId)) {
+      // 260225 Iron Dome Layer 3: 保护单连续失败 → 禁止开仓
+      if (intent.action === 'BUY' && isOptionStrategy && this.isProtectionBlocked(strategyId)) {
         logger.warn(
-          `[IRON_DOME:TSLP_BLOCKED] 策略 ${strategyId} 标的 ${symbol}: ` +
-          `TSLPPCT 连续失败 ${this.tslpFailureCount.get(strategyId)} 次，禁止新开仓。` +
-          `没有保护单还想开仓？你是觉得亏得不够快吗？`
+          `[IRON_DOME:PROTECTION_BLOCKED] 策略 ${strategyId} 标的 ${symbol}: ` +
+          `保护单连续失败 ${this.protectionFailureCount.get(strategyId)} 次，禁止新开仓`
         );
-        summary.idle.push(`${symbol}(TSLP_BLOCKED)`);
+        summary.idle.push(`${symbol}(PROTECTION_BLOCKED)`);
         return;
       }
 
@@ -2334,7 +2320,7 @@ class StrategyScheduler {
 
   /**
    * R5v2 Phase B: 评估单个 IDLE 期权标的，收集候选信号
-   * 包含所有前置检查（收盘窗口/取消退避/熔断/冷却/持仓/订单/TSLP/信号抑制）
+   * 包含所有前置检查（收盘窗口/取消退避/熔断/冷却/持仓/订单/保护单/信号抑制）
    * 不包含 R5 跨标的检查（由 scoringAuction 取代）
    */
   private async evaluateIdleSymbol(
@@ -2347,8 +2333,8 @@ class StrategyScheduler {
     try {
       const strategyConfig: any = (strategyInstance as any)?.config || {};
 
-      // V4: 恢复 TSLP 失败计数
-      await this.restoreTslpFailureCount(strategyId);
+      // V4: 恢复保护单失败计数
+      await this.restoreProtectionFailureCount(strategyId);
 
       // 收盘前N分钟不再开新仓
       const noNewEntryMins = Math.max(0, parseInt(String(strategyConfig?.tradeWindow?.noNewEntryBeforeCloseMinutes ?? 180), 10) || 180);
@@ -2397,9 +2383,9 @@ class StrategyScheduler {
             circuitBreakerActive: false,
             circuitBreakerReason: null,
             circuitBreakerTime: null,
-            tslpFailureCount: 0,
+            protectionFailureCount: 0,
           });
-          this.tslpFailureCount.set(strategyId, 0);
+          this.protectionFailureCount.set(strategyId, 0);
           const freshState = await stateManager.getInstanceState(strategyId, symbol);
           Object.assign(cancelCtx || {}, freshState?.context || {});
         }
@@ -2480,13 +2466,13 @@ class StrategyScheduler {
         return null;
       }
 
-      // TSLP blocked 检查
-      if (intent.action === 'BUY' && this.isTslpBlocked(strategyId)) {
+      // 保护单 blocked 检查
+      if (intent.action === 'BUY' && this.isProtectionBlocked(strategyId)) {
         logger.warn(
-          `[IRON_DOME:TSLP_BLOCKED] 策略 ${strategyId} 标的 ${symbol}: ` +
-          `TSLPPCT 连续失败 ${this.tslpFailureCount.get(strategyId)} 次，禁止新开仓`
+          `[IRON_DOME:PROTECTION_BLOCKED] 策略 ${strategyId} 标的 ${symbol}: ` +
+          `保护单连续失败 ${this.protectionFailureCount.get(strategyId)} 次，禁止新开仓`
         );
-        summary.idle.push(`${symbol}(TSLP_BLOCKED)`);
+        summary.idle.push(`${symbol}(PROTECTION_BLOCKED)`);
         return null;
       }
 
@@ -3042,7 +3028,7 @@ class StrategyScheduler {
     symbol: string
   ): Promise<{ actionTaken: boolean }> {
     try {
-      const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy;
+      const isOptionStrategy = strategyInstance instanceof OptionIntradayStrategy || strategyInstance instanceof SchwartzOptionStrategy;
       const strategyConfig: any = (strategyInstance as any)?.config || {};
 
       // 1. 获取策略实例上下文（包含入场价、止损、止盈）
@@ -3451,10 +3437,10 @@ class StrategyScheduler {
         return { actionTaken: false };
       }
 
-      // P1-4: 检查紧急止损（TSLP保护单失败时的安全网）
+      // P1-4: 检查紧急止损（保护单失败时的安全网）
       if (context.emergencyStopLoss && currentPrice > 0 && currentPrice <= context.emergencyStopLoss) {
         logger.error(
-          `[TSLP_EMERGENCY] 策略${strategyId} ${effectiveSymbol}: 触发紧急止损! ` +
+          `[PROTECTION_EMERGENCY] 策略${strategyId} ${effectiveSymbol}: 触发紧急止损! ` +
           `当前价=$${currentPrice.toFixed(2)} <= 紧急止损=$${context.emergencyStopLoss.toFixed(2)}`
         );
         // 触发紧急平仓
@@ -3466,7 +3452,7 @@ class StrategyScheduler {
           await strategyInstance.updateState(symbol, 'CLOSING', {
             ...context,
             exitReason: 'EMERGENCY_STOP_LOSS',
-            exitReasonDetail: `TSLP失败紧急止损触发: 价格${currentPrice.toFixed(2)} <= ${context.emergencyStopLoss.toFixed(2)}`,
+            exitReasonDetail: `保护单失败紧急止损触发: 价格${currentPrice.toFixed(2)} <= ${context.emergencyStopLoss.toFixed(2)}`,
           });
           const emergencySellIntent = {
             action: 'SELL' as const,
@@ -3474,7 +3460,7 @@ class StrategyScheduler {
             entryPrice: entryPrice,
             sellPrice: currentPrice,
             quantity: sellQty,
-            reason: 'TSLP紧急止损',
+            reason: '保护单紧急止损',
             metadata: {
               assetClass: isOptionStrategy ? 'OPTION' : 'STOCK',
               exitAction: 'EMERGENCY_STOP_LOSS',
@@ -3611,8 +3597,37 @@ class StrategyScheduler {
         const positionCheck = await this.checkAvailablePosition(strategyId, effectiveSymbol);
         if (positionCheck.hasPending) return { actionTaken };
         
+        if (positionCheck.availableQuantity !== undefined && positionCheck.availableQuantity <= 0) {
+          // 券商报告无持仓 → 走 POSITION_EXIT_CLEANUP 清理
+          logger.warn(`策略 ${strategyId} 标的 ${symbol}: 券商报告无持仓(availableQuantity=${positionCheck.availableQuantity})，自动转为IDLE`);
+          const stockBpzPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
+          const stockBpzPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
+          const stockBpzAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
+          const stockBpzPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+          await strategyInstance.updateState(symbol, 'IDLE', {
+            ...POSITION_EXIT_CLEANUP,
+            lastExitTime: new Date().toISOString(),
+            exitReason: 'BROKER_NO_POSITION',
+            exitReasonDetail: `股票路径卖出时券商报告availableQuantity=${positionCheck.availableQuantity}`,
+            dailyTradeCount: stockBpzPrevTradeCount + 1,
+            consecutiveLosses: stockBpzPrevConsecLosses + 1, // 无法确认盈亏，视为亏损
+            dailyRealizedPnL: stockBpzPrevDailyPnL,
+          });
+          // 释放资金
+          if (stockBpzAllocAmt > 0) {
+            try {
+              await capitalManager.releaseAllocation(strategyId, stockBpzAllocAmt, symbol);
+            } catch (relErr: any) {
+              logger.warn(`策略 ${strategyId} 标的 ${symbol}: 释放资金失败: ${relErr?.message}`);
+            }
+          }
+          // 清除跨标的入场状态
+          this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
+          return { actionTaken: true };
+        }
+
         if (positionCheck.availableQuantity !== undefined && quantity > positionCheck.availableQuantity) {
-          logger.error(`策略 ${strategyId} 标的 ${symbol}: 卖出数量不足`);
+          logger.error(`策略 ${strategyId} 标的 ${symbol}: 卖出数量不足 (need=${quantity}, available=${positionCheck.availableQuantity})`);
           return { actionTaken };
         }
 
@@ -3701,26 +3716,25 @@ class StrategyScheduler {
     optionMidPrice: number = 0
   ): Promise<{ actionTaken: boolean }> {
     try {
-      // 0. TSLPPCT 保护单状态检查：如果券商保护单已触发成交，直接转 IDLE
+      // 0. 保护单状态检查：如果券商保护单已触发成交，直接转 IDLE
       if (context.protectionOrderId) {
         try {
-          const tslpStatus = await trailingStopProtectionService.checkProtectionStatus(context.protectionOrderId);
-          if (tslpStatus === 'filled') {
+          const protStatus = await trailingStopProtectionService.checkProtectionStatus(context.protectionOrderId);
+          if (protStatus === 'filled') {
             logger.log(
-              `策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT保护单已触发成交(${context.protectionOrderId})，券商已平仓，更新状态为IDLE`
+              `策略 ${strategyId} 期权 ${effectiveSymbol}: LIT保护单已触发成交(${context.protectionOrderId})，券商已平仓，更新状态为IDLE`
             );
-            // 260301 Fix: TSLPPCT 退出也必须递增 trade counters + 清除持仓级字段
-            const tslpPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
-            const tslpPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
-            const tslpPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+            const protPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
+            const protPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
+            const protPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
             await strategyInstance.updateState(symbol, 'IDLE', {
               ...POSITION_EXIT_CLEANUP,
               lastExitTime: new Date().toISOString(),
-              exitReason: 'TSLPPCT_FILLED',
-              exitReasonDetail: `TSLPPCT保护单${context.protectionOrderId}已触发`,
-              dailyTradeCount: tslpPrevTradeCount + 1,
-              consecutiveLosses: tslpPrevConsecLosses,  // TSLPPCT 无法判断盈亏，保持现有值
-              dailyRealizedPnL: tslpPrevDailyPnL,       // 实际 PnL 由订单回调更新
+              exitReason: 'PROTECTION_LIT_FILLED',
+              exitReasonDetail: `LIT保护单${context.protectionOrderId}已触发`,
+              dailyTradeCount: protPrevTradeCount + 1,
+              consecutiveLosses: protPrevConsecLosses,  // 保护单无法判断盈亏，保持现有值
+              dailyRealizedPnL: protPrevDailyPnL,       // 实际 PnL 由订单回调更新
               lastTradeDirection: context.optionMeta?.optionDirection || context.intent?.metadata?.optionDirection || null,
             });
             // R5: 清除跨标的入场状态
@@ -3731,61 +3745,70 @@ class StrategyScheduler {
             }
             return { actionTaken: true };
           }
-          if (tslpStatus === 'cancelled' || tslpStatus === 'expired') {
-            logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT已${tslpStatus}，清除protectionOrderId`);
+          if (protStatus === 'cancelled' || protStatus === 'expired') {
+            logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: 保护单已${protStatus}，清除protectionOrderId`);
             await strategyInstance.updateState(symbol, 'HOLDING', {
               ...context,
               protectionOrderId: undefined,
-              protectionTrailingPct: undefined,
             });
-            // 更新 local context 以供后续逻辑使用
             context.protectionOrderId = undefined;
-            context.protectionTrailingPct = undefined;
           }
-        } catch (tslpCheckErr: any) {
-          logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT状态查询异常(${tslpCheckErr?.message})，继续软件监控`);
+        } catch (protCheckErr: any) {
+          logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: 保护单状态查询异常(${protCheckErr?.message})，继续软件监控`);
         }
       }
 
-      // C1 修复：检查DB中的TSLP重试标记
-      if (context.tslpRetryPending && context.tslpRetryAfter) {
-        const retryAfter = new Date(context.tslpRetryAfter).getTime();
+      // 检查DB中的保护单重试标记（兼容旧字段名 tslpRetryPending）
+      const retryPending = context.protectionRetryPending || context.tslpRetryPending;
+      const retryAfterStr = context.protectionRetryAfter || context.tslpRetryAfter;
+      if (retryPending && retryAfterStr) {
+        const retryAfter = new Date(retryAfterStr).getTime();
         if (Date.now() >= retryAfter) {
           try {
-            const params = context.tslpRetryParams;
+            const params = context.protectionRetryParams || context.tslpRetryParams;
             if (params) {
-              const retryResult = await trailingStopProtectionService.submitProtection(
-                params.tradedSymbol, params.quantity, params.trailingPct,
-                params.limitOffset, params.expireDate, strategyId,
+              // 兼容读旧字段名：旧版有 trailingPct/limitOffset，新版有 entryPrice/stopLossPct
+              const entryPrice = params.entryPrice || 0;
+              const stopLossPct = params.stopLossPct || 50;
+              const retryResult = await trailingStopProtectionService.submitStopLossProtection(
+                params.tradedSymbol, params.quantity, entryPrice, stopLossPct,
+                params.expireDate, strategyId,
               );
               if (retryResult.success && retryResult.orderId) {
                 await strategyInstance.updateState(symbol, 'HOLDING', {
                   protectionOrderId: retryResult.orderId,
-                  protectionTrailingPct: params.trailingPct,
                   emergencyStopLoss: undefined,
+                  protectionRetryPending: undefined,
+                  protectionRetryParams: undefined,
+                  protectionRetryAfter: undefined,
                   tslpRetryPending: undefined,
                   tslpRetryParams: undefined,
                   tslpRetryAfter: undefined,
                 });
-                logger.log(`[TSLP_RETRY] 策略${strategyId} ${params.tradedSymbol}: DB重试成功 orderId=${retryResult.orderId}`);
-                await this.resetTslpFailure(strategyId);
+                logger.log(`[PROTECTION_RETRY] 策略${strategyId} ${params.tradedSymbol}: DB重试成功 orderId=${retryResult.orderId}`);
+                await this.resetProtectionFailure(strategyId);
               } else {
-                // 重试失败，清除重试标记，保持紧急止损
                 await strategyInstance.updateState(symbol, 'HOLDING', {
+                  protectionRetryPending: undefined,
+                  protectionRetryParams: undefined,
+                  protectionRetryAfter: undefined,
                   tslpRetryPending: undefined,
                   tslpRetryParams: undefined,
                   tslpRetryAfter: undefined,
                 });
-                logger.warn(`[TSLP_RETRY] 策略${strategyId} ${params.tradedSymbol}: DB重试仍失败(${retryResult.error})，保持紧急止损`);
+                logger.warn(`[PROTECTION_RETRY] 策略${strategyId} ${params.tradedSymbol}: DB重试仍失败(${retryResult.error})，保持紧急止损`);
               }
             }
           } catch (retryErr: any) {
             await strategyInstance.updateState(symbol, 'HOLDING', {
+              protectionRetryPending: undefined,
+              protectionRetryParams: undefined,
+              protectionRetryAfter: undefined,
               tslpRetryPending: undefined,
               tslpRetryParams: undefined,
               tslpRetryAfter: undefined,
             });
-            logger.warn(`[TSLP_RETRY] 策略${strategyId}: DB重试异常: ${retryErr.message}`);
+            logger.warn(`[PROTECTION_RETRY] 策略${strategyId}: DB重试异常: ${retryErr.message}`);
           }
         }
       }
@@ -4110,7 +4133,7 @@ class StrategyScheduler {
           return { actionTaken: true };
         }
 
-        // === TSLPPCT 取消：软件退出前先取消券商保护单 ===
+        // === 保护单取消：软件退出前先取消券商保护单 ===
         if (context.protectionOrderId) {
           try {
             const cancelResult = await trailingStopProtectionService.cancelProtection(
@@ -4121,20 +4144,19 @@ class StrategyScheduler {
             if (cancelResult.alreadyFilled) {
               // 券商保护单已触发成交！跳过软件卖出，直接转 IDLE
               logger.log(
-                `策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT已触发成交，跳过软件卖出`
+                `策略 ${strategyId} 期权 ${effectiveSymbol}: LIT保护单已触发成交，跳过软件卖出`
               );
-              // 260301 Fix: 软件退出发现 TSLPPCT 已成交 — 同样需要 trade counters + cleanup
-              const tslpSwPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
-              const tslpSwPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
-              const tslpSwPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+              const protSwPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
+              const protSwPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
+              const protSwPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
               await strategyInstance.updateState(symbol, 'IDLE', {
                 ...POSITION_EXIT_CLEANUP,
                 lastExitTime: new Date().toISOString(),
-                exitReason: 'TSLPPCT_FILLED',
-                exitReasonDetail: `软件退出时发现TSLPPCT(${context.protectionOrderId})已成交`,
-                dailyTradeCount: tslpSwPrevTradeCount + 1,
-                consecutiveLosses: tslpSwPrevConsecLosses,
-                dailyRealizedPnL: tslpSwPrevDailyPnL,
+                exitReason: 'PROTECTION_LIT_FILLED',
+                exitReasonDetail: `软件退出时发现LIT保护单(${context.protectionOrderId})已成交`,
+                dailyTradeCount: protSwPrevTradeCount + 1,
+                consecutiveLosses: protSwPrevConsecLosses,
+                dailyRealizedPnL: protSwPrevDailyPnL,
                 lastTradeDirection: context.optionMeta?.optionDirection || context.intent?.metadata?.optionDirection || null,
               });
               // R5: 清除跨标的入场状态
@@ -4144,10 +4166,10 @@ class StrategyScheduler {
               }
               return { actionTaken: true };
             }
-            // 取消成功或失败都继续软件卖出（broker position check at checkAvailablePosition provides safety）
+            // 取消成功或失败都继续软件卖出
           } catch (cancelErr: any) {
             logger.warn(
-              `策略 ${strategyId} 期权 ${effectiveSymbol}: TSLPPCT取消异常(${cancelErr?.message})，继续软件卖出`
+              `策略 ${strategyId} 期权 ${effectiveSymbol}: 保护单取消异常(${cancelErr?.message})，继续软件卖出`
             );
           }
         }
@@ -4625,7 +4647,7 @@ class StrategyScheduler {
       const allPositions = await this.getCachedPositions();
 
       // 期权策略：symbol 是 underlying，真实持仓是期权symbol
-      if (strategyInstance instanceof OptionIntradayStrategy) {
+      if (strategyInstance instanceof OptionIntradayStrategy || strategyInstance instanceof SchwartzOptionStrategy) {
         const prefixes = getOptionPrefixesForUnderlying(symbol).map((p) => p.toUpperCase());
         const optionPos = allPositions.find((pos: any) => {
           const posSymbol = String(pos.symbol || pos.stock_name || '').toUpperCase();
@@ -5128,67 +5150,67 @@ class StrategyScheduler {
   }
 
   /**
-   * TSLPPCT 失败计数: 记录失败并检查是否应禁止开仓 (V4: 持久化到 DB)
+   * 保护单失败计数: 记录失败并检查是否应禁止开仓 (V4: 持久化到 DB)
    */
-  async recordTslpFailure(strategyId: number): Promise<void> {
-    const count = (this.tslpFailureCount.get(strategyId) || 0) + 1;
-    this.tslpFailureCount.set(strategyId, count);
+  async recordProtectionFailure(strategyId: number): Promise<void> {
+    const count = (this.protectionFailureCount.get(strategyId) || 0) + 1;
+    this.protectionFailureCount.set(strategyId, count);
     // V4: 同步写入 DB，进程重启后可恢复
     try {
       await pool.query(
         `UPDATE strategy_instances
          SET context = context || $1::jsonb
          WHERE strategy_id = $2`,
-        [JSON.stringify({ tslpFailureCount: count }), strategyId]
+        [JSON.stringify({ protectionFailureCount: count }), strategyId]
       );
     } catch (dbErr: unknown) {
-      logger.warn(`[IRON_DOME:TSLP_COUNTER] 策略 ${strategyId}: DB写入失败: ${dbErr instanceof Error ? dbErr.message : dbErr}`);
+      logger.warn(`[IRON_DOME:PROTECTION_COUNTER] 策略 ${strategyId}: DB写入失败: ${dbErr instanceof Error ? dbErr.message : dbErr}`);
     }
     logger.warn(
-      `[IRON_DOME:TSLP_COUNTER] 策略 ${strategyId}: TSLPPCT 累计失败 ${count} 次` +
-      (count >= this.TSLP_FAILURE_THRESHOLD
-        ? `，已达阈值 ${this.TSLP_FAILURE_THRESHOLD}，禁止新开仓`
+      `[IRON_DOME:PROTECTION_COUNTER] 策略 ${strategyId}: 保护单累计失败 ${count} 次` +
+      (count >= this.PROTECTION_FAILURE_THRESHOLD
+        ? `，已达阈值 ${this.PROTECTION_FAILURE_THRESHOLD}，禁止新开仓`
         : ``)
     );
   }
 
-  async resetTslpFailure(strategyId: number): Promise<void> {
-    this.tslpFailureCount.set(strategyId, 0);
+  async resetProtectionFailure(strategyId: number): Promise<void> {
+    this.protectionFailureCount.set(strategyId, 0);
     try {
       await pool.query(
         `UPDATE strategy_instances
-         SET context = context || '{"tslpFailureCount": 0}'::jsonb
+         SET context = context || '{"protectionFailureCount": 0}'::jsonb
          WHERE strategy_id = $1`,
         [strategyId]
       );
     } catch (dbErr: unknown) {
-      logger.warn(`[IRON_DOME:TSLP_COUNTER] 策略 ${strategyId}: 重置DB写入失败: ${dbErr instanceof Error ? dbErr.message : dbErr}`);
+      logger.warn(`[IRON_DOME:PROTECTION_COUNTER] 策略 ${strategyId}: 重置DB写入失败: ${dbErr instanceof Error ? dbErr.message : dbErr}`);
     }
   }
 
-  isTslpBlocked(strategyId: number): boolean {
-    return (this.tslpFailureCount.get(strategyId) || 0) >= this.TSLP_FAILURE_THRESHOLD;
+  isProtectionBlocked(strategyId: number): boolean {
+    return (this.protectionFailureCount.get(strategyId) || 0) >= this.PROTECTION_FAILURE_THRESHOLD;
   }
 
   /**
-   * V4: 从 DB 恢复 TSLP 失败计数（进程重启后首次遇到策略时调用）
+   * V4: 从 DB 恢复保护单失败计数（进程重启后首次遇到策略时调用，兼容旧字段名 tslpFailureCount）
    */
-  async restoreTslpFailureCount(strategyId: number): Promise<void> {
-    if (this.tslpFailureCount.has(strategyId)) return; // 已恢复
+  async restoreProtectionFailureCount(strategyId: number): Promise<void> {
+    if (this.protectionFailureCount.has(strategyId)) return; // 已恢复
     try {
       const result = await pool.query(
-        `SELECT MAX((context->>'tslpFailureCount')::int) as count
+        `SELECT MAX(COALESCE((context->>'protectionFailureCount')::int, (context->>'tslpFailureCount')::int, 0)) as count
          FROM strategy_instances WHERE strategy_id = $1`,
         [strategyId]
       );
       const count = result.rows[0]?.count || 0;
-      this.tslpFailureCount.set(strategyId, count);
+      this.protectionFailureCount.set(strategyId, count);
       if (count > 0) {
-        logger.warn(`[IRON_DOME:TSLP_RESTORE] 策略 ${strategyId}: 从DB恢复TSLP失败计数=${count}`);
+        logger.warn(`[IRON_DOME:PROTECTION_RESTORE] 策略 ${strategyId}: 从DB恢复保护单失败计数=${count}`);
       }
     } catch (dbErr: unknown) {
-      this.tslpFailureCount.set(strategyId, 0);
-      logger.warn(`[IRON_DOME:TSLP_RESTORE] 策略 ${strategyId}: DB恢复失败: ${dbErr instanceof Error ? dbErr.message : dbErr}`);
+      this.protectionFailureCount.set(strategyId, 0);
+      logger.warn(`[IRON_DOME:PROTECTION_RESTORE] 策略 ${strategyId}: DB恢复失败: ${dbErr instanceof Error ? dbErr.message : dbErr}`);
     }
   }
 

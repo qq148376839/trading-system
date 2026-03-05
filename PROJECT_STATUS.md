@@ -1,11 +1,27 @@
 # 项目进度总结
 
-**更新时间**: 2026-03-04
+**更新时间**: 2026-03-05
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-03-05: TSLPPCT → LIT 止损替换 + 三项 Bug 修复
+
+**变更内容**:
+
+1. **Fix A**: `isOptionStrategy` 判定修复 — SchwartzOptionStrategy 被识别为期权策略（4处）
+2. **Fix B**: TSLPPCT → LIT 止损单 — `submitStopLossProtection()` LIT 触价限价单（trigger=entryPrice×0.5）替换无效的 TSLPPCT trailing
+3. **Fix C**: Watchdog 绕过持仓验证 — `executeSellIntent` 新增 `skipPositionValidation` 参数
+4. **Fix D**: 股票路径券商无持仓清理 — `availableQuantity<=0` 时走 POSITION_EXIT_CLEANUP → IDLE
+
+**修改文件**:
+- 📝 `api/src/services/trailing-stop-protection.service.ts`（重写：移除 TSLPPCT，新增 LIT 止损）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（Fix A/B/D + Iron Dome 重命名）
+- 📝 `api/src/services/basic-execution.service.ts`（Fix C: skipPositionValidation）
+- 📝 `api/src/services/0dte-watchdog.service.ts`（Fix C: 使用 skipPositionValidation）
+- 📝 `api/src/__tests__/safety-guards.test.ts`（TSLP→Protection 重命名）
 
 ### 2026-03-04: 0DTE 盈利退出冷却 + 尾盘动态入场阈值
 

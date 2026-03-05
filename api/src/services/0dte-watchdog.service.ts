@@ -234,7 +234,7 @@ class ZeroDTEWatchdogService {
           },
         };
 
-        const result = await basicExecutionService.executeSellIntent(sellIntent, strategyId);
+        const result = await basicExecutionService.executeSellIntent(sellIntent, strategyId, { skipPositionValidation: true });
 
         if (result.success || result.submitted) {
           logger.warn(
