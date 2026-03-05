@@ -7,6 +7,17 @@
 
 ## 🆕 最近更新
 
+### 2026-03-05: 结构失效 Grace Period + LIT 保护单同步提交修复
+
+**变更内容**:
+
+1. **Fix 1**: 结构失效 grace period — 入场后 2 分钟内跳过 VWAP 结构失效检查，避免入场噪声秒杀
+2. **Fix 2**: LIT 保护单同步提交 — 提取 `submitLitProtectionAfterBuy()` 统一方法，修复同步成交路径 LIT 缺失
+
+**修改文件**:
+- `api/src/services/option-dynamic-exit.service.ts`
+- `api/src/services/strategy-scheduler.service.ts`
+
 ### 2026-03-05: Fast Momentum Gate — 快动量防追高
 
 **变更内容**:

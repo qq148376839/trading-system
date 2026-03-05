@@ -438,7 +438,9 @@ class OptionDynamicExitService {
     }
 
     // 2.5 结构失效止损（Level A）：标的价格反转回 VWAP 另一侧
-    if (ctx.vwap && ctx.vwap > 0 && ctx.recentKlines && ctx.recentKlines.length >= 2 && ctx.optionDirection) {
+    // Grace period: 入场后 2 分钟内跳过（VWAP 附近入场的噪声过滤）
+    const structHoldingMin = (now.getTime() - (ctx.entryTime || now).getTime()) / 60000;
+    if (ctx.vwap && ctx.vwap > 0 && ctx.recentKlines && ctx.recentKlines.length >= 2 && ctx.optionDirection && structHoldingMin >= 2) {
       const last2 = ctx.recentKlines.slice(-2);
       const vwap = ctx.vwap;
 

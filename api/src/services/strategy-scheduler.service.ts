@@ -1102,6 +1102,17 @@ class StrategyScheduler {
                       `UPDATE execution_orders SET current_status = 'FILLED', fill_processed = TRUE, updated_at = NOW() WHERE order_id = $1`,
                       [dbOrder.order_id]
                     );
+                    // 补充 LIT：如果已是 HOLDING 但同步路径未提交保护单，补提交
+                    if (!context.protectionOrderId) {
+                      const optMeta = context.optionMeta || context.intent?.metadata;
+                      if (optMeta) {
+                        await this.submitLitProtectionAfterBuy(
+                          strategyInstance, strategyId, instanceKeySymbol,
+                          context.tradedSymbol || dbOrder.symbol,
+                          filledQuantity, avgPrice, optMeta,
+                        );
+                      }
+                    }
                   } else {
                     await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
                       ...POSITION_CONTEXT_RESET,
@@ -1120,66 +1131,13 @@ class StrategyScheduler {
                     logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol} 买入订单已成交，更新状态为HOLDING，订单ID: ${dbOrder.order_id}`);
 
                     // === LIT 止损保护单提交 ===
-                    // 期权买入成交后自动挂出 LIT 止损保护单（trigger = entryPrice × 0.5）
                     const optMeta = context.optionMeta || context.intent?.metadata;
-                    const isOptionAsset = optMeta?.assetClass === 'OPTION' || optMeta?.optionType;
-                    if (isOptionAsset && !context.protectionOrderId && avgPrice > 0) {
-                      try {
-                        const tradedSym = context.tradedSymbol || dbOrder.symbol;
-                        const expDate = trailingStopProtectionService.extractOptionExpireDate(tradedSym, optMeta);
-                        const stopLossPct = 50; // 止损 50%（trigger = entryPrice × 0.5）
-
-                        const slResult = await trailingStopProtectionService.submitStopLossProtection(
-                          tradedSym,
-                          filledQuantity,
-                          avgPrice,
-                          stopLossPct,
-                          expDate,
-                          strategyId,
-                        );
-                        if (slResult.success && slResult.orderId) {
-                          await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
-                            protectionOrderId: slResult.orderId,
-                          });
-                          logger.log(`策略 ${strategyId} 期权 ${tradedSym}: LIT止损保护单已提交 orderId=${slResult.orderId}, trigger=${(avgPrice * 0.5).toFixed(2)}`);
-                          await this.resetProtectionFailure(strategyId);
-                        } else {
-                          logger.warn(`策略 ${strategyId} 期权 ${tradedSym}: LIT止损单提交失败(${slResult.error})，降级到纯监控模式`);
-                          await this.recordProtectionFailure(strategyId);
-
-                          // 将重试标记写入DB context，下一个HOLDING周期重试
-                          const emergencyStopLoss = avgPrice * 0.5;
-                          await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
-                            emergencyStopLoss,
-                            protectionRetryPending: true,
-                            protectionRetryParams: {
-                              tradedSymbol: tradedSym,
-                              quantity: filledQuantity,
-                              entryPrice: avgPrice,
-                              stopLossPct,
-                              expireDate: expDate,
-                            },
-                            protectionRetryAfter: new Date(Date.now() + 30000).toISOString(),
-                          });
-                          logger.warn(`[PROTECTION_EMERGENCY] 策略${strategyId} ${tradedSym}: 设置紧急止损 $${emergencyStopLoss.toFixed(2)} + 30秒后DB重试`);
-                        }
-
-                      } catch (protErr: any) {
-                        logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: LIT止损单提交异常(${protErr?.message})，降级到纯监控模式`);
-                        await this.recordProtectionFailure(strategyId);
-
-                        if (avgPrice > 0) {
-                          try {
-                            const emergencyStopLoss = avgPrice * 0.5;
-                            await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
-                              emergencyStopLoss,
-                            });
-                            logger.warn(`[PROTECTION_EMERGENCY] 策略${strategyId} ${instanceKeySymbol}: 异常后设置紧急止损 $${emergencyStopLoss.toFixed(2)}`);
-                          } catch (eErr: any) {
-                            logger.error(`[PROTECTION_EMERGENCY] 设置紧急止损失败: ${eErr.message}`);
-                          }
-                        }
-                      }
+                    if (optMeta && !context.protectionOrderId) {
+                      await this.submitLitProtectionAfterBuy(
+                        strategyInstance, strategyId, instanceKeySymbol,
+                        context.tradedSymbol || dbOrder.symbol,
+                        filledQuantity, avgPrice, optMeta,
+                      );
                     }
                     // fill_processed 已在 Fix E 处提前标记，此处无需重复
                   }
@@ -2306,6 +2264,17 @@ class StrategyScheduler {
             this.getCrossSymbolState(strategyId).activeEntries.set(symbol, Date.now());
           }
 
+          // === LIT 止损保护单 === 同步成交后立即提交
+          if (isOptionStrategy && holdingContext.optionMeta) {
+            await this.submitLitProtectionAfterBuy(
+              strategyInstance, strategyId, symbol,
+              intent.symbol,
+              executionResult.filledQuantity,
+              executionResult.avgPrice,
+              holdingContext.optionMeta as Record<string, unknown>,
+            );
+          }
+
           summary.actions.push(`${symbol}(BUY_FILLED)`);
         } else if (executionResult.submitted && executionResult.orderId) {
           // 订单已提交但未成交，保持 OPENING
@@ -2785,6 +2754,15 @@ class StrategyScheduler {
 
         // R5v2: 注册入场到跨标的保护状态
         this.getCrossSymbolState(strategyId).activeEntries.set(symbol, Date.now());
+
+        // === LIT 止损保护单 === 同步成交后立即提交
+        await this.submitLitProtectionAfterBuy(
+          strategyInstance, strategyId, symbol,
+          intent.symbol,
+          executionResult.filledQuantity,
+          executionResult.avgPrice,
+          holdingContext.optionMeta as Record<string, unknown>,
+        );
 
         summary.actions.push(`${symbol}(BUY_FILLED)`);
       } else if (executionResult.submitted && executionResult.orderId) {
@@ -5172,6 +5150,76 @@ class StrategyScheduler {
         }
       } catch (rcErr: any) {
         logger.warn(`[IRON_DOME:RECONCILIATION] 策略 ${strategyId} 标的 ${row.symbol} 核对异常: ${rcErr?.message}`);
+      }
+    }
+  }
+
+  /**
+   * 买入成交后提交 LIT 止损保护单（统一入口）
+   * trigger = entryPrice × 0.5，失败时设置紧急止损 + 30秒后重试
+   */
+  private async submitLitProtectionAfterBuy(
+    strategyInstance: StrategyBase,
+    strategyId: number,
+    instanceKeySymbol: string,
+    tradedSymbol: string,
+    filledQuantity: number,
+    avgPrice: number,
+    optionMeta: Record<string, unknown> | undefined,
+  ): Promise<void> {
+    const isOptionAsset = optionMeta?.assetClass === 'OPTION' || optionMeta?.optionType;
+    if (!isOptionAsset || avgPrice <= 0) return;
+
+    try {
+      const expDate = trailingStopProtectionService.extractOptionExpireDate(tradedSymbol, optionMeta);
+      const stopLossPct = 50; // trigger = entryPrice × 0.5
+
+      const slResult = await trailingStopProtectionService.submitStopLossProtection(
+        tradedSymbol,
+        filledQuantity,
+        avgPrice,
+        stopLossPct,
+        expDate,
+        strategyId,
+      );
+      if (slResult.success && slResult.orderId) {
+        await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
+          protectionOrderId: slResult.orderId,
+        });
+        logger.log(`策略 ${strategyId} 期权 ${tradedSymbol}: LIT止损保护单已提交 orderId=${slResult.orderId}, trigger=${(avgPrice * 0.5).toFixed(2)}`);
+        await this.resetProtectionFailure(strategyId);
+      } else {
+        logger.warn(`策略 ${strategyId} 期权 ${tradedSymbol}: LIT止损单提交失败(${slResult.error})，降级到纯监控模式`);
+        await this.recordProtectionFailure(strategyId);
+
+        const emergencyStopLoss = avgPrice * 0.5;
+        await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
+          emergencyStopLoss,
+          protectionRetryPending: true,
+          protectionRetryParams: {
+            tradedSymbol,
+            quantity: filledQuantity,
+            entryPrice: avgPrice,
+            stopLossPct,
+            expireDate: expDate,
+          },
+          protectionRetryAfter: new Date(Date.now() + 30000).toISOString(),
+        });
+        logger.warn(`[PROTECTION_EMERGENCY] 策略${strategyId} ${tradedSymbol}: 设置紧急止损 $${emergencyStopLoss.toFixed(2)} + 30秒后DB重试`);
+      }
+    } catch (protErr: unknown) {
+      const errMsg = protErr instanceof Error ? protErr.message : String(protErr);
+      logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: LIT止损单提交异常(${errMsg})，降级到纯监控模式`);
+      await this.recordProtectionFailure(strategyId);
+
+      if (avgPrice > 0) {
+        try {
+          await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
+            emergencyStopLoss: avgPrice * 0.5,
+          });
+        } catch (eErr: unknown) {
+          logger.error(`[PROTECTION_EMERGENCY] 设置紧急止损失败: ${eErr instanceof Error ? eErr.message : eErr}`);
+        }
       }
     }
   }

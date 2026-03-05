@@ -2,6 +2,24 @@
 
 ## 2026-03-05
 
+### 修复：结构失效 Grace Period + LIT 保护单同步提交
+
+**Fix 1: 结构失效 Grace Period**
+- **问题**: 期权入场后 64 秒即被结构失效止损秒杀（SLV 案例: 买入 @1.62 → 卖出 @1.56）
+- **根因**: `option-dynamic-exit.service.ts` 结构失效检查（Level A）无 grace period，VWAP 附近入场后微幅波动即触发
+- **修复**: 入场后 2 分钟内跳过结构失效检查（复用已有 `ctx.entryTime`）
+
+**Fix 2: LIT 保护单同步成交路径修复**
+- **问题**: 买入同步成交时（市价单/小额期权常见场景），LIT 止损保护单永远不会被提交
+- **根因**: 同步成交路径直接设置 HOLDING 但无 LIT 提交；订单回调检测到已是 HOLDING 时跳过 LIT
+- **修复**: 提取 `submitLitProtectionAfterBuy()` 私有方法，在 3 条路径统一调用（2 条同步成交 + 1 条回调补偿）
+
+**修改文件**:
+- `api/src/services/option-dynamic-exit.service.ts` — 结构失效 2 分钟 grace period
+- `api/src/services/strategy-scheduler.service.ts` — LIT 提交逻辑提取 + 3 处调用点
+
+---
+
 ### 新功能：Fast Momentum Gate — 快动量防追高
 
 **背景**: 0DTE 期权入场信号基于 1 分钟 K 线动量（10 根回看 = 10 分钟历史），延迟链 2-11 分钟，导致信号确认时价格已在局部顶部 → "追高入场"。
