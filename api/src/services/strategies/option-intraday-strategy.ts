@@ -15,6 +15,7 @@ import { selectOptionContract } from '../options-contract-selector.service';
 import { estimateOptionOrderTotalCost } from '../options-fee.service';
 import { logger } from '../../utils/logger';
 import capitalManager from '../capital-manager.service';
+import fastMomentumService from '../fast-momentum.service';
 
 // ============================================
 // 策略类型定义
@@ -597,6 +598,24 @@ export class OptionIntradayStrategy extends StrategyBase {
       }
 
       logData.selectedStrategy = selectedStrategy;
+
+      // 5.5) 快动量 Gate — 防追高
+      const fastMoResult = fastMomentumService.checkGate(symbol, direction);
+      if (!fastMoResult.pass) {
+        logger.info(
+          `[${symbol}] FastMo过滤: ✗ ${fastMoResult.reason} slope=${fastMoResult.slope?.toFixed(6) ?? 'N/A'} decel=${fastMoResult.deceleration?.toFixed(3) ?? 'N/A'}`,
+          { module: 'OptionStrategy.FastMo', strategyId: this.strategyId }
+        );
+        logData.finalResult = 'NO_SIGNAL';
+        logData.rejectionReason = `快动量过滤: ${fastMoResult.reason}`;
+        logData.rejectionCheckpoint = 'fast_momentum';
+        this.logDecision(logData);
+        return null;
+      }
+      logger.info(
+        `[${symbol}] FastMo过滤: ✓ (${fastMoResult.dataPoints}pts, slope=${fastMoResult.slope?.toFixed(6) ?? 'N/A'})`,
+        { module: 'OptionStrategy.FastMo', strategyId: this.strategyId }
+      );
 
       // 6) 选择合约
       const selected = await selectOptionContract({

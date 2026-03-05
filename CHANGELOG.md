@@ -10,12 +10,14 @@
 - 12 点环形缓冲区（~60s 窗口），线性回归检测方向一致性 + 减速
 - 数据不足时优雅降级放行，不影响正常交易流程
 - 在合约选择之前拦截，节省期权链查询 API 配额
+- 对所有期权策略生效（OPTION_INTRADAY_V1 + OPTION_SCHWARTZ_V1）
 
 **新增文件**:
 - `api/src/services/fast-momentum.service.ts` — FastMomentumService（环形缓冲区 + 线性回归 + gate 逻辑）
 - `api/src/__tests__/fast-momentum.test.ts` — 27 个单元测试
 
 **修改文件**:
+- `api/src/services/strategies/option-intraday-strategy.ts` — 步骤 5.5 快动量 gate
 - `api/src/services/strategies/schwartz-option-strategy.ts` — 步骤 5.5 快动量 gate + metadata
 - `api/src/services/strategy-scheduler.service.ts` — Phase A.5 批量报价采集 + reset 调用
 
