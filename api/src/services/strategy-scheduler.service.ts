@@ -5246,6 +5246,13 @@ class StrategyScheduler {
         tradedSymbol, filledQuantity, avgPrice, stopLossPct, expDate, strategyId,
       );
 
+      // Paper account 检测：604050 → 纯软件监控，不重试
+      const isPaperSkip = slResult.error === 'paper_account_skip' || slResult.error === 'paper_account_detected';
+      if (isPaperSkip) {
+        logger.log(`策略 ${strategyId} 期权 ${tradedSymbol}: Paper Account，跳过 MIT 保护单，纯依赖软件监控`);
+        return;
+      }
+
       // 2. 提交止盈 MIT
       const tpResult = await trailingStopProtectionService.submitTakeProfitProtection(
         tradedSymbol, filledQuantity, avgPrice, takeProfitPct, expDate, strategyId,

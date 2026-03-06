@@ -18,6 +18,12 @@ import pool from '../config/database';
 
 const PROTECTION_TAG = '[PROTECTION]';
 
+/**
+ * Paper account 检测：604050 错误表示不支持条件单（LIT/MIT/TSLP 等）。
+ * 首次遇到后标记，后续跳过保护单提交，纯依赖软件监控。
+ */
+let isPaperAccount = false;
+
 // ============================================
 // 类型
 // ============================================
@@ -65,6 +71,10 @@ class TrailingStopProtectionService {
     expireDate: string,
     strategyId: number,
   ): Promise<SubmitResult> {
+    // Paper account 不支持条件单，跳过提交
+    if (isPaperAccount) {
+      return { success: false, error: 'paper_account_skip' };
+    }
     try {
       if (stopLossPct <= 0 || stopLossPct > 100 || entryPrice <= 0) {
         return { success: false, error: `无效参数: stopLossPct=${stopLossPct}, entryPrice=${entryPrice}` };
@@ -138,6 +148,15 @@ class TrailingStopProtectionService {
       return { success: true, orderId: response.orderId };
     } catch (error: any) {
       const errMsg = error?.message || String(error);
+      // 604050 = paper account 不支持条件单，标记后永久跳过
+      if (errMsg.includes('604050')) {
+        isPaperAccount = true;
+        logger.log(
+          `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: 检测到 Paper Account（604050），后续跳过保护单提交，纯依赖软件监控`,
+          { dbWrite: true },
+        );
+        return { success: false, error: 'paper_account_detected' };
+      }
       logger.log(
         `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: MIT止损单提交失败(${errMsg})，降级到纯监控模式`,
         { dbWrite: true },
@@ -303,6 +322,10 @@ class TrailingStopProtectionService {
     expireDate: string,
     strategyId: number,
   ): Promise<SubmitResult> {
+    // Paper account 不支持条件单，跳过提交
+    if (isPaperAccount) {
+      return { success: false, error: 'paper_account_skip' };
+    }
     try {
       if (takeProfitPct <= 0 || entryPrice <= 0) {
         return { success: false, error: `无效参数: takeProfitPct=${takeProfitPct}, entryPrice=${entryPrice}` };
@@ -372,6 +395,14 @@ class TrailingStopProtectionService {
       return { success: true, orderId: response.orderId };
     } catch (error: any) {
       const errMsg = error?.message || String(error);
+      if (errMsg.includes('604050')) {
+        isPaperAccount = true;
+        logger.log(
+          `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: 检测到 Paper Account（604050），后续跳过保护单提交`,
+          { dbWrite: true },
+        );
+        return { success: false, error: 'paper_account_detected' };
+      }
       logger.log(
         `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: MIT止盈单提交失败(${errMsg})`,
         { dbWrite: true },
