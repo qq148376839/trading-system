@@ -252,7 +252,6 @@ export class SchwartzOptionStrategy extends StrategyBase {
       // === 6. 0DTE 禁入窗口检查 ===
       const expirationMode = this.cfg.expirationMode || '0DTE';
       const zdteCooldownMinutes = this.cfg.tradeWindow?.zdteCooldownMinutes ?? 0;
-      let skip0DTE = false;
 
       if (zdteCooldownMinutes > 0 && expirationMode === '0DTE') {
         const nowForCooldown = new Date();
@@ -270,10 +269,10 @@ export class SchwartzOptionStrategy extends StrategyBase {
         const minutesSinceOpen = etMinutesCooldown - marketOpenMinutes;
 
         if (minutesSinceOpen >= 0 && minutesSinceOpen < zdteCooldownMinutes) {
-          skip0DTE = true;
-          logger.info(`[SCHWARTZ][${symbol}] 0DTE禁入 开盘${minutesSinceOpen}分钟`, {
+          logger.info(`[SCHWARTZ][${symbol}] 0DTE禁入 开盘${minutesSinceOpen}分钟，禁止入场（${zdteCooldownMinutes}分钟窗口）`, {
             module: 'Strategy.Schwartz',
           });
+          return null;
         }
       }
 
@@ -286,7 +285,6 @@ export class SchwartzOptionStrategy extends StrategyBase {
         liquidityFilters: this.cfg.liquidityFilters,
         greekFilters: this.cfg.greekFilters,
         noNewEntryBeforeCloseMinutes: this.cfg.tradeWindow?.noNewEntryBeforeCloseMinutes,
-        skip0DTE,
       });
 
       if (!selected) {

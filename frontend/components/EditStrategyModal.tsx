@@ -1049,7 +1049,7 @@ export default function EditStrategyModal({
                       <div>
                         <label className="block text-xs text-gray-700 mb-1 font-medium">开盘禁入时长（分钟）</label>
                         <input {...numberInputProps('zdteCooldownMinutes', { path: ['tradeWindow', 'zdteCooldownMinutes'], defaultValue: 0, min: 0, max: 60 })} />
-                        <p className="text-xs text-gray-500 mt-1">开盘后N分钟内禁止0DTE，极端信号可豁免</p>
+                        <p className="text-xs text-gray-500 mt-1">开盘后N分钟内禁止所有入场（不降级、不豁免）</p>
                       </div>
                       <div className={formData.config.tradeWindow?.firstHourOnly ? 'opacity-50' : ''}>
                         <label className="block text-xs text-gray-700 mb-1 font-medium">禁止开仓窗口（分钟）</label>

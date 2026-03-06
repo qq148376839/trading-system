@@ -481,7 +481,6 @@ export class OptionIntradayStrategy extends StrategyBase {
       // 1.5) 0DTE 开盘禁入窗口检查
       const expirationMode = this.cfg.expirationMode || '0DTE';
       const zdteCooldownMinutes = this.cfg.tradeWindow?.zdteCooldownMinutes ?? 0;
-      let skip0DTE = false;
 
       if (zdteCooldownMinutes > 0 && expirationMode === '0DTE') {
         const nowForCooldown = new Date();
@@ -499,8 +498,12 @@ export class OptionIntradayStrategy extends StrategyBase {
         const minutesSinceOpen = etMinutesCooldown - marketOpenMinutes;
 
         if (minutesSinceOpen >= 0 && minutesSinceOpen < zdteCooldownMinutes) {
-          skip0DTE = true;
-          logger.info(`[0DTE禁入] ${symbol} 开盘${minutesSinceOpen}分钟内禁止0DTE新仓，将降级选择非0DTE合约`);
+          logger.info(`[0DTE禁入] ${symbol} 开盘${minutesSinceOpen}分钟内禁止入场（${zdteCooldownMinutes}分钟窗口）`);
+          logData.finalResult = 'NO_SIGNAL';
+          logData.rejectionReason = `0DTE禁入窗口：开盘${minutesSinceOpen}/${zdteCooldownMinutes}分钟`;
+          logData.rejectionCheckpoint = '0dte_cooldown';
+          this.logDecision(logData);
+          return null;
         }
       }
 
@@ -626,7 +629,6 @@ export class OptionIntradayStrategy extends StrategyBase {
         liquidityFilters: this.cfg.liquidityFilters,
         greekFilters: this.cfg.greekFilters,
         noNewEntryBeforeCloseMinutes: this.cfg.tradeWindow?.noNewEntryBeforeCloseMinutes,
-        skip0DTE,
       });
 
       if (!selected) {
