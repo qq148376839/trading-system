@@ -1,11 +1,12 @@
 /**
  * 止损/止盈保护服务
  *
- * 期权买入成功后，自动挂出 LIT（触价限价单）保护单作为安全网。
+ * 期权买入成功后，自动挂出 MIT（触价市价单）保护单作为安全网。
+ * MIT 在触发价到达时以市价成交，不需要设置限价，避免 paper account 不支持 LIT 的问题。
  *
  * 核心功能：
- * 1. 提交 LIT 止损保护单（submitStopLossProtection）
- * 2. 提交 LIT 止盈保护单（submitTakeProfitProtection）
+ * 1. 提交 MIT 止损保护单（submitStopLossProtection）
+ * 2. 提交 MIT 止盈保护单（submitTakeProfitProtection）
  * 3. 三步确认取消保护单
  * 4. 查询保护单状态
  */
@@ -43,10 +44,11 @@ type ProtectionStatus = 'active' | 'filled' | 'cancelled' | 'expired' | 'unknown
 class TrailingStopProtectionService {
 
   /**
-   * 提交 LIT（触价限价单）止损保护单
+   * 提交 MIT（触价市价单）止损保护单
    *
-   * 当价格下跌到 triggerPrice 时自动触发限价卖出。
+   * 当价格下跌到 triggerPrice 时自动触发市价卖出。
    * 作为进程崩溃时的安全网，防止灾难性亏损。
+   * MIT 不需要限价，触发后直接市价成交。
    *
    * @param symbol        期权代码
    * @param quantity      合约数量
@@ -69,8 +71,6 @@ class TrailingStopProtectionService {
       }
 
       const triggerPrice = entryPrice * (1 - stopLossPct / 100);
-      // 限价 = 触发价 * 0.97（留3%滑点空间确保成交）
-      const submittedPrice = triggerPrice * 0.97;
 
       const tradeCtx = await getTradeContext();
 
@@ -99,14 +99,13 @@ class TrailingStopProtectionService {
 
       const orderOptions: Record<string, unknown> = {
         symbol,
-        orderType: OrderType.LIT,
+        orderType: OrderType.MIT,
         side: OrderSide.Sell,
         submittedQuantity: new Decimal(quantity.toString()),
-        submittedPrice: new Decimal(submittedPrice.toFixed(2)),
         triggerPrice: new Decimal(triggerPrice.toFixed(2)),
         timeInForce: TimeInForceType.GoodTilDate,
         expireDate: expireNaiveDate,
-        remark: 'SL_LIT_AUTO',
+        remark: 'SL_MIT_AUTO',
       };
 
       const response = await longportRateLimiter.execute(() =>
@@ -116,7 +115,7 @@ class TrailingStopProtectionService {
       if (!response || !response.orderId) {
         const errMsg = '未返回订单ID';
         logger.log(
-          `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: LIT止损单提交失败(${errMsg})，降级到纯监控模式`,
+          `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: MIT止损单提交失败(${errMsg})，降级到纯监控模式`,
           { dbWrite: true },
         );
         return { success: false, error: errMsg };
@@ -131,8 +130,8 @@ class TrailingStopProtectionService {
       );
 
       logger.log(
-        `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: LIT止损保护单已提交 orderId=${response.orderId}, ` +
-        `trigger=${triggerPrice.toFixed(2)}(-${stopLossPct}%), limit=${submittedPrice.toFixed(2)}`,
+        `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: MIT止损保护单已提交 orderId=${response.orderId}, ` +
+        `trigger=${triggerPrice.toFixed(2)}(-${stopLossPct}%)`,
         { dbWrite: true },
       );
 
@@ -140,7 +139,7 @@ class TrailingStopProtectionService {
     } catch (error: any) {
       const errMsg = error?.message || String(error);
       logger.log(
-        `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: LIT止损单提交失败(${errMsg})，降级到纯监控模式`,
+        `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: MIT止损单提交失败(${errMsg})，降级到纯监控模式`,
         { dbWrite: true },
       );
       return { success: false, error: errMsg };
@@ -280,13 +279,14 @@ class TrailingStopProtectionService {
   }
 
   // ============================================
-  // LIT 止盈保护单
+  // MIT 止盈保护单
   // ============================================
 
   /**
-   * 提交 LIT（触价限价单）止盈保护单
+   * 提交 MIT（触价市价单）止盈保护单
    *
-   * 当价格上涨到 triggerPrice 时自动触发限价卖出。
+   * 当价格上涨到 triggerPrice 时自动触发市价卖出。
+   * MIT 不需要限价，触发后直接市价成交。
    *
    * @param symbol        期权代码
    * @param quantity      合约数量
@@ -309,8 +309,6 @@ class TrailingStopProtectionService {
       }
 
       const triggerPrice = entryPrice * (1 + takeProfitPct / 100);
-      // 限价 = 触发价 * 0.97（留3%滑点空间确保成交）
-      const limitPrice = triggerPrice * 0.97;
 
       const tradeCtx = await getTradeContext();
 
@@ -335,14 +333,13 @@ class TrailingStopProtectionService {
 
       const orderOptions: Record<string, unknown> = {
         symbol,
-        orderType: OrderType.LIT,
+        orderType: OrderType.MIT,
         side: OrderSide.Sell,
         submittedQuantity: new Decimal(quantity.toString()),
-        submittedPrice: new Decimal(limitPrice.toFixed(2)),
         triggerPrice: new Decimal(triggerPrice.toFixed(2)),
         timeInForce: TimeInForceType.GoodTilDate,
         expireDate: expireNaiveDate,
-        remark: 'TP_LIT_AUTO',
+        remark: 'TP_MIT_AUTO',
       };
 
       const response = await longportRateLimiter.execute(() =>
@@ -352,7 +349,7 @@ class TrailingStopProtectionService {
       if (!response || !response.orderId) {
         const errMsg = '未返回订单ID';
         logger.log(
-          `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: LIT止盈单提交失败(${errMsg})`,
+          `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: MIT止盈单提交失败(${errMsg})`,
           { dbWrite: true },
         );
         return { success: false, error: errMsg };
@@ -367,8 +364,8 @@ class TrailingStopProtectionService {
       );
 
       logger.log(
-        `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: LIT止盈保护单已提交 orderId=${response.orderId}, ` +
-        `trigger=${triggerPrice.toFixed(2)}(+${takeProfitPct}%), limit=${limitPrice.toFixed(2)}`,
+        `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: MIT止盈保护单已提交 orderId=${response.orderId}, ` +
+        `trigger=${triggerPrice.toFixed(2)}(+${takeProfitPct}%)`,
         { dbWrite: true },
       );
 
@@ -376,7 +373,7 @@ class TrailingStopProtectionService {
     } catch (error: any) {
       const errMsg = error?.message || String(error);
       logger.log(
-        `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: LIT止盈单提交失败(${errMsg})`,
+        `${PROTECTION_TAG} 策略 ${strategyId} 期权 ${symbol}: MIT止盈单提交失败(${errMsg})`,
         { dbWrite: true },
       );
       return { success: false, error: errMsg };
@@ -384,7 +381,7 @@ class TrailingStopProtectionService {
   }
 
   /**
-   * 取消 LIT 止盈保护单（复用 cancelProtection 逻辑）
+   * 取消 MIT 止盈保护单（复用 cancelProtection 逻辑）
    */
   async cancelTakeProfitProtection(
     orderId: string,

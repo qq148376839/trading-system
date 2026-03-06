@@ -1,11 +1,23 @@
 # 项目进度总结
 
-**更新时间**: 2026-03-05
+**更新时间**: 2026-03-06
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-03-06: LIT → MIT OCO 保护单改造
+
+**变更内容**:
+
+1. **MIT 替换 LIT**: 保护单从触价限价单改为触价市价单，解决 paper account 604050 不支持问题
+2. **OCO 双单**: 买入成交后同时提交止损 MIT + 止盈 MIT，任一成交自动取消另一个
+3. **全路径覆盖**: 卖出回调/状态轮询/软件退出/Iron Dome 熔断/重试/BROKER_TERMINATED 均已适配双单逻辑
+
+**修改文件**:
+- 📝 `api/src/services/trailing-stop-protection.service.ts`（LIT→MIT，移除 submittedPrice）
+- 📝 `api/src/services/strategy-scheduler.service.ts`（submitProtectionAfterBuy + OCO 全路径）
 
 ### 2026-03-05: 持仓 API 异常误判修复（P0）
 

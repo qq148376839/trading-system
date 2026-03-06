@@ -47,6 +47,7 @@ const POSITION_CONTEXT_RESET = {
   lastCheckTime: null as null,
   lastBrokerCheckTime: null as null,
   protectionOrderId: null as null,
+  takeProfitOrderId: null as null,
 };
 
 /**
@@ -1102,11 +1103,11 @@ class StrategyScheduler {
                       `UPDATE execution_orders SET current_status = 'FILLED', fill_processed = TRUE, updated_at = NOW() WHERE order_id = $1`,
                       [dbOrder.order_id]
                     );
-                    // 补充 LIT：如果已是 HOLDING 但同步路径未提交保护单，补提交
+                    // 补充 MIT：如果已是 HOLDING 但同步路径未提交保护单，补提交
                     if (!context.protectionOrderId) {
                       const optMeta = context.optionMeta || context.intent?.metadata;
                       if (optMeta) {
-                        await this.submitLitProtectionAfterBuy(
+                        await this.submitProtectionAfterBuy(
                           strategyInstance, strategyId, instanceKeySymbol,
                           context.tradedSymbol || dbOrder.symbol,
                           filledQuantity, avgPrice, optMeta,
@@ -1130,10 +1131,10 @@ class StrategyScheduler {
 
                     logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol} 买入订单已成交，更新状态为HOLDING，订单ID: ${dbOrder.order_id}`);
 
-                    // === LIT 止损保护单提交 ===
+                    // === MIT 保护单提交（止损+止盈 OCO 双单） ===
                     const optMeta = context.optionMeta || context.intent?.metadata;
                     if (optMeta && !context.protectionOrderId) {
-                      await this.submitLitProtectionAfterBuy(
+                      await this.submitProtectionAfterBuy(
                         strategyInstance, strategyId, instanceKeySymbol,
                         context.tradedSymbol || dbOrder.symbol,
                         filledQuantity, avgPrice, optMeta,
@@ -1166,13 +1167,30 @@ class StrategyScheduler {
                     }
                   }
                   
-                  // 检测是否为保护单自动成交（protectionOrderId 匹配 + execution_stage 辅助）
-                  const isTslpFill = Boolean(
-                    (context.protectionOrderId && dbOrder.order_id === context.protectionOrderId) ||
-                    (dbOrder.execution_stage === 1 && dbOrder.side === 'SELL')
-                  );
+                  // 检测是否为 MIT 保护单自动成交（止损 or 止盈）
+                  const isSLFill = Boolean(context.protectionOrderId && dbOrder.order_id === context.protectionOrderId);
+                  const isTPFill = Boolean(context.takeProfitOrderId && dbOrder.order_id === context.takeProfitOrderId);
+                  const isTslpFill = isSLFill || isTPFill || Boolean(dbOrder.execution_stage === 1 && dbOrder.side === 'SELL');
                   if (isTslpFill) {
-                    logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol}: 卖出订单为保护单自动触发成交 (orderId=${dbOrder.order_id}, protectionOrderId=${context.protectionOrderId})`);
+                    const fillType = isSLFill ? 'SL' : (isTPFill ? 'TP' : 'UNKNOWN');
+                    logger.log(
+                      `策略 ${strategyId} 标的 ${instanceKeySymbol}: MIT保护单自动成交 type=${fillType} ` +
+                      `(orderId=${dbOrder.order_id}, SL=${context.protectionOrderId}, TP=${context.takeProfitOrderId})`
+                    );
+
+                    // OCO: 一单成交 → 取消另一单
+                    const counterOrderId = isSLFill ? context.takeProfitOrderId : context.protectionOrderId;
+                    if (counterOrderId) {
+                      try {
+                        await trailingStopProtectionService.cancelProtection(
+                          counterOrderId, strategyId,
+                          context.tradedSymbol || dbOrder.symbol,
+                        );
+                        logger.log(`策略 ${strategyId} 标的 ${instanceKeySymbol}: OCO对冲单已取消 orderId=${counterOrderId}`);
+                      } catch (ocoErr: any) {
+                        logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: OCO对冲单取消失败: ${ocoErr?.message}`);
+                      }
+                    }
                   }
 
                   // Fix 11: 递增 dailyTradeCount 供动态冷却期使用
@@ -1219,19 +1237,20 @@ class StrategyScheduler {
                     || context.intent?.metadata?.optionDirection
                     || null;
 
-                  // 软件退出时取消 broker 端残留保护单
-                  if (context.protectionOrderId && !isTslpFill) {
-                    try {
-                      const cancelResult = await trailingStopProtectionService.cancelProtection(
-                        context.protectionOrderId,
-                        strategyId,
-                        context.tradedSymbol || dbOrder.symbol,
-                      );
-                      if (cancelResult.alreadyFilled) {
-                        logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: 保护单在软件退出前已触发成交！需要检查仓位一致性`);
+                  // 软件退出时取消 broker 端残留 MIT 保护单（止损 + 止盈）
+                  if (!isTslpFill) {
+                    for (const [tag, oid] of [['SL', context.protectionOrderId], ['TP', context.takeProfitOrderId]] as const) {
+                      if (!oid) continue;
+                      try {
+                        const cancelResult = await trailingStopProtectionService.cancelProtection(
+                          oid, strategyId, context.tradedSymbol || dbOrder.symbol,
+                        );
+                        if (cancelResult.alreadyFilled) {
+                          logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: ${tag}保护单在软件卖出前已触发成交！需要检查仓位一致性`);
+                        }
+                      } catch (cancelErr: any) {
+                        logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: 取消残留${tag}保护单失败: ${cancelErr?.message}`);
                       }
-                    } catch (cancelErr: any) {
-                      logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: 取消残留保护单失败: ${cancelErr?.message}`);
                     }
                   }
 
@@ -1247,7 +1266,7 @@ class StrategyScheduler {
                     lastTradePnL: tradePnL,
                     takeProfitOrderId: null,
                     protectionOrderId: null,
-                    exitReason: isTslpFill ? 'PROTECTION_LIT_FILLED' : null,
+                    exitReason: isSLFill ? 'PROTECTION_MIT_SL_FILLED' : (isTPFill ? 'PROTECTION_MIT_TP_FILLED' : (isTslpFill ? 'PROTECTION_MIT_FILLED' : null)),
                     // 持仓级字段归零 — 防止跨交易污染
                     peakPnLPercent: null,
                     peakPrice: null,
@@ -1324,7 +1343,7 @@ class StrategyScheduler {
                           ]
                         );
 
-                        // V3: 熔断后对所有 HOLDING 仓位收紧保护单（cancel old → submit tighter LIT）
+                        // V3: 熔断后对所有 HOLDING 仓位收紧保护单（cancel old MIT → submit tighter SL MIT only）
                         try {
                           const holdingInstances = await pool.query(
                             `SELECT symbol, context FROM strategy_instances
@@ -1335,25 +1354,33 @@ class StrategyScheduler {
                             const hCtx = typeof row.context === 'string' ? JSON.parse(row.context) : (row.context || {});
                             const tradedSymbol = hCtx.tradedSymbol || row.symbol;
                             const protectionId = hCtx.protectionOrderId;
+                            const takeProfitId = hCtx.takeProfitOrderId;
                             const qty = parseInt(String(hCtx.quantity || 1));
                             const hEntryPrice = parseFloat(String(hCtx.entryPrice || 0));
 
-                            if (protectionId && hEntryPrice > 0) {
+                            if ((protectionId || takeProfitId) && hEntryPrice > 0) {
                               try {
-                                // 取消旧保护单
-                                await trailingStopProtectionService.cancelProtection(protectionId, strategyId, tradedSymbol);
-                                // 提交更紧的 LIT 止损（15% 替代 50%）
+                                // 取消旧 MIT 双单
+                                if (protectionId) {
+                                  await trailingStopProtectionService.cancelProtection(protectionId, strategyId, tradedSymbol);
+                                }
+                                if (takeProfitId) {
+                                  await trailingStopProtectionService.cancelProtection(takeProfitId, strategyId, tradedSymbol);
+                                }
+                                // 提交更紧的 MIT 止损（15% 替代原始百分比，不再提交止盈）
                                 const expDate = trailingStopProtectionService.extractOptionExpireDate(tradedSymbol, hCtx.optionMeta);
                                 const tighterResult = await trailingStopProtectionService.submitStopLossProtection(
                                   tradedSymbol, qty, hEntryPrice, 15, expDate, strategyId
                                 );
+                                const stateUpdate: Record<string, unknown> = {
+                                  takeProfitOrderId: null,
+                                };
                                 if (tighterResult.success && tighterResult.orderId) {
-                                  await strategyInstance.updateState(row.symbol, 'HOLDING', {
-                                    protectionOrderId: tighterResult.orderId,
-                                  });
+                                  stateUpdate.protectionOrderId = tighterResult.orderId;
                                 }
+                                await strategyInstance.updateState(row.symbol, 'HOLDING', stateUpdate);
                                 logger.warn(
-                                  `[CIRCUIT_BREAKER] 策略 ${strategyId} 标的 ${row.symbol}: HOLDING仓位保护单已收紧至-15%`
+                                  `[CIRCUIT_BREAKER] 策略 ${strategyId} 标的 ${row.symbol}: HOLDING仓位保护单已收紧至-15%（止盈已取消）`
                                 );
                               } catch (replaceErr: unknown) {
                                 logger.warn(
@@ -2264,9 +2291,9 @@ class StrategyScheduler {
             this.getCrossSymbolState(strategyId).activeEntries.set(symbol, Date.now());
           }
 
-          // === LIT 止损保护单 === 同步成交后立即提交
+          // === MIT 保护单（止损+止盈 OCO 双单） === 同步成交后立即提交
           if (isOptionStrategy && holdingContext.optionMeta) {
-            await this.submitLitProtectionAfterBuy(
+            await this.submitProtectionAfterBuy(
               strategyInstance, strategyId, symbol,
               intent.symbol,
               executionResult.filledQuantity,
@@ -2755,8 +2782,8 @@ class StrategyScheduler {
         // R5v2: 注册入场到跨标的保护状态
         this.getCrossSymbolState(strategyId).activeEntries.set(symbol, Date.now());
 
-        // === LIT 止损保护单 === 同步成交后立即提交
-        await this.submitLitProtectionAfterBuy(
+        // === MIT 保护单（止损+止盈 OCO 双单） === 同步成交后立即提交
+        await this.submitProtectionAfterBuy(
           strategyInstance, strategyId, symbol,
           intent.symbol,
           executionResult.filledQuantity,
@@ -3722,22 +3749,38 @@ class StrategyScheduler {
     optionMidPrice: number = 0
   ): Promise<{ actionTaken: boolean }> {
     try {
-      // 0. 保护单状态检查：如果券商保护单已触发成交，直接转 IDLE
-      if (context.protectionOrderId) {
+      // 0. MIT 保护单状态检查（止损 + 止盈 OCO 双单）
+      for (const [tag, ctxKey, exitReason] of [
+        ['SL', 'protectionOrderId', 'PROTECTION_MIT_SL_FILLED'],
+        ['TP', 'takeProfitOrderId', 'PROTECTION_MIT_TP_FILLED'],
+      ] as const) {
+        const orderId = context[ctxKey];
+        if (!orderId) continue;
         try {
-          const protStatus = await trailingStopProtectionService.checkProtectionStatus(context.protectionOrderId);
+          const protStatus = await trailingStopProtectionService.checkProtectionStatus(orderId);
           if (protStatus === 'filled') {
             logger.log(
-              `策略 ${strategyId} 期权 ${effectiveSymbol}: LIT保护单已触发成交(${context.protectionOrderId})，券商已平仓，更新状态为IDLE`
+              `策略 ${strategyId} 期权 ${effectiveSymbol}: MIT${tag}保护单已触发成交(${orderId})，券商已平仓，更新状态为IDLE`
             );
+            // OCO: 取消另一单
+            const counterKey = ctxKey === 'protectionOrderId' ? 'takeProfitOrderId' : 'protectionOrderId';
+            const counterOrderId = context[counterKey];
+            if (counterOrderId) {
+              try {
+                await trailingStopProtectionService.cancelProtection(counterOrderId, strategyId, effectiveSymbol);
+                logger.log(`策略 ${strategyId} 期权 ${effectiveSymbol}: OCO对冲单(${counterKey})已取消`);
+              } catch (ocoErr: any) {
+                logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: OCO对冲单取消失败: ${ocoErr?.message}`);
+              }
+            }
             const protPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
             const protPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
             const protPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
             await strategyInstance.updateState(symbol, 'IDLE', {
               ...POSITION_EXIT_CLEANUP,
               lastExitTime: new Date().toISOString(),
-              exitReason: 'PROTECTION_LIT_FILLED',
-              exitReasonDetail: `LIT保护单${context.protectionOrderId}已触发`,
+              exitReason,
+              exitReasonDetail: `MIT${tag}保护单${orderId}已触发`,
               dailyTradeCount: protPrevTradeCount + 1,
               consecutiveLosses: protPrevConsecLosses,  // 保护单无法判断盈亏，保持现有值
               dailyRealizedPnL: protPrevDailyPnL,       // 实际 PnL 由订单回调更新
@@ -3752,15 +3795,14 @@ class StrategyScheduler {
             return { actionTaken: true };
           }
           if (protStatus === 'cancelled' || protStatus === 'expired') {
-            logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: 保护单已${protStatus}，清除protectionOrderId`);
+            logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: ${tag}保护单已${protStatus}，清除${ctxKey}`);
             await strategyInstance.updateState(symbol, 'HOLDING', {
-              ...context,
-              protectionOrderId: undefined,
+              [ctxKey]: undefined,
             });
-            context.protectionOrderId = undefined;
+            context[ctxKey] = undefined;
           }
         } catch (protCheckErr: any) {
-          logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: 保护单状态查询异常(${protCheckErr?.message})，继续软件监控`);
+          logger.debug(`策略 ${strategyId} 期权 ${effectiveSymbol}: ${tag}保护单状态查询异常(${protCheckErr?.message})，继续软件监控`);
         }
       }
 
@@ -3773,36 +3815,48 @@ class StrategyScheduler {
           try {
             const params = context.protectionRetryParams || context.tslpRetryParams;
             if (params) {
-              // 兼容读旧字段名：旧版有 trailingPct/limitOffset，新版有 entryPrice/stopLossPct
-              const entryPrice = params.entryPrice || 0;
-              const stopLossPct = params.stopLossPct || 50;
-              const retryResult = await trailingStopProtectionService.submitStopLossProtection(
-                params.tradedSymbol, params.quantity, entryPrice, stopLossPct,
+              const retryEntryPrice = params.entryPrice || 0;
+              const retryStopLossPct = params.stopLossPct || 50;
+              const retryTakeProfitPct = params.takeProfitPct || 50;
+
+              // 重试：提交 MIT 双单（止损 + 止盈）
+              const slRetry = await trailingStopProtectionService.submitStopLossProtection(
+                params.tradedSymbol, params.quantity, retryEntryPrice, retryStopLossPct,
                 params.expireDate, strategyId,
               );
-              if (retryResult.success && retryResult.orderId) {
-                await strategyInstance.updateState(symbol, 'HOLDING', {
-                  protectionOrderId: retryResult.orderId,
-                  emergencyStopLoss: undefined,
-                  protectionRetryPending: undefined,
-                  protectionRetryParams: undefined,
-                  protectionRetryAfter: undefined,
-                  tslpRetryPending: undefined,
-                  tslpRetryParams: undefined,
-                  tslpRetryAfter: undefined,
-                });
-                logger.log(`[PROTECTION_RETRY] 策略${strategyId} ${params.tradedSymbol}: DB重试成功 orderId=${retryResult.orderId}`);
+              const tpRetry = await trailingStopProtectionService.submitTakeProfitProtection(
+                params.tradedSymbol, params.quantity, retryEntryPrice, retryTakeProfitPct,
+                params.expireDate, strategyId,
+              );
+
+              const retryUpdate: Record<string, unknown> = {
+                protectionRetryPending: undefined,
+                protectionRetryParams: undefined,
+                protectionRetryAfter: undefined,
+                tslpRetryPending: undefined,
+                tslpRetryParams: undefined,
+                tslpRetryAfter: undefined,
+              };
+              const anyRetrySuccess = (slRetry.success && slRetry.orderId) || (tpRetry.success && tpRetry.orderId);
+
+              if (slRetry.success && slRetry.orderId) {
+                retryUpdate.protectionOrderId = slRetry.orderId;
+              }
+              if (tpRetry.success && tpRetry.orderId) {
+                retryUpdate.takeProfitOrderId = tpRetry.orderId;
+              }
+              if (anyRetrySuccess) {
+                retryUpdate.emergencyStopLoss = undefined;
+                await strategyInstance.updateState(symbol, 'HOLDING', retryUpdate);
+                logger.log(
+                  `[PROTECTION_RETRY] 策略${strategyId} ${params.tradedSymbol}: DB重试成功` +
+                  (slRetry.orderId ? ` SL=${slRetry.orderId}` : '') +
+                  (tpRetry.orderId ? ` TP=${tpRetry.orderId}` : '')
+                );
                 await this.resetProtectionFailure(strategyId);
               } else {
-                await strategyInstance.updateState(symbol, 'HOLDING', {
-                  protectionRetryPending: undefined,
-                  protectionRetryParams: undefined,
-                  protectionRetryAfter: undefined,
-                  tslpRetryPending: undefined,
-                  tslpRetryParams: undefined,
-                  tslpRetryAfter: undefined,
-                });
-                logger.warn(`[PROTECTION_RETRY] 策略${strategyId} ${params.tradedSymbol}: DB重试仍失败(${retryResult.error})，保持紧急止损`);
+                await strategyInstance.updateState(symbol, 'HOLDING', retryUpdate);
+                logger.warn(`[PROTECTION_RETRY] 策略${strategyId} ${params.tradedSymbol}: DB重试仍失败(SL=${slRetry.error}, TP=${tpRetry.error})，保持紧急止损`);
               }
             }
           } catch (retryErr: any) {
@@ -4140,44 +4194,47 @@ class StrategyScheduler {
           return { actionTaken: true };
         }
 
-        // === 保护单取消：软件退出前先取消券商保护单 ===
-        if (context.protectionOrderId) {
-          try {
-            const cancelResult = await trailingStopProtectionService.cancelProtection(
-              context.protectionOrderId,
-              strategyId,
-              effectiveSymbol,
-            );
-            if (cancelResult.alreadyFilled) {
-              // 券商保护单已触发成交！跳过软件卖出，直接转 IDLE
-              logger.log(
-                `策略 ${strategyId} 期权 ${effectiveSymbol}: LIT保护单已触发成交，跳过软件卖出`
-              );
-              const protSwPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
-              const protSwPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
-              const protSwPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
-              await strategyInstance.updateState(symbol, 'IDLE', {
-                ...POSITION_EXIT_CLEANUP,
-                lastExitTime: new Date().toISOString(),
-                exitReason: 'PROTECTION_LIT_FILLED',
-                exitReasonDetail: `软件退出时发现LIT保护单(${context.protectionOrderId})已成交`,
-                dailyTradeCount: protSwPrevTradeCount + 1,
-                consecutiveLosses: protSwPrevConsecLosses,
-                dailyRealizedPnL: protSwPrevDailyPnL,
-                lastTradeDirection: context.optionMeta?.optionDirection || context.intent?.metadata?.optionDirection || null,
-              });
-              // R5: 清除跨标的入场状态
-              this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
-              if (context.allocationAmount) {
-                await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
+        // === MIT 保护单取消：软件退出前先取消券商 MIT 双单（止损+止盈） ===
+        {
+          let anyMitFilled = false;
+          let filledTag = '';
+          let filledOrderId = '';
+          for (const [tag, oid] of [['SL', context.protectionOrderId], ['TP', context.takeProfitOrderId]] as const) {
+            if (!oid) continue;
+            try {
+              const cancelResult = await trailingStopProtectionService.cancelProtection(oid, strategyId, effectiveSymbol);
+              if (cancelResult.alreadyFilled) {
+                anyMitFilled = true;
+                filledTag = tag;
+                filledOrderId = oid;
               }
-              return { actionTaken: true };
+            } catch (cancelErr: any) {
+              logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: ${tag}保护单取消异常(${cancelErr?.message})，继续软件卖出`);
             }
-            // 取消成功或失败都继续软件卖出
-          } catch (cancelErr: any) {
-            logger.warn(
-              `策略 ${strategyId} 期权 ${effectiveSymbol}: 保护单取消异常(${cancelErr?.message})，继续软件卖出`
-            );
+          }
+          if (anyMitFilled) {
+            // 某个 MIT 保护单已触发成交！跳过软件卖出，直接转 IDLE
+            const exitReason = filledTag === 'SL' ? 'PROTECTION_MIT_SL_FILLED' : 'PROTECTION_MIT_TP_FILLED';
+            logger.log(`策略 ${strategyId} 期权 ${effectiveSymbol}: MIT${filledTag}保护单已触发成交，跳过软件卖出`);
+            const protSwPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
+            const protSwPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
+            const protSwPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+            await strategyInstance.updateState(symbol, 'IDLE', {
+              ...POSITION_EXIT_CLEANUP,
+              lastExitTime: new Date().toISOString(),
+              exitReason,
+              exitReasonDetail: `软件退出时发现MIT${filledTag}保护单(${filledOrderId})已成交`,
+              dailyTradeCount: protSwPrevTradeCount + 1,
+              consecutiveLosses: protSwPrevConsecLosses,
+              dailyRealizedPnL: protSwPrevDailyPnL,
+              lastTradeDirection: context.optionMeta?.optionDirection || context.intent?.metadata?.optionDirection || null,
+            });
+            // R5: 清除跨标的入场状态
+            this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
+            if (context.allocationAmount) {
+              await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
+            }
+            return { actionTaken: true };
           }
         }
 
@@ -5109,6 +5166,16 @@ class StrategyScheduler {
             `系统要你命的时候都不会提前通知你！`
           );
 
+          // 取消残留的 MIT 保护单（止损+止盈）
+          for (const oid of [ctx.protectionOrderId, ctx.takeProfitOrderId]) {
+            if (!oid) continue;
+            try {
+              await trailingStopProtectionService.cancelProtection(oid, strategyId, tradedSymbol);
+            } catch (mitCancelErr: any) {
+              logger.warn(`[IRON_DOME] 策略 ${strategyId} 标的 ${row.symbol}: 取消残留MIT单失败: ${mitCancelErr?.message}`);
+            }
+          }
+
           // 标记为 BROKER_TERMINATED 并释放资金
           // 260301 Fix: 同时清除持仓级字段，防止下一笔交易继承 peakPnLPercent 等
           const allocationAmount = parseFloat(String(ctx.allocationAmount || 0));
@@ -5160,10 +5227,12 @@ class StrategyScheduler {
   }
 
   /**
-   * 买入成交后提交 LIT 止损保护单（统一入口）
-   * trigger = entryPrice × 0.5，失败时设置紧急止损 + 30秒后重试
+   * 买入成交后提交 MIT 保护单（OCO 双单：止损 + 止盈）
+   *
+   * 从 optionMeta.exitRules 读取 stopLossPercent / takeProfitPercent（fallback 50）
+   * 成功后存入 context: protectionOrderId（止损） + takeProfitOrderId（止盈）
    */
-  private async submitLitProtectionAfterBuy(
+  private async submitProtectionAfterBuy(
     strategyInstance: StrategyBase,
     strategyId: number,
     instanceKeySymbol: string,
@@ -5177,27 +5246,58 @@ class StrategyScheduler {
 
     try {
       const expDate = trailingStopProtectionService.extractOptionExpireDate(tradedSymbol, optionMeta);
-      const stopLossPct = 50; // trigger = entryPrice × 0.5
 
+      // 从 exitRules 读取止损止盈百分比，fallback 50
+      const exitRules = optionMeta?.exitRules as Record<string, unknown> | undefined;
+      const rawSLPct = Number(exitRules?.stopLossPercent);
+      const stopLossPct = (!isNaN(rawSLPct) && rawSLPct > 0) ? rawSLPct : 50;
+      const rawTPPct = Number(exitRules?.takeProfitPercent);
+      const takeProfitPct = (!isNaN(rawTPPct) && rawTPPct > 0) ? rawTPPct : 50;
+
+      // 1. 提交止损 MIT
       const slResult = await trailingStopProtectionService.submitStopLossProtection(
-        tradedSymbol,
-        filledQuantity,
-        avgPrice,
-        stopLossPct,
-        expDate,
-        strategyId,
+        tradedSymbol, filledQuantity, avgPrice, stopLossPct, expDate, strategyId,
       );
+
+      // 2. 提交止盈 MIT
+      const tpResult = await trailingStopProtectionService.submitTakeProfitProtection(
+        tradedSymbol, filledQuantity, avgPrice, takeProfitPct, expDate, strategyId,
+      );
+
+      const stateUpdate: Record<string, unknown> = {};
+      let anySuccess = false;
+
       if (slResult.success && slResult.orderId) {
-        await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
-          protectionOrderId: slResult.orderId,
-        });
-        logger.log(`策略 ${strategyId} 期权 ${tradedSymbol}: LIT止损保护单已提交 orderId=${slResult.orderId}, trigger=${(avgPrice * 0.5).toFixed(2)}`);
+        stateUpdate.protectionOrderId = slResult.orderId;
+        anySuccess = true;
+        logger.log(
+          `策略 ${strategyId} 期权 ${tradedSymbol}: MIT止损保护单已提交 orderId=${slResult.orderId}, ` +
+          `trigger=${(avgPrice * (1 - stopLossPct / 100)).toFixed(2)}(-${stopLossPct}%)`
+        );
+      } else {
+        logger.warn(`策略 ${strategyId} 期权 ${tradedSymbol}: MIT止损单提交失败(${slResult.error})`);
+      }
+
+      if (tpResult.success && tpResult.orderId) {
+        stateUpdate.takeProfitOrderId = tpResult.orderId;
+        anySuccess = true;
+        logger.log(
+          `策略 ${strategyId} 期权 ${tradedSymbol}: MIT止盈保护单已提交 orderId=${tpResult.orderId}, ` +
+          `trigger=${(avgPrice * (1 + takeProfitPct / 100)).toFixed(2)}(+${takeProfitPct}%)`
+        );
+      } else {
+        logger.warn(`策略 ${strategyId} 期权 ${tradedSymbol}: MIT止盈单提交失败(${tpResult.error})`);
+      }
+
+      if (anySuccess) {
+        await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', stateUpdate);
         await this.resetProtectionFailure(strategyId);
       } else {
-        logger.warn(`策略 ${strategyId} 期权 ${tradedSymbol}: LIT止损单提交失败(${slResult.error})，降级到纯监控模式`);
+        // 双单均失败 → 降级到纯监控模式
+        logger.warn(`策略 ${strategyId} 期权 ${tradedSymbol}: MIT双单均提交失败，降级到纯监控模式`);
         await this.recordProtectionFailure(strategyId);
 
-        const emergencyStopLoss = avgPrice * 0.5;
+        const emergencyStopLoss = avgPrice * (1 - stopLossPct / 100);
         await strategyInstance.updateState(instanceKeySymbol, 'HOLDING', {
           emergencyStopLoss,
           protectionRetryPending: true,
@@ -5206,15 +5306,16 @@ class StrategyScheduler {
             quantity: filledQuantity,
             entryPrice: avgPrice,
             stopLossPct,
+            takeProfitPct,
             expireDate: expDate,
           },
           protectionRetryAfter: new Date(Date.now() + 30000).toISOString(),
         });
-        logger.warn(`[PROTECTION_EMERGENCY] 策略${strategyId} ${tradedSymbol}: 设置紧急止损 $${emergencyStopLoss.toFixed(2)} + 30秒后DB重试`);
+        logger.warn(`[PROTECTION_EMERGENCY] 策略${strategyId} ${tradedSymbol}: 设置紧急止损 $${emergencyStopLoss.toFixed(2)} + 30秒后重试`);
       }
     } catch (protErr: unknown) {
       const errMsg = protErr instanceof Error ? protErr.message : String(protErr);
-      logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: LIT止损单提交异常(${errMsg})，降级到纯监控模式`);
+      logger.warn(`策略 ${strategyId} 标的 ${instanceKeySymbol}: MIT保护单提交异常(${errMsg})，降级到纯监控模式`);
       await this.recordProtectionFailure(strategyId);
 
       if (avgPrice > 0) {

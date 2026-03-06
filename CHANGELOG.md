@@ -1,5 +1,29 @@
 # 更新日志
 
+## 2026-03-06
+
+### 改造：LIT → MIT OCO 保护单（止损+止盈双单）
+
+**背景**: Paper account 报错 604050 不支持 `OrderType.LIT`（触价限价单）。改用 `OrderType.MIT`（触价市价单）+ OCO 双单机制。
+
+**核心变更**:
+- `trailing-stop-protection.service.ts`: `OrderType.LIT` → `OrderType.MIT`，移除 `submittedPrice`（MIT 是市价单不需要限价）
+- `strategy-scheduler.service.ts`:
+  - `submitLitProtectionAfterBuy` → `submitProtectionAfterBuy`：从 `exitRules` 读取 stopLoss/takeProfit 百分比，提交 **两个** MIT 单（止损+止盈），存入 `protectionOrderId` + `takeProfitOrderId`
+  - 卖出成交回调：检测止损/止盈哪个成交 → 取消另一个（OCO），exitReason 区分 `PROTECTION_MIT_SL_FILLED` / `PROTECTION_MIT_TP_FILLED`
+  - 保护单状态轮询：双单都检查，任一成交 → 取消对方 → 转 IDLE
+  - 软件退出路径：取消两个 MIT 单，发现已成交则跳过软件卖出
+  - Iron Dome 熔断收紧：取消旧双单 → 只提交更紧的 15% SL MIT
+  - 重试逻辑：重试时提交 SL + TP 双单
+  - BROKER_TERMINATED：取消残留 MIT 单
+  - `POSITION_CONTEXT_RESET` 新增 `takeProfitOrderId: null`
+
+**修改文件**:
+- `api/src/services/trailing-stop-protection.service.ts`
+- `api/src/services/strategy-scheduler.service.ts`
+
+---
+
 ## 2026-03-05
 
 ### 修复：持仓 API 异常误判为无持仓（P0）
