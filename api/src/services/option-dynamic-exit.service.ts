@@ -156,6 +156,14 @@ const SELLER_PARAMS: Record<TradingPhase, Omit<DynamicExitParams, 'adjustmentRea
   },
 };
 
+/** 阶梯锁利配置 — 盈利达到台阶后锁定最低利润底线 */
+const PROFIT_LOCK_STEPS = [
+  { threshold: 10, floor: 0 },    // 盈利≥10% → 至少保本
+  { threshold: 20, floor: 10 },   // 盈利≥20% → 至少赚10%
+  { threshold: 30, floor: 20 },   // 盈利≥30% → 至少赚20%
+  { threshold: 50, floor: 35 },   // 盈利≥50% → 至少赚35%
+];
+
 // ============================================
 // 核心服务类
 // ============================================
@@ -500,6 +508,32 @@ class OptionDynamicExitService {
             exitTag: 'time_stop_no_tailwind',
           };
         }
+      }
+    }
+
+    // 2.8 阶梯锁利检查 — 盈利踩上台阶后不允许跌回下一台阶
+    // 使用 peakPnLPercent（历史最高盈利）确定锁定的底线
+    const peakForLock = Math.max(ctx.peakPnLPercent ?? 0, pnl.grossPnLPercent);
+    if (peakForLock >= PROFIT_LOCK_STEPS[0].threshold) {
+      // 找到峰值对应的最高台阶
+      let lockedFloor = 0;
+      let lockedThreshold = PROFIT_LOCK_STEPS[0].threshold;
+      for (const step of PROFIT_LOCK_STEPS) {
+        if (peakForLock >= step.threshold) {
+          lockedFloor = step.floor;
+          lockedThreshold = step.threshold;
+        } else {
+          break;
+        }
+      }
+      // 当前盈利跌破底线 → 触发锁利退出
+      if (pnl.grossPnLPercent <= lockedFloor) {
+        return {
+          action: 'TRAILING_STOP',
+          reason: `阶梯锁利：峰值${peakForLock.toFixed(1)}%踩上${lockedThreshold}%台阶，底线${lockedFloor}%，当前${pnl.grossPnLPercent.toFixed(1)}% ≤ 底线`,
+          pnl,
+          exitTag: 'ratchet_profit_lock',
+        };
       }
     }
 

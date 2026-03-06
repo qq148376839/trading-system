@@ -2,6 +2,23 @@
 
 ## 2026-03-06
 
+### 新增：阶梯锁利 (Ratchet Profit Lock) + 策略10入场阈值调整
+
+**阶梯锁利** — 在 `option-dynamic-exit.service.ts` 移动止损之前新增阶梯式利润底线检查：
+- 峰值盈利≥10% → 至少保本(0%)
+- 峰值盈利≥20% → 至少赚10%
+- 峰值盈利≥30% → 至少赚20%
+- 峰值盈利≥50% → 至少赚35%
+
+使用 `peakPnLPercent`（scheduler 追踪的历史最高盈利）确定踩上哪个台阶，当前盈利跌破底线即触发退出。exitTag: `ratchet_profit_lock`。
+
+**策略10阈值** — `entryThresholdOverride.spreadScoreMin` 从 8 调整为 7（DB 更新，无需重启）。
+
+**修改文件**:
+- `api/src/services/option-dynamic-exit.service.ts`（新增 `PROFIT_LOCK_STEPS` 常量 + step 2.8 阶梯锁利检查）
+
+---
+
 ### 改造：LIT → MIT OCO 保护单（止损+止盈双单）
 
 **背景**: Paper account 报错 604050 不支持 `OrderType.LIT`（触价限价单）。改用 `OrderType.MIT`（触价市价单）+ OCO 双单机制。

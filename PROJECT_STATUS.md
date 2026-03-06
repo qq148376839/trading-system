@@ -7,6 +7,16 @@
 
 ## 🆕 最近更新
 
+### 2026-03-06: 阶梯锁利 + 策略10入场阈值调整
+
+**变更内容**:
+
+1. **阶梯锁利 (Ratchet Profit Lock)**: 在移动止损之前新增阶梯式利润底线 — 峰值≥10%保本、≥20%锁10%、≥30%锁20%、≥50%锁35%
+2. **策略10阈值**: `spreadScoreMin` 从 8 降为 7（DB 更新，下个调度周期自动生效）
+
+**修改文件**:
+- 📝 `api/src/services/option-dynamic-exit.service.ts`（`PROFIT_LOCK_STEPS` + step 2.8 阶梯锁利检查）
+
 ### 2026-03-06: LIT → MIT OCO 保护单改造
 
 **变更内容**:
