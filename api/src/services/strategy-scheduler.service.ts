@@ -3356,39 +3356,7 @@ class StrategyScheduler {
                 `策略 ${strategyId} 期权 ${effectiveSymbol}: ⚠️ 收盘前紧急平仓 - 所有价格获取失败但临近收盘，使用市价单避免归零`
               );
 
-              // 取消残留 MIT 保护单（止损+止盈），检测是否已成交
-              let emergencyMitFilled = false;
-              for (const [tag, oid] of [['SL', context.protectionOrderId], ['TP', context.takeProfitOrderId]] as const) {
-                if (!oid) continue;
-                try {
-                  const cancelResult = await trailingStopProtectionService.cancelProtection(oid, strategyId, effectiveSymbol);
-                  if (cancelResult.alreadyFilled) {
-                    emergencyMitFilled = true;
-                    logger.log(`策略 ${strategyId} 期权 ${effectiveSymbol}: 紧急平仓时MIT${tag}保护单已成交，跳过卖出`);
-                  }
-                } catch (cancelErr: any) {
-                  logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: 紧急平仓取消${tag}保护单失败: ${cancelErr?.message}`);
-                }
-              }
-              if (emergencyMitFilled) {
-                // MIT 已成交 → 仓位已平，直接转 IDLE
-                const ecPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
-                const ecPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
-                await strategyInstance.updateState(symbol, 'IDLE', {
-                  ...POSITION_EXIT_CLEANUP,
-                  lastExitTime: new Date().toISOString(),
-                  exitReason: 'PROTECTION_MIT_FILLED',
-                  exitReasonDetail: '紧急平仓前MIT保护单已成交',
-                  dailyTradeCount: ecPrevTradeCount + 1,
-                  dailyRealizedPnL: ecPrevDailyPnL,
-                  lastTradeDirection: context.optionMeta?.optionDirection || null,
-                });
-                this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
-                if (context.allocationAmount) {
-                  await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
-                }
-                return { actionTaken: true };
-              }
+              // MIT 保护单不在此处取消 — 先提交卖出抢时间，成交回调中再取消残留 MIT
 
               // 检查可用持仓
               const positionCheck = await this.checkAvailablePosition(strategyId, effectiveSymbol);
@@ -3519,39 +3487,7 @@ class StrategyScheduler {
           `[PROTECTION_EMERGENCY] 策略${strategyId} ${effectiveSymbol}: 触发紧急止损! ` +
           `当前价=$${currentPrice.toFixed(2)} <= 紧急止损=$${context.emergencyStopLoss.toFixed(2)}`
         );
-        // 取消残留 MIT 保护单（重试可能部分成功），检测是否已成交
-        let esMitFilled = false;
-        for (const [tag, oid] of [['SL', context.protectionOrderId], ['TP', context.takeProfitOrderId]] as const) {
-          if (!oid) continue;
-          try {
-            const cancelResult = await trailingStopProtectionService.cancelProtection(oid, strategyId, effectiveSymbol);
-            if (cancelResult.alreadyFilled) {
-              esMitFilled = true;
-              logger.log(`策略 ${strategyId} 期权 ${effectiveSymbol}: 紧急止损时MIT${tag}保护单已成交，跳过卖出`);
-            }
-          } catch (cancelErr: any) {
-            logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: 紧急止损取消${tag}保护单失败: ${cancelErr?.message}`);
-          }
-        }
-        if (esMitFilled) {
-          // MIT 已成交 → 仓位已平，直接转 IDLE
-          const esPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
-          const esPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
-          await strategyInstance.updateState(symbol, 'IDLE', {
-            ...POSITION_EXIT_CLEANUP,
-            lastExitTime: new Date().toISOString(),
-            exitReason: 'PROTECTION_MIT_FILLED',
-            exitReasonDetail: '紧急止损时MIT保护单已成交',
-            dailyTradeCount: esPrevTradeCount + 1,
-            dailyRealizedPnL: esPrevDailyPnL,
-            lastTradeDirection: context.optionMeta?.optionDirection || null,
-          });
-          this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
-          if (context.allocationAmount) {
-            await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
-          }
-          return { actionTaken: true };
-        }
+        // MIT 保护单不在此处取消 — 先提交卖出抢时间，成交回调中再取消残留 MIT
         // 触发紧急平仓
         const posCheck = await this.checkAvailablePosition(strategyId, effectiveSymbol);
         const sellQty = posCheck.availableQuantity !== undefined
@@ -4279,50 +4215,7 @@ class StrategyScheduler {
           return { actionTaken: true };
         }
 
-        // === MIT 保护单取消：软件退出前先取消券商 MIT 双单（止损+止盈） ===
-        {
-          let anyMitFilled = false;
-          let filledTag = '';
-          let filledOrderId = '';
-          for (const [tag, oid] of [['SL', context.protectionOrderId], ['TP', context.takeProfitOrderId]] as const) {
-            if (!oid) continue;
-            try {
-              const cancelResult = await trailingStopProtectionService.cancelProtection(oid, strategyId, effectiveSymbol);
-              if (cancelResult.alreadyFilled) {
-                anyMitFilled = true;
-                filledTag = tag;
-                filledOrderId = oid;
-              }
-            } catch (cancelErr: any) {
-              logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: ${tag}保护单取消异常(${cancelErr?.message})，继续软件卖出`);
-            }
-          }
-          if (anyMitFilled) {
-            // 某个 MIT 保护单已触发成交！跳过软件卖出，直接转 IDLE
-            const exitReason = filledTag === 'SL' ? 'PROTECTION_MIT_SL_FILLED' : 'PROTECTION_MIT_TP_FILLED';
-            logger.log(`策略 ${strategyId} 期权 ${effectiveSymbol}: MIT${filledTag}保护单已触发成交，跳过软件卖出`);
-            const protSwPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
-            const protSwPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
-            const protSwPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
-            await strategyInstance.updateState(symbol, 'IDLE', {
-              ...POSITION_EXIT_CLEANUP,
-              lastExitTime: new Date().toISOString(),
-              exitReason,
-              exitReasonDetail: `软件退出时发现MIT${filledTag}保护单(${filledOrderId})已成交`,
-              dailyTradeCount: protSwPrevTradeCount + 1,
-              consecutiveLosses: protSwPrevConsecLosses,
-              dailyRealizedPnL: protSwPrevDailyPnL,
-              lastTradeDirection: context.optionMeta?.optionDirection || context.intent?.metadata?.optionDirection || null,
-            });
-            // R5: 清除跨标的入场状态
-            this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
-            if (context.allocationAmount) {
-              await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
-            }
-            return { actionTaken: true };
-          }
-        }
-
+        // MIT 保护单不在此处取消 — 先提交卖出抢时间，成交回调中再取消残留 MIT
         // 更新状态为 CLOSING
         await strategyInstance.updateState(symbol, 'CLOSING', {
           ...context,
