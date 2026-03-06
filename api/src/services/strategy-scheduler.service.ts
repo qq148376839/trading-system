@@ -3356,6 +3356,16 @@ class StrategyScheduler {
                 `策略 ${strategyId} 期权 ${effectiveSymbol}: ⚠️ 收盘前紧急平仓 - 所有价格获取失败但临近收盘，使用市价单避免归零`
               );
 
+              // 取消残留 MIT 保护单（止损+止盈）
+              for (const [tag, oid] of [['SL', context.protectionOrderId], ['TP', context.takeProfitOrderId]] as const) {
+                if (!oid) continue;
+                try {
+                  await trailingStopProtectionService.cancelProtection(oid, strategyId, effectiveSymbol);
+                } catch (cancelErr: any) {
+                  logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: 紧急平仓取消${tag}保护单失败: ${cancelErr?.message}`);
+                }
+              }
+
               // 检查可用持仓
               const positionCheck = await this.checkAvailablePosition(strategyId, effectiveSymbol);
               const sellQty = positionCheck.availableQuantity !== undefined
@@ -3438,6 +3448,15 @@ class StrategyScheduler {
               logger.warn(
                 `策略 ${strategyId} 期权 ${effectiveSymbol}: 已过期+价格获取失败+券商无持仓，自动转为IDLE`
               );
+              // 取消残留 MIT 保护单
+              for (const [tag, oid] of [['SL', context.protectionOrderId], ['TP', context.takeProfitOrderId]] as const) {
+                if (!oid) continue;
+                try {
+                  await trailingStopProtectionService.cancelProtection(oid, strategyId, effectiveSymbol);
+                } catch (cancelErr: any) {
+                  logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: 过期清理取消${tag}保护单失败: ${cancelErr?.message}`);
+                }
+              }
               // 260301 Fix: 过期退出也必须清除持仓级字段 + 递增 trade counters
               const expNpPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
               const expNpPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
@@ -3476,6 +3495,15 @@ class StrategyScheduler {
           `[PROTECTION_EMERGENCY] 策略${strategyId} ${effectiveSymbol}: 触发紧急止损! ` +
           `当前价=$${currentPrice.toFixed(2)} <= 紧急止损=$${context.emergencyStopLoss.toFixed(2)}`
         );
+        // 取消残留 MIT 保护单（重试可能部分成功）
+        for (const [tag, oid] of [['SL', context.protectionOrderId], ['TP', context.takeProfitOrderId]] as const) {
+          if (!oid) continue;
+          try {
+            await trailingStopProtectionService.cancelProtection(oid, strategyId, effectiveSymbol);
+          } catch (cancelErr: any) {
+            logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: 紧急止损取消${tag}保护单失败: ${cancelErr?.message}`);
+          }
+        }
         // 触发紧急平仓
         const posCheck = await this.checkAvailablePosition(strategyId, effectiveSymbol);
         const sellQty = posCheck.availableQuantity !== undefined
@@ -4145,6 +4173,15 @@ class StrategyScheduler {
           logger.warn(
             `策略 ${strategyId} 期权 ${effectiveSymbol}: 券商报告无持仓，自动转为IDLE`
           );
+          // 取消残留 MIT 保护单
+          for (const [tag, oid] of [['SL', context.protectionOrderId], ['TP', context.takeProfitOrderId]] as const) {
+            if (!oid) continue;
+            try {
+              await trailingStopProtectionService.cancelProtection(oid, strategyId, effectiveSymbol);
+            } catch (cancelErr: any) {
+              logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: broker无持仓取消${tag}保护单失败: ${cancelErr?.message}`);
+            }
+          }
           // 260301 Fix: broker_position_zero 退出清除持仓级字段 + 递增 trade counters
           const bpzPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
           const bpzPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
@@ -4323,6 +4360,15 @@ class StrategyScheduler {
           logger.warn(
             `策略 ${strategyId} 期权 ${effectiveSymbol}: 定期核对发现券商无持仓，自动转为IDLE`
           );
+          // 取消残留 MIT 保护单
+          for (const [tag, oid] of [['SL', context.protectionOrderId], ['TP', context.takeProfitOrderId]] as const) {
+            if (!oid) continue;
+            try {
+              await trailingStopProtectionService.cancelProtection(oid, strategyId, effectiveSymbol);
+            } catch (cancelErr: any) {
+              logger.warn(`策略 ${strategyId} 期权 ${effectiveSymbol}: 定期核对取消${tag}保护单失败: ${cancelErr?.message}`);
+            }
+          }
           // 260301 Fix: 定期核对退出也清除持仓级字段 + 递增 trade counters
           const bpzpPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
           const bpzpPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
