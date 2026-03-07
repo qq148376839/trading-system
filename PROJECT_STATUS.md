@@ -1,11 +1,35 @@
 # 项目进度总结
 
-**更新时间**: 2026-03-06
+**更新时间**: 2026-03-07
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-03-07: 移除 structure_invalidation + time_stop_no_tailwind 冗余退出层
+
+**变更内容**:
+
+1. **structure_invalidation 移除**: Feb14-Mar6 共 7 次触发，0% 胜率，累计 -$245。NVDA P182.5 因 0.01% VWAP 偏差被秒杀，错失 +$260 利润
+2. **time_stop_no_tailwind 移除**: 死代码（scheduler 已禁用 timeStopMinutes），0 次触发
+3. **关联清理**: PositionContext 中 `entryUnderlyingPrice` / `timeStopMinutes`、scheduler/backtest 关联变量全部移除
+
+**保留 8 层退出**: 0DTE 时间止损 → 非0DTE 时间止损 → 止盈 → 阶梯锁利 → 追踪止损 → 0DTE PnL 地板 → 标准止损 → 强制止损
+
+**修改文件**:
+- 📝 `api/src/services/option-dynamic-exit.service.ts`
+- 📝 `api/src/services/strategy-scheduler.service.ts`
+- 📝 `api/src/services/option-backtest.service.ts`
+
+### 2026-03-07: 0DTE 禁入窗口完全禁止入场
+
+**变更内容**:
+
+1. **完全禁入**: 0DTE 合约在交易窗口外（9:30-10:00 ET 之前）直接跳过，不再降级为非0DTE
+
+**修改文件**:
+- 📝 `api/src/services/strategy-scheduler.service.ts`
 
 ### 2026-03-06: 阶梯锁利 + 策略10入场阈值调整
 
@@ -40,11 +64,11 @@
 - `api/src/services/basic-execution.service.ts`
 - `api/src/services/strategy-scheduler.service.ts`
 
-### 2026-03-05: 结构失效 Grace Period + LIT 保护单同步提交修复
+### 2026-03-05: ~~结构失效 Grace Period~~ (已移除) + LIT 保护单同步提交修复
 
 **变更内容**:
 
-1. **Fix 1**: 结构失效 grace period — 入场后 2 分钟内跳过 VWAP 结构失效检查，避免入场噪声秒杀
+1. ~~**Fix 1**: 结构失效 grace period~~ — **已在 2026-03-07 随 structure_invalidation 整体移除**
 2. **Fix 2**: LIT 保护单同步提交 — 提取 `submitLitProtectionAfterBuy()` 统一方法，修复同步成交路径 LIT 缺失
 
 **修改文件**:

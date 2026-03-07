@@ -1,5 +1,36 @@
 # 更新日志
 
+## 2026-03-07
+
+### 修复：移除 structure_invalidation + time_stop_no_tailwind 冗余退出层
+
+**数据驱动决策** — 分析 Feb14-Mar6 全部动态退出记录后移除两个 0% 胜率的退出层：
+
+1. **structure_invalidation（已移除）**: 7 次触发全部亏损，累计 -$245。根因：`k.close > vwap` 无容差缓冲，微小偏差（如 NVDA 181.61 vs VWAP 181.59，仅 0.01%）即触发退出。NVDA P182.5 因此被秒杀，错失 +$260 利润。
+2. **time_stop_no_tailwind（已移除）**: 死代码，scheduler 层已禁用 `timeStopMinutes`（回测#87 证实 13 笔全亏），实盘 0 次触发。
+
+**同步清理**: `PositionContext` 中 `entryUnderlyingPrice` / `timeStopMinutes` 字段、scheduler 和 backtest 中的关联变量全部移除。
+
+**保留的 8 层退出机制**: 0DTE 时间止损 → 非0DTE 时间止损 → 止盈 → 阶梯锁利 → 追踪止损 → 0DTE PnL 地板(-25%) → 标准止损 → 强制止损(-40%)
+
+**修改文件**:
+- `api/src/services/option-dynamic-exit.service.ts`（删除两个退出块 + PositionContext 字段）
+- `api/src/services/strategy-scheduler.service.ts`（删除关联变量和 ctx 字段）
+- `api/src/services/option-backtest.service.ts`（删除关联死变量和 ctx 字段）
+
+---
+
+### 修复：0DTE 禁入窗口完全禁止入场
+
+**实盘案例**: 3月6日前 4 笔交易在 0DTE 交易窗口（9:30-10:00 ET）之前入场，因 scheduler 对 0DTE 合约仅降级为非0DTE 而非完全阻止。
+
+**修复**: 检测到 0DTE 合约在窗口外时，直接 `continue` 跳过，不再降级到非0DTE 合约。
+
+**修改文件**:
+- `api/src/services/strategy-scheduler.service.ts`
+
+---
+
 ## 2026-03-06
 
 ### 新增：阶梯锁利 (Ratchet Profit Lock) + 策略10入场阈值调整
