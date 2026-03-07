@@ -1270,7 +1270,6 @@ class OptionBacktestService {
     let holdingIntradayScore = 0;
     let holdingTimeAdj = 0;
     let holdingEntryReason = '';
-    let holdingEntryUnderlyingPrice = 0;
     let holdingPeakPnLPercent = 0;
     let holdingEntryIV = 0;
     let holdingQuantity = cfg.positionContracts; // 每笔交易的实际合约数
@@ -1378,7 +1377,6 @@ class OptionBacktestService {
         holdingIntradayScore = intradayScore;
         holdingTimeAdj = timeAdj;
         holdingEntryReason = `${direction} score=${finalScore.toFixed(1)} (mkt=${marketScore.toFixed(1)}, intra=${intradayScore.toFixed(1)}, time=${timeAdj.toFixed(0)}) strike=${strike}`;
-        holdingEntryUnderlyingPrice = underlyingPrice;
         holdingPeakPnLPercent = 0;
         holdingEntryIV = estimateIVFromOptionBars(optKlines.filter(b => {
           const bET = this.getETMinutes(b.timestamp);
@@ -1480,11 +1478,6 @@ class OptionBacktestService {
         // 计算 VWAP 和 rangePct（与生产 strategy-scheduler 对齐）
         const vwapData = calculateVWAPFromMinuteData(underlyingByMinute, etMin);
 
-        // 时间止损已禁用（回测#87分析：13笔触发全部亏损，0%胜率，贡献72%总亏损）
-        // 现有多重保障（0DTE兜底-25%、移动止损、止盈、收盘强平）已覆盖所有场景
-        // 保留 rangePct 计算用于其他用途（如追踪止盈动态化），仅不传 timeStopMinutes
-        const timeStopMinutes: number | undefined = undefined;
-
         // 估算 IV（从期权 1m bar 波动推导）
         const optBarsUpToNow = optionKlines.filter(b => {
           const bET = this.getETMinutes(b.timestamp);
@@ -1509,10 +1502,8 @@ class OptionBacktestService {
           midPrice: currentPrice, // 回测中 close ≈ mid
           optionDirection: holdingDirection,
           recentKlines: vwapData?.recentKlines || recentKlines,
-          entryUnderlyingPrice: holdingEntryUnderlyingPrice,
           peakPnLPercent: holdingPeakPnLPercent,
           vwap: vwapData?.vwap,
-          timeStopMinutes,
           rangePct: vwapData?.rangePct,
         };
 

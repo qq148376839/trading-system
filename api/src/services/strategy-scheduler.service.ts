@@ -4046,12 +4046,10 @@ class StrategyScheduler {
         );
       }
 
-      // 6. 解析期权方向 & 标的，获取 VWAP 数据（Phase 2 结构确认/时间止损）
+      // 6. 解析期权方向 & 标的，获取 VWAP 数据（rangePct 用于追踪止盈动态化）
       let optionDirection: 'CALL' | 'PUT' | undefined;
       let resolvedUnderlyingSymbol: string | undefined;
-      let entryUnderlyingPrice: number | undefined;
       let vwapData: { vwap: number; rangePct: number; recentKlines: { open: number; high: number; low: number; close: number; volume: number; timestamp: number }[] } | null = null;
-      let timeStopMinutes: number | undefined;
 
       try {
         // 6a. 解析期权方向
@@ -4078,15 +4076,9 @@ class StrategyScheduler {
           }
         }
 
-        // 6c. 入场时标的价格（从 optionMeta 或 context）
-        entryUnderlyingPrice = parseFloat(String(optionMeta.underlyingPrice || context.entryUnderlyingPrice || 0)) || undefined;
-
-        // 6d. 获取 VWAP 数据（仅在有标的 symbol 时）
+        // 6c. 获取 VWAP 数据（仅在有标的 symbol 时，rangePct 用于追踪止盈动态化）
         if (resolvedUnderlyingSymbol) {
           vwapData = await marketDataService.getIntradayVWAP(resolvedUnderlyingSymbol);
-          // 时间止损已禁用（回测#87分析：13笔触发全部亏损，0%胜率，贡献72%总亏损）
-          // 现有多重保障（0DTE兜底-25%、移动止损、止盈、收盘强平）已覆盖所有场景
-          // 保留 vwapData 获取用于其他用途（rangePct 用于追踪止盈动态化），仅不计算 timeStopMinutes
         }
       } catch (vwapErr: unknown) {
         // VWAP 获取失败不影响核心止盈止损逻辑
@@ -4117,12 +4109,9 @@ class StrategyScheduler {
         estimatedExitFees,
         is0DTE,
         midPrice: optionMidPrice > 0 ? optionMidPrice : undefined,
-        // Phase 2: 结构确认 & 时间止损数据
         optionDirection,
         vwap: vwapData?.vwap,
         recentKlines: vwapData?.recentKlines,
-        entryUnderlyingPrice,
-        timeStopMinutes,
         rangePct: vwapData?.rangePct,
         peakPnLPercent: (context.peakPnLPercent && context.entryTime) ? context.peakPnLPercent : 0,
       };
@@ -4143,7 +4132,6 @@ class StrategyScheduler {
           `[${action}]${exitTag ? `[${exitTag}]` : ''} ${reason} | ${optionDynamicExitService.formatPnLInfo(pnl, positionCtx)}` +
           (is0DTE ? ` | midPrice=${optionMidPrice > 0 ? optionMidPrice.toFixed(4) : 'N/A'}` : '') +
           (vwapData ? ` | vwap=${vwapData.vwap.toFixed(2)} rangePct=${vwapData.rangePct.toFixed(2)}%` : '') +
-          (timeStopMinutes ? ` | T=${timeStopMinutes}min` : '') +
           (optionDirection ? ` | dir=${optionDirection}` : '')
         );
 

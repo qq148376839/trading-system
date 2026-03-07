@@ -72,8 +72,6 @@ export interface PositionContext {
   optionDirection?: 'CALL' | 'PUT';   // 期权方向
   vwap?: number;                // 标的当日 VWAP
   recentKlines?: { open: number; high: number; low: number; close: number; volume: number; timestamp: number }[];
-  entryUnderlyingPrice?: number;  // 入场时标的价格（时间止损用）
-  timeStopMinutes?: number;       // 该仓位的时间止损 T（波动率分桶）
   rangePct?: number;               // 标的30分钟开盘波动率（VWAP服务返回），用于追踪止盈动态化
   peakPnLPercent?: number;         // 历史最高盈亏百分比（scheduler 追踪），用于精确移动止损
 }
@@ -443,72 +441,6 @@ class OptionDynamicExitService {
         reason: `盈利${pnl.grossPnLPercent.toFixed(1)}% ≥ 目标${dynamicParams.takeProfitPercent}% | ${dynamicParams.adjustmentReason}`,
         pnl,
       };
-    }
-
-    // 2.5 结构失效止损（Level A）：标的价格反转回 VWAP 另一侧
-    // Grace period: 入场后 2 分钟内跳过（VWAP 附近入场的噪声过滤）
-    const structHoldingMin = (now.getTime() - (ctx.entryTime || now).getTime()) / 60000;
-    if (ctx.vwap && ctx.vwap > 0 && ctx.recentKlines && ctx.recentKlines.length >= 2 && ctx.optionDirection && structHoldingMin >= 2) {
-      const last2 = ctx.recentKlines.slice(-2);
-      const vwap = ctx.vwap;
-
-      if (ctx.optionDirection === 'PUT') {
-        // PUT持仓：标的连续2根1m收盘站回VWAP上方 → 做空结构失效
-        const allAbove = last2.every(k => k.close > vwap);
-        if (allAbove) {
-          return {
-            action: 'STOP_LOSS',
-            reason: `结构失效：PUT持仓但标的连续2根1m收盘(${last2.map(k => k.close.toFixed(2)).join(',')})站回VWAP(${vwap.toFixed(2)})上方`,
-            pnl,
-            exitTag: 'structure_invalidation',
-          };
-        }
-      } else if (ctx.optionDirection === 'CALL') {
-        // CALL持仓：标的连续2根1m收盘跌破VWAP → 做多结构失效
-        const allBelow = last2.every(k => k.close < vwap);
-        if (allBelow) {
-          return {
-            action: 'STOP_LOSS',
-            reason: `结构失效：CALL持仓但标的连续2根1m收盘(${last2.map(k => k.close.toFixed(2)).join(',')})跌破VWAP(${vwap.toFixed(2)})`,
-            pnl,
-            exitTag: 'structure_invalidation',
-          };
-        }
-      }
-    }
-
-    // 2.6 时间止损（Level B）：入场后T分钟内未出现顺风延续
-    if (ctx.timeStopMinutes && ctx.timeStopMinutes > 0 && ctx.entryUnderlyingPrice && ctx.entryUnderlyingPrice > 0) {
-      const holdingMs = now.getTime() - (ctx.entryTime || now).getTime();
-      const holdingMin = holdingMs / 60000;
-      if (holdingMin >= ctx.timeStopMinutes) {
-        // 检查是否有顺风延续
-        let hasTailwind = false;
-
-        // 方式A：标的创新低(PUT)/新高(CALL)
-        if (ctx.recentKlines && ctx.recentKlines.length > 0) {
-          const latestClose = ctx.recentKlines[ctx.recentKlines.length - 1].close;
-          if (ctx.optionDirection === 'PUT' && latestClose < ctx.entryUnderlyingPrice) {
-            hasTailwind = true; // 标的创新低，PUT有利
-          } else if (ctx.optionDirection === 'CALL' && latestClose > ctx.entryUnderlyingPrice) {
-            hasTailwind = true; // 标的创新高，CALL有利
-          }
-        }
-
-        // 方式B：期权mid盈利 >= +5%
-        if (pnl.grossPnLPercent >= 5) {
-          hasTailwind = true;
-        }
-
-        if (!hasTailwind) {
-          return {
-            action: 'STOP_LOSS',
-            reason: `时间止损：持仓${holdingMin.toFixed(0)}min ≥ T=${ctx.timeStopMinutes}min，无顺风延续 | 盈亏=${pnl.grossPnLPercent.toFixed(1)}%`,
-            pnl,
-            exitTag: 'time_stop_no_tailwind',
-          };
-        }
-      }
     }
 
     // 2.8 阶梯锁利检查 — 盈利踩上台阶后不允许跌回下一台阶
