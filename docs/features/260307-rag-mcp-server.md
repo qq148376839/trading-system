@@ -159,6 +159,10 @@ KV 仍使用完整 `file_path::index` 作为 key（无长度限制），Vectoriz
 - 本地: 根目录 `.env` 中 `RAG_API_TOKEN`
 - CI: GitHub Secrets 中 `RAG_API_TOKEN`
 
+## CI/CD
+
+GitHub Action 优化：索引脚本仅依赖 Node.js 内置模块（`fs`, `path`, `crypto`, `child_process`）和项目内相对导入，CI 只需 `npm install -g tsx`，无需安装完整 `node_modules`。
+
 ## 成本
 
 603 chunks × 1024 维 ≈ 0.62M stored dimensions（免费额度 5M）— **完全免费**。
