@@ -22,24 +22,17 @@ on:
 jobs:
   index:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: pnpm
-          cache-dependency-path: edge-functions/rag-server/pnpm-lock.yaml
 
-      - name: Install dependencies
-        working-directory: edge-functions/rag-server
-        run: pnpm install --frozen-lockfile
+      - name: Install tsx
+        run: npm install -g tsx
 
       - name: Restore index manifest
         uses: actions/cache@v4
@@ -53,4 +46,4 @@ jobs:
         env:
           RAG_API_TOKEN: ${{ secrets.RAG_API_TOKEN }}
           RAG_URL: https://rag.riowang.win
-        run: pnpm index
+        run: tsx scripts/index-project.ts
