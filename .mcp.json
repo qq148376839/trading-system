@@ -6,6 +6,13 @@
       "env": {
         "PROJECT_ROOT": "/Users/rio/Documents/trading-system"
       }
+    },
+    "rag": {
+      "type": "http",
+      "url": "https://rag.riowang.win/mcp",
+      "headers": {
+        "Authorization": "Bearer ${RAG_API_TOKEN}"
+      }
     }
   }
 }

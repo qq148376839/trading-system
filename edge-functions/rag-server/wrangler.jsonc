@@ -1,0 +1,53 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rag-server",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-10",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // MCP Agent 需要 Durable Object
+  "migrations": [
+    {
+      "new_sqlite_classes": ["RagMCP"],
+      "tag": "v1"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "RagMCP",
+        "name": "MCP_OBJECT"
+      }
+    ]
+  },
+
+  // Workers AI 绑定（嵌入模型）
+  "ai": {
+    "binding": "AI"
+  },
+
+  // Vectorize 绑定（向量存储）
+  "vectorize": [
+    {
+      "binding": "VECTORIZE",
+      "index_name": "trading-system-rag"
+    }
+  ],
+
+  // KV 绑定（chunk 原文存储）
+  "kv_namespaces": [
+    {
+      "binding": "CHUNKS_KV",
+      "id": "eff14ce9be754c02a92f6e9612c1995e"
+    }
+  ],
+
+  // 自定义域名路由
+  "routes": [
+    { "pattern": "rag.riowang.win/*", "zone_name": "riowang.win" }
+  ],
+
+  "observability": {
+    "enabled": true
+  }
+}

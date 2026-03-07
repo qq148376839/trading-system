@@ -2,6 +2,25 @@
 
 ## 2026-03-07
 
+### 新增：RAG MCP Server — Cloudflare Workers + Vectorize
+
+**项目代码库语义搜索系统** — 基于 Cloudflare Workers 部署 RAG 服务，为 Claude Code 提供 3 个 MCP 工具：
+
+1. **search**: 全库语义搜索（支持 scope 过滤：all/docs/code/sql/config/nav）
+2. **search_errors**: 错误规则和安全模式搜索（防重复犯错）
+3. **lookup_file**: 按文件路径检索所有已索引 chunks
+
+**技术栈**: Workers AI (`@cf/baai/bge-m3` 1024维中英文嵌入) + Vectorize (向量存储) + KV Store (原文存储)
+
+**索引管道**: 本地脚本支持增量/全量/单文件索引，按文件类型智能分块（MD 按标题、TS 按函数、SQL 按表）
+
+**新增文件**:
+- `edge-functions/rag-server/` — 完整 Worker + 索引脚本
+- `.mcp.json` — 新增 rag server 配置
+- `docs/features/260307-rag-mcp-server.md` — 功能文档
+
+---
+
 ### 修复：移除 structure_invalidation + time_stop_no_tailwind 冗余退出层
 
 **数据驱动决策** — 分析 Feb14-Mar6 全部动态退出记录后移除两个 0% 胜率的退出层：

@@ -7,6 +7,20 @@
 
 ## 🆕 最近更新
 
+### 2026-03-07: RAG MCP Server 部署
+
+**变更内容**:
+
+1. **RAG 语义搜索系统**: Cloudflare Worker (`rag.riowang.win`) 提供 3 个 MCP 工具 — search / search_errors / lookup_file
+2. **技术栈**: Workers AI (bge-m3 1024维) + Vectorize + KV Store
+3. **索引管道**: 增量/全量索引脚本，智能分块（MD/TS/SQL）
+4. **MCP 集成**: `.mcp.json` 已配置 rag server
+
+**新增文件**:
+- 📁 `edge-functions/rag-server/` — Worker + 索引脚本
+- 📝 `.mcp.json` — 新增 rag 配置
+- 📝 `docs/features/260307-rag-mcp-server.md`
+
 ### 2026-03-07: 移除 structure_invalidation + time_stop_no_tailwind 冗余退出层
 
 **变更内容**:
