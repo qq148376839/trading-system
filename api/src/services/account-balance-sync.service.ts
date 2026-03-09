@@ -245,8 +245,10 @@ class AccountBalanceSyncService {
             pos.avgPrice?.toString() || 
             '0'
           );
-          const positionValue = quantity * price;
-          
+          // 期权持仓需要乘以合约乘数（通常100），因为broker返回的是每股价格
+          const multiplier = isLikelyOptionSymbol(symbol) ? 100 : 1;
+          const positionValue = quantity * price * multiplier;
+
           if (positionValue > 0) {
             // 存储原始格式
             positionMap.set(symbol, positionValue);
