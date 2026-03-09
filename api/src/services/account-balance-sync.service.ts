@@ -386,27 +386,38 @@ class AccountBalanceSyncService {
           // 1. HOLDING状态但实际持仓不存在 -> 需要修复
           // 2. OPENING/CLOSING状态但实际持仓不存在且无未成交订单 -> 需要修复
           // 3. OPENING状态但实际持仓已存在 -> 需要修复（转为HOLDING）
+          // 4. IDLE状态但broker有实际持仓 -> 孤儿持仓，需要恢复为HOLDING
           const needsFixToIdle = positionValue === 0 && (
-            currentState === 'HOLDING' || 
+            currentState === 'HOLDING' ||
             (currentState === 'OPENING' && !hasPendingOrder) ||
             (currentState === 'CLOSING' && !hasPendingOrder)
           );
-          
+
           const needsFixToHolding = positionValue > 0 && currentState === 'OPENING';
-          
+
+          // 孤儿持仓检测：IDLE状态但broker有实际持仓（重启/异常导致状态丢失）
+          const needsFixOrphan = positionValue > 0 && currentState === 'IDLE';
+
           if (needsFixToIdle) {
             logger.warn(
               `[账户余额同步] 策略 ${strategy.strategy_name} 标的 ${originalSymbol} ` +
               `状态为${currentState}但实际持仓中未找到匹配（尝试了 ${originalSymbol} 和 ${normalizedSymbol}），` +
               `未成交订单: ${hasPendingOrder ? '有' : '无'}`
             );
-            
+
             symbolsToFix.push({ symbol: originalSymbol, state: currentState, context, targetState: 'IDLE' });
           } else if (needsFixToHolding) {
             // OPENING状态但实际持仓已存在，应该转为HOLDING
             logger.warn(
               `[账户余额同步] 策略 ${strategy.strategy_name} 标的 ${originalSymbol} ` +
               `状态为OPENING但实际持仓已存在（持仓价值=${positionValue.toFixed(2)}），需要转为HOLDING`
+            );
+            symbolsToFix.push({ symbol: originalSymbol, state: currentState, context, targetState: 'HOLDING' });
+          } else if (needsFixOrphan) {
+            // IDLE状态但broker有持仓：孤儿持仓（重启期间下单成交、状态未同步等）
+            logger.warn(
+              `[账户余额同步] 🔴 孤儿持仓检测 - 策略 ${strategy.strategy_name} 标的 ${originalSymbol} ` +
+              `状态为IDLE但broker有实际持仓（持仓价值=${positionValue.toFixed(2)}），恢复为HOLDING`
             );
             symbolsToFix.push({ symbol: originalSymbol, state: currentState, context, targetState: 'HOLDING' });
           } else if (positionValue > 0) {
@@ -460,16 +471,28 @@ class AccountBalanceSyncService {
               
               if (finalTargetState === 'HOLDING') {
                 // 转为HOLDING：更新context，保存持仓信息
-                // 获取实际持仓信息
-                const actualPosition = positionsArray.find((pos: any) => {
+                // 获取实际持仓信息（支持 underlying → option symbol 匹配）
+                let actualPosition = positionsArray.find((pos: any) => {
                   const posSymbol = pos.symbol || pos.stock_name;
                   return posSymbol === symbol || posSymbol === this.normalizeSymbol(symbol);
                 });
-                
+                // 如果直接匹配失败，尝试 underlying → option symbol 匹配（孤儿持仓场景）
+                if (!actualPosition && !isLikelyOptionSymbol(symbol)) {
+                  const prefixes = getOptionPrefixesForUnderlying(symbol).map(p => p.toUpperCase());
+                  actualPosition = positionsArray.find((pos: any) => {
+                    const posSymbol = (pos.symbol || pos.stock_name || '').toUpperCase();
+                    return isLikelyOptionSymbol(posSymbol) && prefixes.some(p => posSymbol.startsWith(p));
+                  });
+                }
+
+                // 记录匹配到的实际期权symbol（用于tradedSymbol）
+                const matchedOptionSymbol = actualPosition?.symbol || actualPosition?.stock_name || '';
+
                 const updatedContext = {
                   ...context,
                   entryPrice: actualPosition?.costPrice || actualPosition?.avgPrice || context.entryPrice || context.intent?.entryPrice,
                   quantity: actualPosition?.quantity || context.quantity || context.intent?.quantity,
+                  tradedSymbol: matchedOptionSymbol || context.tradedSymbol,
                   syncedFromPosition: true,
                   syncedAt: new Date().toISOString(),
                 };
