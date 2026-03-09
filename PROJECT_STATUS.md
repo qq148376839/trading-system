@@ -1,11 +1,23 @@
 # 项目进度总结
 
-**更新时间**: 2026-03-07
+**更新时间**: 2026-03-09
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-03-09: 评分系统多因子校准 + 非交易日修复
+
+**变更内容**:
+
+1. **动量 ATR 归一化**: `avgChange*1000` → `(avgChange/atrPct)*50`，四个动量因子从近零恢复有效输出
+2. **VWAP 灵敏度**: `distancePct*200` → `distancePct*50`，2% 偏离才饱和（旧 0.5%）
+3. **非交易日修复**: `isInTradingSession()` fallback 改用 `tradingDaysService.isTradingDay()`
+
+**修改文件**:
+- 📝 `api/src/services/option-recommendation.service.ts`
+- 📝 `api/src/services/trading-session.service.ts`
 
 ### 2026-03-07: RAG MCP Server 部署
 

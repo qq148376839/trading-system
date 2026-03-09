@@ -1,5 +1,23 @@
 # 更新日志
 
+## 2026-03-09
+
+### 修复：评分系统多因子校准 + 非交易日误触发
+
+**评分系统** — 修复 `calculateMomentum()` 和 VWAP 灵敏度，让 5 个评分因子全部产生有效输出：
+
+1. **动量计算 ATR 归一化**: 旧公式 `avgChange * 1000` 在正常行情输出 ±0.1~0.5（接近零），VWAP 贡献 93-100% 评分。新公式 `(avgChange / atrPct) * 50` 使动量输出覆盖 ±20~60 正常范围
+2. **VWAP 灵敏度降低**: `distancePct * 200` → `distancePct * 50`，从 0.5% 偏离饱和改为 2% 偏离饱和，VWAP 回归 15% 权重辅助角色
+3. **非交易日修复**: `isInTradingSession()` 两个降级路径改用 `tradingDaysService.isTradingDay()`，修复周末 API 无时段数据时返回 true 的问题
+
+**影响范围**: 标的动量(30%)、SPX(25%)、BTC(15%)、USD(15%) 四个因子从近零恢复有效输出，VWAP(15%) 降低主导性
+
+**修改文件**:
+- `api/src/services/option-recommendation.service.ts`（calculateMomentum + VWAP 系数）
+- `api/src/services/trading-session.service.ts`（isInTradingSession fallback）
+
+---
+
 ## 2026-03-07
 
 ### 新增：RAG MCP Server — Cloudflare Workers + Vectorize
