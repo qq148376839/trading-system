@@ -370,6 +370,7 @@ class AccountBalanceSyncService {
               const posKeyUpper = posKey.toUpperCase();
               if (isLikelyOptionSymbol(posKeyUpper) && prefixes.some(p => posKeyUpper.startsWith(p))) {
                 positionValue = posVal;
+                logger.debug(`[账户余额同步] 期权前缀匹配: ${originalSymbol} → ${posKey}, 价值=${posVal.toFixed(2)}`);
                 break;
               }
             }
@@ -448,6 +449,60 @@ class AccountBalanceSyncService {
                   `状态为${currentState}，计入申请资金 ${allocationAmount.toFixed(2)}`
                 );
               }
+            }
+          }
+        }
+
+        // 孤儿持仓检测：broker有持仓但没有被任何HOLDING/OPENING/CLOSING实例认领
+        // 这发生在重启期间下单成交、状态未同步到DB的场景
+        const claimedPositions = new Set<string>();
+        for (const instance of strategyInstances.rows) {
+          const sym = instance.symbol;
+          const normSym = this.normalizeSymbol(sym);
+          claimedPositions.add(sym.toUpperCase());
+          claimedPositions.add(normSym.toUpperCase());
+          // 如果是期权symbol，也标记为已认领
+          if (instance.context) {
+            try {
+              const ctx = typeof instance.context === 'string' ? JSON.parse(instance.context) : instance.context;
+              if (ctx.tradedSymbol) claimedPositions.add(ctx.tradedSymbol.toUpperCase());
+            } catch { /* ignore */ }
+          }
+        }
+
+        for (const [posKey, posVal] of positionMap) {
+          if (posVal <= 0) continue;
+          if (claimedPositions.has(posKey.toUpperCase())) continue;
+
+          // 这个broker持仓没有被任何非IDLE实例认领
+          // 找到对应的underlying IDLE实例来恢复
+          let matchedUnderlying: string | null = null;
+          if (isLikelyOptionSymbol(posKey)) {
+            // 从期权symbol提取underlying（如 SPY260309P669000.US → SPY.US）
+            const core = posKey.replace(/\.(US|HK)$/i, '');
+            const match = core.match(/^([A-Z]+)\d{6}[CP]\d+$/);
+            if (match) {
+              const root = match[1];
+              const suffix = posKey.includes('.US') ? '.US' : posKey.includes('.HK') ? '.HK' : '';
+              matchedUnderlying = root + suffix;
+            }
+          }
+
+          if (matchedUnderlying) {
+            // 查DB确认这个underlying是否属于当前策略且为IDLE
+            const idleCheck = await pool.query(
+              `SELECT symbol, context FROM strategy_instances WHERE strategy_id = $1 AND symbol = $2 AND current_state = 'IDLE'`,
+              [strategy.strategy_id, matchedUnderlying]
+            );
+            if (idleCheck.rows.length > 0) {
+              const idleContext = idleCheck.rows[0].context
+                ? (typeof idleCheck.rows[0].context === 'string' ? JSON.parse(idleCheck.rows[0].context) : idleCheck.rows[0].context)
+                : {};
+              logger.warn(
+                `[账户余额同步] 🔴 孤儿持仓检测 - 策略 ${strategy.strategy_name} 标的 ${matchedUnderlying} ` +
+                `状态为IDLE但broker有实际持仓 ${posKey}（价值=${posVal.toFixed(2)}），恢复为HOLDING`
+              );
+              symbolsToFix.push({ symbol: matchedUnderlying, state: 'IDLE', context: idleContext, targetState: 'HOLDING' });
             }
           }
         }
