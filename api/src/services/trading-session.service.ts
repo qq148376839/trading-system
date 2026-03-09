@@ -7,6 +7,7 @@
 import { getQuoteContext } from '../config/longport';
 import { logger } from '../utils/logger';
 import { getMarketFromSymbol } from '../utils/trading-days';
+import tradingDaysService from './trading-days.service';
 import configService from './config.service';
 
 // 导入Longbridge SDK的Market枚举（延迟加载）
@@ -438,9 +439,13 @@ class TradingSessionService {
       const sessions = await this.getMarketTradingSessions(market);
 
       if (sessions.length === 0) {
-        // 如果没有交易时段数据，降级到交易日判断
-        logger.warn(`[交易时段服务] ${market}市场无交易时段数据，降级到交易日判断`);
-        return true; // 假设是交易日，允许执行
+        // 无交易时段数据（周末/节假日 API 不返回时段）→ 用交易日 API 二次确认
+        const isTradDay = await tradingDaysService.isTradingDay(now, market);
+        if (!isTradDay) {
+          return false; // 非交易日（周末/节假日），不执行
+        }
+        logger.warn(`[交易时段服务] ${market}市场无交易时段数据但交易日API确认为交易日，降级允许执行`);
+        return true;
       }
 
       // ✅ 时区转换：获取市场所在时区的当前时间
@@ -501,8 +506,17 @@ class TradingSessionService {
       return false;
     } catch (error: any) {
       logger.error(`[交易时段服务] 判断交易时段失败:`, error.message);
-      // 如果判断失败，降级到允许执行（避免阻塞策略）
-      return true;
+      // 降级：用交易日 API 判断，非交易日不执行
+      try {
+        const now = currentTime || new Date();
+        const isTradDay = await tradingDaysService.isTradingDay(now, market);
+        return isTradDay; // 交易日允许执行，非交易日拒绝
+      } catch {
+        // 两个 API 都失败，用周末判断兜底
+        const now = currentTime || new Date();
+        const dayOfWeek = now.getDay();
+        return dayOfWeek !== 0 && dayOfWeek !== 6;
+      }
     }
   }
 

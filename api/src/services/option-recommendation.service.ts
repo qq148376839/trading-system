@@ -446,7 +446,7 @@ class OptionRecommendationService {
     if (underlyingVWAP && underlyingVWAP.vwap > 0 && underlyingVWAP.recentKlines?.length > 0) {
       const lastPrice = underlyingVWAP.recentKlines[underlyingVWAP.recentKlines.length - 1].close;
       const distancePct = ((lastPrice - underlyingVWAP.vwap) / underlyingVWAP.vwap) * 100;
-      const rawScore = Math.max(-100, Math.min(100, distancePct * 200));
+      const rawScore = Math.max(-100, Math.min(100, distancePct * 50)); // 2%偏离才饱和（旧值200→0.5%饱和）
       const weighted = rawScore * 0.15;
       componentScores.vwapPosition = weighted;
       score += weighted;
@@ -542,10 +542,25 @@ class OptionRecommendationService {
   }
 
   /**
-   * 计算动量 (基于价格变化率)
+   * 计算动量 (ATR归一化)
+   * 用 avgChange / atrPct 衡量价格变动相对于波动率的强度
+   * 解决旧公式 avgChange*1000 在正常行情下输出接近零的问题
    */
   private calculateMomentum(data: CandlestickData[]): number {
     if (!data || data.length < 5) return 0;
+
+    // 计算ATR（Average True Range）作为归一化基准
+    const trueRanges: number[] = [];
+    for (let i = 1; i < data.length; i++) {
+      const high = data[i].high;
+      const low = data[i].low;
+      const prevClose = data[i - 1].close;
+      const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+      trueRanges.push(tr);
+    }
+    const atr = trueRanges.reduce((sum, tr) => sum + tr, 0) / trueRanges.length;
+    const currentPrice = data[data.length - 1].close;
+    const atrPct = currentPrice > 0 ? atr / currentPrice : 0;
 
     // 计算最近几根K线的价格变化率
     const changes: number[] = [];
@@ -557,8 +572,14 @@ class OptionRecommendationService {
     // 平均变化率
     const avgChange = changes.reduce((sum, c) => sum + c, 0) / changes.length;
 
-    // 转换为-100到100的分数
-    const momentum = avgChange * 1000; // 放大1000倍
+    // ATR归一化: avgChange / atrPct 衡量变动占波动率的比例
+    // 乘以50使输出范围覆盖 ±100（当avgChange = 2×atrPct时饱和）
+    let momentum: number;
+    if (atrPct > 0) {
+      momentum = (avgChange / atrPct) * 50;
+    } else {
+      momentum = avgChange * 1000; // ATR为0时降级到旧公式
+    }
     return Math.max(-100, Math.min(100, momentum));
   }
 
