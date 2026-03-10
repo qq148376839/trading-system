@@ -421,18 +421,22 @@ export default function EditStrategyModal({
 
         if (symbolsChanged) {
           const cg = strategy.config?.correlationGroups;
-          const threshold = cg?.threshold ?? 0.75;
-          const days = cg?.days ?? 120;
-          message.info('标的变动，正在后台重算相关性分组...');
-          quantApi.computeCorrelationGroups(strategy.id, { threshold, days })
-            .then((r) => {
-              if (r.success) {
-                message.success('相关性分组重算完成');
-              }
-            })
-            .catch(() => {
-              // 非阻塞，静默失败
-            });
+          if (cg?.manualOverride) {
+            message.info('当前分组为手动设置，跳过自动重算');
+          } else {
+            const threshold = cg?.threshold ?? 0.75;
+            const days = cg?.days ?? 120;
+            message.info('标的变动，正在后台重算相关性分组...');
+            quantApi.computeCorrelationGroups(strategy.id, { threshold, days })
+              .then((r) => {
+                if (r.success) {
+                  message.success('相关性分组重算完成');
+                }
+              })
+              .catch(() => {
+                // 非阻塞，静默失败
+              });
+          }
         }
       }
     } catch (err: any) {

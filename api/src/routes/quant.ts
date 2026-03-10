@@ -2706,6 +2706,31 @@ quantRouter.post('/strategies/:id/correlation-groups', async (req: Request, res:
   }
 });
 
+/**
+ * PUT /api/quant/strategies/:id/correlation-groups
+ * 保存手动编辑的相关性分组
+ */
+quantRouter.put('/strategies/:id/correlation-groups', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const strategyId = parseInt(req.params.id);
+    const correlationGroupsConfig = req.body;
+
+    if (!correlationGroupsConfig?.groups || Object.keys(correlationGroupsConfig.groups).length === 0) {
+      return res.status(400).json({ success: false, error: '分组数据不能为空' });
+    }
+
+    await pool.query(
+      `UPDATE strategies SET config = COALESCE(config, '{}'::jsonb) || $1::jsonb WHERE id = $2`,
+      [JSON.stringify({ correlationGroups: correlationGroupsConfig }), strategyId]
+    );
+
+    res.json({ success: true });
+  } catch (error: unknown) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
 // ==================== 期权排行 API ====================
 
 /**

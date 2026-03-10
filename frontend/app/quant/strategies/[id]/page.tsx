@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { quantApi, watchlistApi, quoteApi } from '@/lib/api';
 import AppLayout from '@/components/AppLayout';
 import EditStrategyModal from '@/components/EditStrategyModal';
-import { Card, Table, Tag, Space, Button, Alert, Spin, Row, Col, Descriptions, Modal, message, Typography, Collapse, InputNumber } from 'antd';
+import { Card, Table, Tag, Space, Button, Alert, Spin, Row, Col, Descriptions, Modal, message, Typography, Collapse, InputNumber, Select, Divider } from 'antd';
 
 interface Strategy {
   id: number;
@@ -56,6 +56,13 @@ export default function StrategyDetailPage() {
   const [corrThreshold, setCorrThreshold] = useState(0.75);
   const [corrDays, setCorrDays] = useState(120);
   const [corrComputing, setCorrComputing] = useState(false);
+
+  // 相关性分组手动编辑
+  const [editingGroups, setEditingGroups] = useState(false);
+  const [targetGroupCount, setTargetGroupCount] = useState(2);
+  const [manualGroups, setManualGroups] = useState<Record<string, string[]>>({});
+  const [savingGroups, setSavingGroups] = useState(false);
+  const [moveSymbol, setMoveSymbol] = useState<{ symbol: string; fromGroup: string } | null>(null);
 
   useEffect(() => {
     if (strategyId) {
@@ -245,6 +252,73 @@ export default function StrategyDetailPage() {
       message.error(errMsg);
     } finally {
       setCorrComputing(false);
+    }
+  };
+
+  const handleStartEditGroups = () => {
+    if (!strategy?.config?.correlationGroups?.groups) return;
+    setManualGroups(JSON.parse(JSON.stringify(strategy.config.correlationGroups.groups)));
+    setEditingGroups(true);
+  };
+
+  const handleAutoMerge = () => {
+    const entries = Object.entries(manualGroups);
+    if (entries.length <= targetGroupCount) {
+      message.info('当前组数已 <= 目标组数，无需合并');
+      return;
+    }
+    // 按成员数降序排列
+    entries.sort((a, b) => b[1].length - a[1].length);
+    const kept = entries.slice(0, targetGroupCount - 1);
+    const rest = entries.slice(targetGroupCount - 1);
+    const merged = rest.flatMap(([, members]) => members);
+
+    const newGroups: Record<string, string[]> = {};
+    kept.forEach(([, members], i) => {
+      newGroups[`组${i + 1}`] = members;
+    });
+    newGroups[`组${targetGroupCount}`] = merged;
+    setManualGroups(newGroups);
+    message.success(`已合并为 ${targetGroupCount} 组`);
+  };
+
+  const handleMoveSymbol = (symbol: string, fromGroup: string, toGroup: string) => {
+    setManualGroups((prev) => {
+      const next = { ...prev };
+      next[fromGroup] = prev[fromGroup].filter((s) => s !== symbol);
+      next[toGroup] = [...(prev[toGroup] || []), symbol];
+      // 删除空组
+      if (next[fromGroup].length === 0) {
+        delete next[fromGroup];
+      }
+      return next;
+    });
+    setMoveSymbol(null);
+  };
+
+  const handleSaveGroups = async () => {
+    try {
+      setSavingGroups(true);
+      const existing = strategy?.config?.correlationGroups || {};
+      const payload = {
+        ...existing,
+        groups: manualGroups,
+        manualOverride: true,
+        manualOverrideAt: new Date().toISOString(),
+      };
+      const res = await quantApi.saveCorrelationGroups(strategyId, payload);
+      if (res.success) {
+        message.success('分组已保存');
+        await loadData();
+        setEditingGroups(false);
+      } else {
+        message.error('保存失败');
+      }
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : '保存失败';
+      message.error(errMsg);
+    } finally {
+      setSavingGroups(false);
     }
   };
 
@@ -631,19 +705,105 @@ export default function StrategyDetailPage() {
                             </Descriptions.Item>
                           </Descriptions>
 
-                          <Typography.Title level={5}>分组结果</Typography.Title>
-                          <Space wrap style={{ marginBottom: 16 }}>
-                            {Object.entries(groups).map(([groupName, members]) => (
-                              <Tag
-                                key={groupName}
-                                color={members.length > 1 ? 'volcano' : 'default'}
-                                style={{ padding: '4px 8px' }}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                            <Typography.Title level={5} style={{ margin: 0 }}>分组结果</Typography.Title>
+                            {cg.manualOverride && (
+                              <Tag color="blue">手动</Tag>
+                            )}
+                            {!editingGroups && (
+                              <Button size="small" onClick={handleStartEditGroups}>
+                                编辑分组
+                              </Button>
+                            )}
+                          </div>
+
+                          {editingGroups ? (
+                            <div style={{ border: '1px solid #d9d9d9', borderRadius: 8, padding: 16, marginBottom: 16, background: '#fafafa' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+                                <span>目标分组数:</span>
+                                <Select
+                                  value={targetGroupCount}
+                                  onChange={(v) => setTargetGroupCount(v)}
+                                  style={{ width: 70 }}
+                                  options={[2, 3, 4, 5].map((n) => ({ label: `${n}`, value: n }))}
+                                />
+                                <Button onClick={handleAutoMerge}>自动合并</Button>
+                                <div style={{ flex: 1 }} />
+                                <Button type="primary" loading={savingGroups} onClick={handleSaveGroups}>
+                                  保存
+                                </Button>
+                                <Button onClick={() => setEditingGroups(false)}>取消</Button>
+                              </div>
+
+                              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                                {Object.entries(manualGroups).map(([groupName, members]) => (
+                                  <div
+                                    key={groupName}
+                                    style={{
+                                      border: '1px solid #d9d9d9',
+                                      borderRadius: 6,
+                                      padding: '8px 12px',
+                                      minWidth: 140,
+                                      background: '#fff',
+                                    }}
+                                  >
+                                    <div style={{ fontWeight: 600, marginBottom: 6, fontSize: 13 }}>{groupName}</div>
+                                    <Space wrap size={[4, 4]}>
+                                      {(members as string[]).map((sym: string) => (
+                                        <Tag
+                                          key={sym}
+                                          closable
+                                          style={{ cursor: 'pointer' }}
+                                          onClose={(e) => {
+                                            e.preventDefault();
+                                            setMoveSymbol({ symbol: sym, fromGroup: groupName });
+                                          }}
+                                        >
+                                          {sym.replace('.US', '')}
+                                        </Tag>
+                                      ))}
+                                    </Space>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {/* 移动标的弹窗 */}
+                              <Modal
+                                title={`移动 ${moveSymbol?.symbol?.replace('.US', '') || ''}`}
+                                open={!!moveSymbol}
+                                onCancel={() => setMoveSymbol(null)}
+                                footer={null}
+                                width={300}
                               >
-                                <strong>{groupName}:</strong>{' '}
-                                {(members as string[]).map((s: string) => s.replace('.US', '')).join(', ')}
-                              </Tag>
-                            ))}
-                          </Space>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                  {Object.keys(manualGroups)
+                                    .filter((g) => g !== moveSymbol?.fromGroup)
+                                    .map((g) => (
+                                      <Button
+                                        key={g}
+                                        block
+                                        onClick={() => moveSymbol && handleMoveSymbol(moveSymbol.symbol, moveSymbol.fromGroup, g)}
+                                      >
+                                        移到 {g}
+                                      </Button>
+                                    ))}
+                                </div>
+                              </Modal>
+                            </div>
+                          ) : (
+                            <Space wrap style={{ marginBottom: 16 }}>
+                              {Object.entries(groups).map(([groupName, members]) => (
+                                <Tag
+                                  key={groupName}
+                                  color={members.length > 1 ? 'volcano' : 'default'}
+                                  style={{ padding: '4px 8px' }}
+                                >
+                                  <strong>{groupName}:</strong>{' '}
+                                  {(members as string[]).map((s: string) => s.replace('.US', '')).join(', ')}
+                                </Tag>
+                              ))}
+                            </Space>
+                          )}
 
                           {allSymbols.length > 1 && (
                             <>

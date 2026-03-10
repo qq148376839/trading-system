@@ -892,6 +892,19 @@ export const quantApi = {
   /**
    * 计算标的池相关性分组
    */
+  /**
+   * 保存手动编辑的相关性分组
+   */
+  saveCorrelationGroups: (strategyId: number, data: Record<string, unknown>): Promise<{
+    success: boolean;
+    error?: { message: string };
+  }> => {
+    return api.put(`/quant/strategies/${strategyId}/correlation-groups`, data)
+  },
+
+  /**
+   * 计算标的池相关性分组
+   */
   computeCorrelationGroups: (strategyId: number, params?: { threshold?: number; days?: number }): Promise<{
     success: boolean;
     data?: {

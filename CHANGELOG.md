@@ -1,5 +1,24 @@
 # 更新日志
 
+## 2026-03-10
+
+### 新增：相关性分组手动编辑
+
+**策略详情页相关性分组** — 自动计算分组后增加手动调整能力：
+
+1. **编辑模式**: 点击「编辑分组」进入编辑面板，支持设定目标分组数 + 一键自动合并
+2. **标的移动**: 点击标的 Tag 的 × 弹出组选择器，在组间移动标的
+3. **手动标记**: 保存时写入 `manualOverride: true`，引擎直接使用手动分组
+4. **自动重算保护**: 标的变动时若存在手动分组，跳过自动重算（EditStrategyModal）
+
+**修改文件**:
+- `frontend/app/quant/strategies/[id]/page.tsx`（编辑 UI + 合并/移动/保存逻辑）
+- `frontend/lib/api.ts`（新增 `saveCorrelationGroups` PUT 方法）
+- `api/src/routes/quant.ts`（新增 `PUT /strategies/:id/correlation-groups`）
+- `frontend/components/EditStrategyModal.tsx`（manualOverride 重算保护）
+
+---
+
 ## 2026-03-09
 
 ### 修复：评分系统多因子校准 + 非交易日误触发
