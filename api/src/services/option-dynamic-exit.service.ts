@@ -41,6 +41,7 @@ export interface DynamicExitParams {
 export interface ExitRulesOverride {
   takeProfitPercent?: number;   // 用户配置的止盈%（作为 EARLY 阶段基准）
   stopLossPercent?: number;     // 用户配置的止损%（作为 EARLY 阶段基准）
+  non0DTECooldownMinutes?: number;  // 非0DTE入场后冷静期（分钟），默认3
 }
 
 /** 持仓上下文（用于计算动态参数） */
@@ -515,11 +516,11 @@ class OptionDynamicExitService {
           exitTag: '0dte_stop_loss_no_widen',
         };
       }
-    } else if (holdingMinutes < 3) {
-      // 非0DTE 0-3分钟: 仅安全阀生效，跳过常规止损
+    } else if (holdingMinutes < (exitRulesOverride?.non0DTECooldownMinutes ?? 3)) {
+      // 非0DTE 冷静期内: 仅安全阀生效，跳过常规止损
       // fall through 到下面的安全阀检查
-    } else if (holdingMinutes < 10) {
-      // 非0DTE 3-10分钟: 止损线放宽1.5倍
+    } else if (holdingMinutes < (exitRulesOverride?.non0DTECooldownMinutes ?? 3) + 7) {
+      // 非0DTE 冷静期~冷静期+7分钟: 止损线放宽1.5倍
       const widenedSL = dynamicParams.stopLossPercent * 1.5;
       if (pnl.grossPnLPercent <= -widenedSL) {
         return {
@@ -529,7 +530,7 @@ class OptionDynamicExitService {
         };
       }
     } else {
-      // 非0DTE 10+分钟: 标准止损
+      // 非0DTE 冷静期+7分钟后: 标准止损
       if (pnl.grossPnLPercent <= -dynamicParams.stopLossPercent) {
         return {
           action: 'STOP_LOSS',

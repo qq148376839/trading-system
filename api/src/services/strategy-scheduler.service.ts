@@ -2476,7 +2476,21 @@ class StrategyScheduler {
         return null;
       }
 
-      // R5v2: 不在此处做跨标的检查 — 由 scoringAuction() 统一处理
+      // R5v2: 同组互斥 — 如果同组已有 HOLDING 标的，当前 IDLE 标的不参与竞价
+      const candidateGroup = getCorrelationGroup(symbol, correlationMap);
+      const crossState = this.getCrossSymbolState(strategyId);
+      for (const [activeSym, _entryTime] of crossState.activeEntries) {
+        if (activeSym === symbol) continue;
+        const activeGroup = getCorrelationGroup(activeSym, correlationMap);
+        if (activeGroup === candidateGroup) {
+          logger.info(
+            `[R5v2_INTRA_GROUP_BLOCKED] 策略 ${strategyId}: ${symbol} ` +
+            `被同组 HOLDING 标的 ${activeSym} 阻止 (group=${candidateGroup})`
+          );
+          summary.idle.push(`${symbol}(INTRA_GROUP_BLOCKED:${activeSym})`);
+          return null;
+        }
+      }
 
       // 生成信号
       const intent = await strategyInstance.generateSignal(symbol, undefined);
@@ -2603,6 +2617,21 @@ class StrategyScheduler {
         }
       }
       if (blockedByConcurrent) continue;
+
+      // 条件1b: 同组互斥 — activeEntries 中同组有 HOLDING 则过滤
+      let blockedByIntraGroup = false;
+      for (const [otherSym, _entryTime] of crossState.activeEntries) {
+        const otherGroup = getCorrelationGroup(otherSym, correlationMap);
+        if (otherGroup === candidateGroup) {
+          logger.info(
+            `[R5v2_PHASE2_INTRA_GROUP] 策略 ${strategyId}: ${candidate.symbol} ` +
+            `被同组 HOLDING 标的 ${otherSym} 过滤 (group=${candidateGroup})`
+          );
+          blockedByIntraGroup = true;
+          break;
+        }
+      }
+      if (blockedByIntraGroup) continue;
 
       // 条件2: floor 连锁 — 不同组 30min 内有 floor 退出则过滤
       let blockedByFloor = false;
@@ -3450,6 +3479,7 @@ class StrategyScheduler {
                 }
               }
               // 260301 Fix: 过期退出也必须清除持仓级字段 + 递增 trade counters
+              this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
               const expNpPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
               const expNpPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
               const expNpAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
@@ -4024,6 +4054,7 @@ class StrategyScheduler {
             `策略 ${strategyId} 期权 ${effectiveSymbol}: 已过期且券商无持仓，自动转为IDLE`
           );
           // 260301 Fix: 过期退出同样需要清除持仓级字段 + 递增 trade counters
+          this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
           const expPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
           const expPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
           const expAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
@@ -4120,6 +4151,7 @@ class StrategyScheduler {
       const exitRulesOverride = strategyConfig?.exitRules ? {
         takeProfitPercent: (() => { const v = Number(strategyConfig.exitRules.takeProfitPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
         stopLossPercent: (() => { const v = Number(strategyConfig.exitRules.stopLossPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
+        non0DTECooldownMinutes: (() => { const v = Number(strategyConfig.exitRules.non0DTECooldownMinutes); return isNaN(v) || v < 0 ? undefined : v; })(),
       } : undefined;
       const exitCondition = optionDynamicExitService.checkExitCondition(positionCtx, undefined, exitRulesOverride);
 
@@ -4155,6 +4187,7 @@ class StrategyScheduler {
             }
           }
           // 260301 Fix: broker_position_zero 退出清除持仓级字段 + 递增 trade counters
+          this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
           const bpzPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
           const bpzPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
           const bpzAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
@@ -4299,6 +4332,7 @@ class StrategyScheduler {
             }
           }
           // 260301 Fix: 定期核对退出也清除持仓级字段 + 递增 trade counters
+          this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
           const bpzpPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
           const bpzpPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
           const bpzpAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
@@ -5153,6 +5187,7 @@ class StrategyScheduler {
 
           // 标记为 BROKER_TERMINATED 并释放资金
           // 260301 Fix: 同时清除持仓级字段，防止下一笔交易继承 peakPnLPercent 等
+          this.getCrossSymbolState(strategyId).activeEntries.delete(row.symbol);
           const allocationAmount = parseFloat(String(ctx.allocationAmount || 0));
           await stateManager.updateState(strategyId, row.symbol, 'IDLE', {
             ...POSITION_EXIT_CLEANUP,
