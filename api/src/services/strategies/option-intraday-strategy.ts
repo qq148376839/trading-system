@@ -16,6 +16,8 @@ import { estimateOptionOrderTotalCost } from '../options-fee.service';
 import { logger } from '../../utils/logger';
 import capitalManager from '../capital-manager.service';
 import fastMomentumService from '../fast-momentum.service';
+import { getQuoteContext } from '../../config/longport';
+import { calculateATR } from '../../utils/technical-indicators';
 
 // ============================================
 // 策略类型定义
@@ -70,6 +72,13 @@ export interface TradeWindowConfig {
   noNewEntryBeforeCloseMinutes?: number;  // 收盘前N分钟不开新仓
   forceCloseBeforeCloseMinutes?: number;  // 收盘前N分钟强制平仓
   zdteCooldownMinutes?: number;       // 0DTE开盘禁入时长，分钟（默认0，可通过DB配置设置禁入窗口）
+  nonZdteCooldownMinutes?: number;    // 非0DTE开盘冷静期，分钟（默认0）
+  openImpulseGuard?: {                // 开盘冲量守卫 — 防止追高买在开盘冲量尾端
+    enabled: boolean;                 // 默认 false（需手动启用）
+    maxOpenMoveATR: number;           // 阈值：开盘至今移动超过此 ATR 倍数则拦截（默认 1.5）
+    filterActiveMinutes: number;      // 生效窗口：开盘后 N 分钟内检查（默认 30）
+    scoreOverrideMultiplier: number;  // 超强信号覆盖倍数：absScore >= scoreMin * 此值时放行（默认 2.0）
+  };
 }
 
 // ============================================
@@ -478,30 +487,45 @@ export class OptionIntradayStrategy extends StrategyBase {
         return null;
       }
 
-      // 1.5) 0DTE 开盘禁入窗口检查
+      // 1.5) 开盘冷静期检查（0DTE + 非0DTE）
       const expirationMode = this.cfg.expirationMode || '0DTE';
+
+      // 计算 minutesSinceOpen（冷静期 + 冲量守卫共用）
+      const nowForCooldown = new Date();
+      const etFormatterCooldown = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        hour: 'numeric',
+        minute: 'numeric',
+        hour12: false,
+      });
+      const etPartsCooldown = etFormatterCooldown.formatToParts(nowForCooldown);
+      const etHourCooldown = parseInt(etPartsCooldown.find(p => p.type === 'hour')?.value || '0');
+      const etMinuteCooldown = parseInt(etPartsCooldown.find(p => p.type === 'minute')?.value || '0');
+      const etMinutesCooldown = etHourCooldown * 60 + etMinuteCooldown;
+      const marketOpenMinutes = 9 * 60 + 30;
+      const minutesSinceOpen = etMinutesCooldown - marketOpenMinutes;
+
+      // 1.5a) 0DTE 冷静期
       const zdteCooldownMinutes = this.cfg.tradeWindow?.zdteCooldownMinutes ?? 0;
-
       if (zdteCooldownMinutes > 0 && expirationMode === '0DTE') {
-        const nowForCooldown = new Date();
-        const etFormatterCooldown = new Intl.DateTimeFormat('en-US', {
-          timeZone: 'America/New_York',
-          hour: 'numeric',
-          minute: 'numeric',
-          hour12: false,
-        });
-        const etPartsCooldown = etFormatterCooldown.formatToParts(nowForCooldown);
-        const etHourCooldown = parseInt(etPartsCooldown.find(p => p.type === 'hour')?.value || '0');
-        const etMinuteCooldown = parseInt(etPartsCooldown.find(p => p.type === 'minute')?.value || '0');
-        const etMinutesCooldown = etHourCooldown * 60 + etMinuteCooldown;
-        const marketOpenMinutes = 9 * 60 + 30;
-        const minutesSinceOpen = etMinutesCooldown - marketOpenMinutes;
-
         if (minutesSinceOpen >= 0 && minutesSinceOpen < zdteCooldownMinutes) {
           logger.info(`[0DTE禁入] ${symbol} 开盘${minutesSinceOpen}分钟内禁止入场（${zdteCooldownMinutes}分钟窗口）`);
           logData.finalResult = 'NO_SIGNAL';
           logData.rejectionReason = `0DTE禁入窗口：开盘${minutesSinceOpen}/${zdteCooldownMinutes}分钟`;
           logData.rejectionCheckpoint = '0dte_cooldown';
+          this.logDecision(logData);
+          return null;
+        }
+      }
+
+      // 1.5b) 非0DTE 冷静期
+      const nonZdteCooldownMinutes = this.cfg.tradeWindow?.nonZdteCooldownMinutes ?? 0;
+      if (nonZdteCooldownMinutes > 0 && expirationMode !== '0DTE') {
+        if (minutesSinceOpen >= 0 && minutesSinceOpen < nonZdteCooldownMinutes) {
+          logger.info(`[非0DTE禁入] ${symbol} 开盘${minutesSinceOpen}分钟内禁止入场（${nonZdteCooldownMinutes}分钟窗口）`);
+          logData.finalResult = 'NO_SIGNAL';
+          logData.rejectionReason = `非0DTE禁入窗口：开盘${minutesSinceOpen}/${nonZdteCooldownMinutes}分钟`;
+          logData.rejectionCheckpoint = 'non_0dte_cooldown';
           this.logDecision(logData);
           return null;
         }
@@ -619,6 +643,75 @@ export class OptionIntradayStrategy extends StrategyBase {
         `[${symbol}] FastMo过滤: ✓ (${fastMoResult.dataPoints}pts, slope=${fastMoResult.slope?.toFixed(6) ?? 'N/A'})`,
         { module: 'OptionStrategy.FastMo', strategyId: this.strategyId }
       );
+
+      // 5.6) 开盘冲量守卫（Opening Impulse Exhaustion Filter）
+      const impulseGuard = this.cfg.tradeWindow?.openImpulseGuard;
+      const filterActiveMinutes = impulseGuard?.filterActiveMinutes ?? 30;
+
+      if (minutesSinceOpen >= 0 && minutesSinceOpen < filterActiveMinutes) {
+        try {
+          const quoteCtx = await getQuoteContext();
+          const longport = require('longport');
+          const { Period, AdjustType, TradeSessions } = longport;
+          const { formatLongbridgeCandlestick } = require('../../utils/candlestick-formatter');
+
+          const dailyCandles = await quoteCtx.candlesticks(
+            symbol, Period.Day, 20, AdjustType.NoAdjust,
+            TradeSessions?.All || 100,
+          );
+          const formattedDaily = dailyCandles.map((c: any) => formatLongbridgeCandlestick(c));
+          const atr14 = calculateATR(formattedDaily, 14);
+
+          if (atr14 > 0 && formattedDaily.length > 0) {
+            const todayBar = formattedDaily[formattedDaily.length - 1];
+            const openPrice = todayBar.open;
+            const currentPrice = todayBar.close;
+            const moveFromOpen = currentPrice - openPrice;
+            const moveATR = Math.abs(moveFromOpen) / atr14;
+            const isMoveInSignalDirection =
+              (direction === 'CALL' && moveFromOpen > 0) ||
+              (direction === 'PUT' && moveFromOpen < 0);
+
+            logger.info(
+              `[${symbol}] 开盘冲量: move=${moveFromOpen > 0 ? '+' : ''}${moveFromOpen.toFixed(2)} ` +
+              `(${moveATR.toFixed(2)} ATR) | open=${openPrice.toFixed(2)} now=${currentPrice.toFixed(2)} | ` +
+              `ATR14=${atr14.toFixed(2)} | 方向一致=${isMoveInSignalDirection} | 开盘${minutesSinceOpen}min`,
+              { module: 'OptionStrategy.ImpulseGuard', strategyId: this.strategyId },
+            );
+
+            const maxOpenMoveATR = impulseGuard?.maxOpenMoveATR ?? 1.5;
+            if (impulseGuard?.enabled && isMoveInSignalDirection && moveATR > maxOpenMoveATR) {
+              // 检查超强信号覆盖
+              const thresholds = this.getThresholds();
+              const absScore = Math.abs(optionRec.finalScore);
+              const overrideMultiplier = impulseGuard.scoreOverrideMultiplier ?? 2.0;
+              const overrideThreshold = thresholds.directionalScoreMin * overrideMultiplier;
+
+              if (absScore >= overrideThreshold) {
+                logger.info(
+                  `[${symbol}] 开盘冲量守卫: 超强信号覆盖放行 |score|=${absScore.toFixed(1)} >= ${overrideThreshold.toFixed(1)}`,
+                  { module: 'OptionStrategy.ImpulseGuard', strategyId: this.strategyId },
+                );
+              } else {
+                logger.info(
+                  `[${symbol}] 开盘冲量守卫: 拦截 moveATR=${moveATR.toFixed(2)} > ${maxOpenMoveATR} | ` +
+                  `|score|=${absScore.toFixed(1)} < override=${overrideThreshold.toFixed(1)}`,
+                  { module: 'OptionStrategy.ImpulseGuard', strategyId: this.strategyId },
+                );
+                logData.finalResult = 'NO_SIGNAL';
+                logData.rejectionReason = `开盘冲量守卫: moveATR=${moveATR.toFixed(2)} > ${maxOpenMoveATR}`;
+                logData.rejectionCheckpoint = 'impulse_guard';
+                this.logDecision(logData);
+                return null;
+              }
+            }
+          }
+        } catch (impulseErr: any) {
+          logger.warn(`[${symbol}] 开盘冲量守卫数据获取失败: ${impulseErr.message}`, {
+            module: 'OptionStrategy.ImpulseGuard',
+          });
+        }
+      }
 
       // 6) 选择合约
       const selected = await selectOptionContract({

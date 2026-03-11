@@ -29,6 +29,8 @@ import {
   ExitRulesConfig,
 } from './option-intraday-strategy';
 import fastMomentumService from '../fast-momentum.service';
+import { getQuoteContext } from '../../config/longport';
+import { calculateATR } from '../../utils/technical-indicators';
 
 // ============================================
 // Schwartz 专属配置
@@ -249,30 +251,109 @@ export class SchwartzOptionStrategy extends StrategyBase {
         { module: 'Strategy.Schwartz.Filter', strategyId: this.strategyId }
       );
 
-      // === 6. 0DTE 禁入窗口检查 ===
+      // === 6. 开盘冷静期 + 冲量守卫 ===
       const expirationMode = this.cfg.expirationMode || '0DTE';
+
+      // 计算 minutesSinceOpen（后续冷静期 + 冲量守卫共用）
+      const nowForCooldown = new Date();
+      const etFormatterCooldown = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        hour: 'numeric',
+        minute: 'numeric',
+        hour12: false,
+      });
+      const etPartsCooldown = etFormatterCooldown.formatToParts(nowForCooldown);
+      const etHourCooldown = parseInt(etPartsCooldown.find(p => p.type === 'hour')?.value || '0');
+      const etMinuteCooldown = parseInt(etPartsCooldown.find(p => p.type === 'minute')?.value || '0');
+      const etMinutesCooldown = etHourCooldown * 60 + etMinuteCooldown;
+      const marketOpenMinutes = 9 * 60 + 30;
+      const minutesSinceOpen = etMinutesCooldown - marketOpenMinutes;
+
+      // 6a. 0DTE 冷静期
       const zdteCooldownMinutes = this.cfg.tradeWindow?.zdteCooldownMinutes ?? 0;
-
       if (zdteCooldownMinutes > 0 && expirationMode === '0DTE') {
-        const nowForCooldown = new Date();
-        const etFormatterCooldown = new Intl.DateTimeFormat('en-US', {
-          timeZone: 'America/New_York',
-          hour: 'numeric',
-          minute: 'numeric',
-          hour12: false,
-        });
-        const etPartsCooldown = etFormatterCooldown.formatToParts(nowForCooldown);
-        const etHourCooldown = parseInt(etPartsCooldown.find(p => p.type === 'hour')?.value || '0');
-        const etMinuteCooldown = parseInt(etPartsCooldown.find(p => p.type === 'minute')?.value || '0');
-        const etMinutesCooldown = etHourCooldown * 60 + etMinuteCooldown;
-        const marketOpenMinutes = 9 * 60 + 30;
-        const minutesSinceOpen = etMinutesCooldown - marketOpenMinutes;
-
         if (minutesSinceOpen >= 0 && minutesSinceOpen < zdteCooldownMinutes) {
           logger.info(`[SCHWARTZ][${symbol}] 0DTE禁入 开盘${minutesSinceOpen}分钟，禁止入场（${zdteCooldownMinutes}分钟窗口）`, {
             module: 'Strategy.Schwartz',
           });
           return null;
+        }
+      }
+
+      // 6b. 非0DTE 冷静期
+      const nonZdteCooldownMinutes = this.cfg.tradeWindow?.nonZdteCooldownMinutes ?? 0;
+      if (nonZdteCooldownMinutes > 0 && expirationMode !== '0DTE') {
+        if (minutesSinceOpen >= 0 && minutesSinceOpen < nonZdteCooldownMinutes) {
+          logger.info(`[SCHWARTZ][${symbol}] 非0DTE禁入 开盘${minutesSinceOpen}分钟，禁止入场（${nonZdteCooldownMinutes}分钟窗口）`, {
+            module: 'Strategy.Schwartz',
+          });
+          return null;
+        }
+      }
+
+      // 6c. 开盘冲量守卫（Opening Impulse Exhaustion Filter）
+      const impulseGuard = this.cfg.tradeWindow?.openImpulseGuard;
+      const filterActiveMinutes = impulseGuard?.filterActiveMinutes ?? 30;
+
+      if (minutesSinceOpen >= 0 && minutesSinceOpen < filterActiveMinutes) {
+        try {
+          // 获取日线数据计算 ATR14
+          const quoteCtx = await getQuoteContext();
+          const longport = require('longport');
+          const { Period, AdjustType, TradeSessions } = longport;
+          const { formatLongbridgeCandlestick } = require('../../utils/candlestick-formatter');
+
+          const dailyCandles = await quoteCtx.candlesticks(
+            symbol, Period.Day, 20, AdjustType.NoAdjust,
+            TradeSessions?.All || 100,
+          );
+          const formattedDaily = dailyCandles.map((c: any) => formatLongbridgeCandlestick(c));
+          const atr14 = calculateATR(formattedDaily, 14);
+
+          if (atr14 > 0 && formattedDaily.length > 0) {
+            // 今日 open = 最后一根日线的 open，currentPrice = 最后一根日线的 close
+            const todayBar = formattedDaily[formattedDaily.length - 1];
+            const openPrice = todayBar.open;
+            const currentPrice = todayBar.close;
+            const moveFromOpen = currentPrice - openPrice;
+            const moveATR = Math.abs(moveFromOpen) / atr14;
+            const isMoveInSignalDirection =
+              (direction === 'CALL' && moveFromOpen > 0) ||
+              (direction === 'PUT' && moveFromOpen < 0);
+
+            logger.info(
+              `[SCHWARTZ][${symbol}] 开盘冲量: move=${moveFromOpen > 0 ? '+' : ''}${moveFromOpen.toFixed(2)} ` +
+              `(${moveATR.toFixed(2)} ATR) | open=${openPrice.toFixed(2)} now=${currentPrice.toFixed(2)} | ` +
+              `ATR14=${atr14.toFixed(2)} | 方向一致=${isMoveInSignalDirection} | 开盘${minutesSinceOpen}min`,
+              { module: 'Strategy.Schwartz.ImpulseGuard', strategyId: this.strategyId },
+            );
+
+            const maxOpenMoveATR = impulseGuard?.maxOpenMoveATR ?? 1.5;
+            if (impulseGuard?.enabled && isMoveInSignalDirection && moveATR > maxOpenMoveATR) {
+              // 检查超强信号覆盖
+              const overrideMultiplier = impulseGuard.scoreOverrideMultiplier ?? 2.0;
+              const overrideThreshold = scoreMin * overrideMultiplier;
+
+              if (absScore >= overrideThreshold) {
+                logger.info(
+                  `[SCHWARTZ][${symbol}] 开盘冲量守卫: 超强信号覆盖放行 |score|=${absScore.toFixed(1)} >= ${overrideThreshold.toFixed(1)}`,
+                  { module: 'Strategy.Schwartz.ImpulseGuard', strategyId: this.strategyId },
+                );
+              } else {
+                logger.info(
+                  `[SCHWARTZ][${symbol}] 开盘冲量守卫: 拦截 moveATR=${moveATR.toFixed(2)} > ${maxOpenMoveATR} | ` +
+                  `|score|=${absScore.toFixed(1)} < override=${overrideThreshold.toFixed(1)}`,
+                  { module: 'Strategy.Schwartz.ImpulseGuard', strategyId: this.strategyId },
+                );
+                return null;
+              }
+            }
+          }
+        } catch (impulseErr: any) {
+          // 冲量守卫数据获取失败不阻塞交易，仅记录警告
+          logger.warn(`[SCHWARTZ][${symbol}] 开盘冲量守卫数据获取失败: ${impulseErr.message}`, {
+            module: 'Strategy.Schwartz.ImpulseGuard',
+          });
         }
       }
 

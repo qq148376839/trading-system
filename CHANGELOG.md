@@ -2,6 +2,26 @@
 
 ## 2026-03-11
 
+### 新增：开盘冲量守卫 (Opening Impulse Exhaustion Filter)
+
+**问题根因**: ORCL 2DTE Call 在 9:46 AM ET 买在日内最高点，12 分钟亏损 41%。非 0DTE 没有开盘阶段保护，评分系统在冲量走完后反而给出高分。
+
+**改动内容**:
+
+1. **`TradeWindowConfig` 新增配置**: `nonZdteCooldownMinutes`（非0DTE冷静期）+ `openImpulseGuard`（冲量守卫开关/ATR阈值/生效窗口/超强信号覆盖倍数）
+2. **Schwartz 策略**: Step 6 扩展为 6a（0DTE冷静期）+ 6b（非0DTE冷静期）+ 6c（冲量守卫：获取日线ATR14，计算 moveFromOpenATR，方向一致且超阈值时拦截）
+3. **Intraday 策略**: 同上逻辑，冲量守卫在 Step 5.6（FastMo 之后，有 finalScore 可判断覆盖）
+4. **公共工具函数**: `calculateATR()` 提取到 `utils/technical-indicators.ts`
+
+**安全设计**: `enabled` 默认 false，不影响现有交易；数据获取失败不阻塞交易；超强信号可覆盖拦截
+
+**修改文件**:
+- `api/src/services/strategies/option-intraday-strategy.ts`（配置接口 + 非0DTE冷静期 + 冲量守卫）
+- `api/src/services/strategies/schwartz-option-strategy.ts`（非0DTE冷静期 + 冲量守卫）
+- `api/src/utils/technical-indicators.ts`（新建：calculateATR 公共函数）
+
+---
+
 ### 修复：非0DTE冷静期参数读取路径
 
 **`strategy-scheduler.service.ts`** — `non0DTECooldownMinutes` 从不存在的 `exitRules.non0DTECooldownMinutes` 改为读取 `tradeWindow.zdteCooldownMinutes`（前端"开盘禁入时长"字段）：

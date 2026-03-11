@@ -7,6 +7,20 @@
 
 ## 🆕 最近更新
 
+### 2026-03-11: 开盘冲量守卫 (Opening Impulse Exhaustion Filter)
+
+**变更内容**:
+
+1. **冲量守卫**: 开盘 30 分钟内检测价格朝信号方向已走距离（ATR 倍数），超阈值拦截
+2. **非0DTE冷静期**: 新增 `nonZdteCooldownMinutes` 配置，补齐非0DTE开盘保护空白
+3. **公共 ATR 工具**: `calculateATR()` 提取到 `utils/technical-indicators.ts`
+4. **默认安全**: `enabled: false`，需手动启用；数据失败不阻塞；超强信号可覆盖
+
+**修改文件**:
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`
+- 📝 `api/src/services/strategies/schwartz-option-strategy.ts`
+- 🆕 `api/src/utils/technical-indicators.ts`
+
 ### 2026-03-11: 非0DTE冷静期参数读取路径修复
 
 **变更内容**:
