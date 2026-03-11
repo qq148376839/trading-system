@@ -4148,10 +4148,10 @@ class StrategyScheduler {
       };
 
       // 7. 检查是否应该平仓（传入用户配置的止盈止损比例）
-      const exitRulesOverride = strategyConfig?.exitRules ? {
-        takeProfitPercent: (() => { const v = Number(strategyConfig.exitRules.takeProfitPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
-        stopLossPercent: (() => { const v = Number(strategyConfig.exitRules.stopLossPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
-        non0DTECooldownMinutes: (() => { const v = Number(strategyConfig.exitRules.non0DTECooldownMinutes); return isNaN(v) || v < 0 ? undefined : v; })(),
+      const exitRulesOverride = (strategyConfig?.exitRules || strategyConfig?.tradeWindow?.zdteCooldownMinutes != null) ? {
+        takeProfitPercent: (() => { const v = Number(strategyConfig?.exitRules?.takeProfitPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
+        stopLossPercent: (() => { const v = Number(strategyConfig?.exitRules?.stopLossPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
+        non0DTECooldownMinutes: (() => { const v = Number(strategyConfig?.tradeWindow?.zdteCooldownMinutes); return isNaN(v) || v < 0 ? undefined : v; })(),
       } : undefined;
       const exitCondition = optionDynamicExitService.checkExitCondition(positionCtx, undefined, exitRulesOverride);
 

@@ -1,5 +1,20 @@
 # 更新日志
 
+## 2026-03-11
+
+### 修复：非0DTE冷静期参数读取路径
+
+**`strategy-scheduler.service.ts`** — `non0DTECooldownMinutes` 从不存在的 `exitRules.non0DTECooldownMinutes` 改为读取 `tradeWindow.zdteCooldownMinutes`（前端"开盘禁入时长"字段）：
+
+1. **数据源修正**: `exitRules.non0DTECooldownMinutes`（数据库无此字段）→ `tradeWindow.zdteCooldownMinutes`（前端已有配置）
+2. **条件扩展**: 即使无 `exitRules`，只要配置了冷却时长也构造 override
+3. **安全访问**: `exitRules` 内字段加 `?.` 防止 undefined 访问
+
+**修改文件**:
+- `api/src/services/strategy-scheduler.service.ts`（行 4151-4155）
+
+---
+
 ## 2026-03-10
 
 ### 新增：相关性分组手动编辑

@@ -1,11 +1,22 @@
 # 项目进度总结
 
-**更新时间**: 2026-03-10
+**更新时间**: 2026-03-11
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-03-11: 非0DTE冷静期参数读取路径修复
+
+**变更内容**:
+
+1. **数据源修正**: `non0DTECooldownMinutes` 从 `exitRules.non0DTECooldownMinutes`（不存在）改为 `tradeWindow.zdteCooldownMinutes`（前端"开盘禁入时长"）
+2. **条件扩展**: 即使无 `exitRules`，只要配了冷却时长也生效
+3. **安全访问**: `exitRules` 内字段加 `?.`
+
+**修改文件**:
+- 📝 `api/src/services/strategy-scheduler.service.ts`
 
 ### 2026-03-10: 相关性分组手动编辑
 
