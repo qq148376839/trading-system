@@ -1069,6 +1069,64 @@ export default function EditStrategyModal({
                         </p>
                       </div>
                     </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                      <div>
+                        <label className="block text-xs text-gray-700 mb-1 font-medium">非0DTE冷静期（分钟）</label>
+                        <input {...numberInputProps('nonZdteCooldownMinutes', { path: ['tradeWindow', 'nonZdteCooldownMinutes'], defaultValue: 0, min: 0, max: 60 })} />
+                        <p className="text-xs text-gray-500 mt-1">非0DTE开盘后N分钟禁止入场（0=不限制）</p>
+                      </div>
+                    </div>
+                    {/* 开盘冲量守卫 */}
+                    <div className="mt-4 p-3 border rounded bg-white">
+                      <div className="flex items-center gap-2 mb-3">
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.config.tradeWindow?.openImpulseGuard?.enabled ?? false}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  tradeWindow: {
+                                    ...(formData.config.tradeWindow || {}),
+                                    openImpulseGuard: {
+                                      ...(formData.config.tradeWindow?.openImpulseGuard || { maxOpenMoveATR: 1.5, filterActiveMinutes: 30, scoreOverrideMultiplier: 2.0 }),
+                                      enabled: e.target.checked,
+                                    },
+                                  },
+                                },
+                              })
+                            }
+                          />
+                          <span className="text-xs font-semibold text-gray-700">开盘冲量守卫</span>
+                        </label>
+                        <span className="text-xs text-gray-500">开盘窗口内价格朝信号方向冲量过大时拦截入场</span>
+                      </div>
+                      <div className={`grid grid-cols-1 md:grid-cols-3 gap-4 ${!(formData.config.tradeWindow?.openImpulseGuard?.enabled) ? 'opacity-50' : ''}`}>
+                        <div>
+                          <label className="block text-xs text-gray-700 mb-1 font-medium">ATR阈值</label>
+                          <input {...numberInputProps('maxOpenMoveATR', { path: ['tradeWindow', 'openImpulseGuard', 'maxOpenMoveATR'], defaultValue: 1.5, min: 0.5, max: 5, step: 0.1, isFloat: true })}
+                            disabled={!(formData.config.tradeWindow?.openImpulseGuard?.enabled)}
+                          />
+                          <p className="text-xs text-gray-500 mt-1">开盘移动超过N倍ATR则拦截</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-700 mb-1 font-medium">生效窗口（分钟）</label>
+                          <input {...numberInputProps('filterActiveMinutes', { path: ['tradeWindow', 'openImpulseGuard', 'filterActiveMinutes'], defaultValue: 30, min: 5, max: 120 })}
+                            disabled={!(formData.config.tradeWindow?.openImpulseGuard?.enabled)}
+                          />
+                          <p className="text-xs text-gray-500 mt-1">开盘后N分钟内检查冲量</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-700 mb-1 font-medium">覆盖倍数</label>
+                          <input {...numberInputProps('scoreOverrideMultiplier', { path: ['tradeWindow', 'openImpulseGuard', 'scoreOverrideMultiplier'], defaultValue: 2.0, min: 1.0, max: 5, step: 0.1, isFloat: true })}
+                            disabled={!(formData.config.tradeWindow?.openImpulseGuard?.enabled)}
+                          />
+                          <p className="text-xs text-gray-500 mt-1">超强信号(score&ge;阈值&times;N)可覆盖拦截</p>
+                        </div>
+                      </div>
+                    </div>
                     <div className="mt-3 p-2 bg-yellow-100 rounded text-xs text-yellow-800">
                       <strong>强平规则（不可配置）：</strong>0DTE 收盘前120分钟强平 | 非0DTE 收盘前10分钟强平 | 绝对止损 -40%
                     </div>
