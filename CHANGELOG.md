@@ -2,6 +2,20 @@
 
 ## 2026-03-13
 
+### 修复：BY_GROUP 资金分配在期权竞价路径不生效
+
+**问题根因**: `resolveDenominator()` 的 survivorCount 分支（优先级 1）直接返回 `maxConcentration ?? 0.33`，完全跳过 BY_GROUP 检查。期权策略 Phase D 竞价总会传 survivorCount >= 1，导致前端设置的 `capitalSplitMode: BY_GROUP` 永远无法生效，集中度始终为 33%（$2000 → 上限 $660），资金申请被反复拒绝。
+
+**修复内容**: survivorCount 分支中增加 BY_GROUP 检查，BY_GROUP 模式下 concentration 使用 1/groupCount 而非固定 0.33。
+
+**效果**: 2 组策略的每标的上限从 $660 → $1000，资金申请不再被拒绝。
+
+**修改文件**:
+- `api/src/services/capital-manager.service.ts`（resolveDenominator 优先级逻辑）
+- `docs/analysis/260313-资金分配与同标的重入分析.md`（补充 bug fix 说明）
+
+---
+
 ### 新增：反向熊市价差 (REVERSE_BEAR_SPREAD)
 
 **需求背景**: 使用熊市价差相同的评分规则（score <= -spreadScoreMin，看跌信号），但下单时买 CALL 而非 PUT。

@@ -314,16 +314,21 @@ class CapitalManager {
     survivorCount?: number,
     maxConcentration?: number
   ): Promise<{ denominator: number; concentration: number }> {
+    // 先解析 BY_GROUP 配置（同时影响 survivorCount 和独立路径）
+    const correlationGroups = strategyConfig?.correlationGroups as
+      { capitalSplitMode?: string; groups?: Record<string, string[]> } | undefined;
+    const isByGroup = correlationGroups?.capitalSplitMode === 'BY_GROUP' && correlationGroups.groups;
+    const groupCount = isByGroup ? Math.max(1, Object.keys(correlationGroups.groups!).length) : 0;
+
     // 1. survivorCount 最高优先级（Phase D 竞价阶段）
+    //    BY_GROUP 时用 1/groupCount 作为集中度上限，否则用 maxConcentration
     if (survivorCount && survivorCount > 0) {
-      return { denominator: survivorCount, concentration: maxConcentration ?? 0.33 };
+      const concentration = isByGroup ? (1 / groupCount) : (maxConcentration ?? 0.33);
+      return { denominator: survivorCount, concentration };
     }
 
     // 2. BY_GROUP 模式：按相关性分组数分配
-    const correlationGroups = strategyConfig?.correlationGroups as
-      { capitalSplitMode?: string; groups?: Record<string, string[]> } | undefined;
-    if (correlationGroups?.capitalSplitMode === 'BY_GROUP' && correlationGroups.groups) {
-      const groupCount = Math.max(1, Object.keys(correlationGroups.groups).length);
+    if (isByGroup) {
       return { denominator: groupCount, concentration: 1 / groupCount };
     }
 
