@@ -2,6 +2,23 @@
 
 ## 2026-03-13
 
+### 新增：反向熊市价差 (REVERSE_BEAR_SPREAD)
+
+**需求背景**: 使用熊市价差相同的评分规则（score <= -spreadScoreMin，看跌信号），但下单时买 CALL 而非 PUT。
+
+**改动内容**:
+
+1. **类型扩展**: `DirectionalStrategyType` 新增 `'REVERSE_BEAR_SPREAD'`
+2. **评估逻辑**: `evaluateSpreadStrategy()` 支持三种价差策略，REVERSE_BEAR_SPREAD 使用熊市评分条件但生成 CALL 方向
+3. **前端互斥**: 熊市价差 ↔ 反向熊市价差 勾选互斥，牛市价差不受影响
+4. **无需 migration**: JSONB 数组直接存新字符串值
+
+**修改文件**:
+- `api/src/services/strategies/option-intraday-strategy.ts`（类型 + 评估方法 + switch）
+- `frontend/components/EditStrategyModal.tsx`（互斥 checkbox）
+
+---
+
 ### 新增：非0DTE冷却升级机制
 
 **问题根因**: 3/12 交易日 TSLA 12秒重入（-$109）、QQQ 13秒重入（-$36），非0DTE 冷却期仅 3 分钟且不区分盈亏，无法防止同标的快速追高重入。

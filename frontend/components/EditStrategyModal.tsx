@@ -880,9 +880,13 @@ export default function EditStrategyModal({
                             checked={formData.config.strategyTypes?.directional?.includes('BEAR_SPREAD') ?? false}
                             onChange={(e) => {
                               const directional = formData.config.strategyTypes?.directional || [];
-                              const newDirectional = e.target.checked
+                              let newDirectional = e.target.checked
                                 ? [...directional, 'BEAR_SPREAD']
                                 : directional.filter((t: string) => t !== 'BEAR_SPREAD');
+                              // 互斥：勾选熊市价差时移除反向熊市价差
+                              if (e.target.checked) {
+                                newDirectional = newDirectional.filter((t: string) => t !== 'REVERSE_BEAR_SPREAD');
+                              }
                               setFormData({
                                 ...formData,
                                 config: {
@@ -893,6 +897,30 @@ export default function EditStrategyModal({
                             }}
                           />
                           <span className="text-sm">熊市价差</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.config.strategyTypes?.directional?.includes('REVERSE_BEAR_SPREAD') ?? false}
+                            onChange={(e) => {
+                              const directional = formData.config.strategyTypes?.directional || [];
+                              let newDirectional = e.target.checked
+                                ? [...directional, 'REVERSE_BEAR_SPREAD']
+                                : directional.filter((t: string) => t !== 'REVERSE_BEAR_SPREAD');
+                              // 互斥：勾选反向熊市价差时移除熊市价差
+                              if (e.target.checked) {
+                                newDirectional = newDirectional.filter((t: string) => t !== 'BEAR_SPREAD');
+                              }
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  strategyTypes: { ...formData.config.strategyTypes, directional: newDirectional },
+                                },
+                              });
+                            }}
+                          />
+                          <span className="text-sm">反向熊市价差</span>
                         </label>
                       </div>
                     </div>

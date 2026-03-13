@@ -4,7 +4,7 @@
  * 支持的策略类型:
  * - 买方策略: 单边买方(CALL/PUT)、跨式买入、宽跨式买入
  * - 卖方策略: 卖出跨式、卖出宽跨式、铁鹰、铁蝶
- * - 方向性策略: 牛市价差、熊市价差
+ * - 方向性策略: 牛市价差、熊市价差、反向熊市价差
  *
  * Exit is primarily handled by the scheduler's market-close forced exit logic.
  */
@@ -39,8 +39,9 @@ export type SellerStrategyType =
 
 // 方向性策略类型（价差策略）
 export type DirectionalStrategyType =
-  | 'BULL_SPREAD'       // 牛市价差 - 买入低Strike CALL + 卖出高Strike CALL
-  | 'BEAR_SPREAD';      // 熊市价差 - 买入高Strike PUT + 卖出低Strike PUT
+  | 'BULL_SPREAD'           // 牛市价差 - 买入低Strike CALL + 卖出高Strike CALL
+  | 'BEAR_SPREAD'           // 熊市价差 - 买入高Strike PUT + 卖出低Strike PUT
+  | 'REVERSE_BEAR_SPREAD';  // 反向熊市价差 - 评分看跌但买CALL
 
 // 所有策略类型
 export type OptionStrategyType = BuyerStrategyType | SellerStrategyType | DirectionalStrategyType;
@@ -385,7 +386,7 @@ export class OptionIntradayStrategy extends StrategyBase {
    */
   private evaluateSpreadStrategy(
     optionRec: any,
-    strategyType: 'BULL_SPREAD' | 'BEAR_SPREAD'
+    strategyType: 'BULL_SPREAD' | 'BEAR_SPREAD' | 'REVERSE_BEAR_SPREAD'
   ): { shouldTrade: boolean; direction: 'CALL' | 'PUT'; reason: string } {
     const thresholds = this.getThresholds();
     const score = optionRec.finalScore;
@@ -395,13 +396,18 @@ export class OptionIntradayStrategy extends StrategyBase {
       if (score >= thresholds.spreadScoreMin) {
         return { shouldTrade: true, direction: 'CALL', reason: `得分${score.toFixed(1)}≥${thresholds.spreadScoreMin}，适合牛市价差 (${vixInfo})` };
       }
-    } else {
+    } else if (strategyType === 'BEAR_SPREAD') {
       if (score <= -thresholds.spreadScoreMin) {
         return { shouldTrade: true, direction: 'PUT', reason: `得分${score.toFixed(1)}≤-${thresholds.spreadScoreMin}，适合熊市价差 (${vixInfo})` };
       }
+    } else if (strategyType === 'REVERSE_BEAR_SPREAD') {
+      if (score <= -thresholds.spreadScoreMin) {
+        return { shouldTrade: true, direction: 'CALL', reason: `得分${score.toFixed(1)}≤-${thresholds.spreadScoreMin}，适合反向熊市价差 (${vixInfo})` };
+      }
     }
 
-    return { shouldTrade: false, direction: strategyType === 'BULL_SPREAD' ? 'CALL' : 'PUT', reason: `得分${score.toFixed(1)}未达阈值±${thresholds.spreadScoreMin} (${vixInfo})` };
+    const defaultDirection = strategyType === 'BEAR_SPREAD' ? 'PUT' : 'CALL';
+    return { shouldTrade: false, direction: defaultDirection, reason: `得分${score.toFixed(1)}未达阈值±${thresholds.spreadScoreMin} (${vixInfo})` };
   }
 
   /**
@@ -588,6 +594,7 @@ export class OptionIntradayStrategy extends StrategyBase {
 
           case 'BULL_SPREAD':
           case 'BEAR_SPREAD':
+          case 'REVERSE_BEAR_SPREAD':
             evaluation = this.evaluateSpreadStrategy(optionRec, strategy);
             break;
 

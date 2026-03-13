@@ -7,6 +7,18 @@
 
 ## 🆕 最近更新
 
+### 2026-03-13: 反向熊市价差 (REVERSE_BEAR_SPREAD)
+
+**变更内容**:
+
+1. **REVERSE_BEAR_SPREAD 策略**: 使用熊市评分条件（score <= -spreadScoreMin）但买 CALL
+2. **前端互斥**: 熊市价差 ↔ 反向熊市价差互斥，牛市价差不受影响
+3. **零 migration**: JSONB 直接存储新策略类型字符串
+
+**修改文件**:
+- 📝 `api/src/services/strategies/option-intraday-strategy.ts`
+- 📝 `frontend/components/EditStrategyModal.tsx`
+
 ### 2026-03-13: 资金分配方式 — 按组平分 / 按标的平分
 
 **变更内容**:
