@@ -1,5 +1,29 @@
 # 更新日志
 
+## 2026-03-14
+
+### 重构：冷却机制简化 — cooldownUntil 时间戳模式
+
+**问题根因**: 冷却逻辑在 `processSymbol` 和 `evaluateIdleSymbol` 两处重复实现（各 ~50 行），且 `processClosingState` 竞态条件导致冷却信息丢失（IWM 22 秒重入 bug）。`processClosingState` 调用 `updateState(symbol, 'IDLE')` 不带任何 context，JSONB 覆盖导致冷却相关字段被清空。
+
+**改动内容**:
+
+1. **`computeCooldownUntil()` 纯函数**: 退出时计算冷却截止时间戳写入 context（0DTE 首笔=0、非首笔>=1min、非0DTE 默认 10min，支持 `reentryCooldownMinutes` 配置覆盖）
+2. **CLOSING 阶段预写入**: `cooldownUntil` 在 HOLDING→CLOSING 转换时即写入，确保 processClosingState 竞态不丢失冷却信息
+3. **processClosingState 修复**: `updateState(symbol, 'IDLE')` → `updateState(symbol, 'IDLE', { ...POSITION_EXIT_CLEANUP })`，JSONB `||` 合并保留 cooldownUntil
+4. **入场检查简化**: 两处 ~50 行冷却分支逻辑替换为 5 行 `cooldownUntil` 时间戳比较
+5. **8 条退出路径统一**: trade-push 回调、期权过期、broker 无持仓、MIT 保护单触发、定期核对、Iron Dome 全部写入 `cooldownUntil`
+6. **新交易日重置**: 两处日重置块加入 `cooldownUntil: null`
+
+**净效果**: 删除 ~88 行重复冷却分支，新增 ~89 行（含纯函数 + 每退出路径 +4 行 + 2 处 ×5 行检查），processClosingState 竞态条件消除。
+
+**规则 #14 合规**: `Math.max(1, ...)` 保证 0DTE 非首笔 >= 1 分钟。
+
+**修改文件**:
+- `api/src/services/strategy-scheduler.service.ts`
+
+---
+
 ## 2026-03-13
 
 ### 修复：BY_GROUP 资金分配在期权竞价路径不生效

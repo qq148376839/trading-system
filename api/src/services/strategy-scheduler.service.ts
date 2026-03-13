@@ -68,6 +68,30 @@ const POSITION_EXIT_CLEANUP = {
   takeProfitOrderId: null as null,
 };
 
+/**
+ * 退出时计算冷却截止时间戳 — 入场时只需比较 now < cooldownUntil
+ * 规则 #14: Math.max(1, ...) 保证 0DTE 非首笔 >= 1 分钟
+ */
+function computeCooldownUntil(params: {
+  is0DTE: boolean;
+  dailyTradeCount: number;
+  strategyConfig: Record<string, unknown>;
+}): string | null {
+  const { is0DTE, dailyTradeCount, strategyConfig } = params;
+  const tradeWindow = strategyConfig?.tradeWindow as Record<string, unknown> | undefined;
+  const cfgMin = Number(tradeWindow?.reentryCooldownMinutes);
+  const configMinutes = !isNaN(cfgMin) && cfgMin >= 0 ? cfgMin : undefined;
+
+  let cooldownMinutes: number;
+  if (is0DTE) {
+    cooldownMinutes = dailyTradeCount === 0 ? 0 : Math.max(1, configMinutes ?? 1);
+  } else {
+    cooldownMinutes = configMinutes ?? 10;
+  }
+  if (cooldownMinutes <= 0) return null;
+  return new Date(Date.now() + cooldownMinutes * 60000).toISOString();
+}
+
 // R5v2: 默认相关性分组（策略无配置时的回退）
 const DEFAULT_CORRELATION_GROUPS: Record<string, string> = {
   'SPY.US': 'INDEX_ETF',
@@ -1277,6 +1301,11 @@ class StrategyScheduler {
                     protectionRetryAfter: null,
                     lastCheckTime: null,
                     lastBrokerCheckTime: null,
+                    cooldownUntil: computeCooldownUntil({
+                      is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
+                      dailyTradeCount: prevDailyTradeCount,
+                      strategyConfig: strategyConfig || {},
+                    }),
                   });
 
                   if (tradePnL !== 0) {
@@ -1927,6 +1956,7 @@ class StrategyScheduler {
               circuitBreakerReason: null,
               circuitBreakerTime: null,
               protectionFailureCount: 0,  // V4: 新交易日重置保护单失败计数
+              cooldownUntil: null,         // 新交易日清除冷却
             });
             // V4: 同步重置内存计数
             this.protectionFailureCount.set(strategyId, 0);
@@ -1942,44 +1972,12 @@ class StrategyScheduler {
           return;
         }
 
-        // Fix 11+12: LATE时段冷却期 — 优先感知连续亏损，否则沿用交易次数逻辑
-        const dailyTradeCount = cancelCtx?.dailyTradeCount ?? 0;
-        const consecLosses = cancelCtx?.consecutiveLosses ?? 0;
-        const is0DTEContext = cancelCtx?.optionMeta?.expirationMode === '0DTE'
-          || cancelCtx?.is0DTE === true;
-
-        let cooldownMinutes: number;
-        if (is0DTEContext) {
-          if (consecLosses >= 3) {
-            cooldownMinutes = 15;  // 3笔连亏：长冷却，等待趋势明确
-          } else if (consecLosses === 2) {
-            cooldownMinutes = 5;   // 2笔连亏：中等冷却
-          } else if (consecLosses === 1) {
-            cooldownMinutes = 3;   // 1笔亏损：短冷却
-          } else {
-            // 无连续亏损：基于交易次数递增冷却
-            // 260301 Fix: dailyTradeCount>=1 时至少冷却1分钟，防止 peakPnL 残留导致秒级重入循环
-            if (dailyTradeCount === 0) {
-              cooldownMinutes = 0;  // 当日首笔：无冷却
-            } else if (dailyTradeCount <= 3) {
-              // 260304 Fix: 盈利退出后冷却加倍到3分钟，防止同底层换行权价秒级重入
-              const lastPnL = Number(cancelCtx?.lastTradePnL ?? 0);
-              cooldownMinutes = (!isNaN(lastPnL) && lastPnL > 0) ? 3 : 1;
-            } else {
-              cooldownMinutes = 3;  // 第5笔起：3分钟冷却
-            }
-          }
-        } else {
-          cooldownMinutes = strategyConfig?.latePeriod?.cooldownMinutes ?? 3;
-        }
-
-        if (cancelCtx?.lastExitTime && cooldownMinutes > 0) {
-          const exitElapsed = Date.now() - new Date(cancelCtx.lastExitTime).getTime();
-          if (exitElapsed < cooldownMinutes * 60000) {
-            const remainMin = Math.ceil((cooldownMinutes * 60000 - exitElapsed) / 60000);
-            const lastPnL = Number(cancelCtx?.lastTradePnL ?? 0);
-            const profitTag = (!isNaN(lastPnL) && lastPnL > 0) ? '_profitExit' : '';
-            summary.idle.push(`${symbol}(COOLDOWN_${remainMin}m_trade#${dailyTradeCount}${consecLosses > 0 ? `_consLoss${consecLosses}` : ''}${profitTag})`);
+        // 冷却期检查 — 退出时已计算 cooldownUntil
+        if (cancelCtx?.cooldownUntil) {
+          const cooldownEnd = new Date(cancelCtx.cooldownUntil).getTime();
+          if (!isNaN(cooldownEnd) && Date.now() < cooldownEnd) {
+            const remainMin = Math.ceil((cooldownEnd - Date.now()) / 60000);
+            summary.idle.push(`${symbol}(COOLDOWN_${remainMin}m)`);
             return;
           }
         }
@@ -2408,6 +2406,7 @@ class StrategyScheduler {
             circuitBreakerReason: null,
             circuitBreakerTime: null,
             protectionFailureCount: 0,
+            cooldownUntil: null,         // 新交易日清除冷却
           });
           this.protectionFailureCount.set(strategyId, 0);
           const freshState = await stateManager.getInstanceState(strategyId, symbol);
@@ -2421,54 +2420,12 @@ class StrategyScheduler {
         return null;
       }
 
-      // 冷却期检查
-      const dailyTradeCount = cancelCtx?.dailyTradeCount ?? 0;
-      const consecLosses = cancelCtx?.consecutiveLosses ?? 0;
-      const is0DTEContext = cancelCtx?.optionMeta?.expirationMode === '0DTE'
-        || cancelCtx?.is0DTE === true;
-
-      let cooldownMinutes: number;
-      if (is0DTEContext) {
-        if (consecLosses >= 3) {
-          cooldownMinutes = 15;
-        } else if (consecLosses === 2) {
-          cooldownMinutes = 5;
-        } else if (consecLosses === 1) {
-          cooldownMinutes = 3;
-        } else {
-          // 260301 Fix: dailyTradeCount>=1 时至少冷却1分钟，防止 peakPnL 残留导致秒级重入循环
-          if (dailyTradeCount === 0) {
-            cooldownMinutes = 0;
-          } else if (dailyTradeCount <= 3) {
-            // 260304 Fix: 盈利退出后冷却加倍到3分钟，防止同底层换行权价秒级重入
-            const lastPnL = Number(cancelCtx?.lastTradePnL ?? 0);
-            cooldownMinutes = (!isNaN(lastPnL) && lastPnL > 0) ? 3 : 1;
-          } else {
-            cooldownMinutes = 3;
-          }
-        }
-      } else {
-        // 非0DTE 冷却升级机制（方案C）
-        if (consecLosses >= 2) {
-          // 连亏2次：当日禁止该标的
-          summary.idle.push(`${symbol}(NON0DTE_DAILY_BAN_consLoss${consecLosses}_trade#${dailyTradeCount})`);
-          return null;
-        }
-        const lastPnL = Number(cancelCtx?.lastTradePnL ?? 0);
-        if (!isNaN(lastPnL) && lastPnL > 0) {
-          cooldownMinutes = 10; // 盈利退出：10分钟冷却
-        } else {
-          cooldownMinutes = 20; // 亏损退出：20分钟冷却
-        }
-      }
-
-      if (cancelCtx?.lastExitTime && cooldownMinutes > 0) {
-        const exitElapsed = Date.now() - new Date(cancelCtx.lastExitTime).getTime();
-        if (exitElapsed < cooldownMinutes * 60000) {
-          const remainMin = Math.ceil((cooldownMinutes * 60000 - exitElapsed) / 60000);
-          const lastPnL = Number(cancelCtx?.lastTradePnL ?? 0);
-          const profitTag = (!isNaN(lastPnL) && lastPnL > 0) ? '_profitExit' : '';
-          summary.idle.push(`${symbol}(COOLDOWN_${remainMin}m_trade#${dailyTradeCount}${consecLosses > 0 ? `_consLoss${consecLosses}` : ''}${profitTag})`);
+      // 冷却期检查 — 退出时已计算 cooldownUntil
+      if (cancelCtx?.cooldownUntil) {
+        const cooldownEnd = new Date(cancelCtx.cooldownUntil).getTime();
+        if (!isNaN(cooldownEnd) && Date.now() < cooldownEnd) {
+          const remainMin = Math.ceil((cooldownEnd - Date.now()) / 60000);
+          summary.idle.push(`${symbol}(COOLDOWN_${remainMin}m)`);
           return null;
         }
       }
@@ -3491,6 +3448,11 @@ class StrategyScheduler {
                 consecutiveLosses: expNpPrevConsecLosses + 1,
                 dailyRealizedPnL: expNpPrevDailyPnL + (expNpAllocAmt > 0 ? -expNpAllocAmt : 0),
                 lastTradePnL: expNpAllocAmt > 0 ? -expNpAllocAmt : 0,
+                cooldownUntil: computeCooldownUntil({
+                  is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
+                  dailyTradeCount: expNpPrevTradeCount,
+                  strategyConfig,
+                }),
               });
               return { actionTaken: true };
             }
@@ -3684,6 +3646,11 @@ class StrategyScheduler {
             dailyTradeCount: stockBpzPrevTradeCount + 1,
             consecutiveLosses: stockBpzPrevConsecLosses + 1, // 无法确认盈亏，视为亏损
             dailyRealizedPnL: stockBpzPrevDailyPnL,
+            cooldownUntil: computeCooldownUntil({
+              is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
+              dailyTradeCount: stockBpzPrevTradeCount,
+              strategyConfig,
+            }),
           });
           // 释放资金
           if (stockBpzAllocAmt > 0) {
@@ -3824,6 +3791,11 @@ class StrategyScheduler {
               consecutiveLosses: protPrevConsecLosses,  // 保护单无法判断盈亏，保持现有值
               dailyRealizedPnL: protPrevDailyPnL,       // 实际 PnL 由订单回调更新
               lastTradeDirection: context.optionMeta?.optionDirection || context.intent?.metadata?.optionDirection || null,
+              cooldownUntil: computeCooldownUntil({
+                is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
+                dailyTradeCount: protPrevTradeCount,
+                strategyConfig,
+              }),
             });
             // R5: 清除跨标的入场状态
             this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
@@ -4066,6 +4038,11 @@ class StrategyScheduler {
             consecutiveLosses: expPrevConsecLosses + 1,
             dailyRealizedPnL: expPrevDailyPnL + (expAllocAmt > 0 ? -expAllocAmt : 0),
             lastTradePnL: expAllocAmt > 0 ? -expAllocAmt : 0,
+            cooldownUntil: computeCooldownUntil({
+              is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
+              dailyTradeCount: expPrevTradeCount,
+              strategyConfig,
+            }),
           });
           return { actionTaken: true };
         }
@@ -4199,6 +4176,11 @@ class StrategyScheduler {
             consecutiveLosses: bpzPrevConsecLosses + 1,
             dailyRealizedPnL: bpzPrevDailyPnL + (bpzAllocAmt > 0 ? -bpzAllocAmt : 0),
             lastTradePnL: bpzAllocAmt > 0 ? -bpzAllocAmt : 0,
+            cooldownUntil: computeCooldownUntil({
+              is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
+              dailyTradeCount: bpzPrevTradeCount,
+              strategyConfig,
+            }),
           });
           return { actionTaken: true };
         }
@@ -4234,7 +4216,7 @@ class StrategyScheduler {
         }
 
         // MIT 保护单不在此处取消 — 先提交卖出抢时间，成交回调中再取消残留 MIT
-        // 更新状态为 CLOSING
+        // 更新状态为 CLOSING（含 cooldownUntil，确保即使 processClosingState 竞态也不丢失冷却信息）
         await strategyInstance.updateState(symbol, 'CLOSING', {
           ...context,
           exitReason: action,
@@ -4244,6 +4226,11 @@ class StrategyScheduler {
           exitPnL: pnl.netPnL,
           exitPnLPercent: pnl.grossPnLPercent, // Fix 9: 使用 grossPnLPercent 避免 NaN
           totalFees: pnl.totalFees,
+          cooldownUntil: computeCooldownUntil({
+            is0DTE,
+            dailyTradeCount: parseInt(String(context.dailyTradeCount ?? 0), 10) || 0,
+            strategyConfig,
+          }),
         });
 
         // R5v2: 更新跨标的保护状态 — 清除 activeEntry
@@ -4337,6 +4324,11 @@ class StrategyScheduler {
             consecutiveLosses: bpzpPrevConsecLosses + 1,
             dailyRealizedPnL: bpzpPrevDailyPnL + (bpzpAllocAmt > 0 ? -bpzpAllocAmt : 0),
             lastTradePnL: bpzpAllocAmt > 0 ? -bpzpAllocAmt : 0,
+            cooldownUntil: computeCooldownUntil({
+              is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
+              dailyTradeCount: bpzpPrevTradeCount,
+              strategyConfig,
+            }),
           });
           return { actionTaken: true };
         }
@@ -4410,7 +4402,11 @@ class StrategyScheduler {
       if (!hasPendingSellOrder) {
         const hasPosition = await this.checkExistingPosition(strategyId, effectiveSymbol);
         if (!hasPosition) {
-          await strategyInstance.updateState(symbol, 'IDLE');
+          // cooldownUntil 已在 CLOSING 时写入 context，JSONB || 合并会保留它
+          // POSITION_EXIT_CLEANUP 清除持仓级字段防止下一笔交易污染
+          await strategyInstance.updateState(symbol, 'IDLE', {
+            ...POSITION_EXIT_CLEANUP,
+          });
           logger.log(`策略 ${strategyId} 标的 ${symbol}: 平仓完成，更新状态为IDLE`);
         } else {
           await strategyInstance.updateState(symbol, 'HOLDING');
@@ -5188,6 +5184,11 @@ class StrategyScheduler {
             dailyRealizedPnL: (parseFloat(String(ctx.dailyRealizedPnL ?? 0)) + (allocationAmount > 0 ? -allocationAmount : 0)),
             consecutiveLosses: (parseInt(String(ctx.consecutiveLosses ?? 0)) + 1),
             dailyTradeCount: (parseInt(String(ctx.dailyTradeCount ?? 0)) + 1),
+            cooldownUntil: computeCooldownUntil({
+              is0DTE: ctx.optionMeta?.expirationMode === '0DTE' || ctx.is0DTE === true,
+              dailyTradeCount: parseInt(String(ctx.dailyTradeCount ?? 0), 10) || 0,
+              strategyConfig: {},
+            }),
           });
 
           // 释放资金分配

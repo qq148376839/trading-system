@@ -1,11 +1,22 @@
 # 项目进度总结
 
-**更新时间**: 2026-03-13
+**更新时间**: 2026-03-14
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-03-14: 冷却机制简化 — cooldownUntil 时间戳模式
+
+**变更内容**:
+
+1. **cooldownUntil 纯函数**: 退出时计算冷却截止时间戳，入场时只需比较 `now < cooldownUntil`
+2. **竞态修复**: processClosingState 不再丢失冷却信息（IWM 22 秒重入 bug 消除）
+3. **代码精简**: 两处 ~50 行重复冷却分支逻辑替换为 5 行时间戳检查
+
+**修改文件**:
+- 📝 `api/src/services/strategy-scheduler.service.ts`
 
 ### 2026-03-13: 反向熊市价差 (REVERSE_BEAR_SPREAD)
 
