@@ -16,6 +16,20 @@
 
 ---
 
+### 移除：跨组 floor 连锁过滤机制
+
+**问题根因**: P0 Bug — 记录 floor exit 时 `getCorrelationGroup(symbol)` 未传入 `correlationMap`，导致退出标的组名解析为 symbol 自身（如 `'ORCL.US'`），与候选标的正确的组名（如 `'GROUP_0'`、`'NVDA组'`）永远不匹配，所有标的均被误判为"不同组"触发跨组阻止。3/13 实盘中 ORCL 14:56 止损退出后，37 笔 PENDING 信号被阻止 17+ 分钟。
+
+**设计缺陷**: 即使修复 P0 bug，"A 组 floor exit → 阻止 B 组 30 分钟"的设计与相关性分组的第一性原理矛盾——分组目的是区分不相关标的，不相关标的的止损不应互相影响。且该机制保护的风险已被冷却期 + 同组互斥 + 日内熔断三重覆盖。
+
+**处理**: 完全移除 floor 连锁机制（实盘 + 回测同步清理）。
+
+**修改文件**:
+- `api/src/services/strategy-scheduler.service.ts`（crossSymbolState 数据结构、scoringAuction Phase 2、退出记录点）
+- `api/src/services/option-backtest.service.ts`（回测版 floor 连锁）
+
+---
+
 ### 新增：反向熊市价差 (REVERSE_BEAR_SPREAD)
 
 **需求背景**: 使用熊市价差相同的评分规则（score <= -spreadScoreMin，看跌信号），但下单时买 CALL 而非 PUT。
