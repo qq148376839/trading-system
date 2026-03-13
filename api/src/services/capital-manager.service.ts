@@ -303,6 +303,45 @@ class CapitalManager {
   }
 
   /**
+   * 解析资金分配的分母和集中度
+   * 优先级：survivorCount > capitalSplitMode=BY_GROUP > 默认 BY_SYMBOL
+   */
+  private async resolveDenominator(
+    strategyId: number,
+    strategyConfig: Record<string, unknown> | null,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    symbolPoolConfig: any,
+    survivorCount?: number,
+    maxConcentration?: number
+  ): Promise<{ denominator: number; concentration: number }> {
+    // 1. survivorCount 最高优先级（Phase D 竞价阶段）
+    if (survivorCount && survivorCount > 0) {
+      return { denominator: survivorCount, concentration: maxConcentration ?? 0.33 };
+    }
+
+    // 2. BY_GROUP 模式：按相关性分组数分配
+    const correlationGroups = strategyConfig?.correlationGroups as
+      { capitalSplitMode?: string; groups?: Record<string, string[]> } | undefined;
+    if (correlationGroups?.capitalSplitMode === 'BY_GROUP' && correlationGroups.groups) {
+      const groupCount = Math.max(1, Object.keys(correlationGroups.groups).length);
+      return { denominator: groupCount, concentration: 1 / groupCount };
+    }
+
+    // 3. 默认 BY_SYMBOL：按标的池总数分配
+    let symbolCount = 1;
+    try {
+      const stockSelector = (await import('./stock-selector.service')).default;
+      const symbols = await stockSelector.getSymbolPool(symbolPoolConfig || {});
+      symbolCount = Math.max(1, symbols.length);
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      logger.warn(`无法获取策略 ${strategyId} 的标的池，使用默认限制:`, errMsg);
+      symbolCount = 20;
+    }
+    return { denominator: symbolCount, concentration: maxConcentration ?? 0.33 };
+  }
+
+  /**
    * 获取标的级限制（每个标的的最大持仓金额）
    */
   async getMaxPositionPerSymbol(
@@ -312,7 +351,7 @@ class CapitalManager {
     try {
       // 查询策略关联的资金分配账户
       const strategyResult = await pool.query(
-        `SELECT s.symbol_pool_config, ca.allocation_type, ca.allocation_value
+        `SELECT s.symbol_pool_config, s.config, ca.allocation_type, ca.allocation_value
          FROM strategies s
          LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
          WHERE s.id = $1`,
@@ -335,28 +374,11 @@ class CapitalManager {
         allocatedAmount = Math.min(configuredAmount, totalCapital);
       }
 
-      // R5v2: survivorCount 优先，向后兼容 symbolCount
-      let denominator: number;
-      if (options?.survivorCount && options.survivorCount > 0) {
-        denominator = options.survivorCount;
-      } else {
-        // 向后兼容：标的池总数
-        let symbolCount = 1;
-        try {
-          const stockSelector = (await import('./stock-selector.service')).default;
-          const symbols = await stockSelector.getSymbolPool(strategy.symbol_pool_config || {});
-          symbolCount = Math.max(1, symbols.length);
-        } catch (error: unknown) {
-          const errMsg = error instanceof Error ? error.message : String(error);
-          logger.warn(`无法获取策略 ${strategyId} 的标的池，使用默认限制:`, errMsg);
-          symbolCount = 20;
-        }
-        denominator = symbolCount;
-      }
-
-      // 基础分配 + maxConcentration 封顶
+      const { denominator, concentration } = await this.resolveDenominator(
+        strategyId, strategy.config, strategy.symbol_pool_config,
+        options?.survivorCount, options?.maxConcentration
+      );
       const baseMax = allocatedAmount / denominator;
-      const concentration = options?.maxConcentration ?? 0.33;
       return Math.min(baseMax, allocatedAmount * concentration);
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -380,7 +402,7 @@ class CapitalManager {
 
       // 2. 查询策略关联的资金分配账户和标的池配置
       const strategyResult = await client.query(
-        `SELECT s.id, s.name, s.symbol_pool_config, ca.id as allocation_id, ca.allocation_type,
+        `SELECT s.id, s.name, s.symbol_pool_config, s.config, ca.id as allocation_id, ca.allocation_type,
                 ca.allocation_value, ca.current_usage, ca.parent_id
          FROM strategies s
          LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
@@ -492,27 +514,11 @@ class CapitalManager {
           positionValue = parseFloat(positionResult.rows[0]?.total_value || '0');
         }
 
-        // R5v2: survivorCount 优先，向后兼容 symbolCount
-        let denominator: number;
-        if (request.survivorCount && request.survivorCount > 0) {
-          denominator = request.survivorCount;
-        } else {
-          let symbolCount = 1;
-          try {
-            const stockSelector = (await import('./stock-selector.service')).default;
-            const symbols = await stockSelector.getSymbolPool(strategy.symbol_pool_config || {});
-            symbolCount = Math.max(1, symbols.length);
-          } catch (error: unknown) {
-            const errMsg = error instanceof Error ? error.message : String(error);
-            logger.warn(`无法获取策略 ${request.strategyId} 的标的池，使用默认限制:`, errMsg);
-            symbolCount = 20;
-          }
-          denominator = symbolCount;
-        }
-
-        // 基础分配 + maxConcentration 封顶
+        const { denominator, concentration } = await this.resolveDenominator(
+          request.strategyId, strategy.config, strategy.symbol_pool_config,
+          request.survivorCount, request.maxConcentration
+        );
         const baseMaxPerSymbol = allocatedAmount / denominator;
-        const concentration = request.maxConcentration ?? 0.33;
         const maxPositionPerSymbol = Math.min(baseMaxPerSymbol, allocatedAmount * concentration);
         const newPositionValue = positionValue + request.amount;
 

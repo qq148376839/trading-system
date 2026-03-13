@@ -1,11 +1,26 @@
 # 项目进度总结
 
-**更新时间**: 2026-03-11
+**更新时间**: 2026-03-13
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-03-13: 资金分配方式 — 按组平分 / 按标的平分
+
+**变更内容**:
+
+1. **capitalSplitMode 配置**: BY_GROUP（按组平分）/ BY_SYMBOL（按标的平分，默认）
+2. **BY_GROUP 自动集中度**: concentration = 1/groupCount，同组互斥保证天然上限
+3. **前端配置入口**: 策略详情页 Select 组件，实时显示预估分配金额
+4. **统一 resolveDenominator**: 消除 getMaxPositionPerSymbol 和 requestAllocation 中的重复逻辑
+
+**修改文件**:
+- 📝 `api/src/services/capital-manager.service.ts`
+- 📝 `api/src/routes/quant.ts`
+- 📝 `frontend/app/quant/strategies/[id]/page.tsx`
+- 🆕 `docs/analysis/260313-资金分配与同标的重入分析.md`
 
 ### 2026-03-11: 开盘冲量守卫 (Opening Impulse Exhaustion Filter)
 

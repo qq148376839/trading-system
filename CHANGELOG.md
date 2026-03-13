@@ -1,5 +1,27 @@
 # 更新日志
 
+## 2026-03-13
+
+### 新增：资金分配方式 — 按组平分 / 按标的平分
+
+**问题根因**: $2000 分给 7 标的 → 每标的 $285.7，只够买 1 张合约。BY_GROUP 模式下仍被 maxConcentration=0.33 封顶为 $660，前端无配置入口。
+
+**改动内容**:
+
+1. **`resolveDenominator()` 新增私有方法**: 统一解析分母和集中度，优先级 survivorCount > BY_GROUP > BY_SYMBOL
+2. **BY_GROUP 模式**: denominator=groupCount, concentration=1/groupCount（2组→0.5），同组互斥保证天然集中度上限
+3. **BY_SYMBOL 模式**（默认不变）: denominator=symbolPool.length, concentration=0.33
+4. **前端 Select 组件**: 策略详情页分组结果上方，切换资金分配方式，显示每组/每标的预估可用金额
+5. **路由校验**: PUT correlation-groups 增加 capitalSplitMode 枚举校验
+
+**修改文件**:
+- `api/src/services/capital-manager.service.ts`（resolveDenominator + getMaxPositionPerSymbol + requestAllocation）
+- `api/src/routes/quant.ts`（GET strategy 增加 allocationValue/Type + PUT 校验）
+- `frontend/app/quant/strategies/[id]/page.tsx`（资金分配方式 Select + 接口字段）
+- `docs/analysis/260313-资金分配与同标的重入分析.md`（分析报告）
+
+---
+
 ## 2026-03-11
 
 ### 新增：开盘冲量守卫 (Opening Impulse Exhaustion Filter)

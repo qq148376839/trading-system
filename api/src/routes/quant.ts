@@ -912,7 +912,7 @@ quantRouter.get('/strategies/:id', async (req: Request, res: Response, next: Nex
   try {
     const { id } = req.params;
     const result = await pool.query(
-      `SELECT s.*, ca.name as allocation_name
+      `SELECT s.*, ca.name as allocation_name, ca.allocation_type, ca.allocation_value
        FROM strategies s
        LEFT JOIN capital_allocations ca ON s.capital_allocation_id = ca.id
        WHERE s.id = $1`,
@@ -932,6 +932,8 @@ quantRouter.get('/strategies/:id', async (req: Request, res: Response, next: Nex
         type: row.type,
         capitalAllocationId: row.capital_allocation_id,
         allocationName: row.allocation_name,
+        allocationType: row.allocation_type,
+        allocationValue: row.allocation_value ? Number(row.allocation_value) : null,
         symbolPoolConfig: row.symbol_pool_config,
         config: row.config,
         status: row.status,
@@ -2717,6 +2719,12 @@ quantRouter.put('/strategies/:id/correlation-groups', async (req: Request, res: 
 
     if (!correlationGroupsConfig?.groups || Object.keys(correlationGroupsConfig.groups).length === 0) {
       return res.status(400).json({ success: false, error: '分组数据不能为空' });
+    }
+
+    // 校验 capitalSplitMode
+    if (correlationGroupsConfig.capitalSplitMode &&
+        !['BY_GROUP', 'BY_SYMBOL'].includes(correlationGroupsConfig.capitalSplitMode)) {
+      return res.status(400).json({ success: false, error: 'capitalSplitMode 必须为 BY_GROUP 或 BY_SYMBOL' });
     }
 
     await pool.query(

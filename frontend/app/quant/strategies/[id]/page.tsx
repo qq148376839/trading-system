@@ -13,6 +13,8 @@ interface Strategy {
   type: string;
   capitalAllocationId: number | null;
   allocationName: string | null;
+  allocationType: 'PERCENTAGE' | 'FIXED_AMOUNT' | null;
+  allocationValue: number | null;
   symbolPoolConfig: any;
   config: any;
   status: string;
@@ -704,6 +706,50 @@ export default function StrategyDetailPage() {
                               {cg.calculatedAt ? new Date(cg.calculatedAt).toLocaleString('zh-CN') : '-'}
                             </Descriptions.Item>
                           </Descriptions>
+
+                          {Object.keys(groups).length > 1 && (() => {
+                            const currentMode = cg.capitalSplitMode || 'BY_SYMBOL';
+                            const groupCount = Object.keys(groups).length;
+                            const symbolCount = Array.isArray(strategy?.symbolPoolConfig?.symbols) ? strategy.symbolPoolConfig.symbols.length : 0;
+                            const allocationValue = strategy?.allocationValue ?? 0;
+                            const estimatedPerUnit = currentMode === 'BY_GROUP'
+                              ? (groupCount > 0 ? allocationValue / groupCount : 0)
+                              : (symbolCount > 0 ? allocationValue / symbolCount : 0);
+                            return (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                                <span style={{ fontSize: 13, color: '#666' }}>资金分配方式:</span>
+                                <Select
+                                  value={currentMode}
+                                  style={{ width: 160 }}
+                                  onChange={async (value: string) => {
+                                    try {
+                                      const existing = strategy?.config?.correlationGroups || {};
+                                      const payload = { ...existing, capitalSplitMode: value };
+                                      const res = await quantApi.saveCorrelationGroups(strategyId, payload);
+                                      if (res.success) {
+                                        message.success('资金分配方式已保存');
+                                        await loadData();
+                                      } else {
+                                        message.error('保存失败');
+                                      }
+                                    } catch (err: unknown) {
+                                      const errMsg = err instanceof Error ? err.message : '保存失败';
+                                      message.error(errMsg);
+                                    }
+                                  }}
+                                  options={[
+                                    { label: '按标的平分 (BY_SYMBOL)', value: 'BY_SYMBOL' },
+                                    { label: '按组平分 (BY_GROUP)', value: 'BY_GROUP' },
+                                  ]}
+                                />
+                                <span style={{ fontSize: 12, color: '#999' }}>
+                                  {currentMode === 'BY_GROUP'
+                                    ? `每组可用 ≈ $${estimatedPerUnit.toFixed(0)}`
+                                    : `每标的可用 ≈ $${estimatedPerUnit.toFixed(0)}`}
+                                </span>
+                              </div>
+                            );
+                          })()}
 
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                             <Typography.Title level={5} style={{ margin: 0 }}>分组结果</Typography.Title>
