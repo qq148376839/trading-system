@@ -113,9 +113,8 @@ class StrategyScheduler {
   private readonly PROTECTION_FAILURE_THRESHOLD = 2; // 失败 >= 2 次禁止开仓
   // H2 修复：每日重置追踪（per strategy）
   private lastDailyResetDate: Map<number, string> = new Map();
-  // R5v2: 跨标的入场保护状态（策略级共享内存）— 按相关性分组追踪 floor
+  // R5v2: 跨标的入场保护状态（策略级共享内存）
   private crossSymbolState = new Map<number, {
-    lastFloorExitByGroup: Map<string, { exitTime: number; exitSymbol: string }>;
     activeEntries: Map<string, number>;  // symbol → entry timestamp (Date.now())
   }>();
 
@@ -123,7 +122,6 @@ class StrategyScheduler {
   private getCrossSymbolState(strategyId: number) {
     if (!this.crossSymbolState.has(strategyId)) {
       this.crossSymbolState.set(strategyId, {
-        lastFloorExitByGroup: new Map(),
         activeEntries: new Map(),
       });
     }
@@ -641,11 +639,14 @@ class StrategyScheduler {
         if (i + BATCH_SIZE < idleSymbols.length) await new Promise(r => setTimeout(r, 100));
       }
 
-      // Phase C: 两阶段竞价
-      logger.info(
-        `[R5v2] 策略 ${strategyId}: Phase B 完成, IDLE=${idleSymbols.length}, 候选=${candidates.length}` +
-        (candidates.length > 0 ? `, 标的=[${candidates.map(c => `${c.symbol}(${c.finalScore.toFixed(1)})`).join(', ')}]` : '')
-      );
+      // Phase C: 两阶段竞价（无候选时降级 debug，避免非交易时段日志刷屏）
+      const phaseBMsg = `[R5v2] 策略 ${strategyId}: Phase B 完成, IDLE=${idleSymbols.length}, 候选=${candidates.length}` +
+        (candidates.length > 0 ? `, 标的=[${candidates.map(c => `${c.symbol}(${c.finalScore.toFixed(1)})`).join(', ')}]` : '');
+      if (candidates.length > 0) {
+        logger.info(phaseBMsg);
+      } else {
+        logger.debug(phaseBMsg);
+      }
       const winners = this.scoringAuction(strategyId, candidates, correlationMap);
 
       // R5v2: 计算 survivorCount = 竞价胜者 + 当前 HOLDING 标的
@@ -2575,7 +2576,7 @@ class StrategyScheduler {
    * R5v2 Phase C: 两阶段评分竞价 — 与回测逻辑对齐
    *
    * Phase 1: 同组竞价 — 每个相关组只保留 |finalScore| 最高的候选
-   * Phase 2: 跨组 R5 — 并发入场保护 + floor 连锁保护
+   * Phase 2: 跨组 R5 — 并发入场保护 + 同组互斥
    */
   private scoringAuction(
     strategyId: number,
@@ -2583,7 +2584,7 @@ class StrategyScheduler {
     correlationMap?: Record<string, string>
   ): Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string }> {
     if (candidates.length === 0) {
-      logger.info(`[R5v2_AUCTION] 策略 ${strategyId}: 无候选，跳过竞价`);
+      logger.debug(`[R5v2_AUCTION] 策略 ${strategyId}: 无候选，跳过竞价`);
       return [];
     }
 
@@ -2643,21 +2644,6 @@ class StrategyScheduler {
         }
       }
       if (blockedByIntraGroup) continue;
-
-      // 条件2: floor 连锁 — 不同组 30min 内有 floor 退出则过滤
-      let blockedByFloor = false;
-      for (const [floorGroup, floorData] of crossState.lastFloorExitByGroup) {
-        if (floorGroup !== candidateGroup && (now - floorData.exitTime) < 30 * 60000) {
-          logger.info(
-            `[R5v2_PHASE2_FILTERED] 策略 ${strategyId}: ${candidate.symbol} ` +
-            `被跨组 floor 连锁过滤 (group=${floorGroup}, exitSymbol=${floorData.exitSymbol}, ` +
-            `${Math.round((now - floorData.exitTime) / 1000)}s ago)`
-          );
-          blockedByFloor = true;
-          break;
-        }
-      }
-      if (blockedByFloor) continue;
 
       phase2Winners.push(candidate);
     }
@@ -4253,24 +4239,17 @@ class StrategyScheduler {
           ...context,
           exitReason: action,
           exitReasonDetail: reason,
-          exitTag,  // R5: 保存 exitTag 用于跨标的 floor 连锁检测
+          exitTag,
           exitPrice: currentPrice,
           exitPnL: pnl.netPnL,
           exitPnLPercent: pnl.grossPnLPercent, // Fix 9: 使用 grossPnLPercent 避免 NaN
           totalFees: pnl.totalFees,
         });
 
-        // R5v2: 更新跨标的保护状态 — 清除 activeEntry + 按组记录 floor 退出
+        // R5v2: 更新跨标的保护状态 — 清除 activeEntry
         {
           const crossState = this.getCrossSymbolState(strategyId);
           crossState.activeEntries.delete(symbol);
-          if (exitTag === '0dte_pnl_floor') {
-            const group = getCorrelationGroup(symbol);
-            crossState.lastFloorExitByGroup.set(group, {
-              exitTime: Date.now(),
-              exitSymbol: symbol,
-            });
-          }
         }
 
         // 执行卖出

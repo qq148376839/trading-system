@@ -1827,7 +1827,7 @@ class OptionBacktestService {
    * Phase 1: 同组竞价 — 同一相关组（如 SPY/QQQ/IWM/DIA）+ 同一时间窗口（±3min 或持仓重叠），
    *          仅保留 |entryScore| 最高者，消除遍历顺序偏差
    *
-   * Phase 2: 跨组 R5 — 不同组之间保留原并发检测 + floor 连锁，
+   * Phase 2: 跨组 R5 — 不同组之间保留原并发检测 + 同组互斥，
    *          冲突时用 |entryScore| 决定保留谁（而非先到先得）
    *
    * 排序从 entryTime 改为 |entryScore| 降序 → 高分者先占位
@@ -1901,19 +1901,6 @@ class OptionBacktestService {
         if (Math.abs(entryTs - kEntryTs) < 3 * 60 * 1000 || (entryTs >= kEntryTs && entryTs <= kExitTs)) {
           filterReason = `CROSS_CONCURRENT:${k.symbol}`;
           break;
-        }
-      }
-
-      // 条件2: floor 连锁 — 不同组 0dte_pnl_floor 退出后 30min 内
-      if (!filterReason) {
-        for (const [grp, exitInfo] of lastExitByGroup) {
-          if (grp === group) continue;
-          if (exitInfo.exitTag === '0dte_pnl_floor' && entryTs > exitInfo.exitTime) {
-            if (entryTs - exitInfo.exitTime < 30 * 60 * 1000) {
-              filterReason = `CROSS_FLOOR:${exitInfo.symbol}`;
-              break;
-            }
-          }
         }
       }
 
