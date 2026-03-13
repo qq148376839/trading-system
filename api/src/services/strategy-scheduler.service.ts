@@ -2447,7 +2447,18 @@ class StrategyScheduler {
           }
         }
       } else {
-        cooldownMinutes = strategyConfig?.latePeriod?.cooldownMinutes ?? 3;
+        // 非0DTE 冷却升级机制（方案C）
+        if (consecLosses >= 2) {
+          // 连亏2次：当日禁止该标的
+          summary.idle.push(`${symbol}(NON0DTE_DAILY_BAN_consLoss${consecLosses}_trade#${dailyTradeCount})`);
+          return null;
+        }
+        const lastPnL = Number(cancelCtx?.lastTradePnL ?? 0);
+        if (!isNaN(lastPnL) && lastPnL > 0) {
+          cooldownMinutes = 10; // 盈利退出：10分钟冷却
+        } else {
+          cooldownMinutes = 20; // 亏损退出：20分钟冷却
+        }
       }
 
       if (cancelCtx?.lastExitTime && cooldownMinutes > 0) {
