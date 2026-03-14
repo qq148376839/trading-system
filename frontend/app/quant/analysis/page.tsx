@@ -83,6 +83,22 @@ interface StrategyInfo {
   name: string
 }
 
+/** 配对后的完整交易记录（BUY + SELL 合并） */
+interface TradeRecord {
+  id: number           // SELL signal id
+  symbol: string
+  strategy_id: number
+  trade_date: string   // SELL created_at 日期
+  created_at: string   // SELL created_at
+  pnl: number
+  pnlPct: number | null
+  exitType: string
+  score: number | null
+  direction: string
+  regime: any          // regimeDetection from BUY
+  strategyName: string // from BUY metadata.selectedStrategy
+}
+
 export default function AnalysisPage() {
   const isMobile = useIsMobile()
 
@@ -190,88 +206,127 @@ export default function AnalysisPage() {
     }
   }, [selectedOrderId, loadKline])
 
-  // -- 元数据提取辅助函数 --
-  const getMeta = (s: SignalRow, key: string) => s.metadata?.[key] ?? null
-  const getPnl = (s: SignalRow): number | null => {
-    const v = getMeta(s, 'pnl') ?? getMeta(s, 'realizedPnl')
-    return v !== null ? Number(v) : null
-  }
-  const getSignalScore = (s: SignalRow): number | null => {
-    const v = getMeta(s, 'signalScore') ?? getMeta(s, 'signal_score') ?? getMeta(s, 'score')
-    return v !== null ? Number(v) : null
-  }
-  const getExitType = (s: SignalRow): string => String(getMeta(s, 'exitType') ?? getMeta(s, 'exit_type') ?? '')
-  const getPnlPct = (s: SignalRow): number | null => {
-    const v = getMeta(s, 'pnlPercentage') ?? getMeta(s, 'pnl_percentage')
-    return v !== null ? Number(v) : null
-  }
-  const getRegime = (s: SignalRow) => s.metadata?.regimeDetection ?? null
-  const getDirection = (s: SignalRow): string => String(getMeta(s, 'direction') ?? getMeta(s, 'strategyType') ?? s.signal_type ?? '')
+  const strategyNameById = (id: number) => strategies.find(s => s.id === id)?.name || `策略 ${id}`
 
-  const strategyName = (id: number) => strategies.find(s => s.id === id)?.name || `策略 ${id}`
+  // -- BUY/SELL 信号配对 → 统一 TradeRecord --
+  // BUY 信号有: finalScore, optionDirection, selectedStrategy, regimeDetection
+  // SELL 信号有: netPnL, netPnLPercent, exitAction
+  // 按 symbol + strategy_id 配对，SELL 匹配最近的前序 BUY
+  const trades = useMemo(() => {
+    const buySignals = signals.filter(s => s.signal_type === 'BUY')
+    const sellSignals = signals.filter(s => s.signal_type === 'SELL' && s.metadata?.netPnL !== undefined && s.metadata?.netPnL !== null)
 
-  // -- 按策略筛选信号 --
-  const filteredSignals = useMemo(() => {
-    if (!selectedStrategyId) return signals
-    return signals.filter(s => s.strategy_id === selectedStrategyId)
-  }, [signals, selectedStrategyId])
+    // 按 symbol+strategy_id 建立 BUY 索引（按时间排序）
+    const buyIndex = new Map<string, SignalRow[]>()
+    for (const b of buySignals) {
+      const key = `${b.symbol}::${b.strategy_id || 0}`
+      const arr = buyIndex.get(key) || []
+      arr.push(b)
+      buyIndex.set(key, arr)
+    }
+    // 每组按时间排序
+    for (const arr of buyIndex.values()) {
+      arr.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    }
+
+    const usedBuys = new Set<number>()
+    const records: TradeRecord[] = []
+
+    for (const sell of sellSignals) {
+      const key = `${sell.symbol}::${sell.strategy_id || 0}`
+      const buys = buyIndex.get(key)
+      const sellTime = new Date(sell.created_at).getTime()
+
+      // 找最近的未使用 BUY（在 SELL 之前）
+      let matchedBuy: SignalRow | null = null
+      if (buys) {
+        for (let i = buys.length - 1; i >= 0; i--) {
+          const b = buys[i]
+          if (!usedBuys.has(b.id) && new Date(b.created_at).getTime() <= sellTime) {
+            matchedBuy = b
+            usedBuys.add(b.id)
+            break
+          }
+        }
+      }
+
+      const pnl = Number(sell.metadata.netPnL)
+      const pnlPctVal = sell.metadata.netPnLPercent
+      const pnlPct = pnlPctVal !== undefined && pnlPctVal !== null ? Number(pnlPctVal) : null
+
+      records.push({
+        id: sell.id,
+        symbol: sell.symbol,
+        strategy_id: sell.strategy_id || 0,
+        trade_date: (sell.created_at || '').split('T')[0],
+        created_at: sell.created_at,
+        pnl,
+        pnlPct,
+        exitType: String(sell.metadata.exitAction ?? ''),
+        score: matchedBuy?.metadata?.finalScore !== undefined ? Number(matchedBuy.metadata.finalScore) : null,
+        direction: String(matchedBuy?.metadata?.optionDirection ?? matchedBuy?.metadata?.selectedStrategy ?? ''),
+        regime: matchedBuy?.metadata?.regimeDetection ?? null,
+        strategyName: String(matchedBuy?.metadata?.selectedStrategy ?? ''),
+      })
+    }
+
+    return records
+  }, [signals])
+
+  // -- 按策略筛选交易 --
+  const filteredTrades = useMemo(() => {
+    if (!selectedStrategyId) return trades
+    return trades.filter(t => t.strategy_id === selectedStrategyId)
+  }, [trades, selectedStrategyId])
 
   // -- 计算统计数据 --
   const stats = useMemo(() => {
-    const trades = filteredSignals.filter((s: SignalRow) => getPnl(s) !== null)
-    const totalPnl = trades.reduce((sum: number, s: SignalRow) => sum + Number(getPnl(s) || 0), 0)
-    const wins = trades.filter((s: SignalRow) => Number(getPnl(s)) > 0)
-    const losses = trades.filter((s: SignalRow) => Number(getPnl(s)) < 0)
-    const winRate = trades.length > 0 ? (wins.length / trades.length) * 100 : 0
-    const avgWin = wins.length > 0 ? wins.reduce((s: number, t: SignalRow) => s + Number(getPnl(t)), 0) / wins.length : 0
-    const avgLoss = losses.length > 0 ? losses.reduce((s: number, t: SignalRow) => s + Number(getPnl(t)), 0) / losses.length : 0
-    const tradingDays = new Set(trades.map((t: SignalRow) => (t.created_at || '').split('T')[0])).size
+    const totalPnl = filteredTrades.reduce((sum, t) => sum + t.pnl, 0)
+    const wins = filteredTrades.filter(t => t.pnl > 0)
+    const losses = filteredTrades.filter(t => t.pnl < 0)
+    const winRate = filteredTrades.length > 0 ? (wins.length / filteredTrades.length) * 100 : 0
+    const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0
+    const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0
+    const tradingDays = new Set(filteredTrades.map(t => t.trade_date)).size
 
-    return { totalPnl, tradeCount: trades.length, winRate, avgWin, avgLoss, tradingDays }
-  }, [filteredSignals])
+    return { totalPnl, tradeCount: filteredTrades.length, winRate, avgWin, avgLoss, tradingDays }
+  }, [filteredTrades])
 
   // -- 每日盈亏数据 --
   const dailyPnlData = useMemo(() => {
     const byDay = new Map<string, number>()
-    for (const s of filteredSignals) {
-      const pnl = getPnl(s)
-      if (pnl === null) continue
-      const day = (s.created_at || '').split('T')[0]
-      if (!day) continue
-      byDay.set(day, (byDay.get(day) || 0) + pnl)
+    for (const t of filteredTrades) {
+      if (!t.trade_date) continue
+      byDay.set(t.trade_date, (byDay.get(t.trade_date) || 0) + t.pnl)
     }
     return Array.from(byDay.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([date, pnl]) => ({ date, pnl: Math.round(pnl * 100) / 100 }))
-  }, [filteredSignals])
+  }, [filteredTrades])
 
   // -- 得分 vs 盈亏散点数据 --
   const scoreVsPnlData = useMemo(() => {
-    return filteredSignals
-      .filter((s: SignalRow) => getSignalScore(s) !== null && getPnl(s) !== null)
-      .map((s: SignalRow) => ({
-        score: Number(getSignalScore(s)),
-        pnl: Number(getPnl(s)),
-        symbol: s.symbol,
+    return filteredTrades
+      .filter(t => t.score !== null)
+      .map(t => ({
+        score: Number(t.score),
+        pnl: t.pnl,
+        symbol: t.symbol,
       }))
-  }, [filteredSignals])
+  }, [filteredTrades])
 
   // -- 方向/策略类型分组统计 --
   const strategyStats = useMemo(() => {
     const groups = new Map<string, { trades: number; wins: number; totalPnl: number }>()
-    for (const s of filteredSignals) {
-      const pnl = getPnl(s)
-      if (pnl === null) continue
-      const dir = getDirection(s) || s.signal_type || 'UNKNOWN'
-      const regime = getRegime(s)
-      // 区分：顺势 vs 反向 vs 不确定
+    for (const t of filteredTrades) {
+      const dir = t.direction || 'UNKNOWN'
       let label = dir
-      if (regime?.shouldReverse) label = `${dir} (反向)`
-      else if (regime?.regime === 'UNCERTAIN') label = `${dir} (不确定)`
+      if (t.regime?.shouldReverse) label = `${dir} (反向)`
+      else if (t.regime?.regime === 'UNCERTAIN') label = `${dir} (不确定)`
       const g = groups.get(label) || { trades: 0, wins: 0, totalPnl: 0 }
       g.trades++
-      if (pnl > 0) g.wins++
-      g.totalPnl += pnl
+      if (t.pnl > 0) g.wins++
+      g.totalPnl += t.pnl
       groups.set(label, g)
     }
     return Array.from(groups.entries()).map(([type, g]) => ({
@@ -279,41 +334,37 @@ export default function AnalysisPage() {
       ...g,
       winRate: g.trades > 0 ? (g.wins / g.trades) * 100 : 0,
     }))
-  }, [filteredSignals])
+  }, [filteredTrades])
 
   // -- 按策略 ID 分组统计（跨策略对比）--
   const perStrategyStats = useMemo(() => {
     const groups = new Map<number, { trades: number; wins: number; totalPnl: number; reversed: number }>()
-    for (const s of signals) {
-      const pnl = getPnl(s)
-      if (pnl === null) continue
-      const sid = s.strategy_id || 0
+    for (const t of trades) {
+      const sid = t.strategy_id
       const g = groups.get(sid) || { trades: 0, wins: 0, totalPnl: 0, reversed: 0 }
       g.trades++
-      if (pnl > 0) g.wins++
-      g.totalPnl += pnl
-      if (getRegime(s)?.shouldReverse) g.reversed++
+      if (t.pnl > 0) g.wins++
+      g.totalPnl += t.pnl
+      if (t.regime?.shouldReverse) g.reversed++
       groups.set(sid, g)
     }
     return Array.from(groups.entries()).map(([sid, g]) => ({
       strategyId: sid,
-      strategyName: strategyName(sid),
+      strategyName: strategyNameById(sid),
       ...g,
       winRate: g.trades > 0 ? (g.wins / g.trades) * 100 : 0,
     }))
-  }, [signals, strategies])
+  }, [trades, strategies])
 
   // -- 退出方式统计 --
   const exitStats = useMemo(() => {
     const groups = new Map<string, { trades: number; wins: number; totalPnl: number }>()
-    for (const s of filteredSignals) {
-      const pnl = getPnl(s)
-      if (pnl === null) continue
-      const exitType = getExitType(s) || 'UNKNOWN'
+    for (const t of filteredTrades) {
+      const exitType = t.exitType || 'UNKNOWN'
       const g = groups.get(exitType) || { trades: 0, wins: 0, totalPnl: 0 }
       g.trades++
-      if (pnl > 0) g.wins++
-      g.totalPnl += pnl
+      if (t.pnl > 0) g.wins++
+      g.totalPnl += t.pnl
       groups.set(exitType, g)
     }
     return Array.from(groups.entries()).map(([type, g]) => ({
@@ -321,7 +372,7 @@ export default function AnalysisPage() {
       ...g,
       winRate: g.trades > 0 ? (g.wins / g.trades) * 100 : 0,
     }))
-  }, [filteredSignals])
+  }, [filteredTrades])
 
   // -- 得分区间胜率 --
   const scoreBuckets = useMemo(() => {
@@ -332,35 +383,31 @@ export default function AnalysisPage() {
       { label: '80-90', min: 80, max: 90, trades: 0, wins: 0 },
       { label: '90+', min: 90, max: Infinity, trades: 0, wins: 0 },
     ]
-    for (const s of filteredSignals) {
-      const pnl = getPnl(s)
-      const score = getSignalScore(s)
-      if (pnl === null || score === null) continue
+    for (const t of filteredTrades) {
+      if (t.score === null) continue
       for (const b of buckets) {
-        if (score >= b.min && score < b.max) {
+        if (t.score >= b.min && t.score < b.max) {
           b.trades++
-          if (pnl > 0) b.wins++
+          if (t.pnl > 0) b.wins++
           break
         }
       }
     }
     return buckets.map(b => ({ ...b, winRate: b.trades > 0 ? (b.wins / b.trades) * 100 : 0 }))
-  }, [filteredSignals])
+  }, [filteredTrades])
 
   // -- 每日明细分组 --
   const dailyDetails = useMemo(() => {
-    const byDay = new Map<string, SignalRow[]>()
-    for (const s of filteredSignals) {
-      if (getPnl(s) === null) continue
-      const day = (s.created_at || '').split('T')[0]
-      if (!day) continue
-      const arr = byDay.get(day) || []
-      arr.push(s)
-      byDay.set(day, arr)
+    const byDay = new Map<string, TradeRecord[]>()
+    for (const t of filteredTrades) {
+      if (!t.trade_date) continue
+      const arr = byDay.get(t.trade_date) || []
+      arr.push(t)
+      byDay.set(t.trade_date, arr)
     }
     return Array.from(byDay.entries())
       .sort(([a], [b]) => b.localeCompare(a))
-  }, [filteredSignals])
+  }, [filteredTrades])
 
   // -- 反向分析对比 --
   const reverseComparison = useMemo(() => {
@@ -590,8 +637,8 @@ export default function AnalysisPage() {
                 children: (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                     {dailyDetails.length === 0 && <Empty description="暂无交易数据" />}
-                    {dailyDetails.map(([date, trades]) => {
-                      const dayPnl = trades.reduce((s: number, t: SignalRow) => s + Number(getPnl(t) || 0), 0)
+                    {dailyDetails.map(([date, dayTrades]) => {
+                      const dayPnl = dayTrades.reduce((s, t) => s + t.pnl, 0)
                       return (
                         <Card
                           key={date}
@@ -601,31 +648,27 @@ export default function AnalysisPage() {
                           styles={{ header: { borderBottom: `1px solid ${COLOR.cardBorder}` }, body: { padding: isMobile ? 4 : 12 } }}
                         >
                           <Table
-                            dataSource={trades}
+                            dataSource={dayTrades}
                             rowKey="id"
                             size="small"
                             pagination={false}
                             scroll={{ x: 'max-content' }}
                             columns={[
                               { title: '标的', dataIndex: 'symbol', width: 180, ellipsis: true },
-                              { title: '方向', key: 'direction', render: (_: any, r: SignalRow) => {
-                                const dir = getDirection(r)
-                                const regime = getRegime(r)
-                                return (
-                                  <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
-                                    <Tag color={directionColor(dir)}>{dir || r.signal_type}</Tag>
-                                    {regime?.shouldReverse && <Tag color="volcano">反向</Tag>}
-                                    {regime?.regime === 'UNCERTAIN' && <Tag color="orange">不确定</Tag>}
-                                  </span>
-                                )
-                              }},
+                              { title: '方向', key: 'direction', render: (_: any, r: TradeRecord) => (
+                                <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+                                  <Tag color={directionColor(r.direction)}>{r.direction || '-'}</Tag>
+                                  {r.regime?.shouldReverse && <Tag color="volcano">反向</Tag>}
+                                  {r.regime?.regime === 'UNCERTAIN' && <Tag color="orange">不确定</Tag>}
+                                </span>
+                              )},
                               ...(isMobile ? [] : [
-                                { title: '得分', key: 'score', render: (_: any, r: SignalRow) => { const v = getSignalScore(r); return v !== null ? Number(v).toFixed(0) : '-' } },
-                                { title: '策略', key: 'strategy', render: (_: any, r: SignalRow) => <span style={{ color: '#8b949e', fontSize: 12 }}>{strategyName(r.strategy_id)}</span> },
+                                { title: '得分', key: 'score', render: (_: any, r: TradeRecord) => r.score !== null ? Number(r.score).toFixed(0) : '-' },
+                                { title: '策略', key: 'strategy', render: (_: any, r: TradeRecord) => <span style={{ color: '#8b949e', fontSize: 12 }}>{strategyNameById(r.strategy_id)}</span> },
                               ]),
-                              { title: '盈亏', key: 'pnl', render: (_: any, r: SignalRow) => { const v = getPnl(r); return v !== null ? <span style={{ color: pnlColor(v), fontWeight: 600 }}>${v.toFixed(2)}</span> : '-' } },
-                              { title: '盈亏%', key: 'pnlPct', render: (_: any, r: SignalRow) => { const v = getPnlPct(r); return v !== null ? <span style={{ color: pnlColor(v) }}>{v.toFixed(1)}%</span> : '-' } },
-                              { title: '退出', key: 'exit', render: (_: any, r: SignalRow) => { const v = getExitType(r); return v ? <Tag color={exitColor(v)}>{v}</Tag> : '-' } },
+                              { title: '盈亏', key: 'pnl', render: (_: any, r: TradeRecord) => <span style={{ color: pnlColor(r.pnl), fontWeight: 600 }}>${r.pnl.toFixed(2)}</span> },
+                              { title: '盈亏%', key: 'pnlPct', render: (_: any, r: TradeRecord) => r.pnlPct !== null ? <span style={{ color: pnlColor(r.pnlPct) }}>{r.pnlPct.toFixed(1)}%</span> : '-' },
+                              { title: '退出', key: 'exit', render: (_: any, r: TradeRecord) => r.exitType ? <Tag color={exitColor(r.exitType)}>{r.exitType}</Tag> : '-' },
                             ]}
                           />
                         </Card>
