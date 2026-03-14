@@ -14,6 +14,14 @@ model: sonnet
 
 ## 审查清单
 
+### P0 — 规则合规
+- [ ] JSONB 数字用 `Number()`+`isNaN`（规则 #3）
+- [ ] JSONB 更新用 `||` 合并（规则 #5）
+- [ ] HOLDING→IDLE 用 `POSITION_EXIT_CLEANUP`（规则 #12）
+- [ ] 新增 `logger.info` 非交易时段不刷屏（规则 #15）
+- [ ] 新表/改表同步 `000_init_schema`（规则 #10）
+- [ ] 前端适配移动端 375px（规则 #11）
+
 ### P0 — 严重问题（必须修复）
 
 #### 资金安全

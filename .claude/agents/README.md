@@ -14,6 +14,7 @@
 | **reviewer** | 代码审查 | 代码质量、架构合规、安全检查 |
 | **debugger** | 调试专家 | Bug 排查、错误定位、性能诊断 |
 | **security-auditor** | 安全审计 | 安全漏洞、认证授权、交易安全 |
+| **strategy-analyst** | 策略分析大师 | 策略逻辑剖析、实盘数据诊断、自动化推进、冗余冲突消除 |
 | **project-summarizer** | 文档管理 | 变更后文档整理、导航文件更新（强制执行） |
 
 ## 标准工作流
@@ -37,6 +38,8 @@
   │
   ├─ 需要安全检查？ → security-auditor（安全审计）
   │
+  ├─ 策略问题分析？ → strategy-analyst（策略诊断）
+  │
   └─ 完成变更 → project-summarizer（文档整理）⚠️ 强制
 ```
 
@@ -45,6 +48,13 @@
 ```
 product-manager → architect → developer → tester → reviewer → project-summarizer
    需求定义      架构设计      编码实现     测试编写    代码审查      文档整理
+```
+
+### 策略优化流程
+
+```
+strategy-analyst → product-manager → developer → tester → reviewer → project-summarizer
+   数据诊断+处方     需求确认         代码实现    测试编写    代码审查      文档整理
 ```
 
 ### Bug 修复流程
@@ -75,6 +85,31 @@ name: agent-name
 description: "Agent purpose and trigger conditions"
 model: sonnet
 ---
+```
+
+## 团队配置
+
+Agent 可组合为团队协作，团队配置位于 `.claude/teams/*.md`。
+
+| 团队 | 定位 | 核心成员 | 触发场景 |
+|------|------|---------|---------|
+| **strategy-ops** | 策略诊断与优化 | @strategy-analyst (Lead) + @debugger + @developer + @reviewer | 日常策略分析、实盘问题定位、参数调优 |
+| **security-redteam** | 安全审计红队 | CTO (Lead) + @strategy-analyst + @security-auditor + @chaos-engineer + @tester | 版本发布前审计、异常亏损事件、定期安全检查 |
+
+### 团队操作
+
+```bash
+# 查看所有团队
+/mcp__rm__list_teams
+
+# 激活团队（会话级生效）
+/mcp__rm__activate_team name=strategy-ops
+
+# 查看当前激活的团队
+/mcp__rm__get_active_team
+
+# 取消激活
+/mcp__rm__deactivate_team
 ```
 
 ## 核心原则

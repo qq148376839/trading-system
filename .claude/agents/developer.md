@@ -52,6 +52,17 @@ model: sonnet
 3. 运行 `git log --oneline -10` — 了解最近提交
 4. 基于 `currentSubtask` 继续未完成的工作
 
+## 规则门控
+
+上下文中出现 "相关规则提醒" 时必须逐条确认并遵守。
+
+关键文件→规则映射:
+- `strategy-scheduler.service.ts` → 先读策略核心逻辑保护清单
+- HOLDING→IDLE 退出路径 → 规则 #12
+- `logger.info` / 定时任务 → 规则 #15
+- JSONB 操作 → 规则 #3 + #5
+- migration → 规则 #10
+
 ## 开发工作流
 
 ### 1. 需求理解

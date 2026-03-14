@@ -53,20 +53,12 @@ docs/                 → 项目文档
 - **最小变更** — 只做必要改动，不过度工程
 - **资金安全第一** — 涉及资金/订单的变更必须格外谨慎
 
-## Role Memory MCP (`rm`)
-- teammate-mode 下，上下文压缩后自动调用 `get_active_team` 恢复团队身份
-- 手动恢复：`/mcp__rm__who` | 切换团队：`/mcp__rm__switch team=<name>`
-- 团队配置目录：`.claude/teams/*.md`
-
 ## 会话管理协议
 
-**启动**：读 `PROJECT_STATUS.md` → `git log --oneline -15` → `claude-progress.json`（如存在）→ 开始工作
-
-**长任务**（>3 文件变更）：拆子任务写入 `claude-progress.json` → 逐个完成并 commit → 全部完成后清理
-
-**检查点**：代码变更 → `pnpm run build` → 测试 → commit → 更新进度
-
-**上下文压缩恢复**：`mcp__rm__get_active_team` → `claude-progress.json` → `git log --oneline -10` → 继续
+- **启动**：`PROJECT_STATUS.md` → `git log --oneline -15` → `claude-progress.json`（如存在）
+- **长任务**（>3 文件变更）：拆子任务写入 `claude-progress.json`，逐个完成并 commit
+- **检查点**：代码变更 → `pnpm run build` → 测试 → commit
+- **压缩恢复**：`mcp__rm__get_active_team` → `claude-progress.json` → `git log --oneline -10`
 
 ---
 
@@ -82,12 +74,18 @@ docs/                 → 项目文档
 | 6 | **连续 2 次修复失败必须停下** | 记 blocker 请求指导 |
 | 7 | **安全防护不能移除只能替换** | 先建新再拆旧 |
 | 8 | 变更后更新文档 + push | CHANGELOG + PROJECT_STATUS |
-| 9 | 开发前保存规划文档到 docs/ | 不留在对话中 |
+| 9 | **会话工作文档实时持久化** | 非简单问答必须落盘 docs/ |
 | 10 | 新表/改表同步更新 000_init_schema | 增量 migration + 000 双写 |
 | 11 | 前端必须适配移动端 | Tailwind 响应式 + 375px 验证 |
 | 12 | **HOLDING→IDLE 用 POSITION_EXIT_CLEANUP** | 禁 `...context` 泄露字段 |
 | 13 | LongPort 文档用 `.md` 后缀 | 入口 `open.longbridge.com/llms.txt` |
 | 14 | **0DTE 非首笔冷却 >= 1 分钟** | 首笔 0 / 2-4笔 1min / 5+ 3min |
+| 15 | **非交易时段日志降级** | 策略日志仅开盘时运行，非交易时段只保留关键日志 |
+| 16 | **部署 NAS 标准步骤** | ssh -p 32000 → cd /volume1/docker/trading-system → git pull → docker compose up -d --build |
+
+> **规则自动注入**: UserPromptSubmit hook 自动通过 RAG 检索并注入相关规则。
+> 手动查阅: `docs/guides/260307-错误规则集.md` | 策略保护: `docs/guides/260307-策略核心逻辑保护清单.md`
+> **新增规则**: 见错误规则集末尾"新增规则 SOP"，需同步更新 4 处（本表 + 规则集 + hook RULE_MAP + agent 定义）
 
 ## 策略核心逻辑保护（详情见 `docs/guides/260307-策略核心逻辑保护清单.md`）
 
