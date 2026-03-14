@@ -26,7 +26,7 @@ const MIN_PROMPT_LENGTH = 6;
 const RAG_SOURCE_FILTER = '错误规则集.md';
 
 // Always-inject rule IDs — safety-critical, must survive context compression
-const ALWAYS_INJECT_IDS = [2, 6, 7];
+const ALWAYS_INJECT_IDS = [2, 6, 7, 8, 9];
 
 // ── Local keyword fallback map ─────────────────────────────────────────
 // Two-tier matching to reduce false positives:

@@ -7,6 +7,19 @@
 
 ## 🆕 最近更新
 
+### 2026-03-14: 前端导航栏优化 + 规则强制加载强化
+
+**变更内容**:
+
+1. **导航栏重组**: 新增"股票交易"分类（市场总览/K线图/外汇行情/关注列表），移除行情查询
+2. **CLAUDE.md 强制规则**: 内嵌 #2/#6/#7/#8/#9 完整指令，不依赖 hook 注入
+3. **Hook 扩展**: ALWAYS_INJECT_IDS 增加 #8/#9
+
+**修改文件**:
+- 📝 `frontend/components/AppLayout.tsx`
+- 📝 `CLAUDE.md`
+- 📝 `.claude/hooks/rule-guard.mjs`
+
 ### 2026-03-14: 合并 Create/Edit 策略模态框为 StrategyFormModal
 
 **变更内容**:

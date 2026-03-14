@@ -2,6 +2,22 @@
 
 ## 2026-03-14
 
+### 前端导航栏优化 + 规则强制加载强化
+
+**改动内容**:
+
+1. **导航栏分类重组**: 新增"股票交易"分类，将市场总览（原首页）、K线图、外汇行情、关注列表归入其中
+2. **移除行情查询**: 从导航栏和面包屑中移除无实际用途的行情查询入口
+3. **CLAUDE.md 强制规则段**: 在规则速查表前新增"强制规则"段，内嵌 #2/#6/#7/#8/#9 完整行动指令
+4. **Hook ALWAYS_INJECT_IDS 扩展**: `[2,6,7]` → `[2,6,7,8,9]`，确保文档更新和持久化规则始终注入
+
+**修改文件**:
+- `frontend/components/AppLayout.tsx`（导航栏重组 + 面包屑更新）
+- `CLAUDE.md`（新增强制规则段）
+- `.claude/hooks/rule-guard.mjs`（ALWAYS_INJECT_IDS 扩展）
+
+---
+
 ### 重构：合并 Create/Edit 策略模态框为统一 StrategyFormModal
 
 **问题**: CreateStrategyModal（~800行，内联在 page.tsx）与 EditStrategyModal（独立组件）功能高度重叠，维护成本高，UI 风格不一致（create 用 antd Modal/Select，edit 用原生 HTML）。

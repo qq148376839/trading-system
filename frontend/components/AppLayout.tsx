@@ -49,9 +49,31 @@ export default function AppLayout({ children }: AppLayoutProps) {
   // 菜单项配置
   const menuItems = [
     {
-      key: '/',
+      key: 'stock',
       icon: <HomeOutlined />,
-      label: <Link href="/">首页</Link>,
+      label: '股票交易',
+      children: [
+        {
+          key: '/',
+          icon: <HomeOutlined />,
+          label: <Link href="/">市场总览</Link>,
+        },
+        {
+          key: '/candles',
+          icon: <LineChartOutlined />,
+          label: <Link href="/candles">K线图</Link>,
+        },
+        {
+          key: '/forex',
+          icon: <GlobalOutlined />,
+          label: <Link href="/forex">外汇行情</Link>,
+        },
+        {
+          key: '/watchlist',
+          icon: <EyeOutlined />,
+          label: <Link href="/watchlist">关注列表</Link>,
+        },
+      ],
     },
     {
       type: 'divider' as const,
@@ -97,29 +119,6 @@ export default function AppLayout({ children }: AppLayoutProps) {
       type: 'divider' as const,
     },
     {
-      key: '/candles',
-      icon: <LineChartOutlined />,
-      label: <Link href="/candles">K线图</Link>,
-    },
-    {
-      key: '/forex',
-      icon: <GlobalOutlined />,
-      label: <Link href="/forex">外汇行情</Link>,
-    },
-    {
-      key: '/quote',
-      icon: <FileTextOutlined />,
-      label: <Link href="/quote">行情查询</Link>,
-    },
-    {
-      key: '/watchlist',
-      icon: <EyeOutlined />,
-      label: <Link href="/watchlist">关注列表</Link>,
-    },
-    {
-      type: 'divider' as const,
-    },
-    {
       key: '/logs',
       icon: <FileSearchOutlined />,
       label: <Link href="/logs">系统日志</Link>,
@@ -147,15 +146,19 @@ export default function AppLayout({ children }: AppLayoutProps) {
 
   // 获取当前打开的子菜单
   const getOpenKeys = () => {
-    if (pathname.startsWith('/quant')) {
-      return ['quant']
+    const keys: string[] = []
+    if (pathname === '/' || pathname === '/candles' || pathname === '/forex' || pathname === '/watchlist') {
+      keys.push('stock')
     }
-    return []
+    if (pathname.startsWith('/quant')) {
+      keys.push('quant')
+    }
+    return keys
   }
 
   // 生成面包屑
   const getBreadcrumbItems = () => {
-    const items: Array<{ title: React.ReactNode }> = [{ title: <Link href="/">首页</Link> }]
+    const items: Array<{ title: React.ReactNode }> = [{ title: <Link href="/">市场总览</Link> }]
 
     if (pathname === '/') {
       return items
@@ -186,8 +189,6 @@ export default function AppLayout({ children }: AppLayoutProps) {
         items.push({ title: isLast ? 'K线图' : <Link href={currentPath}>K线图</Link> })
       } else if (path === 'forex') {
         items.push({ title: isLast ? '外汇行情' : <Link href={currentPath}>外汇行情</Link> })
-      } else if (path === 'quote') {
-        items.push({ title: isLast ? '行情查询' : <Link href={currentPath}>行情查询</Link> })
       } else if (path === 'watchlist') {
         items.push({ title: isLast ? '关注列表' : <Link href={currentPath}>关注列表</Link> })
       } else if (path === 'logs') {
