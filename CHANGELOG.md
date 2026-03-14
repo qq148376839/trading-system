@@ -2,6 +2,32 @@
 
 ## 2026-03-14
 
+### 重构：合并 Create/Edit 策略模态框为统一 StrategyFormModal
+
+**问题**: CreateStrategyModal（~800行，内联在 page.tsx）与 EditStrategyModal（独立组件）功能高度重叠，维护成本高，UI 风格不一致（create 用 antd Modal/Select，edit 用原生 HTML）。
+
+**改动内容**:
+
+1. **统一组件 `StrategyFormModal`**: 通过 `strategy?: Strategy` prop 区分模式（undefined=创建，有值=编辑）
+2. **7 个风险点逐一处理**:
+   - handleSubmit 分支：edit 调 updateStrategy + 条件重算相关性；create 调 createStrategy + 无条件算相关性
+   - 模式切换（STATIC/INSTITUTION）：edit 保留 symbols，create 清空
+   - holdingValue 计算：create 时 existingHoldings=[]，reduce 自然为 0
+   - useEffect：条件加载 holdings（仅 edit）
+   - presetMode：create 默认 STANDARD，edit 调 detectPresetMode
+   - 期权参数 UI：统一用 edit 的完整 6 大区块模板，create 由 DEFAULT_CONFIGS 提供默认值
+   - 说明卡片 BUG 修复：补上 OPTION_SCHWARTZ_V1 分支（原 edit 只处理了 INTRADAY 和 RECOMMENDATION）
+3. **DEFAULT_CONFIGS 含 STANDARD preset 风控参数**: 期权类型创建时自带完整的入场/退出/RSI/冷却默认值
+4. **"不可修改"提示仅 edit 模式显示**
+5. **page.tsx 瘦身 ~800 行**: 删除内联 CreateStrategyModal，移除 watchlistApi/InstitutionStockSelector/Radio/Spin/Select 等不再需要的 import
+
+**修改文件**:
+- `frontend/components/EditStrategyModal.tsx` → `frontend/components/StrategyFormModal.tsx`（git mv + 重写）
+- `frontend/app/quant/strategies/page.tsx`（删除 ~800 行 + 更新引用）
+- `frontend/app/quant/strategies/[id]/page.tsx`（更新 import + 组件名）
+
+---
+
 ### 重构：冷却机制简化 — cooldownUntil 时间戳模式
 
 **问题根因**: 冷却逻辑在 `processSymbol` 和 `evaluateIdleSymbol` 两处重复实现（各 ~50 行），且 `processClosingState` 竞态条件导致冷却信息丢失（IWM 22 秒重入 bug）。`processClosingState` 调用 `updateState(symbol, 'IDLE')` 不带任何 context，JSONB 覆盖导致冷却相关字段被清空。

@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { quantApi, watchlistApi, quoteApi } from '@/lib/api';
 import AppLayout from '@/components/AppLayout';
-import EditStrategyModal from '@/components/EditStrategyModal';
+import StrategyFormModal from '@/components/StrategyFormModal';
 import { Card, Table, Tag, Space, Button, Alert, Spin, Row, Col, Descriptions, Modal, message, Typography, Collapse, InputNumber, Select, Divider } from 'antd';
 
 interface Strategy {
@@ -884,7 +884,7 @@ export default function StrategyDetailPage() {
       </Card>
 
       {showEditModal && strategy && (
-        <EditStrategyModal
+        <StrategyFormModal
           strategy={strategy}
           onClose={() => setShowEditModal(false)}
           onSuccess={() => {

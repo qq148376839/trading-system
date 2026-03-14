@@ -18,8 +18,8 @@ interface Strategy {
   updatedAt: string;
 }
 
-interface EditStrategyModalProps {
-  strategy: Strategy;
+interface StrategyFormModalProps {
+  strategy?: Strategy;  // undefined = create mode
   onClose: () => void;
   onSuccess: () => void;
 }
@@ -72,6 +72,57 @@ const RISK_PRESETS: Record<Exclude<PresetMode, 'CUSTOM'>, {
   },
 };
 
+const DEFAULT_CONFIGS: Record<string, any> = {
+  RECOMMENDATION_V1: { atrPeriod: 14, atrMultiplier: 2.0, riskRewardRatio: 1.5 },
+  OPTION_INTRADAY_V1: {
+    assetClass: 'OPTION',
+    expirationMode: '0DTE',
+    directionMode: 'FOLLOW_SIGNAL',
+    entryPriceMode: 'ASK',
+    positionSizing: { mode: 'FIXED_CONTRACTS', fixedContracts: 1 },
+    liquidityFilters: { minOpenInterest: 500, maxBidAskSpreadAbs: 0.3, maxBidAskSpreadPct: 25 },
+    greekFilters: { deltaMin: 0.25, deltaMax: 0.6 },
+    tradeWindow: { noNewEntryBeforeCloseMinutes: 60, forceCloseBeforeCloseMinutes: 30 },
+    feeModel: { commissionPerContract: 0.1, minCommissionPerOrder: 0.99, platformFeePerContract: 0.3 },
+    // STANDARD preset defaults
+    riskPreference: 'AGGRESSIVE',
+    entryThresholdOverride: { directionalScoreMin: 12, spreadScoreMin: 12 },
+    zdteEntryThreshold: 12,
+    exitRules: { takeProfitPercent: 40, stopLossPercent: 30 },
+    consecutiveConfirmCycles: 1,
+    rsiFilter: { oversoldThreshold: 5, overboughtThreshold: 95 },
+    latePeriod: { cooldownMinutes: 3 },
+  },
+  OPTION_SCHWARTZ_V1: {
+    assetClass: 'OPTION',
+    expirationMode: '0DTE',
+    directionMode: 'FOLLOW_SIGNAL',
+    entryPriceMode: 'ASK',
+    positionSizing: { mode: 'FIXED_CONTRACTS', fixedContracts: 1 },
+    liquidityFilters: { minOpenInterest: 500, maxBidAskSpreadAbs: 0.3, maxBidAskSpreadPct: 25 },
+    greekFilters: { deltaMin: 0.25, deltaMax: 0.6 },
+    tradeWindow: { noNewEntryBeforeCloseMinutes: 120, forceCloseBeforeCloseMinutes: 30 },
+    feeModel: { commissionPerContract: 0.1, minCommissionPerOrder: 0.99, platformFeePerContract: 0.3 },
+    entryThresholdOverride: { directionalScoreMin: 12, spreadScoreMin: 12 },
+    // STANDARD preset defaults
+    riskPreference: 'AGGRESSIVE',
+    zdteEntryThreshold: 12,
+    exitRules: { takeProfitPercent: 40, stopLossPercent: 30 },
+    consecutiveConfirmCycles: 1,
+    rsiFilter: { oversoldThreshold: 5, overboughtThreshold: 95 },
+    latePeriod: { cooldownMinutes: 3 },
+    schwartz: {
+      emaPeriod: 10,
+      chopThreshold: 0.5,
+      emaWrapThreshold: 0.3,
+      ivRankRejectThreshold: 60,
+      ivFallbackRejectIV: 0.8,
+      positionShrinkAfterBigWin: true,
+      bigWinThreshold: 30,
+    },
+  },
+};
+
 function detectPresetMode(config: Record<string, unknown>): PresetMode {
   for (const [mode, preset] of Object.entries(RISK_PRESETS) as [Exclude<PresetMode, 'CUSTOM'>, typeof RISK_PRESETS[keyof typeof RISK_PRESETS]][]) {
     const entryOverride = config.entryThresholdOverride as Record<string, unknown> | undefined;
@@ -96,22 +147,35 @@ function detectPresetMode(config: Record<string, unknown>): PresetMode {
   return 'CUSTOM';
 }
 
-export default function EditStrategyModal({
+export default function StrategyFormModal({
   strategy,
   onClose,
   onSuccess,
-}: EditStrategyModalProps) {
-  const [formData, setFormData] = useState({
-    name: strategy.name,
-    type: strategy.type,
-    capitalAllocationId: strategy.capitalAllocationId,
-    symbolPoolConfig: {
-      mode: strategy.symbolPoolConfig?.mode || 'STATIC',
-      symbols: Array.isArray(strategy.symbolPoolConfig?.symbols) 
-        ? strategy.symbolPoolConfig.symbols 
-        : [],
-    },
-    config: strategy.config,
+}: StrategyFormModalProps) {
+  const isEditMode = !!strategy;
+
+  const [formData, setFormData] = useState(() => {
+    if (strategy) {
+      return {
+        name: strategy.name,
+        type: strategy.type,
+        capitalAllocationId: strategy.capitalAllocationId,
+        symbolPoolConfig: {
+          mode: strategy.symbolPoolConfig?.mode || 'STATIC',
+          symbols: Array.isArray(strategy.symbolPoolConfig?.symbols)
+            ? strategy.symbolPoolConfig.symbols
+            : [],
+        },
+        config: strategy.config,
+      };
+    }
+    return {
+      name: '',
+      type: 'RECOMMENDATION_V1',
+      capitalAllocationId: null as number | null,
+      symbolPoolConfig: { mode: 'STATIC', symbols: [] as string[] },
+      config: DEFAULT_CONFIGS.RECOMMENDATION_V1,
+    };
   });
   const [allocations, setAllocations] = useState<any[]>([]);
   const [watchlist, setWatchlist] = useState<any[]>([]);
@@ -124,7 +188,7 @@ export default function EditStrategyModal({
   const [optionRankType, setOptionRankType] = useState<'total-volume' | 'total-turnover'>('total-volume');
   const [optionRankOpen, setOptionRankOpen] = useState(false);
   const [stockPoolMode, setStockPoolMode] = useState<'STATIC' | 'INSTITUTION'>(
-    strategy.symbolPoolConfig?.mode === 'INSTITUTION' ? 'INSTITUTION' : 'STATIC'
+    strategy?.symbolPoolConfig?.mode === 'INSTITUTION' ? 'INSTITUTION' : 'STATIC'
   );
   const [totalCapital, setTotalCapital] = useState(0);
   const [existingHoldings, setExistingHoldings] = useState<Array<{
@@ -137,16 +201,23 @@ export default function EditStrategyModal({
     context: any;
   }>>([]);
   const originalSymbolsRef = useRef<string[]>(
-    [...(Array.isArray(strategy.symbolPoolConfig?.symbols) ? strategy.symbolPoolConfig.symbols : [])].sort()
+    strategy
+      ? [...(Array.isArray(strategy.symbolPoolConfig?.symbols) ? strategy.symbolPoolConfig.symbols : [])].sort()
+      : []
   );
 
   useEffect(() => {
-    Promise.all([
+    const promises: Promise<any>[] = [
       quantApi.getCapitalAllocations(),
       watchlistApi.getWatchlist(true),
       quantApi.getCapitalUsage(),
-      quantApi.getStrategyHoldings(strategy.id),
-    ]).then(([allocRes, watchRes, usageRes, holdingsRes]) => {
+    ];
+    if (strategy) {
+      promises.push(quantApi.getStrategyHoldings(strategy.id));
+    }
+    Promise.all(promises).then((results) => {
+      const [allocRes, watchRes, usageRes] = results;
+      const holdingsRes = strategy ? results[3] : null;
       if (allocRes.success) {
         setAllocations(allocRes.data || []);
       }
@@ -161,7 +232,7 @@ export default function EditStrategyModal({
             if (usageAlloc && alloc.allocationType === 'PERCENTAGE') {
               return {
                 ...alloc,
-                actualAllocated: totalCapital * alloc.allocationValue,
+                actualAllocated: (usageRes.data.totalCapital || 0) * alloc.allocationValue,
               };
             }
             return alloc;
@@ -169,11 +240,11 @@ export default function EditStrategyModal({
           setAllocations(updatedAllocations);
         }
       }
-      if (holdingsRes.success) {
+      if (holdingsRes?.success) {
         setExistingHoldings(holdingsRes.data || []);
       }
     });
-  }, [strategy.id]);
+  }, [strategy?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (formData.capitalAllocationId && allocations.length > 0) {
@@ -187,12 +258,12 @@ export default function EditStrategyModal({
         } else {
           allocated = parseFloat(allocation.allocationValue || '0');
         }
-        
+
         // 计算已有持仓占用的资金
         const holdingValue = existingHoldings.reduce((sum, h) => {
           return sum + (h.quantity * h.currentPrice);
         }, 0);
-        
+
         const used = parseFloat(allocation.currentUsage || '0');
         // 可用资金 = 分配资金 - 已使用资金 - 已有持仓占用资金
         const available = Math.max(0, allocated - used - holdingValue);
@@ -206,9 +277,12 @@ export default function EditStrategyModal({
   }, [formData.capitalAllocationId, allocations, totalCapital, existingHoldings]);
 
   // --- Risk Preset & Number Input UX ---
-  const [presetMode, setPresetMode] = useState<PresetMode>(() =>
-    formData.type === 'OPTION_INTRADAY_V1' ? detectPresetMode(formData.config) : 'STANDARD'
-  );
+  const [presetMode, setPresetMode] = useState<PresetMode>(() => {
+    if (!strategy) return 'STANDARD';
+    return (strategy.type === 'OPTION_INTRADAY_V1' || strategy.type === 'OPTION_SCHWARTZ_V1')
+      ? detectPresetMode(strategy.config)
+      : 'STANDARD';
+  });
   const [localNumbers, setLocalNumbers] = useState<Record<string, string>>({});
   const [showEntryParams, setShowEntryParams] = useState(false);
 
@@ -310,7 +384,7 @@ export default function EditStrategyModal({
 
   // Auto-detect CUSTOM when config changes away from current preset
   useEffect(() => {
-    if (formData.type !== 'OPTION_INTRADAY_V1') return;
+    if (formData.type !== 'OPTION_INTRADAY_V1' && formData.type !== 'OPTION_SCHWARTZ_V1') return;
     if (presetMode === 'CUSTOM') return;
     const detected = detectPresetMode(formData.config);
     if (detected !== presetMode) {
@@ -404,43 +478,69 @@ export default function EditStrategyModal({
     }
     setLoading(true);
     try {
-      await quantApi.updateStrategy(strategy.id, formData);
-      message.success('策略已更新');
-      onSuccess();
+      if (isEditMode && strategy) {
+        // --- EDIT MODE ---
+        await quantApi.updateStrategy(strategy.id, formData);
+        message.success('策略已更新');
+        onSuccess();
 
-      // 期权类型 + 标的变动 → fire-and-forget 重算相关性分组
-      if (
-        formData.type === 'OPTION_INTRADAY_V1' ||
-        formData.type === 'OPTION_SCHWARTZ_V1'
-      ) {
-        const newSymbols = [...formData.symbolPoolConfig.symbols].sort();
-        const oldSymbols = originalSymbolsRef.current;
-        const symbolsChanged =
-          newSymbols.length !== oldSymbols.length ||
-          newSymbols.some((s, i) => s !== oldSymbols[i]);
+        // 期权类型 + 标的变动 -> fire-and-forget 重算相关性分组
+        if (
+          formData.type === 'OPTION_INTRADAY_V1' ||
+          formData.type === 'OPTION_SCHWARTZ_V1'
+        ) {
+          const newSymbols = [...formData.symbolPoolConfig.symbols].sort();
+          const oldSymbols = originalSymbolsRef.current;
+          const symbolsChanged =
+            newSymbols.length !== oldSymbols.length ||
+            newSymbols.some((s, i) => s !== oldSymbols[i]);
 
-        if (symbolsChanged) {
-          const cg = strategy.config?.correlationGroups;
-          if (cg?.manualOverride) {
-            message.info('当前分组为手动设置，跳过自动重算');
-          } else {
-            const threshold = cg?.threshold ?? 0.75;
-            const days = cg?.days ?? 120;
-            message.info('标的变动，正在后台重算相关性分组...');
-            quantApi.computeCorrelationGroups(strategy.id, { threshold, days })
-              .then((r) => {
-                if (r.success) {
-                  message.success('相关性分组重算完成');
-                }
-              })
-              .catch(() => {
-                // 非阻塞，静默失败
-              });
+          if (symbolsChanged) {
+            const cg = strategy.config?.correlationGroups;
+            if (cg?.manualOverride) {
+              message.info('当前分组为手动设置，跳过自动重算');
+            } else {
+              const threshold = cg?.threshold ?? 0.75;
+              const days = cg?.days ?? 120;
+              message.info('标的变动，正在后台重算相关性分组...');
+              quantApi.computeCorrelationGroups(strategy.id, { threshold, days })
+                .then((r) => {
+                  if (r.success) {
+                    message.success('相关性分组重算完成');
+                  }
+                })
+                .catch(() => {
+                  // 非阻塞，静默失败
+                });
+            }
           }
+        }
+      } else {
+        // --- CREATE MODE ---
+        const res = await quantApi.createStrategy(formData);
+        message.success('策略创建成功');
+        onSuccess();
+
+        // 期权类型策略：fire-and-forget 计算相关性分组
+        const createdId = res?.data?.id;
+        if (
+          createdId &&
+          (formData.type === 'OPTION_INTRADAY_V1' || formData.type === 'OPTION_SCHWARTZ_V1')
+        ) {
+          message.info('正在后台计算相关性分组...');
+          quantApi.computeCorrelationGroups(createdId, { threshold: 0.75, days: 120 })
+            .then((r) => {
+              if (r.success) {
+                message.success('相关性分组计算完成');
+              }
+            })
+            .catch(() => {
+              // 非阻塞，静默失败
+            });
         }
       }
     } catch (err: any) {
-      message.error(err.message || '更新策略失败');
+      message.error(err.message || (isEditMode ? '更新策略失败' : '创建策略失败'));
     } finally {
       setLoading(false);
     }
@@ -450,10 +550,10 @@ export default function EditStrategyModal({
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-2 md:p-0">
       <div className="bg-white rounded-lg max-w-2xl w-full mx-2 md:mx-0 max-h-[90vh] flex flex-col">
         <div className="p-6 border-b">
-          <h2 className="text-2xl font-bold">编辑策略</h2>
+          <h2 className="text-2xl font-bold">{isEditMode ? '编辑策略' : '创建策略'}</h2>
         </div>
         <div className="flex-1 overflow-y-auto p-6">
-          <form onSubmit={handleSubmit} id="edit-strategy-form">
+          <form onSubmit={handleSubmit} id="strategy-form">
             <div className="mb-4">
               <label className="block text-sm font-medium mb-1">策略名称</label>
               <input
@@ -463,6 +563,77 @@ export default function EditStrategyModal({
                 className="border rounded px-3 py-2 w-full"
                 required
               />
+            </div>
+
+            {/* 策略类型选择 - 仅创建模式 */}
+            {!isEditMode && (
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-1">策略类型</label>
+                <select
+                  value={formData.type}
+                  onChange={(e) => {
+                    const nextType = e.target.value;
+                    setStockPoolMode('STATIC');
+                    setPresetMode('STANDARD');
+                    setLocalNumbers({});
+                    setFormData({
+                      ...formData,
+                      type: nextType,
+                      symbolPoolConfig: { mode: 'STATIC', symbols: [] },
+                      config: DEFAULT_CONFIGS[nextType] || {},
+                    });
+                  }}
+                  className="border rounded px-3 py-2 w-full"
+                >
+                  <option value="RECOMMENDATION_V1">推荐策略 V1（股票）</option>
+                  <option value="OPTION_INTRADAY_V1">期权日内策略 V1（买方）</option>
+                  <option value="OPTION_SCHWARTZ_V1">期权-舒华兹趋势 V1</option>
+                </select>
+              </div>
+            )}
+
+            {/* 策略类型说明卡片 */}
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-4 mb-4">
+              <div className="flex items-start gap-3">
+                <div className="flex-shrink-0 mt-1">
+                  <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <div className="flex-1">
+                  {formData.type === 'OPTION_INTRADAY_V1' ? (
+                    <>
+                      <h3 className="text-sm font-semibold text-gray-900 mb-1">期权日内策略 V1（买方）</h3>
+                      <p className="text-xs text-gray-600 leading-relaxed mb-2">
+                        对正股/指数标的先生成方向信号，再自动选择流动性更好的期权合约开仓；
+                        收盘前30分钟强制平仓（不论盈亏），并将期权佣金/平台费计入资金占用与回测。
+                      </p>
+                    </>
+                  ) : formData.type === 'OPTION_SCHWARTZ_V1' ? (
+                    <>
+                      <h3 className="text-sm font-semibold text-gray-900 mb-1">期权-舒华兹趋势 V1</h3>
+                      <p className="text-xs text-gray-600 leading-relaxed mb-2">
+                        基于马丁·舒华兹 Pit Bull 交易哲学的期权策略。使用 10 日 EMA 硬过滤（逆趋势无例外拒绝）
+                        + IV Rank 过滤（高IV拒绝买方）+ 震荡区间检测（MA缠绕时提高门槛2x）+ 大赚后仓位缩减。
+                        入场门槛更高，适合趋势明确的市场。
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <h3 className="text-sm font-semibold text-gray-900 mb-1">推荐策略 V1</h3>
+                      <p className="text-xs text-gray-600 leading-relaxed mb-2">
+                        基于市场趋势和ATR（平均真实波幅）的智能推荐策略。系统会分析SPX、USD指数、BTC等市场指标，
+                        结合ATR计算止损止盈价格，智能生成买卖信号。适合趋势跟踪和风险控制的量化交易场景。
+                      </p>
+                    </>
+                  )}
+                  {isEditMode && (
+                    <p className="text-xs text-gray-500 italic">
+                      策略类型创建后不可修改。如需使用其他策略类型，请创建新策略。
+                    </p>
+                  )}
+                </div>
+              </div>
             </div>
 
             <div className="mb-4">
@@ -488,7 +659,7 @@ export default function EditStrategyModal({
 
             <div className="mb-4">
               <label className="block text-sm font-medium mb-1">股票池</label>
-              
+
               {/* 股票池模式选择 */}
               <div className="mb-3">
                 <div className="flex gap-4">
@@ -498,13 +669,13 @@ export default function EditStrategyModal({
                       name="stockPoolMode"
                       value="STATIC"
                       checked={stockPoolMode === 'STATIC'}
-                      onChange={(e) => {
+                      onChange={() => {
                         setStockPoolMode('STATIC');
                         setFormData({
                           ...formData,
-                          symbolPoolConfig: { 
-                            mode: 'STATIC', 
-                            symbols: formData.symbolPoolConfig.symbols 
+                          symbolPoolConfig: {
+                            mode: 'STATIC',
+                            symbols: isEditMode ? formData.symbolPoolConfig.symbols : [],
                           },
                         });
                       }}
@@ -517,13 +688,13 @@ export default function EditStrategyModal({
                       name="stockPoolMode"
                       value="INSTITUTION"
                       checked={stockPoolMode === 'INSTITUTION'}
-                      onChange={(e) => {
+                      onChange={() => {
                         setStockPoolMode('INSTITUTION');
                         setFormData({
                           ...formData,
-                          symbolPoolConfig: { 
-                            mode: 'INSTITUTION', 
-                            symbols: formData.symbolPoolConfig.symbols 
+                          symbolPoolConfig: {
+                            mode: 'INSTITUTION',
+                            symbols: isEditMode ? formData.symbolPoolConfig.symbols : [],
                           },
                         });
                       }}
@@ -541,15 +712,17 @@ export default function EditStrategyModal({
                       {availableCapital <= 0 && existingHoldings.length > 0 && (
                         <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded">
                           <div className="text-sm text-yellow-800">
-                            ⚠️ <strong>提示：</strong>当前可用资金不足（已有持仓占用了资金），但您仍可以修改股票池配置。
-                            如需买入新股票，请先平仓部分持仓或增加资金分配。                          </div>
+                            <strong>提示：</strong>当前可用资金不足（已有持仓占用了资金），但您仍可以修改股票池配置。
+                            如需买入新股票，请先平仓部分持仓或增加资金分配。
+                          </div>
                         </div>
                       )}
                       {availableCapital <= 0 && existingHoldings.length === 0 && (
                         <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded">
                           <div className="text-sm text-yellow-800">
-                            ⚠️ <strong>提示：</strong>当前可用资金不足，但您仍可以修改股票池配置。
-                            如需买入新股票，请先增加资金分配或选择其他账户。                          </div>
+                            <strong>提示：</strong>当前可用资金不足，但您仍可以修改股票池配置。
+                            如需买入新股票，请先增加资金分配或选择其他账户。
+                          </div>
                         </div>
                       )}
                       <InstitutionStockSelector
@@ -591,7 +764,11 @@ export default function EditStrategyModal({
                             handleAddSymbol();
                           }
                         }}
-                        placeholder="输入股票代码，例如：AAPL.US"
+                        placeholder={
+                          (formData.type === 'OPTION_INTRADAY_V1' || formData.type === 'OPTION_SCHWARTZ_V1')
+                            ? '输入标的代码（正股/指数），例如：QQQ.US 或 .SPX.US'
+                            : '输入股票代码，例如：AAPL.US'
+                        }
                         className="flex-1 border rounded px-3 py-2"
                       />
                       <button
@@ -728,7 +905,7 @@ export default function EditStrategyModal({
                               onClick={() => handleRemoveSymbol(symbol)}
                               className="text-blue-600 hover:text-blue-800"
                             >
-                              ×
+                              x
                             </button>
                           </span>
                         ))}
@@ -741,42 +918,6 @@ export default function EditStrategyModal({
 
             {/* 策略参数配置 */}
             <div className="mb-4">
-              {/* 策略类型说明卡片（放在策略参数配置上方） */}
-              <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-4 mb-4">
-                <div className="flex items-start gap-3">
-                  <div className="flex-shrink-0 mt-1">
-                    <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  </div>
-                  <div className="flex-1">
-                    {formData.type === 'OPTION_INTRADAY_V1' ? (
-                      <>
-                        <h3 className="text-sm font-semibold text-gray-900 mb-1">期权日内策略 V1（买方）</h3>
-                        <p className="text-xs text-gray-600 leading-relaxed mb-2">
-                          对正股/指数标的先生成方向信号，再自动选择流动性更好的期权合约开仓；
-                          收盘前30分钟强制平仓（不论盈亏），并将期权佣金/平台费计入资金占用与回测。
-                        </p>
-                        <p className="text-xs text-gray-500 italic">
-                          ⚠️ 策略类型创建后不可修改。如需使用其他策略类型，请创建新策略。
-                        </p>
-                      </>
-                    ) : (
-                      <>
-                        <h3 className="text-sm font-semibold text-gray-900 mb-1">推荐策略 V1</h3>
-                        <p className="text-xs text-gray-600 leading-relaxed mb-2">
-                          基于市场趋势和ATR（平均真实波幅）的智能推荐策略。系统会分析SPX、USD指数、BTC等市场指标，
-                          结合ATR计算止损止盈价格，智能生成买卖信号。适合趋势跟踪和风险控制的量化交易场景。
-                        </p>
-                        <p className="text-xs text-gray-500 italic">
-                          ⚠️ 策略类型创建后不可修改。如需使用其他策略类型，请创建新策略。
-                        </p>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-              
               <label className="block text-sm font-medium mb-2">
                 {(formData.type === 'OPTION_INTRADAY_V1' || formData.type === 'OPTION_SCHWARTZ_V1') ? '期权策略参数' : '策略参数配置'}
                 <span className="text-xs text-gray-500 ml-2">
@@ -863,7 +1004,6 @@ export default function EditStrategyModal({
                               let newDirectional = e.target.checked
                                 ? [...directional, 'BULL_SPREAD']
                                 : directional.filter((t: string) => t !== 'BULL_SPREAD');
-                              // 互斥：勾选牛市价差时移除反向牛市价差
                               if (e.target.checked) {
                                 newDirectional = newDirectional.filter((t: string) => t !== 'REVERSE_BULL_SPREAD');
                               }
@@ -887,7 +1027,6 @@ export default function EditStrategyModal({
                               let newDirectional = e.target.checked
                                 ? [...directional, 'REVERSE_BULL_SPREAD']
                                 : directional.filter((t: string) => t !== 'REVERSE_BULL_SPREAD');
-                              // 互斥：勾选反向牛市价差时移除牛市价差
                               if (e.target.checked) {
                                 newDirectional = newDirectional.filter((t: string) => t !== 'BULL_SPREAD');
                               }
@@ -911,7 +1050,6 @@ export default function EditStrategyModal({
                               let newDirectional = e.target.checked
                                 ? [...directional, 'BEAR_SPREAD']
                                 : directional.filter((t: string) => t !== 'BEAR_SPREAD');
-                              // 互斥：勾选熊市价差时移除反向熊市价差
                               if (e.target.checked) {
                                 newDirectional = newDirectional.filter((t: string) => t !== 'REVERSE_BEAR_SPREAD');
                               }
@@ -935,7 +1073,6 @@ export default function EditStrategyModal({
                               let newDirectional = e.target.checked
                                 ? [...directional, 'REVERSE_BEAR_SPREAD']
                                 : directional.filter((t: string) => t !== 'REVERSE_BEAR_SPREAD');
-                              // 互斥：勾选反向熊市价差时移除熊市价差
                               if (e.target.checked) {
                                 newDirectional = newDirectional.filter((t: string) => t !== 'BEAR_SPREAD');
                               }
@@ -1320,7 +1457,7 @@ export default function EditStrategyModal({
                 <>
                   <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-3">
                     <p className="text-xs text-blue-800 mb-2">
-                      <strong>💡 参数说明：</strong>
+                      <strong>参数说明：</strong>
                     </p>
                     <ul className="text-xs text-blue-700 space-y-1 ml-4 list-disc">
                       <li><strong>ATR周期</strong>：计算平均真实波幅的周期，默认14天。周期越长，ATR值越平滑但反应越慢。</li>
@@ -1328,7 +1465,7 @@ export default function EditStrategyModal({
                       <li><strong>风险收益比</strong>：止盈价格与止损价格的比例，默认1.5。比例越大，潜在收益越高，但需要更强的趋势支持。</li>
                     </ul>
                     <p className="text-xs text-blue-600 mt-2">
-                      <strong>计算公式：</strong>止损价 = 入场价 - (ATR × ATR倍数)，止盈价 = 入场价 + (止损距离 × 风险收益比)
+                      <strong>计算公式：</strong>止损价 = 入场价 - (ATR x ATR倍数)，止盈价 = 入场价 + (止损距离 x 风险收益比)
                     </p>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1410,11 +1547,11 @@ export default function EditStrategyModal({
           </button>
           <button
             type="submit"
-            form="edit-strategy-form"
+            form="strategy-form"
             disabled={loading}
             className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 disabled:opacity-50"
           >
-            {loading ? '保存中...' : '保存'}
+            {loading ? (isEditMode ? '保存中...' : '创建中...') : (isEditMode ? '保存' : '创建')}
           </button>
         </div>
       </div>

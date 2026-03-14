@@ -7,6 +7,20 @@
 
 ## 🆕 最近更新
 
+### 2026-03-14: 合并 Create/Edit 策略模态框为 StrategyFormModal
+
+**变更内容**:
+
+1. **统一组件**: EditStrategyModal → StrategyFormModal，`strategy?` prop 区分创建/编辑模式
+2. **page.tsx 瘦身 ~800 行**: 删除内联 CreateStrategyModal
+3. **BUG 修复**: 说明卡片补上 OPTION_SCHWARTZ_V1 分支
+4. **DEFAULT_CONFIGS**: 期权类型创建时自带 STANDARD preset 完整风控参数
+
+**修改文件**:
+- 📝 `frontend/components/StrategyFormModal.tsx`（原 EditStrategyModal.tsx）
+- 📝 `frontend/app/quant/strategies/page.tsx`
+- 📝 `frontend/app/quant/strategies/[id]/page.tsx`
+
 ### 2026-03-14: 冷却机制简化 — cooldownUntil 时间戳模式
 
 **变更内容**:
