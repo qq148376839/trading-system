@@ -1483,27 +1483,31 @@ export default function StrategyFormModal({
                         <label className="block text-xs text-gray-700 mb-1 font-medium">开仓张数模式</label>
                         <select
                           value={formData.config.positionSizing?.mode || 'FIXED_CONTRACTS'}
-                          onChange={(e) =>
+                          onChange={(e) => {
+                            const newMode = e.target.value;
+                            const newSizing: Record<string, unknown> = { ...(formData.config.positionSizing || {}), mode: newMode };
+                            // 切到资金池动态模式时，清除手动金额，确保后端使用 capitalManager
+                            if (newMode === 'MAX_PREMIUM') {
+                              delete newSizing.maxPremiumUsd;
+                            }
                             setFormData({
                               ...formData,
-                              config: {
-                                ...formData.config,
-                                positionSizing: { ...(formData.config.positionSizing || {}), mode: e.target.value },
-                              },
-                            })
-                          }
+                              config: { ...formData.config, positionSizing: newSizing },
+                            });
+                          }}
                           className="border rounded px-3 py-2 w-full"
                         >
                           <option value="FIXED_CONTRACTS">固定张数</option>
-                          <option value="MAX_PREMIUM">最大权利金（USD）</option>
+                          <option value="MAX_PREMIUM">资金池动态（按分配资金自动计算）</option>
                         </select>
                       </div>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3">
                       {formData.config.positionSizing?.mode === 'MAX_PREMIUM' ? (
-                        <div>
-                          <label className="block text-xs text-gray-700 mb-1 font-medium">最大权利金（USD）</label>
-                          <input {...numberInputProps('maxPremiumUsd', { path: ['positionSizing', 'maxPremiumUsd'], defaultValue: 300, min: 0, max: 10000, isFloat: true })} />
+                        <div className="col-span-full">
+                          <p className="text-xs text-gray-500">
+                            根据策略关联的资金分组，自动计算可用预算（可用资金 与 单标的上限 取较小值），按当前权利金动态决定合约数量。无需手动设定金额。
+                          </p>
                         </div>
                       ) : (
                         <div>
