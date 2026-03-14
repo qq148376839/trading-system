@@ -1069,11 +1069,6 @@ export default function StrategyFormModal({
                                   uncertain: 0.5,
                                   ...prev.positionMultiplier,
                                 },
-                                timeWindow: {
-                                  endHour: 14,
-                                  endMinute: 30,
-                                  ...prev.timeWindow,
-                                },
                               },
                             },
                           });
@@ -1219,58 +1214,6 @@ export default function StrategyFormModal({
                               });
                             }}
                           />
-                        </div>
-                        <div>
-                          <label className="text-xs text-gray-600">反向截止时间 (ET)</label>
-                          <div className="flex gap-1 items-center">
-                            <input
-                              type="number"
-                              min={9}
-                              max={15}
-                              value={formData.config.smartReverse?.timeWindow?.endHour ?? 14}
-                              className="w-16 border rounded px-2 py-1 text-sm"
-                              onChange={(e) => {
-                                const val = Number(e.target.value);
-                                setFormData({
-                                  ...formData,
-                                  config: {
-                                    ...formData.config,
-                                    smartReverse: {
-                                      ...formData.config.smartReverse,
-                                      timeWindow: {
-                                        ...formData.config.smartReverse.timeWindow,
-                                        endHour: val,
-                                      },
-                                    },
-                                  },
-                                });
-                              }}
-                            />
-                            <span className="text-sm">:</span>
-                            <input
-                              type="number"
-                              min={0}
-                              max={59}
-                              value={formData.config.smartReverse?.timeWindow?.endMinute ?? 30}
-                              className="w-16 border rounded px-2 py-1 text-sm"
-                              onChange={(e) => {
-                                const val = Number(e.target.value);
-                                setFormData({
-                                  ...formData,
-                                  config: {
-                                    ...formData.config,
-                                    smartReverse: {
-                                      ...formData.config.smartReverse,
-                                      timeWindow: {
-                                        ...formData.config.smartReverse.timeWindow,
-                                        endMinute: val,
-                                      },
-                                    },
-                                  },
-                                });
-                              }}
-                            />
-                          </div>
                         </div>
                       </div>
                     )}

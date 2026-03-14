@@ -582,30 +582,17 @@ export class OptionIntradayStrategy extends StrategyBase {
       }
 
       // 3.5) 市场状态判别（智能反向）
+      // 时间窗口由 tradeWindow.noNewEntryBeforeCloseMinutes 控制，regime detection 不重复检查
       const smartReverseConfig: SmartReverseConfig = {
         ...DEFAULT_SMART_REVERSE_CONFIG,
         ...this.cfg.smartReverse,
         thresholds: { ...DEFAULT_SMART_REVERSE_CONFIG.thresholds, ...this.cfg.smartReverse?.thresholds },
         positionMultiplier: { ...DEFAULT_SMART_REVERSE_CONFIG.positionMultiplier, ...this.cfg.smartReverse?.positionMultiplier },
-        timeWindow: { ...DEFAULT_SMART_REVERSE_CONFIG.timeWindow, ...this.cfg.smartReverse?.timeWindow },
       };
-
-      // 获取美东时间用于 regime detection
-      const nowForRegime = new Date();
-      const etFormatterRegime = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/New_York',
-        hour: 'numeric', minute: 'numeric', hour12: false,
-      });
-      const etPartsRegime = etFormatterRegime.formatToParts(nowForRegime);
-      const etHourRegime = parseInt(etPartsRegime.find(p => p.type === 'hour')?.value || '0');
-      const etMinuteRegime = parseInt(etPartsRegime.find(p => p.type === 'minute')?.value || '0');
-      const currentETForRegime = new Date(nowForRegime);
-      currentETForRegime.setHours(etHourRegime, etMinuteRegime);
 
       const regimeResult: RegimeDetectionResult = marketRegimeDetector.detectRegime(
         optionRec.marketScore,
         optionRec.intradayScore,
-        currentETForRegime,
         smartReverseConfig
       );
 

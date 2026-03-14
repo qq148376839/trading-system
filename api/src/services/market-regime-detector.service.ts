@@ -31,10 +31,6 @@ export interface SmartReverseConfig {
     reversed: number;                 // 反向交易仓位系数，默认 1.0
     uncertain: number;                // UNCERTAIN 仓位系数，默认 0.5
   };
-  timeWindow: {
-    endHour: number;                  // 反向截止小时（ET），默认 14
-    endMinute: number;                // 反向截止分钟（ET），默认 30
-  };
 }
 
 export interface RegimeMetrics {
@@ -43,7 +39,6 @@ export interface RegimeMetrics {
   divergence: number;
   marketExtreme: boolean;
   intradayExtreme: boolean;
-  withinTimeWindow: boolean;
 }
 
 export interface RegimeDetectionResult {
@@ -71,10 +66,6 @@ export const DEFAULT_SMART_REVERSE_CONFIG: SmartReverseConfig = {
     reversed: 1.0,
     uncertain: 0.5,
   },
-  timeWindow: {
-    endHour: 14,
-    endMinute: 30,
-  },
 };
 
 // ============================================
@@ -95,15 +86,16 @@ class MarketRegimeDetector {
   /**
    * 判别市场状态（纯函数，无 I/O）
    *
+   * 时间窗口由 tradeWindow.noNewEntryBeforeCloseMinutes 控制，
+   * 此处不再重复检查时间——如果信号能到达这里，说明时间窗口已通过。
+   *
    * @param marketScore     原始 marketScore（大盘环境得分，-100 ~ 100）
    * @param intradayScore   原始 intradayScore（分时动量得分，-100 ~ 100）
-   * @param currentTimeET   当前美东时间
    * @param config          智能反向配置
    */
   detectRegime(
     marketScore: number,
     intradayScore: number,
-    currentTimeET: Date,
     config: SmartReverseConfig
   ): RegimeDetectionResult {
 
@@ -113,7 +105,6 @@ class MarketRegimeDetector {
       divergence: 0,
       marketExtreme: false,
       intradayExtreme: false,
-      withinTimeWindow: false,
     };
 
     // 0. 未启用 → 直接返回 MOMENTUM（保持原方向）
@@ -128,25 +119,7 @@ class MarketRegimeDetector {
       };
     }
 
-    // 1. 时间窗口检查
-    const hour = currentTimeET.getHours();
-    const minute = currentTimeET.getMinutes();
-    const timeMinutes = hour * 60 + minute;
-    const endMinutes = config.timeWindow.endHour * 60 + config.timeWindow.endMinute;
-    const withinTimeWindow = timeMinutes < endMinutes;
-
-    if (!withinTimeWindow) {
-      return {
-        regime: 'MOMENTUM',
-        confidence: 'HIGH',
-        shouldReverse: false,
-        positionMultiplier: 1.0,
-        reason: `超出反向时间窗口(${hour}:${String(minute).padStart(2, '0')} >= ${config.timeWindow.endHour}:${String(config.timeWindow.endMinute).padStart(2, '0')})`,
-        metrics: { ...defaultMetrics, withinTimeWindow: false },
-      };
-    }
-
-    // 2. 归一化 + 极端度计算
+    // 1. 归一化 + 极端度计算
     const normMarket = marketScore / MARKET_SCORE_NORMALIZER;
     const normIntraday = intradayScore / INTRADAY_SCORE_NORMALIZER;
 
@@ -164,7 +137,6 @@ class MarketRegimeDetector {
       divergence,
       marketExtreme,
       intradayExtreme,
-      withinTimeWindow,
     };
 
     // === 高置信反向 ===
