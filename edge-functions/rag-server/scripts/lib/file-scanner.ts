@@ -45,7 +45,7 @@ export function scanProjectFiles(projectRoot: string): ScannedFile[] {
     // 使用 git ls-files 来遵守 .gitignore
     try {
       const output = execSync(
-        `git ls-files --cached --others --exclude-standard "${pattern}"`,
+        `git -c core.quotePath=false ls-files --cached --others --exclude-standard "${pattern}"`,
         { cwd: projectRoot, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 },
       ).trim();
 
