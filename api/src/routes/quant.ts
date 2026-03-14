@@ -1507,7 +1507,7 @@ quantRouter.get('/strategies/:id/monitoring-status', async (req: Request, res: R
  */
 quantRouter.get('/signals', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { strategyId, status, limit = 100 } = req.query;
+    const { strategyId, status, signalType, startDate, endDate, limit = 100 } = req.query;
 
     let query = 'SELECT * FROM strategy_signals WHERE 1=1';
     const params: any[] = [];
@@ -1521,6 +1521,21 @@ quantRouter.get('/signals', async (req: Request, res: Response, next: NextFuncti
     if (status) {
       query += ` AND status = $${paramIndex++}`;
       params.push(status);
+    }
+
+    if (signalType) {
+      query += ` AND signal_type = $${paramIndex++}`;
+      params.push(signalType);
+    }
+
+    if (startDate) {
+      query += ` AND created_at >= $${paramIndex++}`;
+      params.push(startDate);
+    }
+
+    if (endDate) {
+      query += ` AND created_at <= $${paramIndex++}`;
+      params.push(endDate);
     }
 
     query += ` ORDER BY created_at DESC LIMIT $${paramIndex++}`;

@@ -4,7 +4,10 @@ import { useState, useEffect } from 'react';
 import { quantApi } from '@/lib/api';
 import AppLayout from '@/components/AppLayout';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { Card, Table, Tag, Space, Input, Select, Alert, Spin, Row, Col } from 'antd';
+import { Card, Table, Tag, Space, Input, Select, Alert, Spin, Row, Col, DatePicker } from 'antd';
+import dayjs, { Dayjs } from 'dayjs';
+
+const { RangePicker } = DatePicker;
 
 interface Signal {
   id: number;
@@ -23,9 +26,17 @@ export default function SignalsPage() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filters, setFilters] = useState({
+  const [filters, setFilters] = useState<{
+    strategyId: string;
+    status: string;
+    signalType: string;
+    dateRange: [Dayjs, Dayjs] | null;
+    limit: number;
+  }>({
     strategyId: '',
     status: '',
+    signalType: '',
+    dateRange: null,
     limit: 100,
   });
 
@@ -36,9 +47,14 @@ export default function SignalsPage() {
   const loadSignals = async () => {
     try {
       setLoading(true);
-      const params: any = { limit: filters.limit };
+      const params: Record<string, string | number> = { limit: filters.limit };
       if (filters.strategyId) params.strategyId = filters.strategyId;
       if (filters.status) params.status = filters.status;
+      if (filters.signalType) params.signalType = filters.signalType;
+      if (filters.dateRange) {
+        params.startDate = filters.dateRange[0].startOf('day').toISOString();
+        params.endDate = filters.dateRange[1].endOf('day').toISOString();
+      }
 
       const response = await quantApi.getSignals(params);
       if (response.success) {
@@ -130,8 +146,46 @@ export default function SignalsPage() {
 
         {/* 筛选器 */}
         <Card style={{ marginBottom: 16 }}>
-          <Row gutter={16}>
-            <Col xs={24} sm={8}>
+          <Row gutter={[16, 12]}>
+            <Col xs={24} sm={12} md={8}>
+              <div style={{ marginBottom: 8, fontWeight: 500 }}>日期范围</div>
+              <RangePicker
+                value={filters.dateRange}
+                onChange={(dates) => setFilters({ ...filters, dateRange: dates as [Dayjs, Dayjs] | null })}
+                style={{ width: '100%' }}
+                allowClear
+                placeholder={['开始日期', '结束日期']}
+              />
+            </Col>
+            <Col xs={12} sm={6} md={4}>
+              <div style={{ marginBottom: 8, fontWeight: 500 }}>信号</div>
+              <Select
+                value={filters.signalType || undefined}
+                onChange={(value) => setFilters({ ...filters, signalType: value || '' })}
+                style={{ width: '100%' }}
+                allowClear
+                placeholder="全部"
+              >
+                <Select.Option value="BUY">BUY</Select.Option>
+                <Select.Option value="SELL">SELL</Select.Option>
+              </Select>
+            </Col>
+            <Col xs={12} sm={6} md={4}>
+              <div style={{ marginBottom: 8, fontWeight: 500 }}>状态</div>
+              <Select
+                value={filters.status || undefined}
+                onChange={(value) => setFilters({ ...filters, status: value || '' })}
+                style={{ width: '100%' }}
+                allowClear
+                placeholder="全部"
+              >
+                <Select.Option value="PENDING">待处理</Select.Option>
+                <Select.Option value="EXECUTED">已执行</Select.Option>
+                <Select.Option value="REJECTED">已拒绝</Select.Option>
+                <Select.Option value="IGNORED">已忽略</Select.Option>
+              </Select>
+            </Col>
+            <Col xs={12} sm={6} md={4}>
               <div style={{ marginBottom: 8, fontWeight: 500 }}>策略ID</div>
               <Input
                 type="number"
@@ -140,21 +194,7 @@ export default function SignalsPage() {
                 placeholder="留空显示所有"
               />
             </Col>
-            <Col xs={24} sm={8}>
-              <div style={{ marginBottom: 8, fontWeight: 500 }}>状态</div>
-              <Select
-                value={filters.status || undefined}
-                onChange={(value) => setFilters({ ...filters, status: value || '' })}
-                style={{ width: '100%' }}
-                allowClear
-              >
-                <Select.Option value="PENDING">待处理</Select.Option>
-                <Select.Option value="EXECUTED">已执行</Select.Option>
-                <Select.Option value="REJECTED">已拒绝</Select.Option>
-                <Select.Option value="IGNORED">已忽略</Select.Option>
-              </Select>
-            </Col>
-            <Col xs={24} sm={8}>
+            <Col xs={12} sm={6} md={4}>
               <div style={{ marginBottom: 8, fontWeight: 500 }}>数量限制</div>
               <Input
                 type="number"

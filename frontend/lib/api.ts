@@ -809,7 +809,7 @@ export const quantApi = {
   },
 
   // 信号日志
-  getSignals: (params?: { strategyId?: number; status?: string; limit?: number }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
+  getSignals: (params?: { strategyId?: number; status?: string; signalType?: string; startDate?: string; endDate?: string; limit?: number }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/quant/signals', { params })
   },
 
