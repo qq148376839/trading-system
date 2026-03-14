@@ -1,8 +1,8 @@
 'use client'
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Card, Tabs, Table, Tag, Statistic, Row, Col, DatePicker, Select, Spin, Alert, Empty, Button } from 'antd'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, ScatterChart, Scatter, LineChart, Line, ReferenceLine, Legend } from 'recharts'
+import { Card, Tabs, Table, Tag, Statistic, Row, Col, DatePicker, Select, Spin, Alert, Empty, Descriptions } from 'antd'
+import { BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, ScatterChart, Scatter, LineChart, Line, ReferenceLine, Legend } from 'recharts'
 import dayjs, { Dayjs } from 'dayjs'
 import AppLayout from '@/components/AppLayout'
 import { ordersApi, quantApi } from '@/lib/api'
@@ -10,22 +10,10 @@ import { useIsMobile } from '@/hooks/useIsMobile'
 
 const { RangePicker } = DatePicker
 
-// -- 颜色常量 --
-const COLOR = {
-  profit: '#3fb950',
-  loss: '#f85149',
-  neutral: '#d29922',
-  cardBg: '#161b22',
-  cardBorder: '#30363d',
-  bull: '#3fb950',
-  bear: '#f85149',
-  revBear: '#a371f7',
-  takeProfit: '#3fb950',
-  trailingStop: '#d29922',
-  stopLoss: '#f85149',
-  original: '#58a6ff',
-  reverse: '#f0883e',
-}
+// Standard project colors for profit/loss
+const PROFIT_COLOR = '#52c41a'
+const LOSS_COLOR = '#ff4d4f'
+const NEUTRAL_COLOR = '#faad14'
 
 interface AnalysisRow {
   order_id: string
@@ -72,7 +60,7 @@ interface SignalRow {
   signal_type: string
   price: number
   reason: string
-  metadata: any
+  metadata: Record<string, unknown>
   status: string
   created_at: string
   strategy_id: number
@@ -95,7 +83,7 @@ interface TradeRecord {
   exitType: string
   score: number | null
   direction: string
-  regime: any          // regimeDetection from BUY
+  regime: Record<string, unknown> | null  // regimeDetection from BUY
   strategyName: string // from BUY metadata.selectedStrategy
 }
 
@@ -122,7 +110,7 @@ export default function AnalysisPage() {
 
   // K线 tab 状态
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
-  const [klineData, setKlineData] = useState<{ original: any[]; reverse: any[] }>({ original: [], reverse: [] })
+  const [klineData, setKlineData] = useState<{ original: Record<string, unknown>[]; reverse: Record<string, unknown>[] }>({ original: [], reverse: [] })
   const [klineLoading, setKlineLoading] = useState(false)
 
   // 加载策略列表
@@ -130,8 +118,8 @@ export default function AnalysisPage() {
     (async () => {
       try {
         const res = await quantApi.getStrategies()
-        const list = (res as any)?.data || []
-        setStrategies(list.map((s: any) => ({ id: s.id, name: s.name })))
+        const list = ((res as Record<string, unknown>)?.data || []) as Record<string, unknown>[]
+        setStrategies(list.map((s) => ({ id: Number(s.id), name: String(s.name) })))
       } catch { /* ignore */ }
     })()
   }, [])
@@ -158,20 +146,21 @@ export default function AnalysisPage() {
       ])
 
       // 过滤期权订单
-      const allOrders = (ordersRes as any)?.data?.orders || (ordersRes as any)?.data || []
-      const optionOrders = allOrders.filter((o: any) => {
+      const allOrders = ((ordersRes as Record<string, unknown>)?.data as Record<string, unknown>)?.orders || (ordersRes as Record<string, unknown>)?.data || []
+      const optionOrders = (allOrders as OrderRow[]).filter((o) => {
         const sym = String(o.symbol || '')
         return /^[A-Z]+\d{6}[CP]\d+\.US$/i.test(sym)
       })
       setOrders(optionOrders)
 
-      const allSignals = (signalsRes as any)?.data?.signals || (signalsRes as any)?.data || []
-      setSignals(allSignals)
+      const allSignals = ((signalsRes as Record<string, unknown>)?.data as Record<string, unknown>)?.signals || (signalsRes as Record<string, unknown>)?.data || []
+      setSignals(allSignals as SignalRow[])
 
-      const allAnalysis = (analysisRes as any)?.data || []
-      setAnalysis(allAnalysis)
-    } catch (err: any) {
-      setError(err.message || '加载数据失败')
+      const allAnalysis = (analysisRes as Record<string, unknown>)?.data || []
+      setAnalysis(allAnalysis as AnalysisRow[])
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : '加载数据失败'
+      setError(message)
     } finally {
       setLoading(false)
     }
@@ -190,8 +179,8 @@ export default function AnalysisPage() {
         quantApi.getOptionKlineCandles(orderId, 'REVERSE'),
       ])
       setKlineData({
-        original: (origRes as any)?.data || [],
-        reverse: (revRes as any)?.data || [],
+        original: ((origRes as Record<string, unknown>)?.data || []) as Record<string, unknown>[],
+        reverse: ((revRes as Record<string, unknown>)?.data || []) as Record<string, unknown>[],
       })
     } catch {
       setKlineData({ original: [], reverse: [] })
@@ -214,7 +203,7 @@ export default function AnalysisPage() {
   // 按 symbol + strategy_id 配对，SELL 匹配最近的前序 BUY
   const trades = useMemo(() => {
     const buySignals = signals.filter(s => s.signal_type === 'BUY')
-    const sellSignals = signals.filter(s => s.signal_type === 'SELL' && s.metadata?.netPnL !== undefined && s.metadata?.netPnL !== null)
+    const sellSignals = signals.filter(s => s.signal_type === 'SELL' && (s.metadata as Record<string, unknown>)?.netPnL !== undefined && (s.metadata as Record<string, unknown>)?.netPnL !== null)
 
     // 按 symbol+strategy_id 建立 BUY 索引（按时间排序）
     const buyIndex = new Map<string, SignalRow[]>()
@@ -250,8 +239,10 @@ export default function AnalysisPage() {
         }
       }
 
-      const pnl = Number(sell.metadata.netPnL)
-      const pnlPctVal = sell.metadata.netPnLPercent
+      const meta = sell.metadata as Record<string, unknown>
+      const buyMeta = matchedBuy?.metadata as Record<string, unknown> | undefined
+      const pnl = Number(meta.netPnL)
+      const pnlPctVal = meta.netPnLPercent
       const pnlPct = pnlPctVal !== undefined && pnlPctVal !== null ? Number(pnlPctVal) : null
 
       records.push({
@@ -262,11 +253,11 @@ export default function AnalysisPage() {
         created_at: sell.created_at,
         pnl,
         pnlPct,
-        exitType: String(sell.metadata.exitAction ?? ''),
-        score: matchedBuy?.metadata?.finalScore !== undefined ? Number(matchedBuy.metadata.finalScore) : null,
-        direction: String(matchedBuy?.metadata?.optionDirection ?? matchedBuy?.metadata?.selectedStrategy ?? ''),
-        regime: matchedBuy?.metadata?.regimeDetection ?? null,
-        strategyName: String(matchedBuy?.metadata?.selectedStrategy ?? ''),
+        exitType: String(meta.exitAction ?? ''),
+        score: buyMeta?.finalScore !== undefined ? Number(buyMeta.finalScore) : null,
+        direction: String(buyMeta?.optionDirection ?? buyMeta?.selectedStrategy ?? ''),
+        regime: (buyMeta?.regimeDetection as Record<string, unknown>) ?? null,
+        strategyName: String(buyMeta?.selectedStrategy ?? ''),
       })
     }
 
@@ -281,12 +272,12 @@ export default function AnalysisPage() {
 
   // -- 计算统计数据 --
   const stats = useMemo(() => {
-    const totalPnl = filteredTrades.reduce((sum, t) => sum + t.pnl, 0)
+    const totalPnl = Math.round(filteredTrades.reduce((sum, t) => sum + t.pnl, 0) * 100) / 100
     const wins = filteredTrades.filter(t => t.pnl > 0)
     const losses = filteredTrades.filter(t => t.pnl < 0)
     const winRate = filteredTrades.length > 0 ? (wins.length / filteredTrades.length) * 100 : 0
-    const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0
-    const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0
+    const avgWin = Math.round((wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0) * 100) / 100
+    const avgLoss = Math.round((losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0) * 100) / 100
     const tradingDays = new Set(filteredTrades.map(t => t.trade_date)).size
 
     return { totalPnl, tradeCount: filteredTrades.length, winRate, avgWin, avgLoss, tradingDays }
@@ -310,7 +301,7 @@ export default function AnalysisPage() {
       .filter(t => t.score !== null)
       .map(t => ({
         score: Number(t.score),
-        pnl: t.pnl,
+        pnl: Math.round(t.pnl * 100) / 100,
         symbol: t.symbol,
       }))
   }, [filteredTrades])
@@ -374,26 +365,32 @@ export default function AnalysisPage() {
     }))
   }, [filteredTrades])
 
-  // -- 得分区间胜率 --
+  // -- 得分区间胜率（绝对值区间，匹配 HTML 报告）--
   const scoreBuckets = useMemo(() => {
     const buckets = [
-      { label: '< 60', min: -Infinity, max: 60, trades: 0, wins: 0 },
-      { label: '60-70', min: 60, max: 70, trades: 0, wins: 0 },
-      { label: '70-80', min: 70, max: 80, trades: 0, wins: 0 },
-      { label: '80-90', min: 80, max: 90, trades: 0, wins: 0 },
-      { label: '90+', min: 90, max: Infinity, trades: 0, wins: 0 },
+      { label: '|得分| < 10', min: 0, max: 10, trades: 0, wins: 0, totalPnl: 0 },
+      { label: '10 ≤ |得分| < 12', min: 10, max: 12, trades: 0, wins: 0, totalPnl: 0 },
+      { label: '12 ≤ |得分| < 15', min: 12, max: 15, trades: 0, wins: 0, totalPnl: 0 },
+      { label: '|得分| ≥ 15', min: 15, max: Infinity, trades: 0, wins: 0, totalPnl: 0 },
     ]
     for (const t of filteredTrades) {
       if (t.score === null) continue
+      const absScore = Math.abs(t.score)
       for (const b of buckets) {
-        if (t.score >= b.min && t.score < b.max) {
+        if (absScore >= b.min && absScore < b.max) {
           b.trades++
           if (t.pnl > 0) b.wins++
+          b.totalPnl += t.pnl
           break
         }
       }
     }
-    return buckets.map(b => ({ ...b, winRate: b.trades > 0 ? (b.wins / b.trades) * 100 : 0 }))
+    return buckets.map(b => ({
+      ...b,
+      winRate: b.trades > 0 ? (b.wins / b.trades) * 100 : 0,
+      avgPnl: b.trades > 0 ? Math.round((b.totalPnl / b.trades) * 100) / 100 : 0,
+      totalPnl: Math.round(b.totalPnl * 100) / 100,
+    }))
   }, [filteredTrades])
 
   // -- 每日明细分组 --
@@ -437,25 +434,34 @@ export default function AnalysisPage() {
       }))
   }, [analysis])
 
-  // -- 标签颜色 --
-  const directionColor = (dir: string) => {
-    if (dir?.includes('BULL') || dir?.includes('CALL')) return COLOR.bull
-    if (dir?.includes('BEAR') || dir?.includes('PUT')) return COLOR.bear
-    if (dir?.includes('REV')) return COLOR.revBear
-    return COLOR.neutral
+  // -- 获取选中交易的分析数据 --
+  const selectedAnalysis = useMemo(() => {
+    if (!selectedOrderId) return null
+    return analysis.find(a => a.order_id === selectedOrderId) || null
+  }, [selectedOrderId, analysis])
+
+  // -- 标签颜色（使用标准 Ant Design Tag color 名称）--
+  const directionTagColor = (dir: string): string => {
+    if (dir?.includes('BULL') || dir?.includes('CALL')) return 'green'
+    if (dir?.includes('BEAR') || dir?.includes('PUT')) return 'red'
+    if (dir?.includes('REV')) return 'purple'
+    return 'blue'
   }
 
-  const exitColor = (exitType: string) => {
-    if (exitType?.includes('PROFIT') || exitType?.includes('TAKE')) return COLOR.takeProfit
-    if (exitType?.includes('TRAIL')) return COLOR.trailingStop
-    if (exitType?.includes('STOP') || exitType?.includes('LOSS')) return COLOR.stopLoss
-    return COLOR.neutral
+  const exitTagColor = (exitType: string): string => {
+    if (exitType?.includes('PROFIT') || exitType?.includes('TAKE')) return 'green'
+    if (exitType?.includes('TRAIL')) return 'orange'
+    if (exitType?.includes('STOP') || exitType?.includes('LOSS')) return 'red'
+    return 'default'
   }
 
-  const pnlColor = (v: number) => (v > 0 ? COLOR.profit : v < 0 ? COLOR.loss : COLOR.neutral)
+  const pnlColor = (v: number) => (v > 0 ? PROFIT_COLOR : v < 0 ? LOSS_COLOR : NEUTRAL_COLOR)
 
-  // -- 渲染 --
-  const darkCard = { background: COLOR.cardBg, border: `1px solid ${COLOR.cardBorder}`, borderRadius: 8 }
+  // -- 格式化时间戳为 HH:mm --
+  const formatTime = (ts: number): string => {
+    const d = new Date(ts)
+    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
+  }
 
   return (
     <AppLayout>
@@ -480,7 +486,6 @@ export default function AnalysisPage() {
             />
           </div>
         }
-        styles={{ header: { borderBottom: `1px solid ${COLOR.cardBorder}` } }}
       >
         {error && <Alert message={error} type="error" showIcon closable style={{ marginBottom: 16 }} />}
 
@@ -489,20 +494,20 @@ export default function AnalysisPage() {
           {[
             { title: '总盈亏', value: stats.totalPnl, prefix: '$', color: pnlColor(stats.totalPnl) },
             { title: '有效交易', value: stats.tradeCount, color: undefined },
-            { title: '胜率', value: stats.winRate, suffix: '%', precision: 1, color: stats.winRate >= 50 ? COLOR.profit : COLOR.loss },
-            { title: '平均盈利', value: stats.avgWin, prefix: '$', precision: 2, color: COLOR.profit },
-            { title: '平均亏损', value: stats.avgLoss, prefix: '$', precision: 2, color: COLOR.loss },
+            { title: '胜率', value: stats.winRate, suffix: '%', precision: 1, color: stats.winRate >= 50 ? PROFIT_COLOR : LOSS_COLOR },
+            { title: '平均盈利', value: stats.avgWin, prefix: '$', precision: 2, color: PROFIT_COLOR },
+            { title: '平均亏损', value: stats.avgLoss, prefix: '$', precision: 2, color: LOSS_COLOR },
             { title: '交易天数', value: stats.tradingDays, color: undefined },
           ].map((item, i) => (
             <Col key={i} xs={12} sm={8} md={4}>
-              <Card size="small" style={darkCard}>
+              <Card size="small" style={{ marginBottom: 0 }}>
                 <Statistic
-                  title={<span style={{ color: '#8b949e' }}>{item.title}</span>}
+                  title={item.title}
                   value={item.value}
                   prefix={item.prefix}
                   suffix={item.suffix}
                   precision={item.precision}
-                  valueStyle={{ color: item.color || '#e6edf3', fontSize: isMobile ? 16 : 20 }}
+                  valueStyle={{ color: item.color, fontSize: isMobile ? 16 : 20 }}
                 />
               </Card>
             </Col>
@@ -521,7 +526,7 @@ export default function AnalysisPage() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                     {/* 策略对比（按策略 ID）*/}
                     {perStrategyStats.length > 0 && (
-                      <Card size="small" title="策略对比" style={darkCard} styles={{ header: { color: '#e6edf3', borderBottom: `1px solid ${COLOR.cardBorder}` }, body: { padding: isMobile ? 8 : 16 } }}>
+                      <Card size="small" title="策略对比" style={{ marginBottom: 0 }}>
                         <Table
                           dataSource={perStrategyStats}
                           rowKey="strategyId"
@@ -529,22 +534,22 @@ export default function AnalysisPage() {
                           pagination={false}
                           scroll={{ x: 'max-content' }}
                           onRow={(record) => ({
-                            style: { cursor: 'pointer', background: selectedStrategyId === record.strategyId ? '#1c2128' : undefined },
+                            style: { cursor: 'pointer', background: selectedStrategyId === record.strategyId ? '#e6f4ff' : undefined },
                             onClick: () => setSelectedStrategyId(selectedStrategyId === record.strategyId ? null : record.strategyId),
                           })}
                           columns={[
-                            { title: '策略', dataIndex: 'strategyName', render: (v: string, r: any) => <span style={{ color: '#e6edf3' }}>{v}</span> },
+                            { title: '策略', dataIndex: 'strategyName' },
                             { title: '笔数', dataIndex: 'trades' },
-                            { title: '胜率', dataIndex: 'winRate', render: (v: number) => <span style={{ color: v >= 50 ? COLOR.profit : COLOR.loss }}>{v.toFixed(1)}%</span> },
+                            { title: '胜率', dataIndex: 'winRate', render: (v: number) => <span style={{ color: v >= 50 ? PROFIT_COLOR : LOSS_COLOR }}>{v.toFixed(1)}%</span> },
                             { title: '总盈亏', dataIndex: 'totalPnl', render: (v: number) => <span style={{ color: pnlColor(v) }}>${v.toFixed(2)}</span> },
-                            { title: '反向笔数', dataIndex: 'reversed', render: (v: number) => v > 0 ? <Tag color="volcano">{v}</Tag> : <span style={{ color: '#484f58' }}>0</span> },
+                            { title: '反向笔数', dataIndex: 'reversed', render: (v: number) => v > 0 ? <Tag color="volcano">{v}</Tag> : <span style={{ color: '#999' }}>0</span> },
                           ]}
                         />
                       </Card>
                     )}
 
                     {/* 策略类型分析 */}
-                    <Card size="small" title="方向/Regime 分析" style={darkCard} styles={{ header: { color: '#e6edf3', borderBottom: `1px solid ${COLOR.cardBorder}` }, body: { padding: isMobile ? 8 : 16 } }}>
+                    <Card size="small" title="方向/Regime 分析" style={{ marginBottom: 0 }}>
                       <Table
                         dataSource={strategyStats}
                         rowKey="type"
@@ -552,16 +557,16 @@ export default function AnalysisPage() {
                         pagination={false}
                         scroll={{ x: 'max-content' }}
                         columns={[
-                          { title: '策略', dataIndex: 'type', render: (v: string) => <Tag color={directionColor(v)}>{v}</Tag> },
+                          { title: '策略', dataIndex: 'type', render: (v: string) => <Tag color={directionTagColor(v)}>{v}</Tag> },
                           { title: '笔数', dataIndex: 'trades' },
-                          { title: '胜率', dataIndex: 'winRate', render: (v: number) => <span style={{ color: v >= 50 ? COLOR.profit : COLOR.loss }}>{v.toFixed(1)}%</span> },
+                          { title: '胜率', dataIndex: 'winRate', render: (v: number) => <span style={{ color: v >= 50 ? PROFIT_COLOR : LOSS_COLOR }}>{v.toFixed(1)}%</span> },
                           { title: '总盈亏', dataIndex: 'totalPnl', render: (v: number) => <span style={{ color: pnlColor(v) }}>${v.toFixed(2)}</span> },
                         ]}
                       />
                     </Card>
 
                     {/* 退出方式分析 */}
-                    <Card size="small" title="退出方式分析" style={darkCard} styles={{ header: { color: '#e6edf3', borderBottom: `1px solid ${COLOR.cardBorder}` }, body: { padding: isMobile ? 8 : 16 } }}>
+                    <Card size="small" title="退出方式分析" style={{ marginBottom: 0 }}>
                       <Table
                         dataSource={exitStats}
                         rowKey="type"
@@ -569,27 +574,27 @@ export default function AnalysisPage() {
                         pagination={false}
                         scroll={{ x: 'max-content' }}
                         columns={[
-                          { title: '退出方式', dataIndex: 'type', render: (v: string) => <Tag color={exitColor(v)}>{v}</Tag> },
+                          { title: '退出方式', dataIndex: 'type', render: (v: string) => <Tag color={exitTagColor(v)}>{v}</Tag> },
                           { title: '笔数', dataIndex: 'trades' },
-                          { title: '胜率', dataIndex: 'winRate', render: (v: number) => <span style={{ color: v >= 50 ? COLOR.profit : COLOR.loss }}>{v.toFixed(1)}%</span> },
+                          { title: '胜率', dataIndex: 'winRate', render: (v: number) => <span style={{ color: v >= 50 ? PROFIT_COLOR : LOSS_COLOR }}>{v.toFixed(1)}%</span> },
                           { title: '总盈亏', dataIndex: 'totalPnl', render: (v: number) => <span style={{ color: pnlColor(v) }}>${v.toFixed(2)}</span> },
                         ]}
                       />
                     </Card>
 
                     {/* 每日盈亏瀑布图 */}
-                    <Card size="small" title="每日盈亏" style={darkCard} styles={{ header: { color: '#e6edf3', borderBottom: `1px solid ${COLOR.cardBorder}` } }}>
+                    <Card size="small" title="每日盈亏" style={{ marginBottom: 0 }}>
                       {dailyPnlData.length > 0 ? (
                         <ResponsiveContainer width="100%" height={isMobile ? 200 : 300}>
                           <BarChart data={dailyPnlData}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#30363d" />
-                            <XAxis dataKey="date" tick={{ fill: '#8b949e', fontSize: 11 }} />
-                            <YAxis tick={{ fill: '#8b949e', fontSize: 11 }} />
-                            <RechartsTooltip contentStyle={{ background: '#1c2128', border: `1px solid ${COLOR.cardBorder}` }} />
-                            <ReferenceLine y={0} stroke="#484f58" />
-                            <Bar dataKey="pnl" fill={COLOR.profit} isAnimationActive={false}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#e8e8e8" />
+                            <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                            <YAxis tick={{ fontSize: 11 }} />
+                            <RechartsTooltip />
+                            <ReferenceLine y={0} stroke="#999" />
+                            <Bar dataKey="pnl" isAnimationActive={false}>
                               {dailyPnlData.map((entry, idx) => (
-                                <rect key={idx} fill={entry.pnl >= 0 ? COLOR.profit : COLOR.loss} />
+                                <Cell key={idx} fill={entry.pnl >= 0 ? PROFIT_COLOR : LOSS_COLOR} />
                               ))}
                             </Bar>
                           </BarChart>
@@ -598,23 +603,23 @@ export default function AnalysisPage() {
                     </Card>
 
                     {/* 得分 vs 盈亏散点图 */}
-                    <Card size="small" title="信号得分 vs 盈亏" style={darkCard} styles={{ header: { color: '#e6edf3', borderBottom: `1px solid ${COLOR.cardBorder}` } }}>
+                    <Card size="small" title="信号得分 vs 盈亏" style={{ marginBottom: 0 }}>
                       {scoreVsPnlData.length > 0 ? (
                         <ResponsiveContainer width="100%" height={isMobile ? 200 : 300}>
                           <ScatterChart>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#30363d" />
-                            <XAxis dataKey="score" name="得分" tick={{ fill: '#8b949e', fontSize: 11 }} />
-                            <YAxis dataKey="pnl" name="盈亏" tick={{ fill: '#8b949e', fontSize: 11 }} />
-                            <RechartsTooltip contentStyle={{ background: '#1c2128', border: `1px solid ${COLOR.cardBorder}` }} />
-                            <ReferenceLine y={0} stroke="#484f58" />
-                            <Scatter data={scoreVsPnlData} fill={COLOR.original} />
+                            <CartesianGrid strokeDasharray="3 3" stroke="#e8e8e8" />
+                            <XAxis dataKey="score" name="得分" tick={{ fontSize: 11 }} />
+                            <YAxis dataKey="pnl" name="盈亏" tick={{ fontSize: 11 }} />
+                            <RechartsTooltip />
+                            <ReferenceLine y={0} stroke="#999" />
+                            <Scatter data={scoreVsPnlData} fill="#1677ff" />
                           </ScatterChart>
                         </ResponsiveContainer>
                       ) : <Empty description="暂无数据" />}
                     </Card>
 
                     {/* 得分区间胜率分析 */}
-                    <Card size="small" title="得分区间胜率分析" style={darkCard} styles={{ header: { color: '#e6edf3', borderBottom: `1px solid ${COLOR.cardBorder}` }, body: { padding: isMobile ? 8 : 16 } }}>
+                    <Card size="small" title="得分区间胜率分析" style={{ marginBottom: 0 }}>
                       <Table
                         dataSource={scoreBuckets}
                         rowKey="label"
@@ -623,8 +628,10 @@ export default function AnalysisPage() {
                         columns={[
                           { title: '得分区间', dataIndex: 'label' },
                           { title: '笔数', dataIndex: 'trades' },
-                          { title: '胜率', dataIndex: 'winRate', render: (v: number) => <span style={{ color: v >= 50 ? COLOR.profit : COLOR.loss }}>{v.toFixed(1)}%</span> },
                           { title: '盈利笔数', dataIndex: 'wins' },
+                          { title: '胜率', dataIndex: 'winRate', render: (v: number) => <span style={{ color: v >= 50 ? PROFIT_COLOR : LOSS_COLOR }}>{v.toFixed(1)}%</span> },
+                          { title: '总盈亏', dataIndex: 'totalPnl', render: (v: number) => <span style={{ color: pnlColor(v) }}>${v.toFixed(2)}</span> },
+                          { title: '平均盈亏', dataIndex: 'avgPnl', render: (v: number) => <span style={{ color: pnlColor(v) }}>${v.toFixed(2)}</span> },
                         ]}
                       />
                     </Card>
@@ -643,9 +650,8 @@ export default function AnalysisPage() {
                         <Card
                           key={date}
                           size="small"
-                          title={<span style={{ color: '#e6edf3' }}>{date} <Tag color={dayPnl >= 0 ? 'green' : 'red'}>${dayPnl.toFixed(2)}</Tag></span>}
-                          style={darkCard}
-                          styles={{ header: { borderBottom: `1px solid ${COLOR.cardBorder}` }, body: { padding: isMobile ? 4 : 12 } }}
+                          title={<span>{date} <Tag color={dayPnl >= 0 ? 'green' : 'red'}>${dayPnl.toFixed(2)}</Tag></span>}
+                          style={{ marginBottom: 0 }}
                         >
                           <Table
                             dataSource={dayTrades}
@@ -655,20 +661,20 @@ export default function AnalysisPage() {
                             scroll={{ x: 'max-content' }}
                             columns={[
                               { title: '标的', dataIndex: 'symbol', width: 180, ellipsis: true },
-                              { title: '方向', key: 'direction', render: (_: any, r: TradeRecord) => (
+                              { title: '方向', key: 'direction', render: (_: unknown, r: TradeRecord) => (
                                 <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
-                                  <Tag color={directionColor(r.direction)}>{r.direction || '-'}</Tag>
-                                  {r.regime?.shouldReverse && <Tag color="volcano">反向</Tag>}
-                                  {r.regime?.regime === 'UNCERTAIN' && <Tag color="orange">不确定</Tag>}
+                                  <Tag color={directionTagColor(r.direction)}>{r.direction || '-'}</Tag>
+                                  {Boolean(r.regime?.shouldReverse) && <Tag color="volcano">反向</Tag>}
+                                  {String(r.regime?.regime ?? '') === 'UNCERTAIN' && <Tag color="orange">不确定</Tag>}
                                 </span>
                               )},
                               ...(isMobile ? [] : [
-                                { title: '得分', key: 'score', render: (_: any, r: TradeRecord) => r.score !== null ? Number(r.score).toFixed(0) : '-' },
-                                { title: '策略', key: 'strategy', render: (_: any, r: TradeRecord) => <span style={{ color: '#8b949e', fontSize: 12 }}>{strategyNameById(r.strategy_id)}</span> },
+                                { title: '得分', key: 'score', render: (_: unknown, r: TradeRecord) => r.score !== null ? Number(r.score).toFixed(0) : '-' },
+                                { title: '策略', key: 'strategy', render: (_: unknown, r: TradeRecord) => <span style={{ color: '#999', fontSize: 12 }}>{strategyNameById(r.strategy_id)}</span> },
                               ]),
-                              { title: '盈亏', key: 'pnl', render: (_: any, r: TradeRecord) => <span style={{ color: pnlColor(r.pnl), fontWeight: 600 }}>${r.pnl.toFixed(2)}</span> },
-                              { title: '盈亏%', key: 'pnlPct', render: (_: any, r: TradeRecord) => r.pnlPct !== null ? <span style={{ color: pnlColor(r.pnlPct) }}>{r.pnlPct.toFixed(1)}%</span> : '-' },
-                              { title: '退出', key: 'exit', render: (_: any, r: TradeRecord) => r.exitType ? <Tag color={exitColor(r.exitType)}>{r.exitType}</Tag> : '-' },
+                              { title: '盈亏', key: 'pnl', render: (_: unknown, r: TradeRecord) => <span style={{ color: pnlColor(r.pnl), fontWeight: 600 }}>${r.pnl.toFixed(2)}</span> },
+                              { title: '盈亏%', key: 'pnlPct', render: (_: unknown, r: TradeRecord) => r.pnlPct !== null ? <span style={{ color: pnlColor(r.pnlPct) }}>{r.pnlPct.toFixed(1)}%</span> : '-' },
+                              { title: '退出', key: 'exit', render: (_: unknown, r: TradeRecord) => r.exitType ? <Tag color={exitTagColor(r.exitType)}>{r.exitType}</Tag> : '-' },
                             ]}
                           />
                         </Card>
@@ -686,16 +692,16 @@ export default function AnalysisPage() {
                     {reverseComparison ? (
                       <Row gutter={[12, 12]}>
                         <Col xs={24} sm={12}>
-                          <Card size="small" title={<span style={{ color: COLOR.original }}>原始策略</span>} style={darkCard} styles={{ header: { borderBottom: `1px solid ${COLOR.cardBorder}` } }}>
-                            <Statistic title={<span style={{ color: '#8b949e' }}>总盈亏</span>} value={reverseComparison.origTotal} prefix="$" valueStyle={{ color: pnlColor(reverseComparison.origTotal) }} />
-                            <Statistic title={<span style={{ color: '#8b949e' }}>胜率</span>} value={reverseComparison.origWinRate} suffix="%" precision={1} valueStyle={{ color: reverseComparison.origWinRate >= 50 ? COLOR.profit : COLOR.loss, fontSize: 16, marginTop: 8 }} />
+                          <Card size="small" title={<span style={{ color: '#1677ff' }}>原始策略</span>} style={{ marginBottom: 0 }}>
+                            <Statistic title="总盈亏" value={reverseComparison.origTotal} prefix="$" valueStyle={{ color: pnlColor(reverseComparison.origTotal) }} />
+                            <Statistic title="胜率" value={reverseComparison.origWinRate} suffix="%" precision={1} valueStyle={{ color: reverseComparison.origWinRate >= 50 ? PROFIT_COLOR : LOSS_COLOR, fontSize: 16, marginTop: 8 }} />
                           </Card>
                         </Col>
                         <Col xs={24} sm={12}>
-                          <Card size="small" title={<span style={{ color: COLOR.reverse }}>反向策略</span>} style={darkCard} styles={{ header: { borderBottom: `1px solid ${COLOR.cardBorder}` } }}>
-                            <Statistic title={<span style={{ color: '#8b949e' }}>模拟总盈亏</span>} value={reverseComparison.revTotal} prefix="$" valueStyle={{ color: pnlColor(reverseComparison.revTotal) }} />
-                            <Statistic title={<span style={{ color: '#8b949e' }}>胜率</span>} value={reverseComparison.revWinRate} suffix="%" precision={1} valueStyle={{ color: reverseComparison.revWinRate >= 50 ? COLOR.profit : COLOR.loss, fontSize: 16, marginTop: 8 }} />
-                            <div style={{ color: '#8b949e', fontSize: 12, marginTop: 4 }}>有效对比: {reverseComparison.validCount}/{reverseComparison.count} 笔</div>
+                          <Card size="small" title={<span style={{ color: '#fa8c16' }}>反向策略</span>} style={{ marginBottom: 0 }}>
+                            <Statistic title="模拟总盈亏" value={reverseComparison.revTotal} prefix="$" valueStyle={{ color: pnlColor(reverseComparison.revTotal) }} />
+                            <Statistic title="胜率" value={reverseComparison.revWinRate} suffix="%" precision={1} valueStyle={{ color: reverseComparison.revWinRate >= 50 ? PROFIT_COLOR : LOSS_COLOR, fontSize: 16, marginTop: 8 }} />
+                            <div style={{ color: '#999', fontSize: 12, marginTop: 4 }}>有效对比: {reverseComparison.validCount}/{reverseComparison.count} 笔</div>
                           </Card>
                         </Col>
                       </Row>
@@ -704,7 +710,7 @@ export default function AnalysisPage() {
                     )}
 
                     {/* 逐笔对比表 */}
-                    <Card size="small" title="逐笔反向对比" style={darkCard} styles={{ header: { color: '#e6edf3', borderBottom: `1px solid ${COLOR.cardBorder}` }, body: { padding: isMobile ? 4 : 12 } }}>
+                    <Card size="small" title="逐笔反向对比" style={{ marginBottom: 0 }}>
                       <Table
                         dataSource={analysis}
                         rowKey="order_id"
@@ -733,7 +739,7 @@ export default function AnalysisPage() {
                 label: 'K线图表',
                 children: (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                    <Card size="small" style={darkCard}>
+                    <Card size="small" style={{ marginBottom: 0 }}>
                       <Select
                         placeholder="选择交易查看K线"
                         style={{ width: '100%' }}
@@ -752,53 +758,121 @@ export default function AnalysisPage() {
                         {klineData.original.length === 0 && klineData.reverse.length === 0 ? (
                           <Empty description="暂无K线数据" />
                         ) : (
-                          <Card size="small" title="正向 vs 反向期权价格" style={darkCard} styles={{ header: { color: '#e6edf3', borderBottom: `1px solid ${COLOR.cardBorder}` } }}>
-                            <ResponsiveContainer width="100%" height={isMobile ? 250 : 400}>
-                              <LineChart>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#30363d" />
-                                <XAxis
-                                  dataKey="timestamp"
-                                  type="number"
-                                  domain={['dataMin', 'dataMax']}
-                                  tickFormatter={(ts: number) => {
-                                    const d = new Date(ts)
-                                    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
-                                  }}
-                                  tick={{ fill: '#8b949e', fontSize: 11 }}
-                                  allowDuplicatedCategory={false}
-                                />
-                                <YAxis yAxisId="left" tick={{ fill: COLOR.original, fontSize: 11 }} />
-                                <YAxis yAxisId="right" orientation="right" tick={{ fill: COLOR.reverse, fontSize: 11 }} />
-                                <RechartsTooltip
-                                  contentStyle={{ background: '#1c2128', border: `1px solid ${COLOR.cardBorder}` }}
-                                  labelFormatter={(ts: number) => new Date(ts).toLocaleTimeString()}
-                                />
-                                <Legend />
-                                {klineData.original.length > 0 && (
-                                  <Line
-                                    yAxisId="left"
-                                    data={klineData.original.map(k => ({ timestamp: Number(k.timestamp), close: Number(k.close) }))}
-                                    dataKey="close"
-                                    name="正向期权"
-                                    stroke={COLOR.original}
-                                    dot={false}
-                                    strokeWidth={2}
-                                  />
-                                )}
-                                {klineData.reverse.length > 0 && (
-                                  <Line
-                                    yAxisId="right"
-                                    data={klineData.reverse.map(k => ({ timestamp: Number(k.timestamp), close: Number(k.close) }))}
-                                    dataKey="close"
-                                    name="反向期权"
-                                    stroke={COLOR.reverse}
-                                    dot={false}
-                                    strokeWidth={2}
-                                  />
-                                )}
-                              </LineChart>
-                            </ResponsiveContainer>
-                          </Card>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                            {/* 交易信息概览 */}
+                            {selectedAnalysis && (
+                              <Card size="small" title="交易信息" style={{ marginBottom: 0 }}>
+                                <Descriptions size="small" column={isMobile ? 1 : 3} bordered>
+                                  <Descriptions.Item label="正向标的">{selectedAnalysis.original_symbol}</Descriptions.Item>
+                                  <Descriptions.Item label="反向标的">{selectedAnalysis.reverse_symbol || '-'}</Descriptions.Item>
+                                  <Descriptions.Item label="交易日期">{selectedAnalysis.trade_date}</Descriptions.Item>
+                                  <Descriptions.Item label="入场价">${Number(selectedAnalysis.original_entry_price).toFixed(2)}</Descriptions.Item>
+                                  <Descriptions.Item label="出场价">${Number(selectedAnalysis.original_exit_price).toFixed(2)}</Descriptions.Item>
+                                  <Descriptions.Item label="盈亏">
+                                    <span style={{ color: pnlColor(Number(selectedAnalysis.original_pnl)), fontWeight: 600 }}>
+                                      ${Number(selectedAnalysis.original_pnl).toFixed(2)}
+                                    </span>
+                                  </Descriptions.Item>
+                                </Descriptions>
+                              </Card>
+                            )}
+
+                            {/* 正向期权 K 线 */}
+                            {klineData.original.length > 0 && (
+                              <Card
+                                size="small"
+                                title={`正向期权 (${selectedAnalysis?.original_symbol || 'Original'})`}
+                                style={{ marginBottom: 0 }}
+                              >
+                                <ResponsiveContainer width="100%" height={isMobile ? 150 : 200}>
+                                  <LineChart data={klineData.original.map(k => ({ timestamp: Number(k.timestamp), close: Number(k.close) }))}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#e8e8e8" />
+                                    <XAxis
+                                      dataKey="timestamp"
+                                      tickFormatter={formatTime}
+                                      tick={{ fontSize: 11 }}
+                                    />
+                                    <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
+                                    <RechartsTooltip
+                                      labelFormatter={(ts: number) => formatTime(ts)}
+                                      formatter={(value: number) => [`$${value.toFixed(2)}`, '价格']}
+                                    />
+                                    {selectedAnalysis?.entry_time && (
+                                      <ReferenceLine
+                                        x={new Date(selectedAnalysis.entry_time).getTime()}
+                                        stroke={PROFIT_COLOR}
+                                        strokeDasharray="3 3"
+                                        label={{ value: '入场', position: 'top', fill: PROFIT_COLOR, fontSize: 11 }}
+                                      />
+                                    )}
+                                    {selectedAnalysis?.exit_time && (
+                                      <ReferenceLine
+                                        x={new Date(selectedAnalysis.exit_time).getTime()}
+                                        stroke={LOSS_COLOR}
+                                        strokeDasharray="3 3"
+                                        label={{ value: '出场', position: 'top', fill: LOSS_COLOR, fontSize: 11 }}
+                                      />
+                                    )}
+                                    <Line
+                                      dataKey="close"
+                                      name="收盘价"
+                                      stroke="#1677ff"
+                                      dot={false}
+                                      strokeWidth={2}
+                                    />
+                                  </LineChart>
+                                </ResponsiveContainer>
+                              </Card>
+                            )}
+
+                            {/* 反向期权 K 线 */}
+                            {klineData.reverse.length > 0 && (
+                              <Card
+                                size="small"
+                                title={`反向期权 (${selectedAnalysis?.reverse_symbol || 'Reverse'})`}
+                                style={{ marginBottom: 0 }}
+                              >
+                                <ResponsiveContainer width="100%" height={isMobile ? 150 : 200}>
+                                  <LineChart data={klineData.reverse.map(k => ({ timestamp: Number(k.timestamp), close: Number(k.close) }))}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#e8e8e8" />
+                                    <XAxis
+                                      dataKey="timestamp"
+                                      tickFormatter={formatTime}
+                                      tick={{ fontSize: 11 }}
+                                    />
+                                    <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
+                                    <RechartsTooltip
+                                      labelFormatter={(ts: number) => formatTime(ts)}
+                                      formatter={(value: number) => [`$${value.toFixed(2)}`, '价格']}
+                                    />
+                                    {selectedAnalysis?.entry_time && (
+                                      <ReferenceLine
+                                        x={new Date(selectedAnalysis.entry_time).getTime()}
+                                        stroke={PROFIT_COLOR}
+                                        strokeDasharray="3 3"
+                                        label={{ value: '入场', position: 'top', fill: PROFIT_COLOR, fontSize: 11 }}
+                                      />
+                                    )}
+                                    {selectedAnalysis?.exit_time && (
+                                      <ReferenceLine
+                                        x={new Date(selectedAnalysis.exit_time).getTime()}
+                                        stroke={LOSS_COLOR}
+                                        strokeDasharray="3 3"
+                                        label={{ value: '出场', position: 'top', fill: LOSS_COLOR, fontSize: 11 }}
+                                      />
+                                    )}
+                                    <Line
+                                      dataKey="close"
+                                      name="收盘价"
+                                      stroke="#fa8c16"
+                                      dot={false}
+                                      strokeWidth={2}
+                                    />
+                                  </LineChart>
+                                </ResponsiveContainer>
+                              </Card>
+                            )}
+                          </div>
                         )}
                       </Spin>
                     )}
