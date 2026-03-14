@@ -24,6 +24,7 @@ import { logsRouter } from './routes/logs';
 import { tradingDaysRouter } from './routes/trading-days';
 import { klineHistoryRouter } from './routes/kline-history';
 import optionBacktestRouter from './routes/option-backtest';
+import { optionKlineRouter } from './routes/option-kline';
 import { errorHandler } from './middleware/errorHandler';
 import { apiAuth } from './middleware/auth';
 import { rateLimiter } from './middleware/rateLimiter';
@@ -99,6 +100,7 @@ app.use('/api/logs', logsRouter);
 app.use('/api/trading-days', tradingDaysRouter);
 app.use('/api/kline-history', klineHistoryRouter);
 app.use('/api/option-backtest', optionBacktestRouter);
+app.use('/api/quant/option-kline', optionKlineRouter);
 
 // 前端代理 - 将所有非 API 请求代理到前端服务
 // Express 会按顺序匹配路由，/api/* 已经在上面处理，剩余的请求会被代理
@@ -211,6 +213,16 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     }
   }, 8000);
 
+  // 启动期权K线采集服务
+  setTimeout(async () => {
+    try {
+      const optionKlineCollectionService = (await import('./services/option-kline-collection.service')).default;
+      await optionKlineCollectionService.init();
+    } catch (error: any) {
+      console.warn('启动期权K线采集服务失败:', error.message);
+    }
+  }, 9000);
+
   // 启动日志系统
   setTimeout(async () => {
     try {
@@ -284,6 +296,15 @@ const gracefulShutdown = async (signal: string) => {
     console.log('K线数据采集服务已停止');
   } catch (error: any) {
     console.error('停止K线数据采集服务失败:', error.message);
+  }
+
+  // 3.7 停止期权K线采集服务
+  try {
+    const optionKlineCollectionService = (await import('./services/option-kline-collection.service')).default;
+    optionKlineCollectionService.stop();
+    console.log('期权K线采集服务已停止');
+  } catch (error: any) {
+    console.error('停止期权K线采集服务失败:', error.message);
   }
 
   // 4. 停止日志摘要服务

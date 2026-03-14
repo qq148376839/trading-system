@@ -920,6 +920,25 @@ export const quantApi = {
   }> => {
     return api.post(`/quant/strategies/${strategyId}/correlation-groups`, params || {})
   },
+
+  // 期权K线分析
+  getOptionKlineAnalysis: (params?: {
+    startDate?: string;
+    endDate?: string;
+    underlying?: string;
+    orderId?: string;
+  }): Promise<{ success: boolean; data?: any[]; count?: number; error?: { message: string } }> => {
+    return api.get('/quant/option-kline/analysis', { params })
+  },
+  getOptionKlineCandles: (orderId: string, klineType?: string): Promise<{ success: boolean; data?: any[]; count?: number; error?: { message: string } }> => {
+    return api.get('/quant/option-kline/candles', { params: { orderId, klineType } })
+  },
+  triggerOptionKlineCollect: (data: { date?: string; dateRange?: { start: string; end: string } }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
+    return api.post('/quant/option-kline/collect', data)
+  },
+  getOptionKlineStatus: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
+    return api.get('/quant/option-kline/status')
+  },
 }
 
 // 日志查询 API

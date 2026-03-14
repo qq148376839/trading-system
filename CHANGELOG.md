@@ -2,6 +2,31 @@
 
 ## 2026-03-14
 
+### 交易分析系统 (Trade Analysis)
+
+**改动内容**:
+
+1. **期权K线采集服务**: 收盘后自动采集正向+反向期权K线，防止期权过期后数据丢失
+2. **交易分析页面 `/quant/analysis`**: 4个Tab — 综合分析（策略/退出/盈亏图表/得分散点）、每日明细、反向分析（原始vs反向对比）、K线图表
+3. **数据库新增2张表**: `option_trade_kline`（K线存储）+ `option_trade_analysis`（分析摘要）
+4. **4个API端点**: 分析摘要查询、K线查询、手动触发采集、采集状态
+
+**设计文档**: `docs/features/260314-交易分析系统.md`
+
+**新建文件**:
+- `api/migrations/016_option_reverse_kline.sql`
+- `api/src/services/option-kline-collection.service.ts`
+- `api/src/routes/option-kline.ts`
+- `frontend/app/quant/analysis/page.tsx`
+
+**修改文件**:
+- `api/migrations/000_init_schema.sql`（Rule #10 双写）
+- `api/src/server.ts`（路由注册+服务启动+优雅关闭）
+- `frontend/components/AppLayout.tsx`（导航+面包屑）
+- `frontend/lib/api.ts`（4个新API方法）
+
+---
+
 ### 智能反向策略 (Smart Regime Reversal)
 
 **改动内容**:

@@ -113,6 +113,11 @@ export default function AppLayout({ children }: AppLayoutProps) {
           icon: <BarChartOutlined />,
           label: <Link href="/quant/backtest">回测管理</Link>,
         },
+        {
+          key: '/quant/analysis',
+          icon: <FileSearchOutlined />,
+          label: <Link href="/quant/analysis">交易分析</Link>,
+        },
       ],
     },
     {
@@ -183,6 +188,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
         items.push({ title: isLast ? '交易记录' : <Link href={currentPath}>交易记录</Link> })
       } else if (path === 'backtest') {
         items.push({ title: isLast ? '回测管理' : <Link href={currentPath}>回测管理</Link> })
+      } else if (path === 'analysis') {
+        items.push({ title: isLast ? '交易分析' : <Link href={currentPath}>交易分析</Link> })
       } else if (path === 'orders') {
         items.push({ title: isLast ? '订单管理' : <Link href={currentPath}>订单管理</Link> })
       } else if (path === 'candles') {
