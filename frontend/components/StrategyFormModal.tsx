@@ -1000,13 +1000,12 @@ export default function StrategyFormModal({
                             type="checkbox"
                             checked={formData.config.strategyTypes?.directional?.includes('BULL_SPREAD') ?? false}
                             onChange={(e) => {
-                              const directional = formData.config.strategyTypes?.directional || [];
-                              let newDirectional = e.target.checked
+                              const directional = (formData.config.strategyTypes?.directional || []).filter(
+                                (t: string) => t !== 'REVERSE_BULL_SPREAD' && t !== 'REVERSE_BEAR_SPREAD'
+                              );
+                              const newDirectional = e.target.checked
                                 ? [...directional, 'BULL_SPREAD']
                                 : directional.filter((t: string) => t !== 'BULL_SPREAD');
-                              if (e.target.checked) {
-                                newDirectional = newDirectional.filter((t: string) => t !== 'REVERSE_BULL_SPREAD');
-                              }
                               setFormData({
                                 ...formData,
                                 config: {
@@ -1021,38 +1020,14 @@ export default function StrategyFormModal({
                         <label className="flex items-center gap-2 cursor-pointer">
                           <input
                             type="checkbox"
-                            checked={formData.config.strategyTypes?.directional?.includes('REVERSE_BULL_SPREAD') ?? false}
-                            onChange={(e) => {
-                              const directional = formData.config.strategyTypes?.directional || [];
-                              let newDirectional = e.target.checked
-                                ? [...directional, 'REVERSE_BULL_SPREAD']
-                                : directional.filter((t: string) => t !== 'REVERSE_BULL_SPREAD');
-                              if (e.target.checked) {
-                                newDirectional = newDirectional.filter((t: string) => t !== 'BULL_SPREAD');
-                              }
-                              setFormData({
-                                ...formData,
-                                config: {
-                                  ...formData.config,
-                                  strategyTypes: { ...formData.config.strategyTypes, directional: newDirectional },
-                                },
-                              });
-                            }}
-                          />
-                          <span className="text-sm">反向牛市价差</span>
-                        </label>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
                             checked={formData.config.strategyTypes?.directional?.includes('BEAR_SPREAD') ?? false}
                             onChange={(e) => {
-                              const directional = formData.config.strategyTypes?.directional || [];
-                              let newDirectional = e.target.checked
+                              const directional = (formData.config.strategyTypes?.directional || []).filter(
+                                (t: string) => t !== 'REVERSE_BULL_SPREAD' && t !== 'REVERSE_BEAR_SPREAD'
+                              );
+                              const newDirectional = e.target.checked
                                 ? [...directional, 'BEAR_SPREAD']
                                 : directional.filter((t: string) => t !== 'BEAR_SPREAD');
-                              if (e.target.checked) {
-                                newDirectional = newDirectional.filter((t: string) => t !== 'REVERSE_BEAR_SPREAD');
-                              }
                               setFormData({
                                 ...formData,
                                 config: {
@@ -1064,31 +1039,241 @@ export default function StrategyFormModal({
                           />
                           <span className="text-sm">熊市价差</span>
                         </label>
-                        <label className="flex items-center gap-2 cursor-pointer">
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 智能反向配置（替代 REVERSE_BEAR/BULL_SPREAD） */}
+                  <div className="mb-4 p-4 border rounded bg-amber-50 border-amber-200">
+                    <label className="flex items-center gap-2 mb-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formData.config.smartReverse?.enabled ?? false}
+                        onChange={(e) => {
+                          const prev = formData.config.smartReverse || {};
+                          setFormData({
+                            ...formData,
+                            config: {
+                              ...formData.config,
+                              smartReverse: {
+                                enabled: e.target.checked,
+                                thresholds: {
+                                  marketScoreExtreme: 35,
+                                  intradayScoreExtremeNeg: 14,
+                                  intradayScoreExtremePos: 15,
+                                  divergenceMin: 0.3,
+                                  ...prev.thresholds,
+                                },
+                                positionMultiplier: {
+                                  reversed: 1.0,
+                                  uncertain: 0.5,
+                                  ...prev.positionMultiplier,
+                                },
+                                timeWindow: {
+                                  endHour: 14,
+                                  endMinute: 30,
+                                  ...prev.timeWindow,
+                                },
+                              },
+                            },
+                          });
+                        }}
+                      />
+                      <span className="text-sm font-semibold text-amber-800">
+                        智能反向 (Smart Regime Reversal)
+                      </span>
+                    </label>
+                    <p className="text-xs text-amber-600 mb-3">
+                      基于分数极端度和分量分歧度自动判别市场状态，在均值回归概率高时翻转交易方向。替代原有的反向价差策略。
+                    </p>
+
+                    {formData.config.smartReverse?.enabled && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs text-gray-600">大盘极端阈值 (|marketScore|)</label>
                           <input
-                            type="checkbox"
-                            checked={formData.config.strategyTypes?.directional?.includes('REVERSE_BEAR_SPREAD') ?? false}
+                            type="number"
+                            value={formData.config.smartReverse?.thresholds?.marketScoreExtreme ?? 35}
+                            className="w-full border rounded px-2 py-1 text-sm"
+                            min={20}
+                            max={60}
                             onChange={(e) => {
-                              const directional = formData.config.strategyTypes?.directional || [];
-                              let newDirectional = e.target.checked
-                                ? [...directional, 'REVERSE_BEAR_SPREAD']
-                                : directional.filter((t: string) => t !== 'REVERSE_BEAR_SPREAD');
-                              if (e.target.checked) {
-                                newDirectional = newDirectional.filter((t: string) => t !== 'BEAR_SPREAD');
-                              }
+                              const val = Number(e.target.value);
                               setFormData({
                                 ...formData,
                                 config: {
                                   ...formData.config,
-                                  strategyTypes: { ...formData.config.strategyTypes, directional: newDirectional },
+                                  smartReverse: {
+                                    ...formData.config.smartReverse,
+                                    thresholds: {
+                                      ...formData.config.smartReverse.thresholds,
+                                      marketScoreExtreme: val,
+                                    },
+                                  },
                                 },
                               });
                             }}
                           />
-                          <span className="text-sm">反向熊市价差</span>
-                        </label>
+                        </div>
+                        <div>
+                          <label className="text-xs text-gray-600">分歧度阈值</label>
+                          <input
+                            type="number"
+                            step={0.05}
+                            value={formData.config.smartReverse?.thresholds?.divergenceMin ?? 0.3}
+                            className="w-full border rounded px-2 py-1 text-sm"
+                            min={0.1}
+                            max={1.0}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  smartReverse: {
+                                    ...formData.config.smartReverse,
+                                    thresholds: {
+                                      ...formData.config.smartReverse.thresholds,
+                                      divergenceMin: val,
+                                    },
+                                  },
+                                },
+                              });
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-gray-600">日内极端阈值 (neg / pos)</label>
+                          <div className="flex gap-2">
+                            <input
+                              type="number"
+                              value={formData.config.smartReverse?.thresholds?.intradayScoreExtremeNeg ?? 14}
+                              className="w-full border rounded px-2 py-1 text-sm"
+                              min={5}
+                              max={40}
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                setFormData({
+                                  ...formData,
+                                  config: {
+                                    ...formData.config,
+                                    smartReverse: {
+                                      ...formData.config.smartReverse,
+                                      thresholds: {
+                                        ...formData.config.smartReverse.thresholds,
+                                        intradayScoreExtremeNeg: val,
+                                      },
+                                    },
+                                  },
+                                });
+                              }}
+                            />
+                            <input
+                              type="number"
+                              value={formData.config.smartReverse?.thresholds?.intradayScoreExtremePos ?? 15}
+                              className="w-full border rounded px-2 py-1 text-sm"
+                              min={5}
+                              max={40}
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                setFormData({
+                                  ...formData,
+                                  config: {
+                                    ...formData.config,
+                                    smartReverse: {
+                                      ...formData.config.smartReverse,
+                                      thresholds: {
+                                        ...formData.config.smartReverse.thresholds,
+                                        intradayScoreExtremePos: val,
+                                      },
+                                    },
+                                  },
+                                });
+                              }}
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-xs text-gray-600">UNCERTAIN 仓位系数</label>
+                          <input
+                            type="number"
+                            step={0.1}
+                            min={0.1}
+                            max={1.0}
+                            value={formData.config.smartReverse?.positionMultiplier?.uncertain ?? 0.5}
+                            className="w-full border rounded px-2 py-1 text-sm"
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  smartReverse: {
+                                    ...formData.config.smartReverse,
+                                    positionMultiplier: {
+                                      ...formData.config.smartReverse.positionMultiplier,
+                                      uncertain: val,
+                                    },
+                                  },
+                                },
+                              });
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-gray-600">反向截止时间 (ET)</label>
+                          <div className="flex gap-1 items-center">
+                            <input
+                              type="number"
+                              min={9}
+                              max={15}
+                              value={formData.config.smartReverse?.timeWindow?.endHour ?? 14}
+                              className="w-16 border rounded px-2 py-1 text-sm"
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                setFormData({
+                                  ...formData,
+                                  config: {
+                                    ...formData.config,
+                                    smartReverse: {
+                                      ...formData.config.smartReverse,
+                                      timeWindow: {
+                                        ...formData.config.smartReverse.timeWindow,
+                                        endHour: val,
+                                      },
+                                    },
+                                  },
+                                });
+                              }}
+                            />
+                            <span className="text-sm">:</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={59}
+                              value={formData.config.smartReverse?.timeWindow?.endMinute ?? 30}
+                              className="w-16 border rounded px-2 py-1 text-sm"
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                setFormData({
+                                  ...formData,
+                                  config: {
+                                    ...formData.config,
+                                    smartReverse: {
+                                      ...formData.config.smartReverse,
+                                      timeWindow: {
+                                        ...formData.config.smartReverse.timeWindow,
+                                        endMinute: val,
+                                      },
+                                    },
+                                  },
+                                });
+                              }}
+                            />
+                          </div>
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
 
                   {/* Section 2: 风险模式 */}

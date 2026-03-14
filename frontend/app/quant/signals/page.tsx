@@ -93,9 +93,21 @@ export default function SignalsPage() {
       title: '信号',
       key: 'signal_type',
       dataIndex: 'signal_type',
-      render: (text: string) => (
-        <Tag color={text === 'BUY' ? 'success' : 'error'}>{text}</Tag>
-      ),
+      render: (text: string, record: Signal) => {
+        const regime = record.metadata?.regimeDetection;
+        const reversed = record.metadata?.reversed;
+        return (
+          <Space size={4} wrap>
+            <Tag color={text === 'BUY' ? 'success' : 'error'}>{text}</Tag>
+            {regime && regime.regime === 'MEAN_REVERSION' && (
+              <Tag color="volcano">{reversed ? `反向` : '反向'}</Tag>
+            )}
+            {regime && regime.regime === 'UNCERTAIN' && (
+              <Tag color="orange">不确定</Tag>
+            )}
+          </Space>
+        );
+      },
     },
     ...(isMobile ? [] : [{
       title: '价格',

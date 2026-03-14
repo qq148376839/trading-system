@@ -2,6 +2,25 @@
 
 ## 2026-03-14
 
+### 智能反向策略 (Smart Regime Reversal)
+
+**改动内容**:
+
+1. **新建 MarketRegimeDetector 服务**: 独立市场状态判别层，基于分数极端度 + 分量分歧度 + 时间窗口判定 MOMENTUM / MEAN_REVERSION / UNCERTAIN 三种状态
+2. **替代 REVERSE_BEAR/BULL_SPREAD**: 旧的"无脑反向"策略被智能判别替代，旧配置自动兼容（跳过 REVERSE_* 不报错）
+3. **前端智能反向配置面板**: StrategyFormModal 新增开关 + 阈值配置（大盘极端/日内极端/分歧度/截止时间/UNCERTAIN仓位系数）
+4. **信号日志 regime 标签**: 信号页面显示"反向"/"不确定"标签
+
+**设计文档**: `docs/features/260314-智能反向策略设计方案.md`
+
+**修改文件**:
+- `api/src/services/market-regime-detector.service.ts`（新建）
+- `api/src/services/strategies/option-intraday-strategy.ts`（集成 regime detection）
+- `frontend/components/StrategyFormModal.tsx`（智能反向配置面板）
+- `frontend/app/quant/signals/page.tsx`（regime 标签）
+
+---
+
 ### 前端导航栏优化 + 规则强制加载强化
 
 **改动内容**:

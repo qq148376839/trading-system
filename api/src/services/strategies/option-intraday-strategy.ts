@@ -16,6 +16,7 @@ import { estimateOptionOrderTotalCost } from '../options-fee.service';
 import { logger } from '../../utils/logger';
 import capitalManager from '../capital-manager.service';
 import fastMomentumService from '../fast-momentum.service';
+import marketRegimeDetector, { SmartReverseConfig, DEFAULT_SMART_REVERSE_CONFIG, RegimeDetectionResult } from '../market-regime-detector.service';
 import { getQuoteContext } from '../../config/longport';
 import { calculateATR } from '../../utils/technical-indicators';
 
@@ -38,11 +39,12 @@ export type SellerStrategyType =
   | 'IRON_BUTTERFLY';   // 铁蝶 - 卖出跨式+买入OTM保护
 
 // 方向性策略类型（价差策略）
+// 注: REVERSE_BULL_SPREAD / REVERSE_BEAR_SPREAD 已被 MarketRegimeDetector 智能反向替代
 export type DirectionalStrategyType =
   | 'BULL_SPREAD'           // 牛市价差 - 买入低Strike CALL + 卖出高Strike CALL
   | 'BEAR_SPREAD'           // 熊市价差 - 买入高Strike PUT + 卖出低Strike PUT
-  | 'REVERSE_BULL_SPREAD'   // 反向牛市价差 - 评分看涨但买PUT
-  | 'REVERSE_BEAR_SPREAD';  // 反向熊市价差 - 评分看跌但买CALL
+  | 'REVERSE_BULL_SPREAD'   // [已废弃] 反向牛市价差 — 被 smartReverse 替代，保留类型兼容旧配置
+  | 'REVERSE_BEAR_SPREAD';  // [已废弃] 反向熊市价差 — 被 smartReverse 替代，保留类型兼容旧配置
 
 // 所有策略类型
 export type OptionStrategyType = BuyerStrategyType | SellerStrategyType | DirectionalStrategyType;
@@ -158,6 +160,9 @@ export interface OptionIntradayStrategyConfig {
   };
 
   entryPriceMode?: 'ASK' | 'MID';
+
+  // ===== 智能反向配置（替代 REVERSE_BEAR/BULL_SPREAD）=====
+  smartReverse?: SmartReverseConfig;
 }
 
 // ============================================
@@ -384,6 +389,8 @@ export class OptionIntradayStrategy extends StrategyBase {
 
   /**
    * 评估牛市/熊市价差策略
+   * 注: REVERSE_BULL_SPREAD / REVERSE_BEAR_SPREAD 已被 MarketRegimeDetector 替代，
+   *     此处保留类型签名兼容旧配置但不再执行反向逻辑。
    */
   private evaluateSpreadStrategy(
     optionRec: any,
@@ -397,17 +404,17 @@ export class OptionIntradayStrategy extends StrategyBase {
       if (score >= thresholds.spreadScoreMin) {
         return { shouldTrade: true, direction: 'CALL', reason: `得分${score.toFixed(1)}≥${thresholds.spreadScoreMin}，适合牛市价差 (${vixInfo})` };
       }
-    } else if (strategyType === 'REVERSE_BULL_SPREAD') {
-      if (score >= thresholds.spreadScoreMin) {
-        return { shouldTrade: true, direction: 'PUT', reason: `得分${score.toFixed(1)}≥${thresholds.spreadScoreMin}，适合反向牛市价差 (${vixInfo})` };
-      }
     } else if (strategyType === 'BEAR_SPREAD') {
       if (score <= -thresholds.spreadScoreMin) {
         return { shouldTrade: true, direction: 'PUT', reason: `得分${score.toFixed(1)}≤-${thresholds.spreadScoreMin}，适合熊市价差 (${vixInfo})` };
       }
-    } else if (strategyType === 'REVERSE_BEAR_SPREAD') {
-      if (score <= -thresholds.spreadScoreMin) {
-        return { shouldTrade: true, direction: 'CALL', reason: `得分${score.toFixed(1)}≤-${thresholds.spreadScoreMin}，适合反向熊市价差 (${vixInfo})` };
+    } else if (strategyType === 'REVERSE_BULL_SPREAD' || strategyType === 'REVERSE_BEAR_SPREAD') {
+      // [已废弃] REVERSE_* 由 MarketRegimeDetector 统一处理，此处回退为对应的正向策略
+      if (strategyType === 'REVERSE_BULL_SPREAD' && score >= thresholds.spreadScoreMin) {
+        return { shouldTrade: true, direction: 'CALL', reason: `得分${score.toFixed(1)}≥${thresholds.spreadScoreMin}，REVERSE_BULL已废弃→按BULL执行，方向由smartReverse控制 (${vixInfo})` };
+      }
+      if (strategyType === 'REVERSE_BEAR_SPREAD' && score <= -thresholds.spreadScoreMin) {
+        return { shouldTrade: true, direction: 'PUT', reason: `得分${score.toFixed(1)}≤-${thresholds.spreadScoreMin}，REVERSE_BEAR已废弃→按BEAR执行，方向由smartReverse控制 (${vixInfo})` };
       }
     }
 
@@ -574,6 +581,52 @@ export class OptionIntradayStrategy extends StrategyBase {
         return null;
       }
 
+      // 3.5) 市场状态判别（智能反向）
+      const smartReverseConfig: SmartReverseConfig = {
+        ...DEFAULT_SMART_REVERSE_CONFIG,
+        ...this.cfg.smartReverse,
+        thresholds: { ...DEFAULT_SMART_REVERSE_CONFIG.thresholds, ...this.cfg.smartReverse?.thresholds },
+        positionMultiplier: { ...DEFAULT_SMART_REVERSE_CONFIG.positionMultiplier, ...this.cfg.smartReverse?.positionMultiplier },
+        timeWindow: { ...DEFAULT_SMART_REVERSE_CONFIG.timeWindow, ...this.cfg.smartReverse?.timeWindow },
+      };
+
+      // 获取美东时间用于 regime detection
+      const nowForRegime = new Date();
+      const etFormatterRegime = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        hour: 'numeric', minute: 'numeric', hour12: false,
+      });
+      const etPartsRegime = etFormatterRegime.formatToParts(nowForRegime);
+      const etHourRegime = parseInt(etPartsRegime.find(p => p.type === 'hour')?.value || '0');
+      const etMinuteRegime = parseInt(etPartsRegime.find(p => p.type === 'minute')?.value || '0');
+      const currentETForRegime = new Date(nowForRegime);
+      currentETForRegime.setHours(etHourRegime, etMinuteRegime);
+
+      const regimeResult: RegimeDetectionResult = marketRegimeDetector.detectRegime(
+        optionRec.marketScore,
+        optionRec.intradayScore,
+        currentETForRegime,
+        smartReverseConfig
+      );
+
+      (logData as any).regimeDetection = {
+        regime: regimeResult.regime,
+        confidence: regimeResult.confidence,
+        shouldReverse: regimeResult.shouldReverse,
+        positionMultiplier: regimeResult.positionMultiplier,
+        reason: regimeResult.reason,
+        metrics: regimeResult.metrics,
+      };
+
+      if (smartReverseConfig.enabled) {
+        logger.info(
+          `[${symbol}] Regime: ${regimeResult.regime} (${regimeResult.confidence}) | ` +
+          `reverse=${regimeResult.shouldReverse} | multiplier=${regimeResult.positionMultiplier} | ` +
+          `${regimeResult.reason}`,
+          { module: 'OptionStrategy.Regime', strategyId: this.strategyId }
+        );
+      }
+
       // 4) 遍历启用的策略，找到第一个满足条件的
       let selectedStrategy: OptionStrategyType | null = null;
       let direction: 'CALL' | 'PUT' = 'CALL';
@@ -625,6 +678,19 @@ export class OptionIntradayStrategy extends StrategyBase {
           strategyReason = evaluation.reason;
           break;
         }
+      }
+
+      // 4.5) 应用智能反向：翻转方向
+      if (selectedStrategy && regimeResult.shouldReverse) {
+        const originalDirection = direction;
+        direction = direction === 'CALL' ? 'PUT' : 'CALL';
+        strategyReason += ` → 智能反向: ${originalDirection}→${direction} (${regimeResult.reason})`;
+        (logData as any).reversed = true;
+        (logData as any).originalDirection = originalDirection;
+        logger.info(
+          `[${symbol}] 智能反向触发: ${originalDirection} → ${direction} | ${regimeResult.reason}`,
+          { module: 'OptionStrategy.Regime', strategyId: this.strategyId }
+        );
       }
 
       // 5) 如果没有策略满足条件
@@ -811,6 +877,16 @@ export class OptionIntradayStrategy extends StrategyBase {
         }
       }
 
+      // 8.5) 应用 regime 仓位系数（UNCERTAIN 时减仓至 50%）
+      if (regimeResult.positionMultiplier < 1.0 && contracts > 1) {
+        const originalContracts = contracts;
+        contracts = Math.max(1, Math.round(contracts * regimeResult.positionMultiplier));
+        logger.info(
+          `[${symbol}] Regime仓位调整: ${originalContracts} → ${contracts} (x${regimeResult.positionMultiplier})`,
+          { module: 'OptionStrategy.Regime', strategyId: this.strategyId }
+        );
+      }
+
       const est = estimateOptionOrderTotalCost({
         premium,
         contracts,
@@ -854,6 +930,14 @@ export class OptionIntradayStrategy extends StrategyBase {
           finalScore: optionRec.finalScore,
           marketScore: optionRec.marketScore,
           intradayScore: optionRec.intradayScore,
+          // 智能反向: regime detection 结果
+          regimeDetection: {
+            regime: regimeResult.regime,
+            confidence: regimeResult.confidence,
+            shouldReverse: regimeResult.shouldReverse,
+            positionMultiplier: regimeResult.positionMultiplier,
+          },
+          ...((logData as any).reversed ? { reversed: true, originalDirection: (logData as any).originalDirection } : {}),
         },
       };
 
