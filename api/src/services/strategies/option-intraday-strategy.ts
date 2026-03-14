@@ -198,13 +198,13 @@ export const DEFAULT_OPTION_STRATEGY_CONFIG: Partial<OptionIntradayStrategyConfi
 // ============================================
 export const ENTRY_THRESHOLDS = {
   AGGRESSIVE: {
-    directionalScoreMin: 10,      // 单边买方最低得分
-    spreadScoreMin: 10,           // 价差策略最低得分
+    directionalScoreMin: 5,       // 单边买方最低得分
+    spreadScoreMin: 5,            // 价差策略最低得分
     straddleIvThreshold: 0,       // 跨式IV阈值（相对当前）
   },
   CONSERVATIVE: {
-    directionalScoreMin: 30,      // 单边买方最低得分（更高）
-    spreadScoreMin: 40,           // 价差策略最低得分（更高）
+    directionalScoreMin: 12,      // 单边买方最低得分（更高）
+    spreadScoreMin: 12,           // 价差策略最低得分（更高）
     straddleIvThreshold: 0.1,     // 跨式IV阈值（比当前高10%）
   },
 };

@@ -31,44 +31,28 @@ const RISK_PRESETS: Record<Exclude<PresetMode, 'CUSTOM'>, {
   description: string;
   riskPreference: string;
   entryThresholdOverride: { directionalScoreMin: number; spreadScoreMin: number };
-  zdteEntryThreshold: number;
   exitRules: { takeProfitPercent: number; stopLossPercent: number };
-  consecutiveConfirmCycles: number;
-  rsiFilter: { oversoldThreshold: number; overboughtThreshold: number };
-  latePeriod: { cooldownMinutes: number };
 }> = {
   CONSERVATIVE: {
     label: '保守',
-    description: '更高的入场门槛，更紧的止损，适合震荡市',
+    description: '较高入场门槛，紧止损，适合震荡市',
     riskPreference: 'CONSERVATIVE',
-    entryThresholdOverride: { directionalScoreMin: 20, spreadScoreMin: 20 },
-    zdteEntryThreshold: 15,
+    entryThresholdOverride: { directionalScoreMin: 12, spreadScoreMin: 12 },
     exitRules: { takeProfitPercent: 50, stopLossPercent: 25 },
-    consecutiveConfirmCycles: 2,
-    rsiFilter: { oversoldThreshold: 10, overboughtThreshold: 90 },
-    latePeriod: { cooldownMinutes: 5 },
   },
   STANDARD: {
     label: '标准',
-    description: '平衡的入场阈值和风控参数（推荐）',
+    description: '平衡的入场和风控参数（推荐）',
     riskPreference: 'AGGRESSIVE',
-    entryThresholdOverride: { directionalScoreMin: 12, spreadScoreMin: 12 },
-    zdteEntryThreshold: 12,
+    entryThresholdOverride: { directionalScoreMin: 8, spreadScoreMin: 8 },
     exitRules: { takeProfitPercent: 40, stopLossPercent: 30 },
-    consecutiveConfirmCycles: 1,
-    rsiFilter: { oversoldThreshold: 5, overboughtThreshold: 95 },
-    latePeriod: { cooldownMinutes: 3 },
   },
   AGGRESSIVE: {
     label: '激进',
     description: '低入场门槛，宽止损，适合强趋势市',
     riskPreference: 'AGGRESSIVE',
-    entryThresholdOverride: { directionalScoreMin: 8, spreadScoreMin: 8 },
-    zdteEntryThreshold: 10,
-    exitRules: { takeProfitPercent: 30, stopLossPercent: 40 },
-    consecutiveConfirmCycles: 1,
-    rsiFilter: { oversoldThreshold: 3, overboughtThreshold: 97 },
-    latePeriod: { cooldownMinutes: 1 },
+    entryThresholdOverride: { directionalScoreMin: 5, spreadScoreMin: 5 },
+    exitRules: { takeProfitPercent: 40, stopLossPercent: 35 },
   },
 };
 
@@ -86,12 +70,8 @@ const DEFAULT_CONFIGS: Record<string, any> = {
     feeModel: { commissionPerContract: 0.1, minCommissionPerOrder: 0.99, platformFeePerContract: 0.3 },
     // STANDARD preset defaults
     riskPreference: 'AGGRESSIVE',
-    entryThresholdOverride: { directionalScoreMin: 12, spreadScoreMin: 12 },
-    zdteEntryThreshold: 12,
+    entryThresholdOverride: { directionalScoreMin: 8, spreadScoreMin: 8 },
     exitRules: { takeProfitPercent: 40, stopLossPercent: 30 },
-    consecutiveConfirmCycles: 1,
-    rsiFilter: { oversoldThreshold: 5, overboughtThreshold: 95 },
-    latePeriod: { cooldownMinutes: 3 },
   },
   OPTION_SCHWARTZ_V1: {
     assetClass: 'OPTION',
@@ -103,14 +83,10 @@ const DEFAULT_CONFIGS: Record<string, any> = {
     greekFilters: { deltaMin: 0.25, deltaMax: 0.6 },
     tradeWindow: { noNewEntryBeforeCloseMinutes: 120, forceCloseBeforeCloseMinutes: 30 },
     feeModel: { commissionPerContract: 0.1, minCommissionPerOrder: 0.99, platformFeePerContract: 0.3 },
-    entryThresholdOverride: { directionalScoreMin: 12, spreadScoreMin: 12 },
     // STANDARD preset defaults
     riskPreference: 'AGGRESSIVE',
-    zdteEntryThreshold: 12,
+    entryThresholdOverride: { directionalScoreMin: 8, spreadScoreMin: 8 },
     exitRules: { takeProfitPercent: 40, stopLossPercent: 30 },
-    consecutiveConfirmCycles: 1,
-    rsiFilter: { oversoldThreshold: 5, overboughtThreshold: 95 },
-    latePeriod: { cooldownMinutes: 3 },
     schwartz: {
       emaPeriod: 10,
       chopThreshold: 0.5,
@@ -127,21 +103,13 @@ function detectPresetMode(config: Record<string, unknown>): PresetMode {
   for (const [mode, preset] of Object.entries(RISK_PRESETS) as [Exclude<PresetMode, 'CUSTOM'>, typeof RISK_PRESETS[keyof typeof RISK_PRESETS]][]) {
     const entryOverride = config.entryThresholdOverride as Record<string, unknown> | undefined;
     const exitRules = config.exitRules as Record<string, unknown> | undefined;
-    const rsiFilter = config.rsiFilter as Record<string, unknown> | undefined;
-    const latePeriod = config.latePeriod as Record<string, unknown> | undefined;
     if (
-      config.riskPreference === preset.riskPreference &&
       entryOverride?.directionalScoreMin === preset.entryThresholdOverride.directionalScoreMin &&
       entryOverride?.spreadScoreMin === preset.entryThresholdOverride.spreadScoreMin &&
-      config.zdteEntryThreshold === preset.zdteEntryThreshold &&
       exitRules?.takeProfitPercent === preset.exitRules.takeProfitPercent &&
-      exitRules?.stopLossPercent === preset.exitRules.stopLossPercent &&
-      config.consecutiveConfirmCycles === preset.consecutiveConfirmCycles &&
-      ((rsiFilter?.oversoldThreshold as number | undefined) ?? 5) === preset.rsiFilter.oversoldThreshold &&
-      ((rsiFilter?.overboughtThreshold as number | undefined) ?? 95) === preset.rsiFilter.overboughtThreshold &&
-      ((latePeriod?.cooldownMinutes as number | undefined) ?? 3) === preset.latePeriod.cooldownMinutes
+      exitRules?.stopLossPercent === preset.exitRules.stopLossPercent
     ) {
-      return mode;
+      return mode as Exclude<PresetMode, 'CUSTOM'>;
     }
   }
   return 'CUSTOM';
@@ -361,21 +329,10 @@ export default function StrategyFormModal({
         ...formData.config,
         riskPreference: preset.riskPreference,
         entryThresholdOverride: preset.entryThresholdOverride,
-        zdteEntryThreshold: preset.zdteEntryThreshold,
         exitRules: {
           ...(formData.config.exitRules || {}),
           takeProfitPercent: preset.exitRules.takeProfitPercent,
           stopLossPercent: preset.exitRules.stopLossPercent,
-        },
-        consecutiveConfirmCycles: preset.consecutiveConfirmCycles,
-        rsiFilter: {
-          ...(formData.config.rsiFilter || {}),
-          oversoldThreshold: preset.rsiFilter.oversoldThreshold,
-          overboughtThreshold: preset.rsiFilter.overboughtThreshold,
-        },
-        latePeriod: {
-          ...(formData.config.latePeriod || {}),
-          cooldownMinutes: preset.latePeriod.cooldownMinutes,
         },
       },
     });
@@ -1266,9 +1223,9 @@ export default function StrategyFormModal({
                       <div className="flex items-center gap-2">
                         {presetMode !== 'CUSTOM' && !showEntryParams && (
                           <span className="text-xs text-gray-500">
-                            阈值={formData.config.entryThresholdOverride?.directionalScoreMin ?? 12},
-                            0DTE={formData.config.zdteEntryThreshold ?? 12},
-                            确认={formData.config.consecutiveConfirmCycles ?? 1}次
+                            入场阈值={formData.config.entryThresholdOverride?.directionalScoreMin ?? 8},
+                            止盈={formData.config.exitRules?.takeProfitPercent ?? 40}%,
+                            止损={formData.config.exitRules?.stopLossPercent ?? 30}%
                           </span>
                         )}
                         <svg
@@ -1283,28 +1240,8 @@ export default function StrategyFormModal({
                       <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
                           <label className="block text-xs text-gray-700 mb-1 font-medium">入场得分阈值</label>
-                          <input {...numberInputProps('entryDirectionalScoreMin', { path: ['entryThresholdOverride', 'directionalScoreMin'], defaultValue: 12, min: 5, max: 50 })} />
+                          <input {...numberInputProps('entryDirectionalScoreMin', { path: ['entryThresholdOverride', 'directionalScoreMin'], defaultValue: 8, min: 3, max: 50 })} />
                           <p className="text-xs text-gray-500 mt-1">信号绝对值需达到此阈值才入场</p>
-                        </div>
-                        <div>
-                          <label className="block text-xs text-gray-700 mb-1 font-medium">0DTE入场阈值</label>
-                          <input {...numberInputProps('zdteEntryThreshold', { path: ['zdteEntryThreshold'], defaultValue: 12, min: 5, max: 30 })} />
-                          <p className="text-xs text-gray-500 mt-1">0DTE比普通入场更严格的得分阈值</p>
-                        </div>
-                        <div>
-                          <label className="block text-xs text-gray-700 mb-1 font-medium">价格确认次数</label>
-                          <input {...numberInputProps('consecutiveConfirmCycles', { path: ['consecutiveConfirmCycles'], defaultValue: 1, min: 1, max: 5 })} />
-                          <p className="text-xs text-gray-500 mt-1">设为1跳过价格确认，2+启用确认等待</p>
-                        </div>
-                        <div>
-                          <label className="block text-xs text-gray-700 mb-1 font-medium">RSI超卖阈值</label>
-                          <input {...numberInputProps('rsiOversold', { path: ['rsiFilter', 'oversoldThreshold'], defaultValue: 5, min: 1, max: 50 })} />
-                          <p className="text-xs text-gray-500 mt-1">RSI低于此值时拒绝做空</p>
-                        </div>
-                        <div>
-                          <label className="block text-xs text-gray-700 mb-1 font-medium">RSI超买阈值</label>
-                          <input {...numberInputProps('rsiOverbought', { path: ['rsiFilter', 'overboughtThreshold'], defaultValue: 95, min: 50, max: 99 })} />
-                          <p className="text-xs text-gray-500 mt-1">RSI高于此值时拒绝做多</p>
                         </div>
                         <div>
                           <label className="block text-xs text-gray-700 mb-1 font-medium">方向确认窗口（分钟）</label>
@@ -1328,16 +1265,6 @@ export default function StrategyFormModal({
                         <label className="block text-xs text-gray-700 mb-1 font-medium">止损 %</label>
                         <input {...numberInputProps('stopLossPercent', { path: ['exitRules', 'stopLossPercent'], defaultValue: 30, min: 10, max: 100 })} />
                         <p className="text-xs text-gray-500 mt-1">EARLY基准值，随时段自动递减</p>
-                      </div>
-                      <div>
-                        <label className="block text-xs text-gray-700 mb-1 font-medium">平仓冷却期（分钟）</label>
-                        <input {...numberInputProps('cooldownMinutes', { path: ['latePeriod', 'cooldownMinutes'], defaultValue: 3, min: 0, max: 30 })} />
-                        <p className="text-xs text-gray-500 mt-1">非0DTE固定冷却；0DTE按交易次数动态调整</p>
-                      </div>
-                      <div>
-                        <label className="block text-xs text-gray-700 mb-1 font-medium">尾盘阈值提升比例</label>
-                        <input {...numberInputProps('minProfitThreshold', { path: ['latePeriod', 'minProfitThreshold'], defaultValue: 0.10, min: 0, max: 1, step: 0.05, isFloat: true })} />
-                        <p className="text-xs text-gray-500 mt-1">LATE时段入场门槛提升比例（0.10=10%）</p>
                       </div>
                     </div>
                     <div className="mt-3 p-3 bg-gray-100 border border-gray-200 rounded text-xs text-gray-600">
