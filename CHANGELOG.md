@@ -11,6 +11,8 @@
 3. **数据库新增2张表**: `option_trade_kline`（K线存储）+ `option_trade_analysis`（分析摘要）
 4. **4个API端点**: 分析摘要查询、K线查询、手动触发采集、采集状态
 
+5. **BUY/SELL 信号配对**: 前端将 BUY（含得分/方向/regime）和 SELL（含盈亏/退出方式）按 symbol+strategy_id 配对为完整交易记录
+
 **设计文档**: `docs/features/260314-交易分析系统.md`
 
 **新建文件**:

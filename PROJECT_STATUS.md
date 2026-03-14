@@ -15,6 +15,7 @@
 2. **分析页面 `/quant/analysis`**: 综合分析/每日明细/反向分析/K线图表 4个Tab
 3. **DB**: `option_trade_kline` + `option_trade_analysis` 2张新表
 4. **API**: `/api/quant/option-kline/` 下 4个端点
+5. **BUY/SELL 信号配对**: BUY(得分/方向/regime) + SELL(盈亏/退出) 按 symbol+strategy_id 合并为完整交易记录
 
 **新建文件**:
 - 📝 `api/migrations/016_option_reverse_kline.sql`
