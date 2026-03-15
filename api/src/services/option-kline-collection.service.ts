@@ -661,9 +661,9 @@ class OptionKlineCollectionService {
       const symbol = row.original_symbol;
       const tradeDate = row.trade_date;
 
-      // 1. 找 BUY 信号（同 symbol，同日，最近的一条）
+      // 1. 找 BUY 信号（同 symbol，同日，最近的一条）— 含 price 字段
       const buyRes = await pool.query(
-        `SELECT metadata, created_at FROM strategy_signals
+        `SELECT price, metadata, created_at FROM strategy_signals
          WHERE symbol = $1 AND signal_type = 'BUY' AND status = 'EXECUTED'
            AND created_at::date = $2::date
          ORDER BY created_at DESC
@@ -673,11 +673,12 @@ class OptionKlineCollectionService {
       const buyRow = buyRes.rows[0];
       const buyMeta = buyRow?.metadata;
       const buyTime = buyRow?.created_at;
+      const buyPrice = buyRow?.price ? Number(buyRow.price) : null;
 
-      // 2. 找 SELL 信号（同 symbol，在 BUY 之后）
+      // 2. 找 SELL 信号（同 symbol，在 BUY 之后）— 含 price 字段
       const sellAnchor = buyTime || row.entry_time;
       const sellRes = await pool.query(
-        `SELECT metadata, created_at FROM strategy_signals
+        `SELECT price, metadata, created_at FROM strategy_signals
          WHERE symbol = $1 AND signal_type = 'SELL' AND status = 'EXECUTED'
            AND created_at > $2::timestamptz
          ORDER BY created_at ASC
@@ -687,8 +688,9 @@ class OptionKlineCollectionService {
       const sellRow = sellRes.rows[0];
       const sellMeta = sellRow?.metadata;
       const sellTime = sellRow?.created_at;
+      const sellPrice = sellRow?.price ? Number(sellRow.price) : null;
 
-      if (!buyMeta && !sellMeta) continue;
+      if (!buyRow && !sellRow) continue;
 
       const strategy = String(buyMeta?.selectedStrategy ?? '');
       const direction = String(buyMeta?.optionDirection ?? '');
@@ -698,19 +700,21 @@ class OptionKlineCollectionService {
       const netPnlPct = sellMeta?.netPnLPercent !== undefined ? Number(sellMeta.netPnLPercent) : null;
       const exitType = String(sellMeta?.exitAction ?? '');
 
-      // 用信号时间覆盖 entry_time / exit_time（信号时间比订单时间更准确）
+      // 用信号数据覆盖（信号 price 比订单 executedPrice 更准确）
       await pool.query(
         `UPDATE option_trade_analysis SET
            strategy = COALESCE(NULLIF($2, ''), strategy),
            direction = COALESCE(NULLIF($3, ''), direction),
            signal_score = COALESCE($4, signal_score),
-           original_pnl = COALESCE($5, original_pnl),
-           original_pnl_pct = COALESCE($6, original_pnl_pct),
-           exit_type = COALESCE(NULLIF($7, ''), exit_type),
-           entry_time = COALESCE($8, entry_time),
-           exit_time = COALESCE($9, exit_time)
+           original_entry_price = COALESCE($5, original_entry_price),
+           original_exit_price = COALESCE($6, original_exit_price),
+           original_pnl = COALESCE($7, original_pnl),
+           original_pnl_pct = COALESCE($8, original_pnl_pct),
+           exit_type = COALESCE(NULLIF($9, ''), exit_type),
+           entry_time = COALESCE($10, entry_time),
+           exit_time = COALESCE($11, exit_time)
          WHERE order_id = $1`,
-        [row.order_id, strategy, direction, signalScore, netPnl, netPnlPct, exitType, buyTime, sellTime]
+        [row.order_id, strategy, direction, signalScore, buyPrice, sellPrice, netPnl, netPnlPct, exitType, buyTime, sellTime]
       );
       enriched++;
     }

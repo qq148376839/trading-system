@@ -815,22 +815,40 @@ export default function AnalysisPage() {
                         ) : (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                             {/* 交易信息概览 */}
-                            {selectedAnalysis && (
-                              <Card size="small" title="交易信息" style={{ marginBottom: 0 }}>
-                                <Descriptions size="small" column={isMobile ? 1 : 3} bordered>
-                                  <Descriptions.Item label="正向标的">{selectedAnalysis.original_symbol}</Descriptions.Item>
-                                  <Descriptions.Item label="反向标的">{selectedAnalysis.reverse_symbol || '-'}</Descriptions.Item>
-                                  <Descriptions.Item label="交易日期">{selectedAnalysis.trade_date}</Descriptions.Item>
-                                  <Descriptions.Item label="入场价">${Number(selectedAnalysis.original_entry_price).toFixed(2)}</Descriptions.Item>
-                                  <Descriptions.Item label="出场价">${Number(selectedAnalysis.original_exit_price).toFixed(2)}</Descriptions.Item>
-                                  <Descriptions.Item label="盈亏">
-                                    <span style={{ color: pnlColor(Number(selectedAnalysis.original_pnl)), fontWeight: 600 }}>
-                                      ${Number(selectedAnalysis.original_pnl).toFixed(2)}
-                                    </span>
-                                  </Descriptions.Item>
-                                </Descriptions>
-                              </Card>
-                            )}
+                            {selectedAnalysis && (() => {
+                              const a = selectedAnalysis
+                              const entryP = Number(a.original_entry_price || 0)
+                              const exitP = Number(a.original_exit_price || 0)
+                              const pnl = Number(a.original_pnl || 0)
+                              const revEntryP = Number(a.reverse_price_at_entry || 0)
+                              const revExitP = Number(a.reverse_price_at_exit || 0)
+                              const revPnl = Number(a.reverse_pnl || 0)
+                              const tradeDate = (a.trade_date || '').split('T')[0]
+                              const entryTime = a.entry_time ? new Date(a.entry_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '-'
+                              const exitTime = a.exit_time ? new Date(a.exit_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '-'
+                              return (
+                                <Card size="small" title="交易信息" style={{ marginBottom: 0 }}>
+                                  <Descriptions size="small" column={isMobile ? 1 : 3} bordered>
+                                    <Descriptions.Item label="正向标的">{a.original_symbol}</Descriptions.Item>
+                                    <Descriptions.Item label="反向标的">{a.reverse_symbol || '-'}</Descriptions.Item>
+                                    <Descriptions.Item label="交易日期">{tradeDate}</Descriptions.Item>
+                                    <Descriptions.Item label="入场时间">{entryTime}</Descriptions.Item>
+                                    <Descriptions.Item label="出场时间">{exitTime}</Descriptions.Item>
+                                    <Descriptions.Item label="策略">{a.strategy || '-'} / {a.direction || '-'}</Descriptions.Item>
+                                    <Descriptions.Item label="正向入场价">{entryP > 0 ? `$${entryP.toFixed(2)}` : '-'}</Descriptions.Item>
+                                    <Descriptions.Item label="正向出场价">{exitP > 0 ? `$${exitP.toFixed(2)}` : '-'}</Descriptions.Item>
+                                    <Descriptions.Item label="正向盈亏">
+                                      {a.original_pnl !== null ? <span style={{ color: pnlColor(pnl), fontWeight: 600 }}>${pnl.toFixed(2)}</span> : '-'}
+                                    </Descriptions.Item>
+                                    <Descriptions.Item label="反向入场价">{revEntryP > 0 ? `$${revEntryP.toFixed(2)}` : '-'}</Descriptions.Item>
+                                    <Descriptions.Item label="反向出场价">{revExitP > 0 ? `$${revExitP.toFixed(2)}` : '-'}</Descriptions.Item>
+                                    <Descriptions.Item label="反向盈亏">
+                                      {a.reverse_pnl !== null ? <span style={{ color: pnlColor(revPnl), fontWeight: 600 }}>${revPnl.toFixed(2)}</span> : '-'}
+                                    </Descriptions.Item>
+                                  </Descriptions>
+                                </Card>
+                              )
+                            })()}
 
                             {/* 正向期权 K 线 */}
                             {klineData.original.length > 0 && (() => {
