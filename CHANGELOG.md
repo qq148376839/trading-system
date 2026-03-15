@@ -13,6 +13,7 @@
 
 5. **BUY/SELL 信号配对**: 前端将 BUY（含得分/方向/regime）和 SELL（含盈亏/退出方式）按 symbol+strategy_id 配对为完整交易记录
 6. **样式修复**: 移除自定义暗色主题，统一使用项目标准 Ant Design 浅色主题；PnL 统一保留两位小数；得分区间改为绝对值区间（|score| < 10, 10-12, 12-15, ≥15）；K线图拆分为正向/反向两个独立图表
+7. **反向分析数据补充**: 新增 `enrichAnalysisFromSignals()` 从 strategy_signals 补充 option_trade_analysis 缺失的 strategy/score/pnl/exit 字段；K线图添加买入(绿)/卖出(红)标记点；散点图盈亏着色
 
 **设计文档**: `docs/features/260314-交易分析系统.md`
 

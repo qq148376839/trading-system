@@ -17,6 +17,7 @@
 4. **API**: `/api/quant/option-kline/` 下 4个端点
 5. **BUY/SELL 信号配对**: BUY(得分/方向/regime) + SELL(盈亏/退出) 按 symbol+strategy_id 合并为完整交易记录
 6. **样式修复**: 统一 Ant Design 浅色主题 + PnL 两位小数 + 绝对值得分区间 + K线正反向独立图表
+7. **分析数据补充**: `enrichAnalysisFromSignals()` 补充 analysis 表缺失字段；K线买卖标记点；散点图盈亏着色
 
 **新建文件**:
 - 📝 `api/migrations/016_option_reverse_kline.sql`
