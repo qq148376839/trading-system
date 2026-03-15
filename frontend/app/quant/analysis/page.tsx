@@ -769,7 +769,7 @@ export default function AnalysisPage() {
                         pagination={{ pageSize: 20 }}
                         scroll={{ x: 'max-content' }}
                         columns={[
-                          { title: '日期', dataIndex: 'trade_date', width: 100 },
+                          { title: '日期', dataIndex: 'trade_date', width: 100, render: (v: string) => (v || '').split('T')[0] },
                           { title: '标的', dataIndex: 'underlying', width: 60 },
                           { title: '原始盈亏', dataIndex: 'original_pnl', render: (v: number) => v !== null ? <span style={{ color: pnlColor(Number(v)) }}>${Number(v).toFixed(2)}</span> : '-' },
                           { title: '原始%', dataIndex: 'original_pnl_pct', render: (v: number) => v !== null ? <span style={{ color: pnlColor(Number(v)) }}>{Number(v).toFixed(1)}%</span> : '-' },

@@ -700,7 +700,62 @@ class OptionKlineCollectionService {
       const netPnlPct = sellMeta?.netPnLPercent !== undefined ? Number(sellMeta.netPnLPercent) : null;
       const exitType = String(sellMeta?.exitAction ?? '');
 
-      // 用信号数据覆盖（信号 price 比订单 executedPrice 更准确）
+      // 3. 用实际 entry/exit 时间重算反向价格（取最近的反向K线）
+      const entryTimeMs = buyTime ? new Date(buyTime).getTime() : null;
+      const exitTimeMs = sellTime ? new Date(sellTime).getTime() : null;
+      let revEntryPrice: number | null = null;
+      let revExitPrice: number | null = null;
+      let revHigh: number | null = null;
+      let revLow: number | null = null;
+
+      if (entryTimeMs) {
+        const revKlines = await pool.query(
+          `SELECT timestamp, close, high, low FROM option_trade_kline
+           WHERE order_id = $1 AND kline_type = 'REVERSE'
+           ORDER BY timestamp ASC`,
+          [row.order_id]
+        );
+        if (revKlines.rows.length > 0) {
+          // 反向入场价：最近 entry_time 的K线
+          const entryCandle = revKlines.rows.reduce((best: typeof revKlines.rows[0], r: typeof revKlines.rows[0]) =>
+            Math.abs(Number(r.timestamp) - entryTimeMs) < Math.abs(Number(best.timestamp) - entryTimeMs) ? r : best
+          , revKlines.rows[0]);
+          revEntryPrice = Number(entryCandle.close);
+
+          // 反向出场价：最近 exit_time 的K线（若有 exit_time）
+          if (exitTimeMs) {
+            const exitCandle = revKlines.rows.reduce((best: typeof revKlines.rows[0], r: typeof revKlines.rows[0]) =>
+              Math.abs(Number(r.timestamp) - exitTimeMs) < Math.abs(Number(best.timestamp) - exitTimeMs) ? r : best
+            , revKlines.rows[0]);
+            revExitPrice = Number(exitCandle.close);
+          }
+
+          // 持仓期间（entry ~ exit）的最高/最低价
+          const holdStart = entryTimeMs;
+          const holdEnd = exitTimeMs || Infinity;
+          const holdCandles = revKlines.rows.filter((r: typeof revKlines.rows[0]) => {
+            const ts = Number(r.timestamp);
+            return ts >= holdStart && ts <= holdEnd;
+          });
+          if (holdCandles.length > 0) {
+            revHigh = Math.max(...holdCandles.map((r: typeof revKlines.rows[0]) => Number(r.high)));
+            revLow = Math.min(...holdCandles.map((r: typeof revKlines.rows[0]) => Number(r.low)));
+          }
+        }
+      }
+
+      // 计算反向盈亏（基于同期权张数）
+      const qty = (await pool.query(
+        `SELECT original_qty FROM option_trade_analysis WHERE order_id = $1`, [row.order_id]
+      )).rows[0]?.original_qty || 1;
+      const revPnl = (revEntryPrice && revExitPrice && revEntryPrice > 0)
+        ? (revExitPrice - revEntryPrice) * Number(qty) * 100
+        : null;
+      const revPnlPct = (revEntryPrice && revExitPrice && revEntryPrice > 0)
+        ? ((revExitPrice - revEntryPrice) / revEntryPrice) * 100
+        : null;
+
+      // 用信号数据覆盖
       await pool.query(
         `UPDATE option_trade_analysis SET
            strategy = COALESCE(NULLIF($2, ''), strategy),
@@ -712,9 +767,16 @@ class OptionKlineCollectionService {
            original_pnl_pct = COALESCE($8, original_pnl_pct),
            exit_type = COALESCE(NULLIF($9, ''), exit_type),
            entry_time = COALESCE($10, entry_time),
-           exit_time = COALESCE($11, exit_time)
+           exit_time = COALESCE($11, exit_time),
+           reverse_price_at_entry = COALESCE($12, reverse_price_at_entry),
+           reverse_price_at_exit = COALESCE($13, reverse_price_at_exit),
+           reverse_pnl = COALESCE($14, reverse_pnl),
+           reverse_pnl_pct = COALESCE($15, reverse_pnl_pct),
+           reverse_high = COALESCE($16, reverse_high),
+           reverse_low = COALESCE($17, reverse_low)
          WHERE order_id = $1`,
-        [row.order_id, strategy, direction, signalScore, buyPrice, sellPrice, netPnl, netPnlPct, exitType, buyTime, sellTime]
+        [row.order_id, strategy, direction, signalScore, buyPrice, sellPrice, netPnl, netPnlPct, exitType, buyTime, sellTime,
+         revEntryPrice, revExitPrice, revPnl, revPnlPct, revHigh, revLow]
       );
       enriched++;
     }
