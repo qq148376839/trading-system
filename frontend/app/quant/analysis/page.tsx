@@ -775,9 +775,14 @@ export default function AnalysisPage() {
                           { title: '原始%', dataIndex: 'original_pnl_pct', render: (v: number) => v !== null ? <span style={{ color: pnlColor(Number(v)) }}>{Number(v).toFixed(1)}%</span> : '-' },
                           { title: '反向盈亏', dataIndex: 'reverse_pnl', render: (v: number) => v !== null ? <span style={{ color: pnlColor(Number(v)) }}>${Number(v).toFixed(2)}</span> : '-' },
                           { title: '反向%', dataIndex: 'reverse_pnl_pct', render: (v: number) => v !== null ? <span style={{ color: pnlColor(Number(v)) }}>{Number(v).toFixed(1)}%</span> : '-' },
-                          { title: '状态', dataIndex: 'collection_status', render: (v: string) => {
-                            const colorMap: Record<string, string> = { SUCCESS: 'green', PARTIAL: 'orange', FAILED: 'red', NO_DATA: 'default', PENDING: 'blue' }
-                            return <Tag color={colorMap[v] || 'default'}>{v}</Tag>
+                          { title: '结论', key: 'conclusion', render: (_: unknown, row: AnalysisRow) => {
+                            const origWin = Number(row.original_pnl) > 0;
+                            const revWin = Number(row.reverse_pnl) > 0;
+                            if (row.original_pnl === null || row.reverse_pnl === null) return <Tag>-</Tag>;
+                            if (origWin && !revWin) return <Tag color="blue">原始正确</Tag>;
+                            if (!origWin && revWin) return <Tag color="green">应反买</Tag>;
+                            if (origWin && revWin) return <Tag color="purple">双赢</Tag>;
+                            return <Tag color="red">双输</Tag>;
                           }},
                         ]}
                       />
