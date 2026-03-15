@@ -175,10 +175,11 @@ optionKlineRouter.post('/collect', async (req: Request, res: Response, next: Nex
  *       200:
  *         description: 补充结果
  */
-optionKlineRouter.post('/enrich', async (_req: Request, res: Response, next: NextFunction) => {
+optionKlineRouter.post('/enrich', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const count = await optionKlineCollectionService.enrichAnalysisFromSignals();
-    res.json({ success: true, data: { enriched: count } });
+    const force = req.body?.force === true;
+    const count = await optionKlineCollectionService.enrichAnalysisFromSignals(force);
+    res.json({ success: true, data: { enriched: count, force } });
   } catch (error: any) {
     next(normalizeError(error));
   }

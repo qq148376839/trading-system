@@ -643,13 +643,15 @@ class OptionKlineCollectionService {
 
   /**
    * 从 strategy_signals 补充 option_trade_analysis 中缺失的字段
-   * （strategy, direction, exit_price, pnl, score, exit_type, exit_time）
+   * 逻辑: 先找 BUY 信号（取 entry_time + score/strategy），再找其后的 SELL 信号（取 exit_time + pnl）
+   * @param force 强制重新补充所有记录（覆盖已有数据）
    */
-  async enrichAnalysisFromSignals(): Promise<number> {
-    // 查找缺少原始盈亏数据的记录
+  async enrichAnalysisFromSignals(force = false): Promise<number> {
+    const whereClause = force
+      ? ''
+      : 'WHERE original_pnl IS NULL OR strategy IS NULL OR exit_time IS NULL';
     const incomplete = await pool.query(
-      `SELECT order_id, original_symbol, entry_time FROM option_trade_analysis
-       WHERE original_pnl IS NULL OR strategy IS NULL`
+      `SELECT order_id, original_symbol, trade_date, entry_time FROM option_trade_analysis ${whereClause}`
     );
 
     if (incomplete.rows.length === 0) return 0;
@@ -657,29 +659,34 @@ class OptionKlineCollectionService {
     let enriched = 0;
     for (const row of incomplete.rows) {
       const symbol = row.original_symbol;
+      const tradeDate = row.trade_date;
 
-      // 查找对应的 BUY 信号（含 score/direction/strategy）
-      const buySignal = await pool.query(
+      // 1. 找 BUY 信号（同 symbol，同日，最近的一条）
+      const buyRes = await pool.query(
         `SELECT metadata, created_at FROM strategy_signals
          WHERE symbol = $1 AND signal_type = 'BUY' AND status = 'EXECUTED'
-         ORDER BY ABS(EXTRACT(EPOCH FROM (created_at - $2::timestamptz))) ASC
+           AND created_at::date = $2::date
+         ORDER BY created_at DESC
          LIMIT 1`,
-        [symbol, row.entry_time]
+        [symbol, tradeDate]
       );
+      const buyRow = buyRes.rows[0];
+      const buyMeta = buyRow?.metadata;
+      const buyTime = buyRow?.created_at;
 
-      // 查找对应的 SELL 信号（含 pnl/exitAction）
-      const sellSignal = await pool.query(
+      // 2. 找 SELL 信号（同 symbol，在 BUY 之后）
+      const sellAnchor = buyTime || row.entry_time;
+      const sellRes = await pool.query(
         `SELECT metadata, created_at FROM strategy_signals
          WHERE symbol = $1 AND signal_type = 'SELL' AND status = 'EXECUTED'
-           AND created_at >= $2::timestamptz
+           AND created_at > $2::timestamptz
          ORDER BY created_at ASC
          LIMIT 1`,
-        [symbol, row.entry_time]
+        [symbol, sellAnchor]
       );
-
-      const buyMeta = buySignal.rows[0]?.metadata;
-      const sellMeta = sellSignal.rows[0]?.metadata;
-      const sellTime = sellSignal.rows[0]?.created_at;
+      const sellRow = sellRes.rows[0];
+      const sellMeta = sellRow?.metadata;
+      const sellTime = sellRow?.created_at;
 
       if (!buyMeta && !sellMeta) continue;
 
@@ -687,23 +694,23 @@ class OptionKlineCollectionService {
       const direction = String(buyMeta?.optionDirection ?? '');
       const signalScore = buyMeta?.finalScore !== undefined ? Number(buyMeta.finalScore) : null;
 
-      const exitPrice = sellMeta?.exitPrice !== undefined ? Number(sellMeta.exitPrice) : null;
       const netPnl = sellMeta?.netPnL !== undefined ? Number(sellMeta.netPnL) : null;
       const netPnlPct = sellMeta?.netPnLPercent !== undefined ? Number(sellMeta.netPnLPercent) : null;
       const exitType = String(sellMeta?.exitAction ?? '');
 
+      // 用信号时间覆盖 entry_time / exit_time（信号时间比订单时间更准确）
       await pool.query(
         `UPDATE option_trade_analysis SET
            strategy = COALESCE(NULLIF($2, ''), strategy),
            direction = COALESCE(NULLIF($3, ''), direction),
            signal_score = COALESCE($4, signal_score),
-           original_exit_price = COALESCE($5, original_exit_price),
-           original_pnl = COALESCE($6, original_pnl),
-           original_pnl_pct = COALESCE($7, original_pnl_pct),
-           exit_type = COALESCE(NULLIF($8, ''), exit_type),
+           original_pnl = COALESCE($5, original_pnl),
+           original_pnl_pct = COALESCE($6, original_pnl_pct),
+           exit_type = COALESCE(NULLIF($7, ''), exit_type),
+           entry_time = COALESCE($8, entry_time),
            exit_time = COALESCE($9, exit_time)
          WHERE order_id = $1`,
-        [row.order_id, strategy, direction, signalScore, exitPrice, netPnl, netPnlPct, exitType, sellTime]
+        [row.order_id, strategy, direction, signalScore, netPnl, netPnlPct, exitType, buyTime, sellTime]
       );
       enriched++;
     }
