@@ -160,6 +160,9 @@ class OptionKlineCollectionService {
       logger.info(
         `[期权K线采集] ${date} 完成 — 总计:${summary.total} 成功:${summary.success} 部分:${summary.partial} 失败:${summary.failed} 跳过:${summary.skipped} 无数据:${summary.noData}`
       );
+
+      // 自动补充分析数据
+      await this.enrichAnalysisFromSignals();
     } finally {
       this.collecting = false;
     }
@@ -636,6 +639,77 @@ class OptionKlineCollectionService {
         failed: Number(stats.failed),
       },
     };
+  }
+
+  /**
+   * 从 strategy_signals 补充 option_trade_analysis 中缺失的字段
+   * （strategy, direction, exit_price, pnl, score, exit_type, exit_time）
+   */
+  async enrichAnalysisFromSignals(): Promise<number> {
+    // 查找缺少原始盈亏数据的记录
+    const incomplete = await pool.query(
+      `SELECT order_id, original_symbol, entry_time FROM option_trade_analysis
+       WHERE original_pnl IS NULL OR strategy IS NULL`
+    );
+
+    if (incomplete.rows.length === 0) return 0;
+
+    let enriched = 0;
+    for (const row of incomplete.rows) {
+      const symbol = row.original_symbol;
+
+      // 查找对应的 BUY 信号（含 score/direction/strategy）
+      const buySignal = await pool.query(
+        `SELECT metadata, created_at FROM strategy_signals
+         WHERE symbol = $1 AND signal_type = 'BUY' AND status = 'EXECUTED'
+         ORDER BY ABS(EXTRACT(EPOCH FROM (created_at - $2::timestamptz))) ASC
+         LIMIT 1`,
+        [symbol, row.entry_time]
+      );
+
+      // 查找对应的 SELL 信号（含 pnl/exitAction）
+      const sellSignal = await pool.query(
+        `SELECT metadata, created_at FROM strategy_signals
+         WHERE symbol = $1 AND signal_type = 'SELL' AND status = 'EXECUTED'
+           AND created_at >= $2::timestamptz
+         ORDER BY created_at ASC
+         LIMIT 1`,
+        [symbol, row.entry_time]
+      );
+
+      const buyMeta = buySignal.rows[0]?.metadata;
+      const sellMeta = sellSignal.rows[0]?.metadata;
+      const sellTime = sellSignal.rows[0]?.created_at;
+
+      if (!buyMeta && !sellMeta) continue;
+
+      const strategy = String(buyMeta?.selectedStrategy ?? '');
+      const direction = String(buyMeta?.optionDirection ?? '');
+      const signalScore = buyMeta?.finalScore !== undefined ? Number(buyMeta.finalScore) : null;
+
+      const exitPrice = sellMeta?.exitPrice !== undefined ? Number(sellMeta.exitPrice) : null;
+      const netPnl = sellMeta?.netPnL !== undefined ? Number(sellMeta.netPnL) : null;
+      const netPnlPct = sellMeta?.netPnLPercent !== undefined ? Number(sellMeta.netPnLPercent) : null;
+      const exitType = String(sellMeta?.exitAction ?? '');
+
+      await pool.query(
+        `UPDATE option_trade_analysis SET
+           strategy = COALESCE(NULLIF($2, ''), strategy),
+           direction = COALESCE(NULLIF($3, ''), direction),
+           signal_score = COALESCE($4, signal_score),
+           original_exit_price = COALESCE($5, original_exit_price),
+           original_pnl = COALESCE($6, original_pnl),
+           original_pnl_pct = COALESCE($7, original_pnl_pct),
+           exit_type = COALESCE(NULLIF($8, ''), exit_type),
+           exit_time = COALESCE($9, exit_time)
+         WHERE order_id = $1`,
+        [row.order_id, strategy, direction, signalScore, exitPrice, netPnl, netPnlPct, exitType, sellTime]
+      );
+      enriched++;
+    }
+
+    logger.info(`[期权K线采集] 补充分析数据完成: ${enriched}/${incomplete.rows.length} 条已更新`);
+    return enriched;
   }
 
   /**

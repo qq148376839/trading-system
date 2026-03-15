@@ -406,23 +406,28 @@ export default function AnalysisPage() {
       .sort(([a], [b]) => b.localeCompare(a))
   }, [filteredTrades])
 
-  // -- 反向分析对比 --
+  // -- 反向分析对比（原始PnL从信号trades、反向PnL从analysis API）--
   const reverseComparison = useMemo(() => {
-    if (analysis.length === 0) return null
-    const origTotal = analysis.reduce((s, a) => s + Number(a.original_pnl || 0), 0)
-    const revTotal = analysis.reduce((s, a) => s + Number(a.reverse_pnl || 0), 0)
-    const origWins = analysis.filter(a => Number(a.original_pnl) > 0).length
-    const revWins = analysis.filter(a => Number(a.reverse_pnl) > 0).length
-    const validCount = analysis.filter(a => a.reverse_pnl !== null).length
+    if (filteredTrades.length === 0 && analysis.length === 0) return null
+
+    // 原始策略统计：从 BUY/SELL 配对的 trades 获取
+    const origTotal = filteredTrades.reduce((s, t) => s + t.pnl, 0)
+    const origWins = filteredTrades.filter(t => t.pnl > 0).length
+
+    // 反向策略统计：从 option_trade_analysis 获取
+    const validRev = analysis.filter(a => a.reverse_pnl !== null)
+    const revTotal = validRev.reduce((s, a) => s + Number(a.reverse_pnl || 0), 0)
+    const revWins = validRev.filter(a => Number(a.reverse_pnl) > 0).length
+
     return {
       origTotal: Math.round(origTotal * 100) / 100,
       revTotal: Math.round(revTotal * 100) / 100,
-      origWinRate: analysis.length > 0 ? (origWins / analysis.length) * 100 : 0,
-      revWinRate: validCount > 0 ? (revWins / validCount) * 100 : 0,
-      count: analysis.length,
-      validCount,
+      origWinRate: filteredTrades.length > 0 ? (origWins / filteredTrades.length) * 100 : 0,
+      revWinRate: validRev.length > 0 ? (revWins / validRev.length) * 100 : 0,
+      origCount: filteredTrades.length,
+      revCount: validRev.length,
     }
-  }, [analysis])
+  }, [filteredTrades, analysis])
 
   // -- K线选择器选项 --
   const klineOptions = useMemo(() => {
@@ -430,7 +435,7 @@ export default function AnalysisPage() {
       .filter(a => a.original_candle_count > 0 || a.reverse_candle_count > 0)
       .map(a => ({
         value: a.order_id,
-        label: `${a.original_symbol || a.underlying} (${a.trade_date}) ${a.collection_status === 'SUCCESS' ? '' : `[${a.collection_status}]`}`,
+        label: `${a.original_symbol || a.underlying} (${(a.trade_date || '').split('T')[0]}) ${a.collection_status === 'SUCCESS' ? '' : `[${a.collection_status}]`}`.trim(),
       }))
   }, [analysis])
 
@@ -608,11 +613,18 @@ export default function AnalysisPage() {
                         <ResponsiveContainer width="100%" height={isMobile ? 200 : 300}>
                           <ScatterChart>
                             <CartesianGrid strokeDasharray="3 3" stroke="#e8e8e8" />
-                            <XAxis dataKey="score" name="得分" tick={{ fontSize: 11 }} />
+                            <XAxis dataKey="score" name="得分" tick={{ fontSize: 11 }} type="number" domain={['auto', 'auto']} />
                             <YAxis dataKey="pnl" name="盈亏" tick={{ fontSize: 11 }} />
-                            <RechartsTooltip />
+                            <RechartsTooltip
+                              formatter={(value: number, name: string) => [`${Number(value).toFixed(2)}`, name === 'pnl' ? '盈亏 ($)' : '得分']}
+                              labelFormatter={() => ''}
+                            />
                             <ReferenceLine y={0} stroke="#999" />
-                            <Scatter data={scoreVsPnlData} fill="#1677ff" />
+                            <Scatter data={scoreVsPnlData} fill="#1677ff">
+                              {scoreVsPnlData.map((entry, idx) => (
+                                <Cell key={idx} fill={entry.pnl >= 0 ? PROFIT_COLOR : LOSS_COLOR} />
+                              ))}
+                            </Scatter>
                           </ScatterChart>
                         </ResponsiveContainer>
                       ) : <Empty description="暂无数据" />}
@@ -701,7 +713,7 @@ export default function AnalysisPage() {
                           <Card size="small" title={<span style={{ color: '#fa8c16' }}>反向策略</span>} style={{ marginBottom: 0 }}>
                             <Statistic title="模拟总盈亏" value={reverseComparison.revTotal} prefix="$" valueStyle={{ color: pnlColor(reverseComparison.revTotal) }} />
                             <Statistic title="胜率" value={reverseComparison.revWinRate} suffix="%" precision={1} valueStyle={{ color: reverseComparison.revWinRate >= 50 ? PROFIT_COLOR : LOSS_COLOR, fontSize: 16, marginTop: 8 }} />
-                            <div style={{ color: '#999', fontSize: 12, marginTop: 4 }}>有效对比: {reverseComparison.validCount}/{reverseComparison.count} 笔</div>
+                            <div style={{ color: '#999', fontSize: 12, marginTop: 4 }}>有效对比: {reverseComparison.revCount} 笔（原始 {reverseComparison.origCount} 笔）</div>
                           </Card>
                         </Col>
                       </Row>
@@ -778,100 +790,141 @@ export default function AnalysisPage() {
                             )}
 
                             {/* 正向期权 K 线 */}
-                            {klineData.original.length > 0 && (
-                              <Card
-                                size="small"
-                                title={`正向期权 (${selectedAnalysis?.original_symbol || 'Original'})`}
-                                style={{ marginBottom: 0 }}
-                              >
-                                <ResponsiveContainer width="100%" height={isMobile ? 150 : 200}>
-                                  <LineChart data={klineData.original.map(k => ({ timestamp: Number(k.timestamp), close: Number(k.close) }))}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#e8e8e8" />
-                                    <XAxis
-                                      dataKey="timestamp"
-                                      tickFormatter={formatTime}
-                                      tick={{ fontSize: 11 }}
-                                    />
-                                    <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
-                                    <RechartsTooltip
-                                      labelFormatter={(ts: number) => formatTime(ts)}
-                                      formatter={(value: number) => [`$${value.toFixed(2)}`, '价格']}
-                                    />
-                                    {selectedAnalysis?.entry_time && (
-                                      <ReferenceLine
-                                        x={new Date(selectedAnalysis.entry_time).getTime()}
+                            {klineData.original.length > 0 && (() => {
+                              const entryTs = selectedAnalysis?.entry_time ? new Date(selectedAnalysis.entry_time).getTime() : null
+                              const exitTs = selectedAnalysis?.exit_time ? new Date(selectedAnalysis.exit_time).getTime() : null
+                              const chartData = klineData.original.map(k => {
+                                const ts = Number(k.timestamp)
+                                const close = Number(k.close)
+                                return {
+                                  timestamp: ts,
+                                  close,
+                                  buyPoint: (entryTs && Math.abs(ts - entryTs) < 60000) ? close : undefined,
+                                  sellPoint: (exitTs && Math.abs(ts - exitTs) < 60000) ? close : undefined,
+                                }
+                              })
+                              // If no exact match found, inject entry/exit as special points
+                              const hasBuy = chartData.some(d => d.buyPoint !== undefined)
+                              const hasSell = chartData.some(d => d.sellPoint !== undefined)
+                              if (!hasBuy && entryTs) {
+                                const closest = chartData.reduce((best, d) => Math.abs(d.timestamp - entryTs) < Math.abs(best.timestamp - entryTs) ? d : best, chartData[0])
+                                if (closest) closest.buyPoint = closest.close
+                              }
+                              if (!hasSell && exitTs) {
+                                const closest = chartData.reduce((best, d) => Math.abs(d.timestamp - exitTs) < Math.abs(best.timestamp - exitTs) ? d : best, chartData[0])
+                                if (closest) closest.sellPoint = closest.close
+                              }
+                              return (
+                                <Card
+                                  size="small"
+                                  title={`正向期权 (${selectedAnalysis?.original_symbol || 'Original'})`}
+                                  style={{ marginBottom: 0 }}
+                                >
+                                  <ResponsiveContainer width="100%" height={isMobile ? 180 : 250}>
+                                    <LineChart data={chartData}>
+                                      <CartesianGrid strokeDasharray="3 3" stroke="#e8e8e8" />
+                                      <XAxis dataKey="timestamp" tickFormatter={formatTime} tick={{ fontSize: 11 }} />
+                                      <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
+                                      <RechartsTooltip
+                                        labelFormatter={(ts: number) => formatTime(ts)}
+                                        formatter={(value: number, name: string) => {
+                                          const labels: Record<string, string> = { close: '价格', buyPoint: '买入', sellPoint: '卖出' }
+                                          return value !== undefined ? [`$${Number(value).toFixed(4)}`, labels[name] || name] : ['-', name]
+                                        }}
+                                      />
+                                      <Legend />
+                                      <Line dataKey="close" name="价格" stroke="#1677ff" dot={false} strokeWidth={1.5} />
+                                      <Line
+                                        dataKey="buyPoint"
+                                        name="买入"
                                         stroke={PROFIT_COLOR}
-                                        strokeDasharray="3 3"
-                                        label={{ value: '入场', position: 'top', fill: PROFIT_COLOR, fontSize: 11 }}
+                                        dot={{ r: 6, fill: PROFIT_COLOR, stroke: '#fff', strokeWidth: 2 }}
+                                        legendType="circle"
+                                        connectNulls={false}
+                                        strokeWidth={0}
                                       />
-                                    )}
-                                    {selectedAnalysis?.exit_time && (
-                                      <ReferenceLine
-                                        x={new Date(selectedAnalysis.exit_time).getTime()}
+                                      <Line
+                                        dataKey="sellPoint"
+                                        name="卖出"
                                         stroke={LOSS_COLOR}
-                                        strokeDasharray="3 3"
-                                        label={{ value: '出场', position: 'top', fill: LOSS_COLOR, fontSize: 11 }}
+                                        dot={{ r: 6, fill: LOSS_COLOR, stroke: '#fff', strokeWidth: 2 }}
+                                        legendType="circle"
+                                        connectNulls={false}
+                                        strokeWidth={0}
                                       />
-                                    )}
-                                    <Line
-                                      dataKey="close"
-                                      name="收盘价"
-                                      stroke="#1677ff"
-                                      dot={false}
-                                      strokeWidth={2}
-                                    />
-                                  </LineChart>
-                                </ResponsiveContainer>
-                              </Card>
-                            )}
+                                    </LineChart>
+                                  </ResponsiveContainer>
+                                </Card>
+                              )
+                            })()}
 
                             {/* 反向期权 K 线 */}
-                            {klineData.reverse.length > 0 && (
-                              <Card
-                                size="small"
-                                title={`反向期权 (${selectedAnalysis?.reverse_symbol || 'Reverse'})`}
-                                style={{ marginBottom: 0 }}
-                              >
-                                <ResponsiveContainer width="100%" height={isMobile ? 150 : 200}>
-                                  <LineChart data={klineData.reverse.map(k => ({ timestamp: Number(k.timestamp), close: Number(k.close) }))}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#e8e8e8" />
-                                    <XAxis
-                                      dataKey="timestamp"
-                                      tickFormatter={formatTime}
-                                      tick={{ fontSize: 11 }}
-                                    />
-                                    <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
-                                    <RechartsTooltip
-                                      labelFormatter={(ts: number) => formatTime(ts)}
-                                      formatter={(value: number) => [`$${value.toFixed(2)}`, '价格']}
-                                    />
-                                    {selectedAnalysis?.entry_time && (
-                                      <ReferenceLine
-                                        x={new Date(selectedAnalysis.entry_time).getTime()}
+                            {klineData.reverse.length > 0 && (() => {
+                              const entryTs = selectedAnalysis?.entry_time ? new Date(selectedAnalysis.entry_time).getTime() : null
+                              const exitTs = selectedAnalysis?.exit_time ? new Date(selectedAnalysis.exit_time).getTime() : null
+                              const chartData = klineData.reverse.map(k => {
+                                const ts = Number(k.timestamp)
+                                const close = Number(k.close)
+                                return {
+                                  timestamp: ts,
+                                  close,
+                                  buyPoint: (entryTs && Math.abs(ts - entryTs) < 60000) ? close : undefined,
+                                  sellPoint: (exitTs && Math.abs(ts - exitTs) < 60000) ? close : undefined,
+                                }
+                              })
+                              const hasBuy = chartData.some(d => d.buyPoint !== undefined)
+                              const hasSell = chartData.some(d => d.sellPoint !== undefined)
+                              if (!hasBuy && entryTs) {
+                                const closest = chartData.reduce((best, d) => Math.abs(d.timestamp - entryTs) < Math.abs(best.timestamp - entryTs) ? d : best, chartData[0])
+                                if (closest) closest.buyPoint = closest.close
+                              }
+                              if (!hasSell && exitTs) {
+                                const closest = chartData.reduce((best, d) => Math.abs(d.timestamp - exitTs) < Math.abs(best.timestamp - exitTs) ? d : best, chartData[0])
+                                if (closest) closest.sellPoint = closest.close
+                              }
+                              return (
+                                <Card
+                                  size="small"
+                                  title={`反向期权 (${selectedAnalysis?.reverse_symbol || 'Reverse'})`}
+                                  style={{ marginBottom: 0 }}
+                                >
+                                  <ResponsiveContainer width="100%" height={isMobile ? 180 : 250}>
+                                    <LineChart data={chartData}>
+                                      <CartesianGrid strokeDasharray="3 3" stroke="#e8e8e8" />
+                                      <XAxis dataKey="timestamp" tickFormatter={formatTime} tick={{ fontSize: 11 }} />
+                                      <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
+                                      <RechartsTooltip
+                                        labelFormatter={(ts: number) => formatTime(ts)}
+                                        formatter={(value: number, name: string) => {
+                                          const labels: Record<string, string> = { close: '价格', buyPoint: '买入', sellPoint: '卖出' }
+                                          return value !== undefined ? [`$${Number(value).toFixed(4)}`, labels[name] || name] : ['-', name]
+                                        }}
+                                      />
+                                      <Legend />
+                                      <Line dataKey="close" name="价格" stroke="#fa8c16" dot={false} strokeWidth={1.5} />
+                                      <Line
+                                        dataKey="buyPoint"
+                                        name="买入"
                                         stroke={PROFIT_COLOR}
-                                        strokeDasharray="3 3"
-                                        label={{ value: '入场', position: 'top', fill: PROFIT_COLOR, fontSize: 11 }}
+                                        dot={{ r: 6, fill: PROFIT_COLOR, stroke: '#fff', strokeWidth: 2 }}
+                                        legendType="circle"
+                                        connectNulls={false}
+                                        strokeWidth={0}
                                       />
-                                    )}
-                                    {selectedAnalysis?.exit_time && (
-                                      <ReferenceLine
-                                        x={new Date(selectedAnalysis.exit_time).getTime()}
+                                      <Line
+                                        dataKey="sellPoint"
+                                        name="卖出"
                                         stroke={LOSS_COLOR}
-                                        strokeDasharray="3 3"
-                                        label={{ value: '出场', position: 'top', fill: LOSS_COLOR, fontSize: 11 }}
+                                        dot={{ r: 6, fill: LOSS_COLOR, stroke: '#fff', strokeWidth: 2 }}
+                                        legendType="circle"
+                                        connectNulls={false}
+                                        strokeWidth={0}
                                       />
-                                    )}
-                                    <Line
-                                      dataKey="close"
-                                      name="收盘价"
-                                      stroke="#fa8c16"
-                                      dot={false}
-                                      strokeWidth={2}
-                                    />
-                                  </LineChart>
-                                </ResponsiveContainer>
-                              </Card>
-                            )}
+                                    </LineChart>
+                                  </ResponsiveContainer>
+                                </Card>
+                              )
+                            })()}
                           </div>
                         )}
                       </Spin>

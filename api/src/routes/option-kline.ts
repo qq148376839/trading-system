@@ -165,6 +165,27 @@ optionKlineRouter.post('/collect', async (req: Request, res: Response, next: Nex
 
 /**
  * @openapi
+ * /quant/option-kline/enrich:
+ *   post:
+ *     tags:
+ *       - 期权K线分析
+ *     summary: 补充分析数据
+ *     description: 从 strategy_signals 补充 option_trade_analysis 中缺失的字段（strategy/score/pnl/exit）
+ *     responses:
+ *       200:
+ *         description: 补充结果
+ */
+optionKlineRouter.post('/enrich', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const count = await optionKlineCollectionService.enrichAnalysisFromSignals();
+    res.json({ success: true, data: { enriched: count } });
+  } catch (error: any) {
+    next(normalizeError(error));
+  }
+});
+
+/**
+ * @openapi
  * /quant/option-kline/status:
  *   get:
  *     tags:
