@@ -486,24 +486,20 @@ export default function AnalysisPage() {
         })
       : rawKlines
 
-    // 映射 + 标注买卖点
-    const chartData = filtered.map(k => {
-      const ts = Number(k.timestamp)
-      const close = Number(k.close)
-      return {
-        timestamp: ts,
-        close,
-        buyPoint: (entryTs && Math.abs(ts - entryTs) < 60000) ? close : undefined,
-        sellPoint: (exitTs && Math.abs(ts - exitTs) < 60000) ? close : undefined,
-      }
-    })
+    // 映射数据（先不标注买卖点）
+    const chartData = filtered.map(k => ({
+      timestamp: Number(k.timestamp),
+      close: Number(k.close),
+      buyPoint: undefined as number | undefined,
+      sellPoint: undefined as number | undefined,
+    }))
 
-    // 确保标记存在（找最近点）
-    if (entryTs && !chartData.some(d => d.buyPoint !== undefined) && chartData.length > 0) {
+    // 只标注最近的一根K线作为买入/卖出点（各一个）
+    if (entryTs && chartData.length > 0) {
       const closest = chartData.reduce((best, d) => Math.abs(d.timestamp - entryTs) < Math.abs(best.timestamp - entryTs) ? d : best, chartData[0])
       closest.buyPoint = closest.close
     }
-    if (exitTs && !chartData.some(d => d.sellPoint !== undefined) && chartData.length > 0) {
+    if (exitTs && chartData.length > 0) {
       const closest = chartData.reduce((best, d) => Math.abs(d.timestamp - exitTs) < Math.abs(best.timestamp - exitTs) ? d : best, chartData[0])
       closest.sellPoint = closest.close
     }
