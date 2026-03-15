@@ -468,6 +468,49 @@ export default function AnalysisPage() {
     return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
   }
 
+  // -- 裁剪K线到交易时间窗口 (入场前30分钟 ~ 出场后30分钟) --
+  const WINDOW_PADDING_MS = 30 * 60 * 1000 // 30 min
+  const buildKlineChartData = (rawKlines: Record<string, unknown>[]) => {
+    const entryTs = selectedAnalysis?.entry_time ? new Date(selectedAnalysis.entry_time).getTime() : null
+    const exitTs = selectedAnalysis?.exit_time ? new Date(selectedAnalysis.exit_time).getTime() : null
+
+    // 计算时间窗口
+    const windowStart = entryTs ? entryTs - WINDOW_PADDING_MS : null
+    const windowEnd = exitTs ? exitTs + WINDOW_PADDING_MS : (entryTs ? entryTs + 60 * 60 * 1000 : null)
+
+    // 过滤到时间窗口
+    const filtered = windowStart && windowEnd
+      ? rawKlines.filter(k => {
+          const ts = Number(k.timestamp)
+          return ts >= windowStart && ts <= windowEnd
+        })
+      : rawKlines
+
+    // 映射 + 标注买卖点
+    const chartData = filtered.map(k => {
+      const ts = Number(k.timestamp)
+      const close = Number(k.close)
+      return {
+        timestamp: ts,
+        close,
+        buyPoint: (entryTs && Math.abs(ts - entryTs) < 60000) ? close : undefined,
+        sellPoint: (exitTs && Math.abs(ts - exitTs) < 60000) ? close : undefined,
+      }
+    })
+
+    // 确保标记存在（找最近点）
+    if (entryTs && !chartData.some(d => d.buyPoint !== undefined) && chartData.length > 0) {
+      const closest = chartData.reduce((best, d) => Math.abs(d.timestamp - entryTs) < Math.abs(best.timestamp - entryTs) ? d : best, chartData[0])
+      closest.buyPoint = closest.close
+    }
+    if (exitTs && !chartData.some(d => d.sellPoint !== undefined) && chartData.length > 0) {
+      const closest = chartData.reduce((best, d) => Math.abs(d.timestamp - exitTs) < Math.abs(best.timestamp - exitTs) ? d : best, chartData[0])
+      closest.sellPoint = closest.close
+    }
+
+    return chartData
+  }
+
   return (
     <AppLayout>
       <Card
@@ -791,36 +834,15 @@ export default function AnalysisPage() {
 
                             {/* 正向期权 K 线 */}
                             {klineData.original.length > 0 && (() => {
-                              const entryTs = selectedAnalysis?.entry_time ? new Date(selectedAnalysis.entry_time).getTime() : null
-                              const exitTs = selectedAnalysis?.exit_time ? new Date(selectedAnalysis.exit_time).getTime() : null
-                              const chartData = klineData.original.map(k => {
-                                const ts = Number(k.timestamp)
-                                const close = Number(k.close)
-                                return {
-                                  timestamp: ts,
-                                  close,
-                                  buyPoint: (entryTs && Math.abs(ts - entryTs) < 60000) ? close : undefined,
-                                  sellPoint: (exitTs && Math.abs(ts - exitTs) < 60000) ? close : undefined,
-                                }
-                              })
-                              // If no exact match found, inject entry/exit as special points
-                              const hasBuy = chartData.some(d => d.buyPoint !== undefined)
-                              const hasSell = chartData.some(d => d.sellPoint !== undefined)
-                              if (!hasBuy && entryTs) {
-                                const closest = chartData.reduce((best, d) => Math.abs(d.timestamp - entryTs) < Math.abs(best.timestamp - entryTs) ? d : best, chartData[0])
-                                if (closest) closest.buyPoint = closest.close
-                              }
-                              if (!hasSell && exitTs) {
-                                const closest = chartData.reduce((best, d) => Math.abs(d.timestamp - exitTs) < Math.abs(best.timestamp - exitTs) ? d : best, chartData[0])
-                                if (closest) closest.sellPoint = closest.close
-                              }
+                              const chartData = buildKlineChartData(klineData.original)
+                              if (chartData.length === 0) return <Empty description="该时间窗口无K线数据" />
                               return (
                                 <Card
                                   size="small"
                                   title={`正向期权 (${selectedAnalysis?.original_symbol || 'Original'})`}
                                   style={{ marginBottom: 0 }}
                                 >
-                                  <ResponsiveContainer width="100%" height={isMobile ? 180 : 250}>
+                                  <ResponsiveContainer width="100%" height={isMobile ? 200 : 280}>
                                     <LineChart data={chartData}>
                                       <CartesianGrid strokeDasharray="3 3" stroke="#e8e8e8" />
                                       <XAxis dataKey="timestamp" tickFormatter={formatTime} tick={{ fontSize: 11 }} />
@@ -834,24 +856,8 @@ export default function AnalysisPage() {
                                       />
                                       <Legend />
                                       <Line dataKey="close" name="价格" stroke="#1677ff" dot={false} strokeWidth={1.5} />
-                                      <Line
-                                        dataKey="buyPoint"
-                                        name="买入"
-                                        stroke={PROFIT_COLOR}
-                                        dot={{ r: 6, fill: PROFIT_COLOR, stroke: '#fff', strokeWidth: 2 }}
-                                        legendType="circle"
-                                        connectNulls={false}
-                                        strokeWidth={0}
-                                      />
-                                      <Line
-                                        dataKey="sellPoint"
-                                        name="卖出"
-                                        stroke={LOSS_COLOR}
-                                        dot={{ r: 6, fill: LOSS_COLOR, stroke: '#fff', strokeWidth: 2 }}
-                                        legendType="circle"
-                                        connectNulls={false}
-                                        strokeWidth={0}
-                                      />
+                                      <Line dataKey="buyPoint" name="买入" stroke={PROFIT_COLOR} dot={{ r: 7, fill: PROFIT_COLOR, stroke: '#fff', strokeWidth: 2 }} legendType="circle" connectNulls={false} strokeWidth={0} />
+                                      <Line dataKey="sellPoint" name="卖出" stroke={LOSS_COLOR} dot={{ r: 7, fill: LOSS_COLOR, stroke: '#fff', strokeWidth: 2 }} legendType="circle" connectNulls={false} strokeWidth={0} />
                                     </LineChart>
                                   </ResponsiveContainer>
                                 </Card>
@@ -860,35 +866,15 @@ export default function AnalysisPage() {
 
                             {/* 反向期权 K 线 */}
                             {klineData.reverse.length > 0 && (() => {
-                              const entryTs = selectedAnalysis?.entry_time ? new Date(selectedAnalysis.entry_time).getTime() : null
-                              const exitTs = selectedAnalysis?.exit_time ? new Date(selectedAnalysis.exit_time).getTime() : null
-                              const chartData = klineData.reverse.map(k => {
-                                const ts = Number(k.timestamp)
-                                const close = Number(k.close)
-                                return {
-                                  timestamp: ts,
-                                  close,
-                                  buyPoint: (entryTs && Math.abs(ts - entryTs) < 60000) ? close : undefined,
-                                  sellPoint: (exitTs && Math.abs(ts - exitTs) < 60000) ? close : undefined,
-                                }
-                              })
-                              const hasBuy = chartData.some(d => d.buyPoint !== undefined)
-                              const hasSell = chartData.some(d => d.sellPoint !== undefined)
-                              if (!hasBuy && entryTs) {
-                                const closest = chartData.reduce((best, d) => Math.abs(d.timestamp - entryTs) < Math.abs(best.timestamp - entryTs) ? d : best, chartData[0])
-                                if (closest) closest.buyPoint = closest.close
-                              }
-                              if (!hasSell && exitTs) {
-                                const closest = chartData.reduce((best, d) => Math.abs(d.timestamp - exitTs) < Math.abs(best.timestamp - exitTs) ? d : best, chartData[0])
-                                if (closest) closest.sellPoint = closest.close
-                              }
+                              const chartData = buildKlineChartData(klineData.reverse)
+                              if (chartData.length === 0) return <Empty description="该时间窗口无K线数据" />
                               return (
                                 <Card
                                   size="small"
                                   title={`反向期权 (${selectedAnalysis?.reverse_symbol || 'Reverse'})`}
                                   style={{ marginBottom: 0 }}
                                 >
-                                  <ResponsiveContainer width="100%" height={isMobile ? 180 : 250}>
+                                  <ResponsiveContainer width="100%" height={isMobile ? 200 : 280}>
                                     <LineChart data={chartData}>
                                       <CartesianGrid strokeDasharray="3 3" stroke="#e8e8e8" />
                                       <XAxis dataKey="timestamp" tickFormatter={formatTime} tick={{ fontSize: 11 }} />
@@ -902,24 +888,8 @@ export default function AnalysisPage() {
                                       />
                                       <Legend />
                                       <Line dataKey="close" name="价格" stroke="#fa8c16" dot={false} strokeWidth={1.5} />
-                                      <Line
-                                        dataKey="buyPoint"
-                                        name="买入"
-                                        stroke={PROFIT_COLOR}
-                                        dot={{ r: 6, fill: PROFIT_COLOR, stroke: '#fff', strokeWidth: 2 }}
-                                        legendType="circle"
-                                        connectNulls={false}
-                                        strokeWidth={0}
-                                      />
-                                      <Line
-                                        dataKey="sellPoint"
-                                        name="卖出"
-                                        stroke={LOSS_COLOR}
-                                        dot={{ r: 6, fill: LOSS_COLOR, stroke: '#fff', strokeWidth: 2 }}
-                                        legendType="circle"
-                                        connectNulls={false}
-                                        strokeWidth={0}
-                                      />
+                                      <Line dataKey="buyPoint" name="买入" stroke={PROFIT_COLOR} dot={{ r: 7, fill: PROFIT_COLOR, stroke: '#fff', strokeWidth: 2 }} legendType="circle" connectNulls={false} strokeWidth={0} />
+                                      <Line dataKey="sellPoint" name="卖出" stroke={LOSS_COLOR} dot={{ r: 7, fill: LOSS_COLOR, stroke: '#fff', strokeWidth: 2 }} legendType="circle" connectNulls={false} strokeWidth={0} />
                                     </LineChart>
                                   </ResponsiveContainer>
                                 </Card>
