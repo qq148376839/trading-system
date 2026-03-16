@@ -92,7 +92,7 @@ export abstract class StrategyBase {
   /**
    * 更新信号状态
    */
-  protected async updateSignalStatus(signalId: number, status: 'EXECUTED' | 'REJECTED' | 'IGNORED'): Promise<void> {
+  protected async updateSignalStatus(signalId: number, status: 'EXECUTED' | 'REJECTED' | 'IGNORED' | 'FILTERED'): Promise<void> {
     await pool.query(
       'UPDATE strategy_signals SET status = $1 WHERE id = $2',
       [status, signalId]

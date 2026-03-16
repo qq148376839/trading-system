@@ -673,6 +673,24 @@ class StrategyScheduler {
       }
       const winners = this.scoringAuction(strategyId, candidates, correlationMap);
 
+      // 竞价淘汰者标记为 FILTERED（区分于 PENDING，减少监控噪音）
+      const winnerSymbols = new Set(winners.map(w => w.symbol));
+      const losers = candidates.filter(c => !winnerSymbols.has(c.symbol));
+      if (losers.length > 0) {
+        const loserSignalIds = losers
+          .map(l => (l.intent.metadata as Record<string, unknown>)?.signalId)
+          .filter((id): id is number => typeof id === 'number');
+        if (loserSignalIds.length > 0) {
+          await pool.query(
+            `UPDATE strategy_signals SET status = 'FILTERED' WHERE id = ANY($1) AND status = 'PENDING'`,
+            [loserSignalIds]
+          );
+          logger.info(
+            `[R5v2_AUCTION] 策略 ${strategyId}: ${loserSignalIds.length} 个淘汰信号标记为 FILTERED`
+          );
+        }
+      }
+
       // R5v2: 计算 survivorCount = 竞价胜者 + 当前 HOLDING 标的
       const holdingCount = stateChecks.filter(s => s.state === 'HOLDING').length;
       const survivorCount = Math.max(1, winners.length + holdingCount);

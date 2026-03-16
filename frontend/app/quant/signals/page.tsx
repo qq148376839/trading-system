@@ -126,6 +126,7 @@ export default function SignalsPage() {
           REJECTED: { color: 'error', text: '已拒绝' },
           IGNORED: { color: 'default', text: '已忽略' },
           PENDING: { color: 'warning', text: '待处理' },
+          FILTERED: { color: 'default', text: '已淘汰' },
         };
         const config = statusMap[status] || { color: 'default', text: status };
         return <Tag color={config.color}>{config.text}</Tag>;
@@ -195,6 +196,7 @@ export default function SignalsPage() {
                 <Select.Option value="EXECUTED">已执行</Select.Option>
                 <Select.Option value="REJECTED">已拒绝</Select.Option>
                 <Select.Option value="IGNORED">已忽略</Select.Option>
+                <Select.Option value="FILTERED">已淘汰</Select.Option>
               </Select>
             </Col>
             <Col xs={12} sm={6} md={4}>

@@ -318,7 +318,7 @@ CREATE TABLE IF NOT EXISTS strategy_signals (
     price DECIMAL(15, 4),
     reason TEXT,
     metadata JSONB,
-    status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'EXECUTED', 'REJECTED', 'IGNORED')),
+    status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'EXECUTED', 'REJECTED', 'IGNORED', 'FILTERED')),
     created_at TIMESTAMP DEFAULT NOW()
 );
 

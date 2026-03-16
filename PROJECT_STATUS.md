@@ -1,11 +1,28 @@
 # 项目进度总结
 
-**更新时间**: 2026-03-15
+**更新时间**: 2026-03-16
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-03-16: 竞价淘汰信号标记为 FILTERED
+
+**变更内容**:
+
+1. **信号状态新增 FILTERED**: 竞价淘汰信号从 PENDING → FILTERED，消除监控页面"待处理"噪音
+2. **策略调度器**: `runStrategyCycleInternal()` 竞价后批量标记淘汰者
+3. **前端**: 信号页面新增"已淘汰"状态展示和筛选
+
+**新建文件**:
+- `api/migrations/017_add_signal_filtered_status.sql`
+
+**修改文件**:
+- `api/migrations/000_init_schema.sql`
+- `api/src/services/strategy-scheduler.service.ts`
+- `api/src/services/strategies/strategy-base.ts`
+- `frontend/app/quant/signals/page.tsx`
 
 ### 2026-03-14: 交易分析系统 (Trade Analysis)
 

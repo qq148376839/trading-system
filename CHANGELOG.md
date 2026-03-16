@@ -1,5 +1,24 @@
 # 更新日志
 
+## 2026-03-16
+
+### 竞价淘汰信号标记为 FILTERED
+
+**改动内容**:
+
+1. **信号状态新增 FILTERED**: 竞价淘汰的信号从 PENDING 标记为 FILTERED，区分"等待执行"和"已被淘汰"
+2. **策略调度器**: 竞价完成后自动将未胜出候选信号批量标记为 FILTERED
+3. **前端信号页面**: statusMap + 筛选下拉新增"已淘汰"选项
+
+**新建文件**:
+- `api/migrations/017_add_signal_filtered_status.sql`
+
+**修改文件**:
+- `api/migrations/000_init_schema.sql`（Rule #10 双写）
+- `api/src/services/strategy-scheduler.service.ts`（竞价后标记淘汰者）
+- `api/src/services/strategies/strategy-base.ts`（updateSignalStatus 类型扩展）
+- `frontend/app/quant/signals/page.tsx`（FILTERED 状态展示+筛选）
+
 ## 2026-03-14
 
 ### 交易分析系统 (Trade Analysis)
