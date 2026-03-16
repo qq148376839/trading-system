@@ -17,6 +17,7 @@
 import pool from '../config/database';
 import { logger } from '../utils/logger';
 import basicExecutionService from './basic-execution.service';
+import stateManager from './state-manager.service';
 import { TradingIntent } from './strategies/strategy-base';
 
 /** 从 strategy_instances 查询到的 0DTE 持仓记录 */
@@ -28,6 +29,20 @@ interface ZeroDTEPosition {
   entryPrice: number;
   context: Record<string, unknown>;
 }
+
+/** HOLDING→IDLE 退出时必须清除的持仓级字段（与 strategy-scheduler POSITION_EXIT_CLEANUP 保持一致） */
+const POSITION_EXIT_CLEANUP_FIELDS = {
+  peakPnLPercent: null as null,
+  peakPrice: null as null,
+  emergencyStopLoss: null as null,
+  protectionRetryPending: null as null,
+  protectionRetryParams: null as null,
+  protectionRetryAfter: null as null,
+  lastCheckTime: null as null,
+  lastBrokerCheckTime: null as null,
+  protectionOrderId: null as null,
+  takeProfitOrderId: null as null,
+};
 
 /** 扫描间隔（毫秒） */
 const SCAN_INTERVAL_MS = 60_000;
@@ -193,6 +208,25 @@ class ZeroDTEWatchdogService {
   private async forceClosePosition(position: ZeroDTEPosition): Promise<boolean> {
     const { strategyId, symbol, tradedSymbol, quantity } = position;
 
+    // 券商预检：如果券商端已无持仓，直接清理 DB 状态，打断死循环
+    try {
+      const brokerPos = await basicExecutionService.calculateAvailablePosition(tradedSymbol);
+      if (brokerPos.actualQuantity <= 0) {
+        logger.warn(
+          `[0DTE看门狗] ${tradedSymbol} (策略=${strategyId}) 券商无持仓, 直接清理DB状态→IDLE`
+        );
+        await stateManager.updateState(strategyId, symbol, 'IDLE', {
+          ...POSITION_EXIT_CLEANUP_FIELDS,
+          exitReason: '0dte_watchdog_no_broker_position',
+          lastExitTime: new Date().toISOString(),
+        });
+        return true;
+      }
+    } catch (brokerCheckErr: unknown) {
+      const errMsg = brokerCheckErr instanceof Error ? brokerCheckErr.message : String(brokerCheckErr);
+      logger.warn(`[0DTE看门狗] ${tradedSymbol} 券商持仓预检失败: ${errMsg}, 继续常规平仓流程`);
+    }
+
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         logger.warn(
@@ -236,7 +270,7 @@ class ZeroDTEWatchdogService {
 
         const result = await basicExecutionService.executeSellIntent(sellIntent, strategyId, { skipPositionValidation: true });
 
-        if (result.success || result.submitted) {
+        if (result.success || (result.submitted && result.orderStatus !== 'RejectedStatus')) {
           logger.warn(
             `[0DTE看门狗] ${tradedSymbol} 强制平仓成功 (orderId=${result.orderId || 'N/A'}, ` +
             `status=${result.orderStatus || 'submitted'})`
@@ -260,7 +294,24 @@ class ZeroDTEWatchdogService {
       }
     }
 
-    // 所有重试均失败
+    // 所有重试均失败 — 最终检查券商是否实际已无持仓（可能被其他策略/手动平仓）
+    try {
+      const finalCheck = await basicExecutionService.calculateAvailablePosition(tradedSymbol);
+      if (finalCheck.actualQuantity <= 0) {
+        logger.warn(
+          `[0DTE看门狗] ${tradedSymbol} (策略=${strategyId}) 重试全部失败但券商无持仓, 清理DB状态→IDLE`
+        );
+        await stateManager.updateState(strategyId, symbol, 'IDLE', {
+          ...POSITION_EXIT_CLEANUP_FIELDS,
+          exitReason: '0dte_watchdog_retries_exhausted_no_position',
+          lastExitTime: new Date().toISOString(),
+        });
+        return true;
+      }
+    } catch {
+      // 忽略，走原有兜底逻辑
+    }
+
     logger.error(
       `[0DTE看门狗] 强制平仓失败: ${tradedSymbol} (策略=${strategyId}), ` +
       `${MAX_RETRIES}次尝试均失败, 需要人工干预`

@@ -1334,6 +1334,80 @@ class StrategyScheduler {
                     );
                   }
 
+                  // 跨策略同步：卖出成交后，检查其他策略是否持有同一合约的幽灵持仓
+                  try {
+                    const soldTradedSymbol = context.tradedSymbol || dbOrder.symbol;
+                    const crossRows = await pool.query(
+                      `SELECT strategy_id, symbol, context FROM strategy_instances
+                       WHERE current_state = 'HOLDING'
+                         AND context->>'tradedSymbol' = $1
+                         AND NOT (strategy_id = $2 AND symbol = $3)`,
+                      [soldTradedSymbol, strategyId, instanceKeySymbol]
+                    );
+
+                    if (crossRows.rows.length > 0) {
+                      // 只查一次券商持仓
+                      const brokerPos = await basicExecutionService.calculateAvailablePosition(soldTradedSymbol);
+                      if (brokerPos.actualQuantity <= 0) {
+                        logger.warn(
+                          `[CROSS_STRATEGY_SYNC] ${soldTradedSymbol} 已无券商持仓, ` +
+                          `清理 ${crossRows.rows.length} 个其他策略的幽灵HOLDING: ` +
+                          crossRows.rows.map((r: { strategy_id: number; symbol: string }) => `策略${r.strategy_id}/${r.symbol}`).join(', ')
+                        );
+
+                        for (const row of crossRows.rows) {
+                          try {
+                            const rowCtx = typeof row.context === 'string' ? JSON.parse(row.context) : (row.context || {});
+
+                            // 1. 释放资金
+                            const rawAlloc = Number(rowCtx.allocationAmount || 0);
+                            if (!isNaN(rawAlloc) && rawAlloc > 0) {
+                              await capitalManager.releaseAllocation(row.strategy_id, rawAlloc, row.symbol);
+                            }
+
+                            // 2. 取消残留保护单（止损 + 止盈）
+                            for (const oid of [rowCtx.protectionOrderId, rowCtx.takeProfitOrderId]) {
+                              if (oid) {
+                                try {
+                                  await trailingStopProtectionService.cancelProtection(
+                                    oid, row.strategy_id, soldTradedSymbol,
+                                  );
+                                } catch (cancelErr: unknown) {
+                                  const msg = cancelErr instanceof Error ? cancelErr.message : String(cancelErr);
+                                  logger.warn(`[CROSS_STRATEGY_SYNC] 策略${row.strategy_id} 取消保护单 ${oid} 失败: ${msg}`);
+                                }
+                              }
+                            }
+
+                            // 3. 状态 → IDLE（使用 POSITION_EXIT_CLEANUP 规则 #12）
+                            await stateManager.updateState(row.strategy_id, row.symbol, 'IDLE', {
+                              ...POSITION_EXIT_CLEANUP,
+                              exitReason: 'CROSS_STRATEGY_POSITION_SOLD',
+                              crossStrategySoldBy: strategyId,
+                              lastExitTime: new Date().toISOString(),
+                            });
+
+                            logger.warn(
+                              `[CROSS_STRATEGY_SYNC] 策略${row.strategy_id}/${row.symbol} → IDLE ` +
+                              `(被策略${strategyId}卖出 ${soldTradedSymbol} 触发)`
+                            );
+                          } catch (rowErr: unknown) {
+                            const msg = rowErr instanceof Error ? rowErr.message : String(rowErr);
+                            logger.error(`[CROSS_STRATEGY_SYNC] 策略${row.strategy_id}/${row.symbol} 清理失败: ${msg}`);
+                          }
+                        }
+                      } else {
+                        logger.log(
+                          `[CROSS_STRATEGY_SYNC] ${soldTradedSymbol} 券商仍有持仓(qty=${brokerPos.actualQuantity}), ` +
+                          `保留其他策略HOLDING行`
+                        );
+                      }
+                    }
+                  } catch (crossSyncErr: unknown) {
+                    const csMsg = crossSyncErr instanceof Error ? crossSyncErr.message : String(crossSyncErr);
+                    logger.warn(`[CROSS_STRATEGY_SYNC] 跨策略同步异常(不影响主流程): ${csMsg}`);
+                  }
+
                   // 策略级日内亏损熔断检查（跨标的聚合）
                   if (isOptionAssetSell && tradePnL < 0) {
                     try {

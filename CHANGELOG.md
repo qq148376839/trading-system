@@ -1,5 +1,22 @@
 # 更新日志
 
+## 2026-03-17
+
+### 修复持仓同步问题（跨策略幽灵持仓 + 看门狗死循环）
+
+**问题**: 策略10卖出期权后，策略12/13仍显示HOLDING（幽灵持仓）。0DTE看门狗每60秒检测到这些幽灵持仓并反复尝试平仓，产生120笔被拒订单死循环。
+
+**改动内容**:
+
+1. **看门狗券商预检 (Fix A)**: `forceClosePosition()` 平仓前先查询券商实际持仓，若已无仓位则直接清理DB状态→IDLE，打断死循环
+2. **看门狗 submitted+rejected 误判修复 (Fix A3)**: `result.submitted && orderStatus !== 'RejectedStatus'` 防止被拒订单误判为成功
+3. **看门狗重试兜底 (Fix B)**: 3次重试全部失败后再次检查券商，若无持仓则清理DB
+4. **跨策略同步 (Fix C)**: 卖出成交后查询其他策略是否持有同一合约的HOLDING行，券商确认无持仓后统一清理（释放资金 + 取消保护单 + 状态→IDLE）
+
+**修改文件**:
+- `api/src/services/0dte-watchdog.service.ts`（Fix A + Fix B）
+- `api/src/services/strategy-scheduler.service.ts`（Fix C）
+
 ## 2026-03-16
 
 ### 竞价淘汰信号标记为 FILTERED
