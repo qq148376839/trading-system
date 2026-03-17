@@ -2,6 +2,23 @@
 
 ## 2026-03-17
 
+### 退出后同组标的冷却联动 — 防止卖出后立即换仓
+
+**问题**: TSLA 期权在阶梯锁利退出后 30 秒内，同策略对 TSLA 不同行权价合约重新开仓，造成无效换仓和摩擦损耗（实际亏损约$78）。根因是 `activeEntries.delete()` 退出后立即解除分组阻塞，而 cooldownUntil 仅阻止同一 instance 重入，无法阻止同底层标的不同合约入场。
+
+**改动内容**:
+
+1. **`getCrossSymbolState` 扩展**: 新增 `recentExits: Map<string, number>`，记录退出标的的冷却结束时间
+2. **新增 `recordSymbolExit()` 方法**: 统一处理退出 — 清除 activeEntries + 写入 recentExits
+3. **9 个退出路径统一改用 `recordSymbolExit()`**: 包括修复 MIT 回调路径遗漏的 activeEntries.delete
+4. **`evaluateIdleSymbol` 新增同组退出冷却检查**: 同组标的退出后冷却期内不参与竞价
+
+**修改文件**:
+- `api/src/services/strategy-scheduler.service.ts`
+- `docs/analysis/260317-TSLA换仓问题分析.md`（新建）
+
+---
+
 ### 修复持仓同步问题（跨策略幽灵持仓 + 看门狗死循环）
 
 **问题**: 策略10卖出期权后，策略12/13仍显示HOLDING（幽灵持仓）。0DTE看门狗每60秒检测到这些幽灵持仓并反复尝试平仓，产生120笔被拒订单死循环。

@@ -140,6 +140,7 @@ class StrategyScheduler {
   // R5v2: 跨标的入场保护状态（策略级共享内存）
   private crossSymbolState = new Map<number, {
     activeEntries: Map<string, number>;  // symbol → entry timestamp (Date.now())
+    recentExits: Map<string, number>;    // symbol → cooldownEnd timestamp (ms)，退出后同组冷却
   }>();
 
   /** R5v2: 获取或初始化策略的跨标的保护状态 */
@@ -147,9 +148,31 @@ class StrategyScheduler {
     if (!this.crossSymbolState.has(strategyId)) {
       this.crossSymbolState.set(strategyId, {
         activeEntries: new Map(),
+        recentExits: new Map(),
       });
     }
-    return this.crossSymbolState.get(strategyId)!;
+    const state = this.crossSymbolState.get(strategyId)!;
+    // 兼容旧结构（无 recentExits 的情况）
+    if (!state.recentExits) {
+      state.recentExits = new Map();
+    }
+    return state;
+  }
+
+  /**
+   * 记录标的退出 — 同时清除 activeEntries 并写入 recentExits
+   * 使同组标的在冷却期内不参与竞价，防止退出后立即换仓
+   */
+  private recordSymbolExit(strategyId: number, symbol: string, cooldownUntilStr: string | null): void {
+    const crossState = this.getCrossSymbolState(strategyId);
+    crossState.activeEntries.delete(symbol);
+    // 写入最近退出记录：冷却结束时间戳（ms），fallback 1 分钟
+    const cooldownEnd = cooldownUntilStr
+      ? new Date(cooldownUntilStr).getTime()
+      : Date.now() + 60_000;
+    if (!isNaN(cooldownEnd) && cooldownEnd > Date.now()) {
+      crossState.recentExits.set(symbol, cooldownEnd);
+    }
   }
 
   /**
@@ -1299,6 +1322,13 @@ class StrategyScheduler {
 
                   // 260225 Fix B: protectionOrderId 无条件清除（不再依赖 isTslpFill 条件分支）
                   // 260228 Fix: 清除所有持仓级字段，防止 JSONB || 合并导致下一笔交易继承旧值
+                  const mitCooldown = computeCooldownUntil({
+                    is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
+                    dailyTradeCount: prevDailyTradeCount,
+                    strategyConfig: strategyConfig || {},
+                  });
+                  // 260317 Fix: MIT 回调也必须清除 activeEntries + 写入 recentExits（之前遗漏）
+                  this.recordSymbolExit(strategyId, instanceKeySymbol, mitCooldown);
                   await strategyInstance.updateState(instanceKeySymbol, 'IDLE', {
                     lastExitTime: new Date().toISOString(),
                     dailyTradeCount: prevDailyTradeCount + 1,
@@ -1319,11 +1349,7 @@ class StrategyScheduler {
                     protectionRetryAfter: null,
                     lastCheckTime: null,
                     lastBrokerCheckTime: null,
-                    cooldownUntil: computeCooldownUntil({
-                      is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
-                      dailyTradeCount: prevDailyTradeCount,
-                      strategyConfig: strategyConfig || {},
-                    }),
+                    cooldownUntil: mitCooldown,
                   });
 
                   if (tradePnL !== 0) {
@@ -2553,6 +2579,25 @@ class StrategyScheduler {
         }
       }
 
+      // 260317: 同组最近退出冷却 — 退出后冷却期内同组标的不参与竞价，防止卖出后立即换仓
+      const now = Date.now();
+      for (const [exitSym, cooldownEnd] of crossState.recentExits) {
+        if (now >= cooldownEnd) {
+          crossState.recentExits.delete(exitSym); // 已过期，清理
+          continue;
+        }
+        const exitGroup = getCorrelationGroup(exitSym, correlationMap);
+        if (exitGroup === candidateGroup) {
+          const remainSec = Math.ceil((cooldownEnd - now) / 1000);
+          logger.info(
+            `[R5v2_GROUP_EXIT_COOLDOWN] 策略 ${strategyId}: ${symbol} ` +
+            `被同组最近退出标的 ${exitSym} 冷却阻止 (group=${candidateGroup}, 剩余${remainSec}s)`
+          );
+          summary.idle.push(`${symbol}(GROUP_EXIT_COOLDOWN:${exitSym})`);
+          return null;
+        }
+      }
+
       // 生成信号
       const intent = await strategyInstance.generateSignal(symbol, undefined);
       if (!intent) {
@@ -3525,11 +3570,16 @@ class StrategyScheduler {
                 }
               }
               // 260301 Fix: 过期退出也必须清除持仓级字段 + 递增 trade counters
-              this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
               const expNpPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
               const expNpPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
               const expNpAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
               const expNpPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+              const expNpCooldown = computeCooldownUntil({
+                is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
+                dailyTradeCount: expNpPrevTradeCount,
+                strategyConfig,
+              });
+              this.recordSymbolExit(strategyId, symbol, expNpCooldown);
               await strategyInstance.updateState(symbol, 'IDLE', {
                 ...POSITION_EXIT_CLEANUP,
                 lastExitTime: new Date().toISOString(),
@@ -3540,11 +3590,7 @@ class StrategyScheduler {
                 consecutiveLosses: expNpPrevConsecLosses + 1,
                 dailyRealizedPnL: expNpPrevDailyPnL + (expNpAllocAmt > 0 ? -expNpAllocAmt : 0),
                 lastTradePnL: expNpAllocAmt > 0 ? -expNpAllocAmt : 0,
-                cooldownUntil: computeCooldownUntil({
-                  is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
-                  dailyTradeCount: expNpPrevTradeCount,
-                  strategyConfig,
-                }),
+                cooldownUntil: expNpCooldown,
               });
               return { actionTaken: true };
             }
@@ -3752,8 +3798,13 @@ class StrategyScheduler {
               logger.warn(`策略 ${strategyId} 标的 ${symbol}: 释放资金失败: ${relErr?.message}`);
             }
           }
-          // 清除跨标的入场状态
-          this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
+          // 清除跨标的入场状态（联动同组冷却）
+          const stockBpzCooldown = computeCooldownUntil({
+            is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
+            dailyTradeCount: stockBpzPrevTradeCount,
+            strategyConfig,
+          });
+          this.recordSymbolExit(strategyId, symbol, stockBpzCooldown);
           return { actionTaken: true };
         }
 
@@ -3889,8 +3940,13 @@ class StrategyScheduler {
                 strategyConfig,
               }),
             });
-            // R5: 清除跨标的入场状态
-            this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
+            // R5: 清除跨标的入场状态（联动同组冷却）
+            const protCooldown = computeCooldownUntil({
+              is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
+              dailyTradeCount: protPrevTradeCount,
+              strategyConfig,
+            });
+            this.recordSymbolExit(strategyId, symbol, protCooldown);
             // 释放资金
             if (context.allocationAmount) {
               await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
@@ -4115,11 +4171,16 @@ class StrategyScheduler {
             `策略 ${strategyId} 期权 ${effectiveSymbol}: 已过期且券商无持仓，自动转为IDLE`
           );
           // 260301 Fix: 过期退出同样需要清除持仓级字段 + 递增 trade counters
-          this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
           const expPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
           const expPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
           const expAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
           const expPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+          const expCooldown = computeCooldownUntil({
+            is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
+            dailyTradeCount: expPrevTradeCount,
+            strategyConfig,
+          });
+          this.recordSymbolExit(strategyId, symbol, expCooldown);
           await strategyInstance.updateState(symbol, 'IDLE', {
             ...POSITION_EXIT_CLEANUP,
             lastExitTime: new Date().toISOString(),
@@ -4130,11 +4191,7 @@ class StrategyScheduler {
             consecutiveLosses: expPrevConsecLosses + 1,
             dailyRealizedPnL: expPrevDailyPnL + (expAllocAmt > 0 ? -expAllocAmt : 0),
             lastTradePnL: expAllocAmt > 0 ? -expAllocAmt : 0,
-            cooldownUntil: computeCooldownUntil({
-              is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
-              dailyTradeCount: expPrevTradeCount,
-              strategyConfig,
-            }),
+            cooldownUntil: expCooldown,
           });
           return { actionTaken: true };
         }
@@ -4253,11 +4310,16 @@ class StrategyScheduler {
             }
           }
           // 260301 Fix: broker_position_zero 退出清除持仓级字段 + 递增 trade counters
-          this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
           const bpzPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
           const bpzPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
           const bpzAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
           const bpzPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+          const bpzCooldown = computeCooldownUntil({
+            is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
+            dailyTradeCount: bpzPrevTradeCount,
+            strategyConfig,
+          });
+          this.recordSymbolExit(strategyId, symbol, bpzCooldown);
           await strategyInstance.updateState(symbol, 'IDLE', {
             ...POSITION_EXIT_CLEANUP,
             lastExitTime: new Date().toISOString(),
@@ -4268,11 +4330,7 @@ class StrategyScheduler {
             consecutiveLosses: bpzPrevConsecLosses + 1,
             dailyRealizedPnL: bpzPrevDailyPnL + (bpzAllocAmt > 0 ? -bpzAllocAmt : 0),
             lastTradePnL: bpzAllocAmt > 0 ? -bpzAllocAmt : 0,
-            cooldownUntil: computeCooldownUntil({
-              is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
-              dailyTradeCount: bpzPrevTradeCount,
-              strategyConfig,
-            }),
+            cooldownUntil: bpzCooldown,
           });
           return { actionTaken: true };
         }
@@ -4325,10 +4383,14 @@ class StrategyScheduler {
           }),
         });
 
-        // R5v2: 更新跨标的保护状态 — 清除 activeEntry
+        // R5v2: 更新跨标的保护状态 — 清除 activeEntry（联动同组冷却）
         {
-          const crossState = this.getCrossSymbolState(strategyId);
-          crossState.activeEntries.delete(symbol);
+          const dynExitCooldown = computeCooldownUntil({
+            is0DTE,
+            dailyTradeCount: parseInt(String(context.dailyTradeCount ?? 0), 10) || 0,
+            strategyConfig,
+          });
+          this.recordSymbolExit(strategyId, symbol, dynExitCooldown);
         }
 
         // 执行卖出
@@ -4401,11 +4463,16 @@ class StrategyScheduler {
             }
           }
           // 260301 Fix: 定期核对退出也清除持仓级字段 + 递增 trade counters
-          this.getCrossSymbolState(strategyId).activeEntries.delete(symbol);
           const bpzpPrevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
           const bpzpPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
           const bpzpAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
           const bpzpPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+          const bpzpCooldown = computeCooldownUntil({
+            is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
+            dailyTradeCount: bpzpPrevTradeCount,
+            strategyConfig,
+          });
+          this.recordSymbolExit(strategyId, symbol, bpzpCooldown);
           await strategyInstance.updateState(symbol, 'IDLE', {
             ...POSITION_EXIT_CLEANUP,
             lastExitTime: new Date().toISOString(),
@@ -4416,11 +4483,7 @@ class StrategyScheduler {
             consecutiveLosses: bpzpPrevConsecLosses + 1,
             dailyRealizedPnL: bpzpPrevDailyPnL + (bpzpAllocAmt > 0 ? -bpzpAllocAmt : 0),
             lastTradePnL: bpzpAllocAmt > 0 ? -bpzpAllocAmt : 0,
-            cooldownUntil: computeCooldownUntil({
-              is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
-              dailyTradeCount: bpzpPrevTradeCount,
-              strategyConfig,
-            }),
+            cooldownUntil: bpzpCooldown,
           });
           return { actionTaken: true };
         }
@@ -5265,8 +5328,13 @@ class StrategyScheduler {
 
           // 标记为 BROKER_TERMINATED 并释放资金
           // 260301 Fix: 同时清除持仓级字段，防止下一笔交易继承 peakPnLPercent 等
-          this.getCrossSymbolState(strategyId).activeEntries.delete(row.symbol);
           const allocationAmount = parseFloat(String(ctx.allocationAmount || 0));
+          const brokerTermCooldown = computeCooldownUntil({
+            is0DTE: ctx.optionMeta?.expirationMode === '0DTE' || ctx.is0DTE === true,
+            dailyTradeCount: parseInt(String(ctx.dailyTradeCount ?? 0), 10) || 0,
+            strategyConfig: {},
+          });
+          this.recordSymbolExit(strategyId, row.symbol, brokerTermCooldown);
           await stateManager.updateState(strategyId, row.symbol, 'IDLE', {
             ...POSITION_EXIT_CLEANUP,
             exitReason: 'BROKER_TERMINATED',
@@ -5276,11 +5344,7 @@ class StrategyScheduler {
             dailyRealizedPnL: (parseFloat(String(ctx.dailyRealizedPnL ?? 0)) + (allocationAmount > 0 ? -allocationAmount : 0)),
             consecutiveLosses: (parseInt(String(ctx.consecutiveLosses ?? 0)) + 1),
             dailyTradeCount: (parseInt(String(ctx.dailyTradeCount ?? 0)) + 1),
-            cooldownUntil: computeCooldownUntil({
-              is0DTE: ctx.optionMeta?.expirationMode === '0DTE' || ctx.is0DTE === true,
-              dailyTradeCount: parseInt(String(ctx.dailyTradeCount ?? 0), 10) || 0,
-              strategyConfig: {},
-            }),
+            cooldownUntil: brokerTermCooldown,
           });
 
           // 释放资金分配
