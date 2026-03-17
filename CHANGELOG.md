@@ -2,6 +2,22 @@
 
 ## 2026-03-17
 
+### 期权资金预检拦截 — 消除 MU 等超预算标的信号刷屏
+
+**问题**: MU 期权1张合约成本 ~$2096 超过单标的预算 ~$1000-2000，但 `generateSignal()` 强制 `contracts = Math.max(1, n-1) = 1`，每周期生成一条无法执行的 PENDING 信号，累积 172 条。
+
+**改动内容**:
+
+1. **资金预检拦截**: `generateSignal()` 在 MAX_PREMIUM 模式下，当1张合约成本超预算时返回 null，不再强制1张
+2. **5分钟退避缓存**: `capitalPrecheckRejectUntil` Map 缓存被拦截标的，避免每15秒重复评估
+3. **竞价自然排除**: `generateSignal` 返回 null → 标的不进入候选列表 → 竞价在剩余标的间进行
+
+**修改文件**:
+- `api/src/services/strategies/option-intraday-strategy.ts`
+- `docs/analysis/260317-MU资金预检问题分析.md`（新建）
+
+---
+
 ### 退出后同组标的冷却联动 — 防止卖出后立即换仓
 
 **问题**: TSLA 期权在阶梯锁利退出后 30 秒内，同策略对 TSLA 不同行权价合约重新开仓，造成无效换仓和摩擦损耗（实际亏损约$78）。根因是 `activeEntries.delete()` 退出后立即解除分组阻塞，而 cooldownUntil 仅阻止同一 instance 重入，无法阻止同底层标的不同合约入场。

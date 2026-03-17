@@ -241,6 +241,8 @@ export class OptionIntradayStrategy extends StrategyBase {
   private cfg: OptionIntradayStrategyConfig;
   // 非交易时间日志限频（每标的每5分钟最多打印一次）
   private tradeWindowSkipLogTimes: Map<string, number> = new Map();
+  // 260317: 资金预检拦截缓存（symbol → 拦截到期时间），避免已知超预算标的每周期重复评估
+  private capitalPrecheckRejectUntil: Map<string, number> = new Map();
   // 当前评估周期的VIX值（在generateSignal开始时设置）
   private currentCycleVix?: number;
 
@@ -489,6 +491,12 @@ export class OptionIntradayStrategy extends StrategyBase {
     };
 
     try {
+      // 0) 260317: 资金预检缓存 — 最近被拦截的标的直接跳过，避免重复评估
+      const precheckUntil = this.capitalPrecheckRejectUntil.get(symbol) || 0;
+      if (Date.now() < precheckUntil) {
+        return null;  // 静默跳过，日志已在首次拦截时输出
+      }
+
       // 1) 检查交易时间窗口
       const windowCheck = this.isWithinTradeWindow();
       if (!windowCheck.canTrade) {
@@ -859,7 +867,27 @@ export class OptionIntradayStrategy extends StrategyBase {
             });
             if (est.totalCost > budget) break;
           }
-          contracts = Math.max(1, n - 1);
+          // 260317: 资金预检 — 1张合约都超预算时拒绝信号，避免生成无法执行的 PENDING 信号
+          if (n === 1) {
+            const singleCost = estimateOptionOrderTotalCost({
+              premium,
+              contracts: 1,
+              multiplier: selected.multiplier,
+              feeModel: this.cfg.feeModel,
+            });
+            logger.warn(
+              `[${symbol}] 资金预检拦截: 1张合约成本=$${singleCost.totalCost.toFixed(2)} 超过预算=$${budget.toFixed(2)}，跳过信号`,
+              { module: 'OptionStrategy.CapitalPrecheck', strategyId: this.strategyId }
+            );
+            // 缓存拦截结果5分钟，避免每15秒重复评估
+            this.capitalPrecheckRejectUntil.set(symbol, Date.now() + 5 * 60_000);
+            logData.finalResult = 'NO_SIGNAL';
+            logData.rejectionReason = `资金预检: 最低1张合约成本$${singleCost.totalCost.toFixed(2)}超过单标的预算$${budget.toFixed(2)}`;
+            logData.rejectionCheckpoint = 'capital_precheck';
+            this.logDecision(logData);
+            return null;
+          }
+          contracts = n - 1;
           logger.debug(`[${symbol}仓位] 预算=${budget.toFixed(2)}, 权利金=${premium.toFixed(2)}, 计算合约数=${contracts}`);
         }
       }
