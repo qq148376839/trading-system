@@ -1,5 +1,17 @@
 # 更新日志
 
+## 2026-03-19
+
+### 期权评分夏令时偏移修复
+
+**问题**: `calculateTimeWindowAdjustment` 和 `calculateTimeDecayFactor` 硬编码 `UTC-5` (EST)，夏令时期间 ET 时间被计算为早 1 小时，导致 10:30-11:30 ET 时间窗口评分虚高约 4 分（+20 而非 0）。同一文件的 `get0DTETimeThresholdFactor` 已正确使用 `America/New_York` 时区。
+
+**修复**: 提取 `getETMinutes()` 公共方法（使用 `Intl.DateTimeFormat` + `America/New_York` 自动处理 EST/EDT），3 个时间函数统一复用。
+
+**修改文件**: `api/src/services/option-recommendation.service.ts`
+
+---
+
 ## 2026-03-17
 
 ### 期权资金预检拦截 — 消除 MU 等超预算标的信号刷屏
