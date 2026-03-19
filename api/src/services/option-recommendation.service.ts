@@ -628,19 +628,27 @@ class OptionRecommendationService {
     return denominator !== 0 ? numerator / denominator : 0;
   }
 
+  /** 获取当前美东时间的分钟数（自动处理 EST/EDT 夏令时） */
+  private getETMinutes(): number {
+    const now = new Date();
+    const etFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false,
+    });
+    const etParts = etFormatter.formatToParts(now);
+    const etHour = parseInt(etParts.find(p => p.type === 'hour')?.value || '0');
+    const etMinute = parseInt(etParts.find(p => p.type === 'minute')?.value || '0');
+    return etHour * 60 + etMinute;
+  }
+
   /**
    * 计算时间窗口调整
    * 美股交易时间: 9:30 - 16:00 ET (14个交易小时，每小时约7.14%时间价值)
    */
   private calculateTimeWindowAdjustment(): number {
-    const now = new Date();
-    const hour = now.getUTCHours(); // UTC时间
-    const minute = now.getUTCMinutes();
-
-    // 美东时间 = UTC - 5小时 (EST) 或 UTC - 4小时 (EDT)
-    // 简化：使用EST
-    const etHour = (hour - 5 + 24) % 24;
-    const etMinutes = etHour * 60 + minute;
+    const etMinutes = this.getETMinutes();
 
     // 9:30 = 570分钟，16:00 = 960分钟
     const marketOpen = 570;
@@ -782,12 +790,7 @@ class OptionRecommendationService {
    * 计算时间价值衰减因子
    */
   private calculateTimeDecayFactor(): number {
-    const now = new Date();
-    const hour = now.getUTCHours();
-    const minute = now.getUTCMinutes();
-
-    const etHour = (hour - 5 + 24) % 24;
-    const etMinutes = etHour * 60 + minute;
+    const etMinutes = this.getETMinutes();
 
     const marketOpen = 570; // 9:30
     const marketClose = 960; // 16:00
@@ -908,17 +911,7 @@ class OptionRecommendationService {
    * 15:00-15:30: 1.8→2.5 | 15:30+: 3.0
    */
   private get0DTETimeThresholdFactor(): number {
-    const now = new Date();
-    const etFormatter = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/New_York',
-      hour: 'numeric',
-      minute: 'numeric',
-      hour12: false,
-    });
-    const etParts = etFormatter.formatToParts(now);
-    const etHour = parseInt(etParts.find(p => p.type === 'hour')?.value || '0');
-    const etMinute = parseInt(etParts.find(p => p.type === 'minute')?.value || '0');
-    const etMinutes = etHour * 60 + etMinute;
+    const etMinutes = this.getETMinutes();
 
     const midDay = 12 * 60;
     const afternoon = 14 * 60;
