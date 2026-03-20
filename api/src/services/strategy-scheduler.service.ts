@@ -497,18 +497,19 @@ class StrategyScheduler {
       const todayET = etFormatter.format(new Date());
       const lastReset = this.lastDailyResetDate.get(strategyId);
       if (lastReset !== todayET) {
-        // 扫描所有非IDLE状态的实例，重置其每日计数
-        const holdingInstances = await pool.query(
+        // 扫描所有实例（包括 IDLE），重置其每日计数
+        const allInstances = await pool.query(
           `SELECT symbol, current_state, context FROM strategy_instances
-           WHERE strategy_id = $1 AND current_state NOT IN ('IDLE')`,
+           WHERE strategy_id = $1`,
           [strategyId]
         );
-        for (const row of holdingInstances.rows) {
+        for (const row of allInstances.rows) {
           const ctx = row.context || {};
           const refTime = ctx.lastExitTime || ctx.circuitBreakerTime || ctx.entryTime;
-          if (refTime) {
-            const refDate = etFormatter.format(new Date(refTime));
-            if (refDate !== todayET) {
+          const needsReset = refTime
+            ? etFormatter.format(new Date(refTime)) !== todayET
+            : Number(ctx.dailyRealizedPnL || 0) !== 0; // 无时间戳但有残留 PnL 也重置
+          if (needsReset) {
               await strategyInstance.updateState(row.symbol, row.current_state, {
                 dailyTradeCount: 0,
                 dailyRealizedPnL: 0,
@@ -520,7 +521,6 @@ class StrategyScheduler {
                 circuitBreakerTime: null,
                 protectionFailureCount: 0,
               });
-            }
           }
         }
         this.lastDailyResetDate.set(strategyId, todayET);
@@ -2055,15 +2055,17 @@ class StrategyScheduler {
 
         // Fix 12a + V9: 新交易日检测 — 重置日内 PnL / 连亏计数 / 熔断状态
         // V9: 扩展重置条件 — lastExitTime 或 circuitBreakerTime 任一为前日即重置
+        // V10: 无时间戳但有残留 PnL 也触发重置（防止 IDLE 实例跨日累积）
         const resetReferenceTime = cancelCtx?.lastExitTime || cancelCtx?.circuitBreakerTime;
-        if (resetReferenceTime) {
-          const etFormatter = new Intl.DateTimeFormat('en-US', {
-            timeZone: 'America/New_York',
-            year: 'numeric', month: '2-digit', day: '2-digit',
-          });
-          const refETDate = etFormatter.format(new Date(resetReferenceTime));
-          const nowETDate = etFormatter.format(new Date());
-          if (refETDate !== nowETDate) {
+        const etResetFormatter = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'America/New_York',
+          year: 'numeric', month: '2-digit', day: '2-digit',
+        });
+        const nowETDate = etResetFormatter.format(new Date());
+        const needsDailyReset = resetReferenceTime
+          ? etResetFormatter.format(new Date(resetReferenceTime)) !== nowETDate
+          : Number(cancelCtx?.dailyRealizedPnL || 0) !== 0;
+        if (needsDailyReset) {
             await strategyInstance.updateState(symbol, 'IDLE', {
               dailyTradeCount: 0,
               dailyRealizedPnL: 0,
@@ -2081,7 +2083,6 @@ class StrategyScheduler {
             // 重新读取 context（已重置）
             const freshState = await stateManager.getInstanceState(strategyId, symbol);
             Object.assign(cancelCtx || {}, freshState?.context || {});
-          }
         }
 
         // Fix 12b: 日内熔断检查 — 已熔断则直接跳过
@@ -2505,15 +2506,18 @@ class StrategyScheduler {
       }
 
       // 新交易日重置
+      // V10: 无时间戳但有残留 PnL 也触发重置（防止 IDLE 实例跨日累积）
       const resetReferenceTime = cancelCtx?.lastExitTime || cancelCtx?.circuitBreakerTime;
-      if (resetReferenceTime) {
-        const etFormatter = new Intl.DateTimeFormat('en-US', {
+      {
+        const etResetFmt = new Intl.DateTimeFormat('en-US', {
           timeZone: 'America/New_York',
           year: 'numeric', month: '2-digit', day: '2-digit',
         });
-        const refETDate = etFormatter.format(new Date(resetReferenceTime));
-        const nowETDate = etFormatter.format(new Date());
-        if (refETDate !== nowETDate) {
+        const nowETDate2 = etResetFmt.format(new Date());
+        const needsDailyReset2 = resetReferenceTime
+          ? etResetFmt.format(new Date(resetReferenceTime)) !== nowETDate2
+          : Number(cancelCtx?.dailyRealizedPnL || 0) !== 0;
+        if (needsDailyReset2) {
           await strategyInstance.updateState(symbol, 'IDLE', {
             dailyTradeCount: 0,
             dailyRealizedPnL: 0,
