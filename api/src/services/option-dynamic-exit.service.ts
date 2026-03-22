@@ -42,6 +42,9 @@ export interface ExitRulesOverride {
   takeProfitPercent?: number;   // 用户配置的止盈%（作为 EARLY 阶段基准）
   stopLossPercent?: number;     // 用户配置的止损%（作为 EARLY 阶段基准）
   non0DTECooldownMinutes?: number;  // 非0DTE入场后冷静期（分钟），默认3
+  trailingStopTrigger?: number;     // 追踪止损触发点（盈利%），覆盖阶段默认值
+  trailingStopPercent?: number;     // 追踪止损回撤幅度%，覆盖阶段默认值
+  profitLockSteps?: { threshold: number; floor: number }[];  // 阶梯锁利台阶，覆盖默认值
 }
 
 /** 持仓上下文（用于计算动态参数） */
@@ -308,6 +311,13 @@ class OptionDynamicExitService {
         const ratio = baseParams.stopLossPercent / refParams.stopLossPercent;
         baseParams.stopLossPercent = Math.round(exitRulesOverride.stopLossPercent * ratio);
       }
+      // 追踪止损参数覆盖（直接使用用户值，不缩放——用户明确设定的值应被尊重）
+      if (exitRulesOverride.trailingStopTrigger && exitRulesOverride.trailingStopTrigger > 0) {
+        baseParams.trailingStopTrigger = exitRulesOverride.trailingStopTrigger;
+      }
+      if (exitRulesOverride.trailingStopPercent && exitRulesOverride.trailingStopPercent > 0) {
+        baseParams.trailingStopPercent = exitRulesOverride.trailingStopPercent;
+      }
     }
 
     const reasons: string[] = [`时段=${phase}`];
@@ -446,12 +456,15 @@ class OptionDynamicExitService {
 
     // 2.8 阶梯锁利检查 — 盈利踩上台阶后不允许跌回下一台阶
     // 使用 peakPnLPercent（历史最高盈利）确定锁定的底线
+    const lockSteps = exitRulesOverride?.profitLockSteps?.length
+      ? exitRulesOverride.profitLockSteps
+      : PROFIT_LOCK_STEPS;
     const peakForLock = Math.max(ctx.peakPnLPercent ?? 0, pnl.grossPnLPercent);
-    if (peakForLock >= PROFIT_LOCK_STEPS[0].threshold) {
+    if (peakForLock >= lockSteps[0].threshold) {
       // 找到峰值对应的最高台阶
       let lockedFloor = 0;
-      let lockedThreshold = PROFIT_LOCK_STEPS[0].threshold;
-      for (const step of PROFIT_LOCK_STEPS) {
+      let lockedThreshold = lockSteps[0].threshold;
+      for (const step of lockSteps) {
         if (peakForLock >= step.threshold) {
           lockedFloor = step.floor;
           lockedThreshold = step.threshold;

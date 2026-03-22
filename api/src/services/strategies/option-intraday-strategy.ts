@@ -63,8 +63,9 @@ type PositionSizingMode = 'FIXED_CONTRACTS' | 'MAX_PREMIUM';
 export interface ExitRulesConfig {
   takeProfitPercent: number;    // 止盈百分比，默认 45
   stopLossPercent: number;      // 止损百分比，默认 35
-  useTrailingStop: boolean;     // 是否使用移动止损
-  trailingStopPercent?: number; // 移动止损触发点
+  trailingStopTrigger?: number; // 追踪止损触发点（盈利%），默认按时段：EARLY=30, MID=25, LATE=20, FINAL=15
+  trailingStopPercent?: number; // 追踪止损回撤幅度%，默认按时段：EARLY=15, MID=12, LATE=10, FINAL=8
+  profitLockSteps?: { threshold: number; floor: number }[];  // 阶梯锁利，默认 [{10,0},{20,10},{30,20},{50,35}]
 }
 
 // ============================================
@@ -178,7 +179,6 @@ export const DEFAULT_OPTION_STRATEGY_CONFIG: Partial<OptionIntradayStrategyConfi
   exitRules: {
     takeProfitPercent: 45,
     stopLossPercent: 35,
-    useTrailingStop: false,
   },
   tradeWindow: {
     firstHourOnly: true,

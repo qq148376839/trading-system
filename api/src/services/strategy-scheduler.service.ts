@@ -4279,6 +4279,15 @@ class StrategyScheduler {
         takeProfitPercent: (() => { const v = Number(strategyConfig?.exitRules?.takeProfitPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
         stopLossPercent: (() => { const v = Number(strategyConfig?.exitRules?.stopLossPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
         non0DTECooldownMinutes: (() => { const v = Number(strategyConfig?.tradeWindow?.zdteCooldownMinutes); return isNaN(v) || v < 0 ? undefined : v; })(),
+        trailingStopTrigger: (() => { const v = Number(strategyConfig?.exitRules?.trailingStopTrigger); return isNaN(v) || v <= 0 ? undefined : v; })(),
+        trailingStopPercent: (() => { const v = Number(strategyConfig?.exitRules?.trailingStopPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
+        profitLockSteps: (() => {
+          const steps = strategyConfig?.exitRules?.profitLockSteps;
+          if (!Array.isArray(steps) || steps.length === 0) return undefined;
+          return steps
+            .map((s: Record<string, unknown>) => ({ threshold: Number(s.threshold), floor: Number(s.floor) }))
+            .filter((s: { threshold: number; floor: number }) => !isNaN(s.threshold) && !isNaN(s.floor) && s.threshold > 0);
+        })(),
       } : undefined;
       const exitCondition = optionDynamicExitService.checkExitCondition(positionCtx, undefined, exitRulesOverride);
 

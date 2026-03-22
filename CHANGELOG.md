@@ -1,5 +1,28 @@
 # 更新日志
 
+## 2026-03-22
+
+### 策略退出参数可配置化 + smartReverse 入场过滤
+
+**背景**: 分析发现退出行为 75% 由硬编码控制，用户前端配置仅影响止盈/止损基准。同时 smartReverse 在 intraScore 转正后仍触发反向入场导致大额亏损。
+
+**修改**:
+1. **P0 — intraScore 入场过滤**: smartReverse 新增 `maxIntradayScoreForEntry` 阈值（默认 0），intraScore 超过此值时禁止反向入场（均值回归窗口已过）
+2. **P1 — 阶梯锁利可配置**: `exitRules.profitLockSteps` 从硬编码改为可通过前端配置，默认 [{10,0},{20,10},{30,20},{50,35}]
+3. **P1 — 追踪止损可配置**: `exitRules.trailingStopTrigger` / `trailingStopPercent` 前后端联动，覆盖默认阶段值
+4. **修正前端描述**: 0DTE 强制平仓 120→180 分钟（与代码一致）
+5. **清理空配置**: 移除 `useTrailingStop`（从未被后端读取）
+6. **退出层次说明**: 前端新增自动退出规则说明（阶梯锁利→追踪止损→0DTE兜底→安全阀）
+
+**修改文件**:
+- `api/src/services/market-regime-detector.service.ts` — 新增 intraScore 过滤
+- `api/src/services/option-dynamic-exit.service.ts` — ExitRulesOverride 扩展 + lockSteps 可配置
+- `api/src/services/strategy-scheduler.service.ts` — exitRulesOverride 传递新字段
+- `api/src/services/strategies/option-intraday-strategy.ts` — ExitRulesConfig 接口更新
+- `frontend/components/StrategyFormModal.tsx` — 新增追踪止损/锁利阶梯/intraScore 上限 UI
+
+---
+
 ## 2026-03-20
 
 ### dailyRealizedPnL 跨日累积修复

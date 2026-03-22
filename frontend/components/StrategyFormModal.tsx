@@ -1019,6 +1019,7 @@ export default function StrategyFormModal({
                                   intradayScoreExtremeNeg: 14,
                                   intradayScoreExtremePos: 15,
                                   divergenceMin: 0.3,
+                                  maxIntradayScoreForEntry: 0,
                                   ...prev.thresholds,
                                 },
                                 positionMultiplier: {
@@ -1172,6 +1173,36 @@ export default function StrategyFormModal({
                             }}
                           />
                         </div>
+                        <div className="col-span-2">
+                          <label className="text-xs text-gray-600">反向入场日内得分上限</label>
+                          <input
+                            type="number"
+                            step={1}
+                            min={-10}
+                            max={20}
+                            value={formData.config.smartReverse?.thresholds?.maxIntradayScoreForEntry ?? 0}
+                            className="w-full border rounded px-2 py-1 text-sm"
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  smartReverse: {
+                                    ...formData.config.smartReverse,
+                                    thresholds: {
+                                      ...formData.config.smartReverse.thresholds,
+                                      maxIntradayScoreForEntry: val,
+                                    },
+                                  },
+                                },
+                              });
+                            }}
+                          />
+                          <p className="text-xs text-amber-600 mt-1">
+                            intraScore 超过此值时禁止反向入场（均值回归窗口已过）。0 = 日内转正即禁止，负值更激进。
+                          </p>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1267,9 +1298,93 @@ export default function StrategyFormModal({
                         <p className="text-xs text-gray-500 mt-1">EARLY基准值，随时段自动递减</p>
                       </div>
                     </div>
+                    {/* 追踪止损参数 */}
+                    <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs text-gray-700 mb-1 font-medium">追踪止损触发 %</label>
+                        <input {...numberInputProps('trailingStopTrigger', { path: ['exitRules', 'trailingStopTrigger'], defaultValue: 0, min: 0, max: 50 })} />
+                        <p className="text-xs text-gray-500 mt-1">盈利达此值后启用追踪止损（0=使用系统默认：按时段8-30%）</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-700 mb-1 font-medium">追踪回撤幅度 %</label>
+                        <input {...numberInputProps('trailingStopPercent', { path: ['exitRules', 'trailingStopPercent'], defaultValue: 0, min: 0, max: 30 })} />
+                        <p className="text-xs text-gray-500 mt-1">从盈利峰值回撤此幅度触发止损（0=使用系统默认：按时段8-15%）</p>
+                      </div>
+                    </div>
+                    {/* 阶梯锁利配置 */}
+                    <div className="mt-3 p-3 border rounded bg-blue-50 border-blue-200">
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="text-xs text-gray-700 font-semibold">阶梯锁利</label>
+                        <span className="text-xs text-gray-500">盈利踩上台阶后锁定最低利润底线</span>
+                      </div>
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                        {(formData.config.exitRules?.profitLockSteps ?? [
+                          { threshold: 10, floor: 0 },
+                          { threshold: 20, floor: 10 },
+                          { threshold: 30, floor: 20 },
+                          { threshold: 50, floor: 35 },
+                        ]).map((step: { threshold: number; floor: number }, idx: number) => (
+                          <div key={idx} className="flex flex-col gap-1 p-2 bg-white rounded border">
+                            <label className="text-xs text-gray-500">台阶{idx + 1}</label>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                value={step.threshold}
+                                min={1}
+                                max={100}
+                                className="w-12 border rounded px-1 py-0.5 text-xs text-center"
+                                onChange={(e) => {
+                                  const steps = [...(formData.config.exitRules?.profitLockSteps ?? [
+                                    { threshold: 10, floor: 0 },
+                                    { threshold: 20, floor: 10 },
+                                    { threshold: 30, floor: 20 },
+                                    { threshold: 50, floor: 35 },
+                                  ])];
+                                  steps[idx] = { ...steps[idx], threshold: Number(e.target.value) };
+                                  setFormData({
+                                    ...formData,
+                                    config: {
+                                      ...formData.config,
+                                      exitRules: { ...formData.config.exitRules, profitLockSteps: steps },
+                                    },
+                                  });
+                                }}
+                              />
+                              <span className="text-xs text-gray-400">%&rarr;</span>
+                              <input
+                                type="number"
+                                value={step.floor}
+                                min={0}
+                                max={100}
+                                className="w-12 border rounded px-1 py-0.5 text-xs text-center"
+                                onChange={(e) => {
+                                  const steps = [...(formData.config.exitRules?.profitLockSteps ?? [
+                                    { threshold: 10, floor: 0 },
+                                    { threshold: 20, floor: 10 },
+                                    { threshold: 30, floor: 20 },
+                                    { threshold: 50, floor: 35 },
+                                  ])];
+                                  steps[idx] = { ...steps[idx], floor: Number(e.target.value) };
+                                  setFormData({
+                                    ...formData,
+                                    config: {
+                                      ...formData.config,
+                                      exitRules: { ...formData.config.exitRules, profitLockSteps: steps },
+                                    },
+                                  });
+                                }}
+                              />
+                              <span className="text-xs text-gray-400">%</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-2">左侧=触发阈值（峰值盈利%），右侧=锁定底线%。如：10%&rarr;0% 表示盈利曾达10%后至少保本。留空使用系统默认值。</p>
+                    </div>
                     <div className="mt-3 p-3 bg-gray-100 border border-gray-200 rounded text-xs text-gray-600">
-                      <p><strong>动态缩放：</strong>上方数值为EARLY阶段基准，MID约80%，LATE约60%，FINAL约40%。</p>
-                      <p className="mt-1"><strong>强平规则：</strong>0DTE 收盘前120分钟（约2:00 PM ET）强制平仓；非0DTE 收盘前10分钟强制平仓。</p>
+                      <p><strong>动态缩放：</strong>上方止盈/止损为EARLY阶段基准，MID约80%，LATE约60%，FINAL约40%。</p>
+                      <p className="mt-1"><strong>强平规则：</strong>0DTE 收盘前180分钟（约1:00 PM ET）强制平仓；非0DTE 收盘前10分钟强制平仓。</p>
+                      <p className="mt-1"><strong>自动退出层次：</strong>阶梯锁利 → 追踪止损 → 0DTE兜底止损(-25%) → 安全阀(-40%)，始终生效。</p>
                     </div>
                   </div>
 
@@ -1376,7 +1491,7 @@ export default function StrategyFormModal({
                       </div>
                     </div>
                     <div className="mt-3 p-2 bg-yellow-100 rounded text-xs text-yellow-800">
-                      <strong>强平规则（不可配置）：</strong>0DTE 收盘前120分钟强平 | 非0DTE 收盘前10分钟强平 | 绝对止损 -40%
+                      <strong>强平规则（不可配置）：</strong>0DTE 收盘前180分钟（1:00 PM ET）强平 | 非0DTE 收盘前10分钟强平 | 绝对止损 -40%
                     </div>
                   </div>
 

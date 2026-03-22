@@ -1,11 +1,19 @@
 # 项目进度总结
 
-**更新时间**: 2026-03-20
+**更新时间**: 2026-03-22
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-03-22: 策略退出参数可配置化 + smartReverse 入场过滤
+
+**核心**: 将硬编码的退出参数暴露到前端配置，新增 intraScore 入场过滤防止均值回归窗口过后仍触发反向入场。
+
+**变更**: intraScore 过滤（P0）+ 阶梯锁利可配置（P1）+ 追踪止损可配置（P1）+ 前端描述修正 + 空配置清理
+
+**修改文件**: `market-regime-detector.service.ts`, `option-dynamic-exit.service.ts`, `strategy-scheduler.service.ts`, `option-intraday-strategy.ts`, `StrategyFormModal.tsx`
 
 ### 2026-03-20: dailyRealizedPnL 跨日累积修复
 

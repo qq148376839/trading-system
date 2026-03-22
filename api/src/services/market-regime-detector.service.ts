@@ -26,6 +26,7 @@ export interface SmartReverseConfig {
     intradayScoreExtremeNeg: number;  // intradayScore 看跌极端阈值，默认 14
     intradayScoreExtremePos: number;  // intradayScore 看涨极端阈值，默认 15
     divergenceMin: number;            // 分歧度阈值，默认 0.3
+    maxIntradayScoreForEntry?: number; // 反向入场日内得分上限，默认 0；intraScore 超过此值时禁止反向（均值回归窗口已过）
   };
   positionMultiplier: {
     reversed: number;                 // 反向交易仓位系数，默认 1.0
@@ -61,6 +62,7 @@ export const DEFAULT_SMART_REVERSE_CONFIG: SmartReverseConfig = {
     intradayScoreExtremeNeg: 14,
     intradayScoreExtremePos: 15,
     divergenceMin: 0.3,
+    maxIntradayScoreForEntry: 0,
   },
   positionMultiplier: {
     reversed: 1.0,
@@ -138,6 +140,29 @@ class MarketRegimeDetector {
       marketExtreme,
       intradayExtreme,
     };
+
+    // === intraScore 反向入场过滤 ===
+    // 当 marketScore 极端看跌但 intradayScore 已转正（超过阈值），说明均值回归窗口已过，
+    // 此时再买入 CALL 实际是追涨日内反弹的尾巴，概率显著更低。
+    // 反之亦然：marketScore 极端看涨但 intradayScore 已转负。
+    const maxIntra = config.thresholds.maxIntradayScoreForEntry ?? 0;
+    const reversionExhausted =
+      (marketScore < 0 && intradayScore > maxIntra) ||   // 熊市极端但日内已回升过头
+      (marketScore > 0 && intradayScore < -maxIntra);    // 牛市极端但日内已回落过头
+    if (reversionExhausted) {
+      logger.info(
+        `[SmartReverse] 均值回归窗口已过，禁止反向入场 | ` +
+        `mkt=${marketScore.toFixed(1)}, intra=${intradayScore.toFixed(1)}, maxIntra=${maxIntra}`
+      );
+      return {
+        regime: 'MOMENTUM',
+        confidence: 'HIGH',
+        shouldReverse: false,
+        positionMultiplier: 1.0,
+        reason: `均值回归窗口已过(intra=${intradayScore.toFixed(1)}超过阈值${maxIntra})，保持原方向`,
+        metrics,
+      };
+    }
 
     // === 高置信反向 ===
     // marketScore 极端 + intradayScore 不极端 + 分歧度高
