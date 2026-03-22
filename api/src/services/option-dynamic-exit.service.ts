@@ -158,12 +158,13 @@ const SELLER_PARAMS: Record<TradingPhase, Omit<DynamicExitParams, 'adjustmentRea
   },
 };
 
-/** 阶梯锁利配置 — 盈利达到台阶后锁定最低利润底线 */
+/** 阶梯锁利配置 — 盈利达到台阶后锁定最低利润底线（更激进：更早触发、更高底线） */
 const PROFIT_LOCK_STEPS = [
-  { threshold: 10, floor: 0 },    // 盈利≥10% → 至少保本
-  { threshold: 20, floor: 10 },   // 盈利≥20% → 至少赚10%
-  { threshold: 30, floor: 20 },   // 盈利≥30% → 至少赚20%
-  { threshold: 50, floor: 35 },   // 盈利≥50% → 至少赚35%
+  { threshold: 8, floor: 2 },     // 盈利≥8% → 至少赚2%
+  { threshold: 12, floor: 6 },    // 盈利≥12% → 至少赚6%
+  { threshold: 18, floor: 12 },   // 盈利≥18% → 至少赚12%
+  { threshold: 30, floor: 22 },   // 盈利≥30% → 至少赚22%
+  { threshold: 50, floor: 38 },   // 盈利≥50% → 至少赚38%
 ];
 
 // ============================================

@@ -1317,69 +1317,71 @@ export default function StrategyFormModal({
                         <label className="text-xs text-gray-700 font-semibold">阶梯锁利</label>
                         <span className="text-xs text-gray-500">盈利踩上台阶后锁定最低利润底线</span>
                       </div>
-                      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                      <div className="space-y-1.5">
                         {(formData.config.exitRules?.profitLockSteps ?? [
-                          { threshold: 10, floor: 0 },
-                          { threshold: 20, floor: 10 },
-                          { threshold: 30, floor: 20 },
-                          { threshold: 50, floor: 35 },
+                          { threshold: 8, floor: 2 },
+                          { threshold: 12, floor: 6 },
+                          { threshold: 18, floor: 12 },
+                          { threshold: 30, floor: 22 },
+                          { threshold: 50, floor: 38 },
                         ]).map((step: { threshold: number; floor: number }, idx: number) => (
-                          <div key={idx} className="flex flex-col gap-1 p-2 bg-white rounded border">
-                            <label className="text-xs text-gray-500">台阶{idx + 1}</label>
-                            <div className="flex items-center gap-1">
-                              <input
-                                type="number"
-                                value={step.threshold}
-                                min={1}
-                                max={100}
-                                className="w-12 border rounded px-1 py-0.5 text-xs text-center"
-                                onChange={(e) => {
-                                  const steps = [...(formData.config.exitRules?.profitLockSteps ?? [
-                                    { threshold: 10, floor: 0 },
-                                    { threshold: 20, floor: 10 },
-                                    { threshold: 30, floor: 20 },
-                                    { threshold: 50, floor: 35 },
-                                  ])];
-                                  steps[idx] = { ...steps[idx], threshold: Number(e.target.value) };
-                                  setFormData({
-                                    ...formData,
-                                    config: {
-                                      ...formData.config,
-                                      exitRules: { ...formData.config.exitRules, profitLockSteps: steps },
-                                    },
-                                  });
-                                }}
-                              />
-                              <span className="text-xs text-gray-400">%&rarr;</span>
-                              <input
-                                type="number"
-                                value={step.floor}
-                                min={0}
-                                max={100}
-                                className="w-12 border rounded px-1 py-0.5 text-xs text-center"
-                                onChange={(e) => {
-                                  const steps = [...(formData.config.exitRules?.profitLockSteps ?? [
-                                    { threshold: 10, floor: 0 },
-                                    { threshold: 20, floor: 10 },
-                                    { threshold: 30, floor: 20 },
-                                    { threshold: 50, floor: 35 },
-                                  ])];
-                                  steps[idx] = { ...steps[idx], floor: Number(e.target.value) };
-                                  setFormData({
-                                    ...formData,
-                                    config: {
-                                      ...formData.config,
-                                      exitRules: { ...formData.config.exitRules, profitLockSteps: steps },
-                                    },
-                                  });
-                                }}
-                              />
-                              <span className="text-xs text-gray-400">%</span>
-                            </div>
+                          <div key={idx} className="flex items-center gap-2">
+                            <span className="text-xs text-gray-500 w-10 shrink-0">台阶{idx + 1}</span>
+                            <span className="text-xs text-gray-500 shrink-0">盈利&ge;</span>
+                            <input
+                              type="number"
+                              value={step.threshold}
+                              min={1}
+                              max={100}
+                              className="w-14 border rounded px-1.5 py-1 text-xs text-center"
+                              onChange={(e) => {
+                                const steps = [...(formData.config.exitRules?.profitLockSteps ?? [
+                                  { threshold: 8, floor: 2 },
+                                  { threshold: 12, floor: 6 },
+                                  { threshold: 18, floor: 12 },
+                                  { threshold: 30, floor: 22 },
+                                  { threshold: 50, floor: 38 },
+                                ])];
+                                steps[idx] = { ...steps[idx], threshold: Number(e.target.value) };
+                                setFormData({
+                                  ...formData,
+                                  config: {
+                                    ...formData.config,
+                                    exitRules: { ...formData.config.exitRules, profitLockSteps: steps },
+                                  },
+                                });
+                              }}
+                            />
+                            <span className="text-xs text-gray-400">% &rarr; 锁定</span>
+                            <input
+                              type="number"
+                              value={step.floor}
+                              min={0}
+                              max={100}
+                              className="w-14 border rounded px-1.5 py-1 text-xs text-center"
+                              onChange={(e) => {
+                                const steps = [...(formData.config.exitRules?.profitLockSteps ?? [
+                                  { threshold: 8, floor: 2 },
+                                  { threshold: 12, floor: 6 },
+                                  { threshold: 18, floor: 12 },
+                                  { threshold: 30, floor: 22 },
+                                  { threshold: 50, floor: 38 },
+                                ])];
+                                steps[idx] = { ...steps[idx], floor: Number(e.target.value) };
+                                setFormData({
+                                  ...formData,
+                                  config: {
+                                    ...formData.config,
+                                    exitRules: { ...formData.config.exitRules, profitLockSteps: steps },
+                                  },
+                                });
+                              }}
+                            />
+                            <span className="text-xs text-gray-400">%</span>
                           </div>
                         ))}
                       </div>
-                      <p className="text-xs text-gray-500 mt-2">左侧=触发阈值（峰值盈利%），右侧=锁定底线%。如：10%&rarr;0% 表示盈利曾达10%后至少保本。留空使用系统默认值。</p>
+                      <p className="text-xs text-gray-500 mt-2">峰值盈利达到左侧阈值后，利润跌回右侧底线即触发止盈退出。如 8%&rarr;2% 表示盈利曾达8%后回落到2%就退出。</p>
                     </div>
                     <div className="mt-3 p-3 bg-gray-100 border border-gray-200 rounded text-xs text-gray-600">
                       <p><strong>动态缩放：</strong>上方止盈/止损为EARLY阶段基准，MID约80%，LATE约60%，FINAL约40%。</p>
