@@ -1,11 +1,19 @@
 # 项目进度总结
 
-**更新时间**: 2026-03-23
+**更新时间**: 2026-03-24
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-03-24: IRON_DOME + 卖单回调竞态条件修复（dailyRealizedPnL 重复计算）
+
+**问题**: IRON_DOME 与卖单回调竞态导致 `dailyRealizedPnL` 重复计算（-allocationAmount + tradePnL），PnL 膨胀约 10 倍，误触发熔断器。
+
+**修复**: 卖出回调检测 IRON_DOME 已抢先处理（`IDLE + BROKER_TERMINATED`），撤销其估算 PnL 后用实际交易 PnL 重新计算。
+
+**修改文件**: `strategy-scheduler.service.ts`
 
 ### 2026-03-23: 时区管理统一化 — 修复周末下单 Bug（P0 资金安全）
 

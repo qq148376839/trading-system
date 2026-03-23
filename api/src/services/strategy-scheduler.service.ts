@@ -1232,7 +1232,26 @@ class StrategyScheduler {
                       context = {};
                     }
                   }
-                  
+
+                  // Fix: 检测 IRON_DOME 竞态条件 — 如果 IRON_DOME 已处理此退出，撤销其估算 PnL
+                  // 当卖单成交瞬间 broker 持仓归零，IRON_DOME 可能在回调之前运行，
+                  // 将 -allocationAmount 写入 dailyRealizedPnL（最坏情况估算）
+                  // 此处用实际交易 PnL 替换 IRON_DOME 的估算值
+                  const currentState = await strategyInstance.getCurrentState(instanceKeySymbol);
+                  if (currentState === 'IDLE' && context.exitReason === 'BROKER_TERMINATED') {
+                    const ironDomePnL = Number(context.lastTradePnL || 0);
+                    if (ironDomePnL < 0) {
+                      const rawIronDomePnL = Number(String(context.dailyRealizedPnL ?? 0));
+                      context.dailyRealizedPnL = isNaN(rawIronDomePnL) ? 0 : rawIronDomePnL - ironDomePnL;
+                      context.dailyTradeCount = Math.max(0, (Number(String(context.dailyTradeCount ?? 0)) || 0) - 1);
+                      context.consecutiveLosses = Math.max(0, (Number(String(context.consecutiveLosses ?? 0)) || 0) - 1);
+                      logger.log(
+                        `策略 ${strategyId} 标的 ${instanceKeySymbol}: IRON_DOME竞态修正 — ` +
+                        `撤销估算PnL=${ironDomePnL.toFixed(2)}，使用实际交易PnL`
+                      );
+                    }
+                  }
+
                   // 检测是否为 MIT 保护单自动成交（止损 or 止盈）
                   const isSLFill = Boolean(context.protectionOrderId && dbOrder.order_id === context.protectionOrderId);
                   const isTPFill = Boolean(context.takeProfitOrderId && dbOrder.order_id === context.takeProfitOrderId);

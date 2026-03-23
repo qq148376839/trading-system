@@ -1,5 +1,18 @@
 # 更新日志
 
+## 2026-03-24
+
+### IRON_DOME + 卖单回调竞态条件修复（dailyRealizedPnL 重复计算）
+
+**问题**: `reconciliationCheck`（IRON_DOME）与卖单回调之间存在竞态条件。卖单成交后 broker 持仓瞬间归零，如果监控循环在回调处理前运行，IRON_DOME 会将 `-allocationAmount`（最坏情况估算）写入 `dailyRealizedPnL`；随后卖单回调读取被污染的 context，在此基础上叠加实际 `tradePnL`，导致 PnL 膨胀约 10 倍（如实际亏损 $406 被记为 $4023），误触发熔断器。
+
+**修复**: 在卖出回调中（context 加载后、PnL 计算前），检测 IRON_DOME 是否已抢先处理（`state === 'IDLE' && exitReason === 'BROKER_TERMINATED'`）。若检测到，从 `dailyRealizedPnL` 中撤销 IRON_DOME 的估算值（`-allocationAmount`），同时回退 `dailyTradeCount` 和 `consecutiveLosses`，让后续逻辑用实际交易 PnL 重新计算。
+
+**修改文件**:
+- 📝 `api/src/services/strategy-scheduler.service.ts` — 卖出回调新增 IRON_DOME 竞态检测与修正逻辑
+
+---
+
 ## 2026-03-23
 
 ### 时区管理统一化 — 修复周末下单 Bug（P0 资金安全）
