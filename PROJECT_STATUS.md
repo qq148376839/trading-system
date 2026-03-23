@@ -1,11 +1,23 @@
 # 项目进度总结
 
-**更新时间**: 2026-03-22
+**更新时间**: 2026-03-23
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-03-23: 时区管理统一化 — 修复周末下单 Bug（P0 资金安全）
+
+**问题**: 3月22日（周六）系统在非交易日提交了 8 笔订单。根因：`getDay()` 返回服务器本地时区的星期几，Docker 容器未设 `TZ`，UTC+8 宿主机导致周六被误判为工作日。
+
+**修复**:
+1. 新建 `api/src/utils/market-time.ts` 统一时区模块（8 个函数，`Intl.DateTimeFormat.formatToParts` 实现，DST 安全）
+2. 修复 13 个文件中的时区 bug（`getDay()`→`isWeekend`、NaiveDate 构造、日期格式化、ET→UTC 转换）
+3. Docker `TZ: UTC` 固定（docker-compose.yml / Dockerfile）
+4. 新增规则 #17 + 49 个单元测试
+
+**修改文件**: `market-time.ts`(新建), `trading-session.service.ts`, `trading-days.service.ts`, `trading-days.ts`, `market-session.service.ts`, `backtest.service.ts`, `option-kline-collection.service.ts`, `trading-hours.ts`, `market-data.service.ts`, `candlesticks.ts`, `kline-history.service.ts`, `option-dynamic-exit.service.ts`, `docker-compose.yml`, `Dockerfile`
 
 ### 2026-03-22: 策略退出参数可配置化 + smartReverse 入场过滤
 

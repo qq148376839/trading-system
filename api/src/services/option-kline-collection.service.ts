@@ -9,6 +9,7 @@ import { getQuoteContext, getTradeContext, OrderStatus, Market } from '../config
 import configService from './config.service';
 import { parseOptionSymbol, isLikelyOptionSymbol } from '../utils/options-symbol';
 import { logger } from '../utils/logger';
+import { isWeekend, getMarketLocalDate, zonedTimeToUtc, getMarketTimeZone } from '../utils/market-time'; // 规则 #17
 
 interface CollectOrderParams {
   orderId: string;
@@ -180,9 +181,8 @@ class OptionKlineCollectionService {
 
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().split('T')[0];
-      // 跳过周末
-      const dow = d.getDay();
-      if (dow === 0 || dow === 6) continue;
+      // 跳过周末 — 规则 #17: 使用市场时区判断
+      if (isWeekend(d, 'US')) continue;
 
       results[dateStr] = await this.collectForDate(dateStr);
       // 日期间延迟
@@ -566,18 +566,19 @@ class OptionKlineCollectionService {
    */
   private scheduleDailyCollection(): void {
     const now = new Date();
-    const etStr = now.toLocaleString('en-US', { timeZone: 'America/New_York' });
-    const etNow = new Date(etStr);
+    // 规则 #17: 使用 getMarketLocalDate + zonedTimeToUtc 替代 toLocaleString 解析
+    const { year, month, day } = getMarketLocalDate(now, 'US');
 
-    // 目标时间：今日 16:00 ET + delay
-    const targetET = new Date(etNow);
-    targetET.setHours(16, this.delayMinutes, 0, 0);
+    // 规则 #17: 使用 zonedTimeToUtc 替代偏移量手动计算
+    const tz = getMarketTimeZone('US');
+    const targetUtc = zonedTimeToUtc({ year, month, day, hour: 16, minute: this.delayMinutes, timeZone: tz });
 
-    let delayMs = targetET.getTime() - etNow.getTime();
+    let delayMs = targetUtc.getTime() - now.getTime();
 
     // 如果目标时间已过，调度到明天
     if (delayMs <= 0) {
-      delayMs += 24 * 60 * 60 * 1000;
+      const tomorrowUtc = zonedTimeToUtc({ year, month, day: day + 1, hour: 16, minute: this.delayMinutes, timeZone: tz });
+      delayMs = tomorrowUtc.getTime() - now.getTime();
     }
 
     this.timer = setTimeout(async () => {
@@ -586,8 +587,10 @@ class OptionKlineCollectionService {
         if (!this.enabled) {
           logger.info('[期权K线采集] 采集已被运行时禁用，跳过');
         } else {
-          const today = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
-          const todayDate = new Date(today).toISOString().split('T')[0];
+          // 规则 #17: 使用 getMarketLocalDate 获取当天日期
+          const todayNow = new Date();
+          const { year: y, month: m, day: d } = getMarketLocalDate(todayNow, 'US');
+          const todayDate = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
           await this.collectForDate(todayDate);
         }
       } catch (error: any) {
@@ -597,8 +600,7 @@ class OptionKlineCollectionService {
       this.scheduleDailyCollection();
     }, delayMs);
 
-    const nextRunET = new Date(etNow.getTime() + delayMs);
-    logger.debug(`[期权K线采集] 下次采集调度于美东 ${nextRunET.toLocaleString('en-US')}（约 ${Math.round(delayMs / 60000)} 分钟后）`);
+    logger.debug(`[期权K线采集] 下次采集调度于约 ${Math.round(delayMs / 60000)} 分钟后（美东 16:${String(this.delayMinutes).padStart(2, '0')}）`);
   }
 
   /**

@@ -10,6 +10,7 @@ import tradingRecommendationService from './trading-recommendation.service';
 import dynamicPositionManager from './dynamic-position-manager.service';
 import { getQuoteContext } from '../config/longport';
 import { logger } from '../utils/logger';
+import { isWeekend, formatAsYYYYMMDD, toNaiveDateParts } from '../utils/market-time'; // 规则 #17
 
 export interface BacktestTrade {
   symbol: string;
@@ -131,18 +132,11 @@ class BacktestService {
         const daysDiff = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
         
         // ✅ 将JavaScript Date转换为NaiveDate（Longbridge SDK要求的格式）
-        // NaiveDate构造函数：new NaiveDate(year, month, day)
-        // 注意：month从1开始（1=1月，12=12月），不是从0开始
-        const startNaiveDate = new NaiveDate(
-          startDate.getFullYear(),
-          startDate.getMonth() + 1, // JavaScript的month从0开始，需要+1
-          startDate.getDate()
-        );
-        const endNaiveDate = new NaiveDate(
-          endDate.getFullYear(),
-          endDate.getMonth() + 1,
-          endDate.getDate()
-        );
+        // 使用 toNaiveDateParts 确保时区正确（美东时区）
+        const startParts = toNaiveDateParts(startDate, 'US'); // 规则 #17
+        const startNaiveDate = new NaiveDate(startParts.year, startParts.month, startParts.day);
+        const endParts = toNaiveDateParts(endDate, 'US'); // 规则 #17
+        const endNaiveDate = new NaiveDate(endParts.year, endParts.month, endParts.day);
         
         if (daysDiff <= 1000) {
           // 日期范围在1000天内，优先使用historyCandlesticksByDate（更精确）
@@ -166,12 +160,9 @@ class BacktestService {
         } else {
           // 日期范围超过1000天，使用historyCandlesticksByOffset从结束日期往前获取
           // ✅ 将JavaScript Date转换为NaiveDatetime（Longbridge SDK要求的格式）
-          // NaiveDatetime构造函数：new NaiveDatetime(NaiveDate, Time)
-          const endNaiveDate = new NaiveDate(
-            endDate.getFullYear(),
-            endDate.getMonth() + 1,
-            endDate.getDate()
-          );
+          // 使用 toNaiveDateParts 确保时区正确（美东时区）
+          const offsetEndParts = toNaiveDateParts(endDate, 'US'); // 规则 #17
+          const endNaiveDate = new NaiveDate(offsetEndParts.year, offsetEndParts.month, offsetEndParts.day);
           const endNaiveTime = new longport.Time(
             endDate.getHours(),
             endDate.getMinutes(),
@@ -263,25 +254,16 @@ class BacktestService {
         logger.log(`[数据诊断] ${symbol}: API返回数据日期范围 ${firstDate.toISOString().split('T')[0]} 至 ${lastDate.toISOString().split('T')[0]}`);
       }
       
-      // ✅ 辅助函数：将Date转换为YYYYMMDD格式（用于交易日判断）
-      const dateToYYMMDD = (date: Date): string => {
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
-        return `${year}${month}${day}`;
-      };
-      
       // ✅ 辅助函数：判断是否为交易日
       const isTradingDay = (date: Date): boolean => {
         // 如果成功获取了交易日数据，使用真实数据判断
         if (tradingDaysSet && tradingDaysSet.size > 0) {
-          const dateStr = dateToYYMMDD(date);
+          const dateStr = formatAsYYYYMMDD(date, 'US'); // 规则 #17
           return tradingDaysSet.has(dateStr);
         }
-        
+
         // 降级方案：仅判断周末
-        const dayOfWeek = date.getDay();
-        return dayOfWeek !== 0 && dayOfWeek !== 6;
+        return !isWeekend(date, 'US'); // 规则 #17
       };
       
       let result = formattedCandlesticks
@@ -361,20 +343,12 @@ class BacktestService {
               supplementTradingDaysSet = new Set();
             }
             
-            const supplementDateToYYMMDD = (date: Date): string => {
-              const year = date.getFullYear();
-              const month = String(date.getMonth() + 1).padStart(2, '0');
-              const day = String(date.getDate()).padStart(2, '0');
-              return `${year}${month}${day}`;
-            };
-            
             const supplementIsTradingDay = (date: Date): boolean => {
               if (supplementTradingDaysSet && supplementTradingDaysSet.size > 0) {
-                const dateStr = supplementDateToYYMMDD(date);
+                const dateStr = formatAsYYYYMMDD(date, 'US'); // 规则 #17
                 return supplementTradingDaysSet.has(dateStr);
               }
-              const dayOfWeek = date.getDay();
-              return dayOfWeek !== 0 && dayOfWeek !== 6;
+              return !isWeekend(date, 'US'); // 规则 #17
             };
             
             const additionalResult = additionalFormatted
@@ -609,14 +583,6 @@ class BacktestService {
       }
     }
     
-    // ✅ 辅助函数：将Date转换为YYYYMMDD格式
-    const dateToYYMMDD = (date: Date): string => {
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const day = String(date.getDate()).padStart(2, '0');
-      return `${year}${month}${day}`;
-    };
-    
     const allDates = new Set<string>();
     allCandlesticks.forEach((candles, symbol) => {
       const market = getMarketFromSymbol(symbol);
@@ -635,14 +601,13 @@ class BacktestService {
         // ✅ 交易日判断：如果成功获取了交易日数据，使用真实数据；否则降级到周末判断
         let isTrading = false;
         if (marketTradingDays.size > 0) {
-          const dateStrYYMMDD = dateToYYMMDD(date);
+          const dateStrYYMMDD = formatAsYYYYMMDD(date, 'US'); // 规则 #17
           isTrading = marketTradingDays.has(dateStrYYMMDD);
         } else {
           // 降级方案：仅判断周末
-          const dayOfWeek = date.getDay();
-          isTrading = dayOfWeek !== 0 && dayOfWeek !== 6;
+          isTrading = !isWeekend(date, 'US'); // 规则 #17
         }
-        
+
         if (isTrading) {
           allDates.add(dateStr);
         }
@@ -708,12 +673,11 @@ class BacktestService {
         const marketTradingDays = tradingDaysByMarket.get(market) || new Set();
         let isTrading = false;
         if (marketTradingDays.size > 0) {
-          const dateStrYYMMDD = dateToYYMMDD(dateForCheck);
+          const dateStrYYMMDD = formatAsYYYYMMDD(dateForCheck, 'US'); // 规则 #17
           isTrading = marketTradingDays.has(dateStrYYMMDD);
         } else {
           // 降级方案：仅判断周末
-          const dayOfWeek = dateForCheck.getDay();
-          isTrading = dayOfWeek !== 0 && dayOfWeek !== 6;
+          isTrading = !isWeekend(dateForCheck, 'US'); // 规则 #17
         }
         
         if (!isTrading || isFutureDate(dateForCheck)) {

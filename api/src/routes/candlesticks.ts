@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { getQuoteContext } from '../config/longport';
 import { rateLimiter } from '../middleware/rateLimiter';
 import { ErrorFactory, normalizeError } from '../utils/errors';
+import { toNaiveDateParts, getMarketLocalTime } from '../utils/market-time'; // 规则 #17
 
 export const candlesticksRouter = Router();
 
@@ -417,16 +418,20 @@ candlesticksRouter.get('/history', rateLimiter, async (req: Request, res: Respon
 
     // 将 JavaScript Date 转换为 NaiveDatetime（Longbridge SDK 要求的格式）
     // NaiveDatetime 构造函数：new NaiveDatetime(NaiveDate, Time)
-    // 注意：month 从 1 开始（1=1月，12=12月）
+    // 从 symbol 后缀推断市场，提取市场本地日期/时间 // 规则 #17
+    const marketSuffix = (symbol as string).split('.').pop()?.toUpperCase() || 'US';
+    const marketForTz = (marketSuffix === 'HK' ? 'HK' : marketSuffix === 'SH' ? 'SH' : marketSuffix === 'SZ' ? 'SZ' : 'US') as import('../utils/market-time').MarketType;
+    const dateParts = toNaiveDateParts(parsedDate, marketForTz); // 规则 #17
+    const timeParts = getMarketLocalTime(parsedDate, marketForTz); // 规则 #17
     const naiveDate = new NaiveDate(
-      parsedDate.getFullYear(),
-      parsedDate.getMonth() + 1,
-      parsedDate.getDate()
+      dateParts.year,
+      dateParts.month,
+      dateParts.day
     );
     const naiveTime = new Time(
-      parsedDate.getHours(),
-      parsedDate.getMinutes(),
-      parsedDate.getSeconds()
+      timeParts.hour,
+      timeParts.minute,
+      timeParts.second
     );
     const naiveDatetime = new NaiveDatetime(naiveDate, naiveTime);
 

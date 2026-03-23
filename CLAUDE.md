@@ -94,6 +94,7 @@ docs/                 → 项目文档
 | 14 | **0DTE 非首笔冷却 >= 1 分钟** | 首笔 0 / 2-4笔 1min / 5+ 3min |
 | 15 | **非交易时段日志降级** | 策略日志仅开盘时运行，非交易时段只保留关键日志 |
 | 16 | **部署 NAS 标准步骤** | ssh -p 32000 + **export PATH** → cd /volume1/docker/trading-system → git pull → docker compose up -d --build |
+| 17 | **日期/时间用 market-time.ts** | 禁 `getDay()`/`getFullYear()` 直接用于市场时间，必须走 `utils/market-time.ts` 统一模块 |
 
 > **规则自动注入**: UserPromptSubmit hook 自动通过 RAG 检索并注入相关规则。
 > 手动查阅: `docs/guides/260307-错误规则集.md` | 策略保护: `docs/guides/260307-策略核心逻辑保护清单.md`

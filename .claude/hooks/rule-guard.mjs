@@ -126,6 +126,13 @@ const RULE_MAP = [
     exact: ['nas', 'docker compose'],
     context: [{ kw: '部署', ctx: ['nas', 'docker', '上线', '发布', 'compose', '服务器'] },
               { kw: 'docker', ctx: ['部署', 'nas', '上线', 'compose'] }] },
+  { id: 17, title: '日期/时间用 market-time.ts',
+    action: '周末判断用 isWeekend(date, market)，市场日期用 getMarketLocalDate/formatAsYYYYMMDD，时区映射用 getMarketTimeZone。禁 getDay()/getFullYear()/getMonth()/getDate() 直接用于市场时间逻辑',
+    exact: ['market-time', 'getday', 'isweekend', 'getmarketlocaldate', 'naivedate', 'tonaivedate'],
+    context: [{ kw: '时区', ctx: ['市场', '交易', 'utc', 'est', 'edt', '转换', '时间'] },
+              { kw: '周末', ctx: ['判断', '市场', '交易日', '交易', 'weekend'] },
+              { kw: 'getDay', ctx: ['周末', '交易', '市场', '时区'] },
+              { kw: 'DST', ctx: ['时区', '夏令时', '冬令时', '时间'] }] },
 ];
 
 // ── Helpers ─────────────────────────────────────────────────────────────

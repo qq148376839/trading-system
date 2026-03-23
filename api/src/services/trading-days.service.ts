@@ -6,6 +6,7 @@
 
 import { getQuoteContext } from '../config/longport';
 import { logger } from '../utils/logger';
+import { isWeekend, toNaiveDateParts, getMarketLocalDate, formatAsYYYYMMDD } from '../utils/market-time';
 
 interface TradingDaysCache {
   market: string;
@@ -26,8 +27,13 @@ class TradingDaysService {
 
   /**
    * 将Date转换为YYYYMMDD格式字符串
+   * 当有 market 参数时使用市场本地时区（规则 #17）
    */
-  private dateToYYMMDD(date: Date): string {
+  private dateToYYMMDD(date: Date, market?: 'US' | 'HK' | 'SH' | 'SZ'): string {
+    if (market) {
+      return formatAsYYYYMMDD(date, market);
+    }
+    // 回退：无 market 时用 UTC（TZ=UTC 后等效）
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
@@ -99,19 +105,13 @@ class TradingDaysService {
         throw new Error(`不支持的市场类型: ${market} (${lbMarket})`);
       }
 
-      // 转换为NaiveDate（注意：month从1开始）
-      const beginNaiveDate = new NaiveDate(
-        startDate.getFullYear(),
-        startDate.getMonth() + 1,
-        startDate.getDate()
-      );
-      const endNaiveDate = new NaiveDate(
-        endDate.getFullYear(),
-        endDate.getMonth() + 1,
-        endDate.getDate()
-      );
+      // 转换为NaiveDate — 使用市场本地时区日期（规则 #17）
+      const beginParts = toNaiveDateParts(startDate, market);
+      const beginNaiveDate = new NaiveDate(beginParts.year, beginParts.month, beginParts.day);
+      const endParts = toNaiveDateParts(endDate, market);
+      const endNaiveDate = new NaiveDate(endParts.year, endParts.month, endParts.day);
 
-      logger.log(`[交易日服务] 从Longbridge API获取交易日数据: ${market}, ${this.dateToYYMMDD(startDate)} 至 ${this.dateToYYMMDD(endDate)}`);
+      logger.log(`[交易日服务] 从Longbridge API获取交易日数据: ${market}, ${this.dateToYYMMDD(startDate, market)} 至 ${this.dateToYYMMDD(endDate, market)}`);
 
       // 调用Longbridge API
       // 参考文档：
@@ -236,15 +236,22 @@ class TradingDaysService {
     endDate: Date
   ): Promise<Set<string>> {
     // ✅ 限制查询范围：不能查询未来日期（API仅支持最近一年）
-    const today = new Date();
-    today.setHours(23, 59, 59, 999);
-    
+    // 使用市场本地日期判断是否为未来（规则 #17）
+    const nowLocal = getMarketLocalDate(new Date(), market);
+    const todayDateNum = nowLocal.year * 10000 + nowLocal.month * 100 + nowLocal.day;
+    const startLocal = getMarketLocalDate(startDate, market);
+    const startDateNum = startLocal.year * 10000 + startLocal.month * 100 + startLocal.day;
+
     // 如果开始日期是未来日期，返回空集合
-    if (startDate > today) {
-      logger.warn(`[交易日服务] 开始日期是未来日期，返回空集合: ${this.dateToYYMMDD(startDate)}`);
+    if (startDateNum > todayDateNum) {
+      logger.warn(`[交易日服务] 开始日期是未来日期，返回空集合: ${this.dateToYYMMDD(startDate, market)}`);
       return new Set<string>();
     }
-    
+
+    // 构造 today 末尾用于 endDate 限制（TZ=UTC 后 setHours(23,59,59) 等效 UTC 末尾）
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+
     // 如果结束日期是未来日期，限制到当前日期
     // ⚠️ 注意：此日志仅在调试模式下输出，避免在生产环境产生过多日志
     let actualEndDate = endDate;
@@ -337,31 +344,34 @@ class TradingDaysService {
    * @returns 是否为交易日
    */
   async isTradingDay(date: Date, market: 'US' | 'HK' | 'SH' | 'SZ' = 'US'): Promise<boolean> {
-    // 先快速检查：周末肯定不是交易日
-    const dayOfWeek = date.getDay();
-    if (dayOfWeek === 0 || dayOfWeek === 6) {
+    // 先快速检查：市场本地时区周末肯定不是交易日（规则 #17）
+    if (isWeekend(date, market)) {
       return false;
     }
 
-    // 检查未来日期
-    const today = new Date();
-    today.setHours(23, 59, 59, 999);
-    if (date > today) {
+    // 检查未来日期 — 用市场本地日期判断（规则 #17）
+    const nowLocal = getMarketLocalDate(new Date(), market);
+    const dateLocal = getMarketLocalDate(date, market);
+    const nowDateNum = nowLocal.year * 10000 + nowLocal.month * 100 + nowLocal.day;
+    const dateDateNum = dateLocal.year * 10000 + dateLocal.month * 100 + dateLocal.day;
+    if (dateDateNum > nowDateNum) {
       return false;
     }
 
-    // 获取该日期所在月份的交易日数据
-    const monthStart = new Date(date.getFullYear(), date.getMonth(), 1);
-    const monthEnd = new Date(date.getFullYear(), date.getMonth() + 1, 0);
-    
+    // 获取该日期所在月份的交易日数据 — 用市场本地日期构造月份范围（规则 #17）
+    const { year, month } = getMarketLocalDate(date, market);
+    const monthStart = new Date(Date.UTC(year, month - 1, 1));
+    const monthEnd = new Date(Date.UTC(year, month, 0));
+
     try {
       const tradingDays = await this.getTradingDays(market, monthStart, monthEnd);
-      const dateStr = this.dateToYYMMDD(date);
+      const dateStr = this.dateToYYMMDD(date, market);
       return tradingDays.has(dateStr);
-    } catch (error: any) {
-      logger.warn(`[交易日服务] 获取交易日数据失败，使用周末判断: ${error.message}`);
-      // 如果API调用失败，降级到周末判断
-      return dayOfWeek !== 0 && dayOfWeek !== 6;
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      logger.warn(`[交易日服务] 获取交易日数据失败，使用周末判断: ${errMsg}`);
+      // 如果API调用失败，降级到周末判断（已用市场时区）
+      return !isWeekend(date, market);
     }
   }
 

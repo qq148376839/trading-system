@@ -5,6 +5,7 @@
 
 import pool from '../config/database';
 import { logger } from '../utils/logger';
+import { zonedTimeToUtc } from '../utils/market-time'; // 规则 #17
 
 interface CandlestickData {
   close: number;
@@ -149,50 +150,18 @@ class KlineHistoryService {
 
   /**
    * 美东时间字符串转毫秒时间戳
+   * 使用统一 market-time 模块（Intl.formatToParts 迭代收敛），自动处理 DST // 规则 #17
    * @param etDatetime 格式: "YYYY-MM-DDThh:mm:ss"（美东时间）
    */
   private etToMs(etDatetime: string): number {
-    // 构造带时区的 Date
-    // 使用 Intl 反向解析：先创建 UTC，再调整偏移
-    const date = new Date(etDatetime);
-    // 获取美东时区偏移（自动处理夏令时）
-    const etFormatter = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/New_York',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    });
-
-    // 使用更可靠的方式：直接构造 ET 时间字符串加时区
-    // Node.js 支持 IANA 时区标识
-    const etDate = new Date(
-      new Date(etDatetime + '-05:00').getTime()
-    );
-
-    // 更简单的方式：利用 toLocaleString 反算
-    // 先假设输入是 ET，转换为 UTC
     const parts = etDatetime.split(/[-T:]/);
     const year = parseInt(parts[0], 10);
-    const month = parseInt(parts[1], 10) - 1;
+    const month = parseInt(parts[1], 10);  // 1-12（zonedTimeToUtc 期望 1-based month）
     const day = parseInt(parts[2], 10);
     const hour = parseInt(parts[3] || '0', 10);
     const minute = parseInt(parts[4] || '0', 10);
-    const second = parseInt(parts[5] || '0', 10);
 
-    // 创建一个 UTC 时间作为参考点，然后计算 ET 偏移
-    const refDate = new Date(Date.UTC(year, month, day, hour, minute, second));
-    const utcStr = refDate.toLocaleString('en-US', { timeZone: 'UTC' });
-    const etStr = refDate.toLocaleString('en-US', { timeZone: 'America/New_York' });
-    const utcMs = new Date(utcStr).getTime();
-    const etMs = new Date(etStr).getTime();
-    const offsetMs = utcMs - etMs; // ET 比 UTC 慢，偏移为正
-
-    // 输入是 ET 时间，转为 UTC：UTC = ET + offset
-    return refDate.getTime() + offsetMs;
+    return zonedTimeToUtc({ year, month, day, hour, minute, timeZone: 'America/New_York' }).getTime(); // 规则 #17
   }
 }
 

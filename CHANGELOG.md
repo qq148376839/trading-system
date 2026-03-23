@@ -1,5 +1,43 @@
 # 更新日志
 
+## 2026-03-23
+
+### 时区管理统一化 — 修复周末下单 Bug（P0 资金安全）
+
+**问题**: 3月22日（周六）系统在非交易日提交了 8 笔订单，全部未成交。根因：`getDay()` 返回服务器本地时区的星期几而非市场时区，Docker 容器未显式设 `TZ`，NAS 宿主机 UTC+8 导致周六被判定为工作日。同类 bug 散布在 13 个文件、59 处调用中。
+
+**修复**:
+
+1. **新建 `api/src/utils/market-time.ts` 统一时区模块** — 8 个导出函数（`isWeekend`、`getMarketLocalDate`、`getMarketLocalTime`、`getMarketTimeZone`、`formatAsYYYYMMDD`、`zonedTimeToUtc`、`toNaiveDateParts`、`getMarketLocalDayOfWeek`），基于 `Intl.DateTimeFormat.formatToParts` 实现，DST 安全
+2. **修复 3 个关键 weekend check** — `trading-session.service.ts`、`trading-days.service.ts`、`utils/trading-days.ts` 的 `getDay()` → `isWeekend(date, market)`
+3. **Docker TZ 固定** — `docker-compose.yml`、`docker-compose.dev.yml`、`Dockerfile` 加 `TZ: UTC`
+4. **全面传播到 8 个文件** — `backtest.service.ts`（4处 getDay + NaiveDate + dateToYYMMDD）、`option-kline-collection.service.ts`（weekend + toLocaleString 解析）、`trading-hours.ts`（getETTime）、`market-data.service.ts`（NaiveDate）、`candlesticks.ts`（NaiveDate）、`kline-history.service.ts`（ET→UTC）、`option-dynamic-exit.service.ts`（收盘时间计算）、`market-session.service.ts`（重构为导入）
+5. **新增规则 #17** — 日期/时间操作必须使用 `market-time.ts`，禁止 `getDay()`/`getFullYear()` 直接用于市场时间逻辑
+6. **49 个单元测试** — 覆盖跨时区周末判断、DST 切换、日期边界、往返一致性
+
+**修改文件**:
+- 🆕 `api/src/utils/market-time.ts` — 统一时区模块
+- 🆕 `api/src/__tests__/market-time.test.ts` — 49 个测试
+- 📝 `api/src/services/trading-session.service.ts` — 删除私有时区方法，改为导入
+- 📝 `api/src/services/trading-days.service.ts` — NaiveDate + 日期格式化 + 周末检查
+- 📝 `api/src/utils/trading-days.ts` — 周末检查
+- 📝 `api/src/services/market-session.service.ts` — 重构为导入
+- 📝 `api/src/services/backtest.service.ts` — 4处 getDay + NaiveDate + dateToYYMMDD
+- 📝 `api/src/services/option-kline-collection.service.ts` — weekend + 时间解析
+- 📝 `api/src/utils/trading-hours.ts` — getETTime 内部改用统一模块
+- 📝 `api/src/services/market-data.service.ts` — NaiveDate 构造
+- 📝 `api/src/routes/candlesticks.ts` — NaiveDate 构造
+- 📝 `api/src/services/kline-history.service.ts` — ET→UTC 转换
+- 📝 `api/src/services/option-dynamic-exit.service.ts` — 收盘时间计算
+- 📝 `docker-compose.yml` / `docker-compose.dev.yml` / `Dockerfile` — TZ: UTC
+- 📝 `docs/guides/260307-错误规则集.md` — 新增规则 #17
+- 📝 `CLAUDE.md` — 规则表新增 #17
+- 📝 `.claude/hooks/rule-guard.mjs` — RULE_MAP 新增 #17
+
+**修复文档**: [时区管理统一化](docs/fixes/260323-时区管理统一化.md)
+
+---
+
 ## 2026-03-22
 
 ### 策略退出参数可配置化 + smartReverse 入场过滤

@@ -17,6 +17,7 @@
 import { getOptionDetail } from './futunn-option-chain.service';
 import { isTradingHours } from '../utils/trading-hours';
 import longportOptionQuoteService from './longport-option-quote.service';
+import { getMarketLocalDate, zonedTimeToUtc, getMarketTimeZone } from '../utils/market-time'; // 规则 #17
 
 // ============================================
 // 类型定义
@@ -569,25 +570,12 @@ class OptionDynamicExitService {
 
   /**
    * 获取美股收盘时间（美东时间16:00）
+   * 使用统一 market-time 模块（Intl.formatToParts 迭代收敛），自动处理 DST // 规则 #17
    */
   getMarketCloseTime(date: Date = new Date()): Date {
-    // 260225 Fix F: DST 自适应 — 用 Intl API 获取当前 ET 偏移量，不硬编码 -05:00
-    // 获取美东时间的日期部分
-    const etDateStr = date.toLocaleDateString('en-US', { timeZone: 'America/New_York' });
-    const [month, day, year] = etDateStr.split('/').map(Number);
-
-    // 计算当前 UTC 与 ET 的偏移量（自动适应 EST/EDT）
-    // 原理：同一个 UTC 时刻，转成 ET 字符串再解析回 Date，差值就是 UTC-ET 偏移
-    const utcMs = date.getTime();
-    const etStr = date.toLocaleString('en-US', { timeZone: 'America/New_York' });
-    const etAsLocal = new Date(etStr);
-    const offsetMs = utcMs - etAsLocal.getTime();
-
-    // 构造 ET 16:00:00 的本地时间表示，再加上偏移量得到真实 UTC 时间
-    const et1600Local = new Date(year, month - 1, day, 16, 0, 0, 0);
-    const closeTimeUtc = new Date(et1600Local.getTime() + offsetMs);
-
-    return closeTimeUtc;
+    const { year, month, day } = getMarketLocalDate(date, 'US'); // 规则 #17
+    const timeZone = getMarketTimeZone('US'); // 规则 #17
+    return zonedTimeToUtc({ year, month, day, hour: 16, minute: 0, timeZone }); // 规则 #17
   }
 
   /**

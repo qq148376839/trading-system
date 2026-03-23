@@ -11,6 +11,7 @@ import { getQuoteContext } from '../config/longport';
 import { retryWithBackoff } from '../utils/longport-rate-limiter';
 import { logger } from '../utils/logger';
 import pool from '../config/database';
+import { toNaiveDateParts } from '../utils/market-time'; // 规则 #17
 
 interface CandlestickData {
   close: number;
@@ -475,10 +476,11 @@ class MarketDataService {
       if (targetDate) {
         // 使用historyCandlesticksByOffset获取历史数据
         // 参数：symbol, period, adjustType, forward, datetime, count, tradeSessions(可选)
+        const targetParts = toNaiveDateParts(targetDate, 'US'); // 规则 #17
         const targetNaiveDate = new LbNaiveDate(
-          targetDate.getFullYear(),
-          targetDate.getMonth() + 1,
-          targetDate.getDate()
+          targetParts.year,
+          targetParts.month,
+          targetParts.day
         );
         const targetNaiveTime = new LbTime(
           targetDate.getHours() || 23,
@@ -707,8 +709,10 @@ class MarketDataService {
       
       // 使用LongPort SDK获取历史市场温度
       // 注意：NaiveDate的构造方式：new NaiveDate(year, month, day)，month从1开始
-      const start = new NaiveDate(startDate.getFullYear(), startDate.getMonth() + 1, startDate.getDate());
-      const end = new NaiveDate(endDate.getFullYear(), endDate.getMonth() + 1, endDate.getDate());
+      const startParts = toNaiveDateParts(startDate, 'US'); // 规则 #17
+      const endParts = toNaiveDateParts(endDate, 'US'); // 规则 #17
+      const start = new NaiveDate(startParts.year, startParts.month, startParts.day);
+      const end = new NaiveDate(endParts.year, endParts.month, endParts.day);
       
       const historyData = await quoteCtx.historyMarketTemperature(Market.US, start, end);
       

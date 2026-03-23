@@ -7,6 +7,7 @@
 import { getQuoteContext } from '../config/longport';
 import { logger } from '../utils/logger';
 import { getMarketFromSymbol } from '../utils/trading-days';
+import { getMarketTimeZone, getMarketLocalTime, isWeekend } from '../utils/market-time';
 import tradingDaysService from './trading-days.service';
 import configService from './config.service';
 
@@ -351,16 +352,7 @@ class TradingSessionService {
    * ⚠️ 重要：Longbridge API返回的交易时段时间（begTime/endTime）是市场本地时间
    * 因此需要将当前UTC时间转换为市场本地时间进行比较
    */
-  private getMarketTimeZone(market: 'US' | 'HK' | 'SH' | 'SZ'): string {
-    const timeZoneMap: Record<string, string> = {
-      'US': 'America/New_York', // 美东时间（EST/EDT，自动处理夏令时）
-      'HK': 'Asia/Hong_Kong',    // 香港时间（HKT，UTC+8）
-      'CN': 'Asia/Shanghai',     // 北京时间（CST，UTC+8）
-      'SH': 'Asia/Shanghai',     // 上海时间（同北京时间）
-      'SZ': 'Asia/Shanghai',     // 深圳时间（同北京时间）
-    };
-    return timeZoneMap[market] || 'UTC';
-  }
+  // getMarketTimeZone — 已迁移到 utils/market-time.ts（规则 #17）
 
   /**
    * 获取指定时区的当前时间（小时和分钟）
@@ -375,21 +367,7 @@ class TradingSessionService {
    * - 美股市场（America/New_York）：转换为美东时间 09:00:00 EST
    * - 港股市场（Asia/Hong_Kong）：转换为香港时间 22:00:00 HKT
    */
-  private getLocalTime(date: Date, timeZone: string): { hour: number; minute: number } {
-    // 使用 toLocaleString 将UTC时间转换为指定时区的本地时间
-    const localHour = parseInt(date.toLocaleString('en-US', {
-      timeZone,
-      hour: 'numeric',
-      hour12: false,
-    }));
-    
-    const localMinute = parseInt(date.toLocaleString('en-US', {
-      timeZone,
-      minute: 'numeric',
-    }));
-    
-    return { hour: localHour, minute: localMinute };
-  }
+  // getLocalTime — 已迁移到 utils/market-time.ts getMarketLocalTime（规则 #17）
 
   /**
    * 从配置中读取是否仅允许盘中交易时段
@@ -461,8 +439,8 @@ class TradingSessionService {
       // - 当前UTC时间：2025-12-24 14:00:00 UTC
       // - 转换为美东时间：2025-12-24 09:00:00 EST
       // - 比较：09:00 >= 09:30? 否，不在交易时段内
-      const timeZone = this.getMarketTimeZone(market);
-      const { hour: currentHour, minute: currentMinute } = this.getLocalTime(now, timeZone);
+      const timeZone = getMarketTimeZone(market);
+      const { hour: currentHour, minute: currentMinute } = getMarketLocalTime(now, market);
       const currentTimeMinutes = currentHour * 60 + currentMinute;
 
       // 检查是否在任何交易时段内
@@ -512,10 +490,9 @@ class TradingSessionService {
         const isTradDay = await tradingDaysService.isTradingDay(now, market);
         return isTradDay; // 交易日允许执行，非交易日拒绝
       } catch {
-        // 两个 API 都失败，用周末判断兜底
+        // 两个 API 都失败，用市场本地时区周末判断兜底（规则 #17）
         const now = currentTime || new Date();
-        const dayOfWeek = now.getDay();
-        return dayOfWeek !== 0 && dayOfWeek !== 6;
+        return !isWeekend(now, market);
       }
     }
   }

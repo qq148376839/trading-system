@@ -1,22 +1,24 @@
 /**
  * 美股交易时间工具函数
  * 用于判断当前是否在美股交易时间，以及计算智能缓存时长
- * 
+ *
  * 美股交易时间（美东时间）：
  * - 常规交易时间：9:30 AM - 4:00 PM
  * - 盘前交易时间：4:00 AM - 9:30 AM
  * - 盘后交易时间：4:00 PM - 8:00 PM
- * 
+ *
  * 对应北京时间（冬令时，UTC-5）：
  * - 常规交易时间：22:30 - 次日5:00
  * - 盘前交易时间：17:00 - 22:30
  * - 盘后交易时间：5:00 - 9:00
- * 
+ *
  * 对应北京时间（夏令时，UTC-4）：
  * - 常规交易时间：21:30 - 次日4:00
  * - 盘前交易时间：16:00 - 21:30
  * - 盘后交易时间：4:00 - 8:00
  */
+
+import { getMarketLocalTime } from './market-time'; // 规则 #17
 
 /**
  * 判断当前是否在美股常规交易时间
@@ -114,24 +116,13 @@ export function isNonTradingHours(date?: Date): boolean {
 
 /**
  * 获取美东时间的小时和分钟
- * 使用Intl API自动处理夏令时
+ * 使用统一 market-time 模块（Intl.formatToParts），自动处理夏令时 // 规则 #17
  * @param date 要转换的日期
  * @returns 包含小时和分钟的对象
  */
 function getETTime(date: Date): { hour: number; minute: number } {
-  // 使用Intl API获取美东时间
-  const etHour = parseInt(date.toLocaleString('en-US', {
-    timeZone: 'America/New_York',
-    hour: 'numeric',
-    hour12: false,
-  }));
-  
-  const etMinute = parseInt(date.toLocaleString('en-US', {
-    timeZone: 'America/New_York',
-    minute: 'numeric',
-  }));
-  
-  return { hour: etHour, minute: etMinute };
+  const { hour, minute } = getMarketLocalTime(date, 'US'); // 规则 #17
+  return { hour, minute };
 }
 
 /**

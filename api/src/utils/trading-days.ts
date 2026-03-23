@@ -6,6 +6,8 @@
  * 如果需要准确的交易日数据（包括节假日），请使用 trading-days.service.ts 中的异步方法。
  */
 
+import { isWeekend as isMarketWeekend } from './market-time';
+
 /**
  * 判断指定日期是否为交易日（同步版本，仅判断周末）
  * @param date 日期
@@ -16,10 +18,8 @@
  * 如需准确的交易日判断（包括节假日），请使用 tradingDaysService.isTradingDay()
  */
 export function isTradingDay(date: Date, market: 'US' | 'HK' | 'SH' | 'SZ' = 'US'): boolean {
-  const dayOfWeek = date.getDay();
-  
-  // 周末不是交易日
-  if (dayOfWeek === 0 || dayOfWeek === 6) {
+  // 使用市场本地时区判断周末（规则 #17）
+  if (isMarketWeekend(date, market)) {
     return false;
   }
 
