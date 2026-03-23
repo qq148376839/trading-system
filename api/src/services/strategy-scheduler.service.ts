@@ -92,6 +92,60 @@ function computeCooldownUntil(params: {
   return new Date(Date.now() + cooldownMinutes * 60000).toISOString();
 }
 
+/** 方向感知动态冷却：组退出记录 */
+interface GroupExitRecord {
+  cooldownEnd: number;               // 冷却结束时间戳(ms)
+  exitDirection: string | null;      // CALL/PUT
+  exitFinalScore: number;            // 退出时的 finalScore
+  exitPnL: number;                   // 退出时的 PnL（美元）
+  exitTime: number;                  // 退出时间戳(ms)
+  consecutiveSameDirection: number;  // 该组连续同方向退出次数
+  group: string;                     // 缓存的相关组名
+}
+
+/** 方向感知动态冷却：计算重入准备度 (0~1) */
+function calculateReentryReadiness(params: {
+  currentDirection: string | null;
+  currentFinalScore: number;
+  exitRecord: GroupExitRecord;
+  baseCooldownMinutes: number;
+}): number {
+  const { currentDirection, currentFinalScore, exitRecord, baseCooldownMinutes } = params;
+  const now = Date.now();
+
+  // 硬底线：退出后 2 分钟内一律阻止（防止边缘抖动）
+  if (now - exitRecord.exitTime < 2 * 60_000) {
+    return 0;
+  }
+
+  // 因子 1: 方向变化 (权重 0.35)
+  const directionChanged = currentDirection !== null
+    && exitRecord.exitDirection !== null
+    && currentDirection !== exitRecord.exitDirection;
+  const f1 = directionChanged ? 1.0 : 0.0;
+
+  // 因子 2: 分数变化 (权重 0.25)
+  const scoreDelta = Math.abs(currentFinalScore - exitRecord.exitFinalScore);
+  const f2 = Math.min(1.0, scoreDelta / 5.0);
+
+  // 因子 3: 时间衰减 (权重 0.20)
+  const minutesSinceExit = (now - exitRecord.exitTime) / 60_000;
+  const f3 = Math.min(1.0, minutesSinceExit / baseCooldownMinutes);
+
+  // 因子 4: 盈亏×方向交互 (权重 0.12)
+  const wasProfit = exitRecord.exitPnL >= 0;
+  let f4: number;
+  if (directionChanged && !wasProfit) f4 = 0.9;       // 方向变+亏损 → 高准备度
+  else if (directionChanged && wasProfit) f4 = 0.4;    // 方向变+盈利 → 中等
+  else if (!directionChanged && wasProfit) f4 = 0.7;   // 同向+盈利 → 较高
+  else f4 = 0.1;                                        // 同向+亏损 → 低
+
+  // 因子 5: 连续同向惩罚 (权重 0.08)
+  const f5 = Math.max(0, 1.0 - 0.35 * exitRecord.consecutiveSameDirection);
+
+  return 0.35 * f1 + 0.25 * f2 + 0.20 * f3 + 0.12 * f4 + 0.08 * f5;
+}
+
 // R5v2: 默认相关性分组（策略无配置时的回退）
 const DEFAULT_CORRELATION_GROUPS: Record<string, string> = {
   'SPY.US': 'INDEX_ETF',
@@ -139,8 +193,8 @@ class StrategyScheduler {
   private lastDailyResetDate: Map<number, string> = new Map();
   // R5v2: 跨标的入场保护状态（策略级共享内存）
   private crossSymbolState = new Map<number, {
-    activeEntries: Map<string, number>;  // symbol → entry timestamp (Date.now())
-    recentExits: Map<string, number>;    // symbol → cooldownEnd timestamp (ms)，退出后同组冷却
+    activeEntries: Map<string, number>;          // symbol → entry timestamp (Date.now())
+    recentExits: Map<string, GroupExitRecord>;   // symbol → GroupExitRecord，退出后同组冷却
   }>();
 
   /** R5v2: 获取或初始化策略的跨标的保护状态 */
@@ -160,10 +214,20 @@ class StrategyScheduler {
   }
 
   /**
-   * 记录标的退出 — 同时清除 activeEntries 并写入 recentExits
+   * 记录标的退出 — 同时清除 activeEntries 并写入 recentExits（含方向感知信息）
    * 使同组标的在冷却期内不参与竞价，防止退出后立即换仓
    */
-  private recordSymbolExit(strategyId: number, symbol: string, cooldownUntilStr: string | null): void {
+  private recordSymbolExit(
+    strategyId: number,
+    symbol: string,
+    cooldownUntilStr: string | null,
+    exitInfo?: {
+      direction: string | null;
+      finalScore: number;
+      pnl: number;
+      group: string;
+    }
+  ): void {
     const crossState = this.getCrossSymbolState(strategyId);
     crossState.activeEntries.delete(symbol);
     // 写入最近退出记录：冷却结束时间戳（ms），fallback 1 分钟
@@ -171,7 +235,29 @@ class StrategyScheduler {
       ? new Date(cooldownUntilStr).getTime()
       : Date.now() + 60_000;
     if (!isNaN(cooldownEnd) && cooldownEnd > Date.now()) {
-      crossState.recentExits.set(symbol, cooldownEnd);
+      const exitGroup = exitInfo?.group || symbol;
+      // 查找同组上一条退出记录，计算连续同方向次数
+      let prevConsecutive = 0;
+      if (exitInfo?.direction) {
+        for (const [, record] of crossState.recentExits) {
+          if (record.group === exitGroup && record.exitDirection === exitInfo.direction) {
+            prevConsecutive = record.consecutiveSameDirection;
+            break;
+          }
+        }
+      }
+      const record: GroupExitRecord = {
+        cooldownEnd,
+        exitDirection: exitInfo?.direction ?? null,
+        exitFinalScore: exitInfo?.finalScore ?? 0,
+        exitPnL: exitInfo?.pnl ?? 0,
+        exitTime: Date.now(),
+        consecutiveSameDirection: exitInfo?.direction
+          ? prevConsecutive + 1
+          : 0,
+        group: exitGroup,
+      };
+      crossState.recentExits.set(symbol, record);
     }
   }
 
@@ -674,7 +760,7 @@ class StrategyScheduler {
       }
 
       // Phase B: 并行评估 IDLE → 收集候选
-      const candidates: Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string }> = [];
+      const candidates: Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string; groupExitRecord: GroupExitRecord | null }> = [];
       for (let i = 0; i < idleSymbols.length; i += BATCH_SIZE) {
         const batch = idleSymbols.slice(i, i + BATCH_SIZE);
         const results = await Promise.all(
@@ -1347,7 +1433,12 @@ class StrategyScheduler {
                     strategyConfig: strategyConfig || {},
                   });
                   // 260317 Fix: MIT 回调也必须清除 activeEntries + 写入 recentExits（之前遗漏）
-                  this.recordSymbolExit(strategyId, instanceKeySymbol, mitCooldown);
+                  this.recordSymbolExit(strategyId, instanceKeySymbol, mitCooldown, {
+                    direction: tradeDirection,
+                    finalScore: Number(context.optionMeta?.finalScore ?? 0),
+                    pnl: tradePnL,
+                    group: getCorrelationGroup(instanceKeySymbol),
+                  });
                   await strategyInstance.updateState(instanceKeySymbol, 'IDLE', {
                     lastExitTime: new Date().toISOString(),
                     dailyTradeCount: prevDailyTradeCount + 1,
@@ -2489,7 +2580,7 @@ class StrategyScheduler {
     symbol: string,
     summary: ExecutionSummary,
     correlationMap?: Record<string, string>
-  ): Promise<{ symbol: string; intent: TradingIntent; finalScore: number; group: string } | null> {
+  ): Promise<{ symbol: string; intent: TradingIntent; finalScore: number; group: string; groupExitRecord: GroupExitRecord | null } | null> {
     try {
       const strategyConfig: any = (strategyInstance as any)?.config || {};
 
@@ -2602,22 +2693,18 @@ class StrategyScheduler {
         }
       }
 
-      // 260317: 同组最近退出冷却 — 退出后冷却期内同组标的不参与竞价，防止卖出后立即换仓
+      // 方向感知动态冷却：收集同组退出记录（不再硬阻止，交由 scoringAuction readiness 判定）
       const now = Date.now();
-      for (const [exitSym, cooldownEnd] of crossState.recentExits) {
-        if (now >= cooldownEnd) {
+      let groupExitRecord: GroupExitRecord | null = null;
+      for (const [exitSym, exitRec] of crossState.recentExits) {
+        if (now >= exitRec.cooldownEnd) {
           crossState.recentExits.delete(exitSym); // 已过期，清理
           continue;
         }
-        const exitGroup = getCorrelationGroup(exitSym, correlationMap);
+        const exitGroup = exitRec.group || getCorrelationGroup(exitSym, correlationMap);
         if (exitGroup === candidateGroup) {
-          const remainSec = Math.ceil((cooldownEnd - now) / 1000);
-          logger.info(
-            `[R5v2_GROUP_EXIT_COOLDOWN] 策略 ${strategyId}: ${symbol} ` +
-            `被同组最近退出标的 ${exitSym} 冷却阻止 (group=${candidateGroup}, 剩余${remainSec}s)`
-          );
-          summary.idle.push(`${symbol}(GROUP_EXIT_COOLDOWN:${exitSym})`);
-          return null;
+          groupExitRecord = exitRec;
+          break; // 只取第一条同组记录
         }
       }
 
@@ -2680,6 +2767,7 @@ class StrategyScheduler {
         intent,
         finalScore,
         group: getCorrelationGroup(symbol, correlationMap),
+        groupExitRecord: groupExitRecord || null,
       };
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -2697,9 +2785,9 @@ class StrategyScheduler {
    */
   private scoringAuction(
     strategyId: number,
-    candidates: Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string }>,
+    candidates: Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string; groupExitRecord: GroupExitRecord | null }>,
     correlationMap?: Record<string, string>
-  ): Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string }> {
+  ): Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string; groupExitRecord: GroupExitRecord | null }> {
     if (candidates.length === 0) {
       logger.debug(`[R5v2_AUCTION] 策略 ${strategyId}: 无候选，跳过竞价`);
       return [];
@@ -2708,18 +2796,54 @@ class StrategyScheduler {
     const crossState = this.getCrossSymbolState(strategyId);
     const now = Date.now();
 
-    // === Phase 1: 同组竞价 — 按 |finalScore| 降序，每组取最高 ===
-    const groupBest = new Map<string, { symbol: string; intent: TradingIntent; finalScore: number; group: string }>();
+    // === Phase 1: 同组竞价 + 方向感知动态冷却 ===
+    type CandidateType = typeof candidates[number];
     // 按 |finalScore| 降序排列
     const sorted = [...candidates].sort((a, b) => Math.abs(b.finalScore) - Math.abs(a.finalScore));
 
-    for (const candidate of sorted) {
-      if (!groupBest.has(candidate.group)) {
-        groupBest.set(candidate.group, candidate);
-      } else {
+    // 按组分桶
+    const groupCandidates = new Map<string, CandidateType[]>();
+    for (const c of sorted) {
+      if (!groupCandidates.has(c.group)) groupCandidates.set(c.group, []);
+      groupCandidates.get(c.group)!.push(c);
+    }
+
+    // 每组选代表（带 readiness 检查）
+    const groupBest = new Map<string, CandidateType>();
+    for (const [group, members] of groupCandidates) {
+      for (const candidate of members) {
+        if (!candidate.groupExitRecord) {
+          // 无冷却记录，直接选为组代表
+          groupBest.set(group, candidate);
+          break;
+        }
+        const currentDirection = (candidate.intent.metadata as Record<string, unknown>)?.optionDirection as string | null ?? null;
+        const readiness = calculateReentryReadiness({
+          currentDirection,
+          currentFinalScore: candidate.finalScore,
+          exitRecord: candidate.groupExitRecord,
+          baseCooldownMinutes: 8,
+        });
+        if (readiness >= 0.50) {
+          logger.info(
+            `[R5v2_DIRECTION_COOLING] 策略 ${strategyId}: ${candidate.symbol} ` +
+            `readiness=${readiness.toFixed(3)} >= 0.50，允许重入 ` +
+            `(dir=${currentDirection}, exitDir=${candidate.groupExitRecord.exitDirection}, group=${group})`
+          );
+          groupBest.set(group, candidate);
+          break;
+        }
         logger.info(
-          `[R5v2_PHASE1_FILTERED] 策略 ${strategyId}: ${candidate.symbol} ` +
-          `(score=${candidate.finalScore.toFixed(2)}) 被同组 ${groupBest.get(candidate.group)!.symbol} 淘汰`
+          `[R5v2_DIRECTION_COOLING] 策略 ${strategyId}: ${candidate.symbol} ` +
+          `readiness=${readiness.toFixed(3)} < 0.50，冷却阻止 ` +
+          `(dir=${currentDirection}, exitDir=${candidate.groupExitRecord.exitDirection}, ` +
+          `exitPnL=${candidate.groupExitRecord.exitPnL.toFixed(2)}, consec=${candidate.groupExitRecord.consecutiveSameDirection}, group=${group})`
+        );
+        // 继续尝试同组下一个候选人
+      }
+      if (!groupBest.has(group)) {
+        logger.info(
+          `[R5v2_DIRECTION_COOLING] 策略 ${strategyId}: group=${group} 所有候选均被冷却阻止，本轮无代表`
         );
       }
     }
@@ -3602,7 +3726,12 @@ class StrategyScheduler {
                 dailyTradeCount: expNpPrevTradeCount,
                 strategyConfig,
               });
-              this.recordSymbolExit(strategyId, symbol, expNpCooldown);
+              this.recordSymbolExit(strategyId, symbol, expNpCooldown, {
+                direction: context.optionMeta?.optionDirection || context.lastTradeDirection || null,
+                finalScore: Number(context.optionMeta?.finalScore ?? 0),
+                pnl: expNpAllocAmt > 0 ? -expNpAllocAmt : 0,
+                group: getCorrelationGroup(symbol),
+              });
               await strategyInstance.updateState(symbol, 'IDLE', {
                 ...POSITION_EXIT_CLEANUP,
                 lastExitTime: new Date().toISOString(),
@@ -3827,7 +3956,12 @@ class StrategyScheduler {
             dailyTradeCount: stockBpzPrevTradeCount,
             strategyConfig,
           });
-          this.recordSymbolExit(strategyId, symbol, stockBpzCooldown);
+          this.recordSymbolExit(strategyId, symbol, stockBpzCooldown, {
+            direction: context.optionMeta?.optionDirection || context.lastTradeDirection || null,
+            finalScore: Number(context.optionMeta?.finalScore ?? 0),
+            pnl: 0, // 券商无持仓，无法确认盈亏
+            group: getCorrelationGroup(symbol),
+          });
           return { actionTaken: true };
         }
 
@@ -3969,7 +4103,12 @@ class StrategyScheduler {
               dailyTradeCount: protPrevTradeCount,
               strategyConfig,
             });
-            this.recordSymbolExit(strategyId, symbol, protCooldown);
+            this.recordSymbolExit(strategyId, symbol, protCooldown, {
+              direction: context.optionMeta?.optionDirection || context.intent?.metadata?.optionDirection || null,
+              finalScore: Number(context.optionMeta?.finalScore ?? 0),
+              pnl: 0, // 保护单无法判断盈亏
+              group: getCorrelationGroup(symbol),
+            });
             // 释放资金
             if (context.allocationAmount) {
               await capitalManager.releaseAllocation(strategyId, parseFloat(String(context.allocationAmount)), symbol);
@@ -4203,7 +4342,12 @@ class StrategyScheduler {
             dailyTradeCount: expPrevTradeCount,
             strategyConfig,
           });
-          this.recordSymbolExit(strategyId, symbol, expCooldown);
+          this.recordSymbolExit(strategyId, symbol, expCooldown, {
+            direction: context.optionMeta?.optionDirection || context.lastTradeDirection || null,
+            finalScore: Number(context.optionMeta?.finalScore ?? 0),
+            pnl: expAllocAmt > 0 ? -expAllocAmt : 0,
+            group: getCorrelationGroup(symbol),
+          });
           await strategyInstance.updateState(symbol, 'IDLE', {
             ...POSITION_EXIT_CLEANUP,
             lastExitTime: new Date().toISOString(),
@@ -4351,7 +4495,12 @@ class StrategyScheduler {
             dailyTradeCount: bpzPrevTradeCount,
             strategyConfig,
           });
-          this.recordSymbolExit(strategyId, symbol, bpzCooldown);
+          this.recordSymbolExit(strategyId, symbol, bpzCooldown, {
+            direction: context.optionMeta?.optionDirection || context.lastTradeDirection || null,
+            finalScore: Number(context.optionMeta?.finalScore ?? 0),
+            pnl: bpzAllocAmt > 0 ? -bpzAllocAmt : 0,
+            group: getCorrelationGroup(symbol),
+          });
           await strategyInstance.updateState(symbol, 'IDLE', {
             ...POSITION_EXIT_CLEANUP,
             lastExitTime: new Date().toISOString(),
@@ -4422,7 +4571,12 @@ class StrategyScheduler {
             dailyTradeCount: parseInt(String(context.dailyTradeCount ?? 0), 10) || 0,
             strategyConfig,
           });
-          this.recordSymbolExit(strategyId, symbol, dynExitCooldown);
+          this.recordSymbolExit(strategyId, symbol, dynExitCooldown, {
+            direction: context.optionMeta?.optionDirection || context.lastTradeDirection || null,
+            finalScore: Number(context.optionMeta?.finalScore ?? 0),
+            pnl: pnl.netPnL,
+            group: getCorrelationGroup(symbol),
+          });
         }
 
         // 执行卖出
@@ -4504,7 +4658,12 @@ class StrategyScheduler {
             dailyTradeCount: bpzpPrevTradeCount,
             strategyConfig,
           });
-          this.recordSymbolExit(strategyId, symbol, bpzpCooldown);
+          this.recordSymbolExit(strategyId, symbol, bpzpCooldown, {
+            direction: context.optionMeta?.optionDirection || context.lastTradeDirection || null,
+            finalScore: Number(context.optionMeta?.finalScore ?? 0),
+            pnl: bpzpAllocAmt > 0 ? -bpzpAllocAmt : 0,
+            group: getCorrelationGroup(symbol),
+          });
           await strategyInstance.updateState(symbol, 'IDLE', {
             ...POSITION_EXIT_CLEANUP,
             lastExitTime: new Date().toISOString(),
@@ -5366,7 +5525,12 @@ class StrategyScheduler {
             dailyTradeCount: parseInt(String(ctx.dailyTradeCount ?? 0), 10) || 0,
             strategyConfig: {},
           });
-          this.recordSymbolExit(strategyId, row.symbol, brokerTermCooldown);
+          this.recordSymbolExit(strategyId, row.symbol, brokerTermCooldown, {
+            direction: ctx.optionMeta?.optionDirection || ctx.lastTradeDirection || null,
+            finalScore: Number(ctx.optionMeta?.finalScore ?? 0),
+            pnl: allocationAmount > 0 ? -allocationAmount : 0,
+            group: getCorrelationGroup(row.symbol),
+          });
           await stateManager.updateState(strategyId, row.symbol, 'IDLE', {
             ...POSITION_EXIT_CLEANUP,
             exitReason: 'BROKER_TERMINATED',

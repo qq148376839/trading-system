@@ -7,6 +7,12 @@
 
 ## 🆕 最近更新
 
+### 2026-03-24: 方向感知动态冷却（Direction-Aware Dynamic Cooling）
+
+**改动**: 组内冷却从固定时间硬阻止改为五因子动态评分。方向翻转时快速重入（readiness≈0.54），同方向重复时自动阻止（readiness≈0.19）。2min 硬底线防抖动。
+
+**修改文件**: `strategy-scheduler.service.ts`（GroupExitRecord + calculateReentryReadiness + 9处退出路径 + scoringAuction Phase 1）
+
 ### 2026-03-24: IRON_DOME + 卖单回调竞态条件修复（dailyRealizedPnL 重复计算）
 
 **问题**: IRON_DOME 与卖单回调竞态导致 `dailyRealizedPnL` 重复计算（-allocationAmount + tradePnL），PnL 膨胀约 10 倍，误触发熔断器。

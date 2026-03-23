@@ -2,6 +2,24 @@
 
 ## 2026-03-24
 
+### 方向感知动态冷却（Direction-Aware Dynamic Cooling）
+
+**背景**: 组内冷却（GROUP_EXIT_COOLDOWN）原为固定时间硬阻止，不区分方向/盈亏/分数变化。方向翻转时错过反转机会，同方向重复亏损时没有额外阻止。
+
+**改动**: 将硬冷却替换为五因子动态评分（`calculateReentryReadiness`），readiness >= 0.50 允许重入：
+- 方向变化（0.35）：CALL↔PUT 翻转给最高分
+- 分数变化（0.25）：|Δscore| / 5.0
+- 时间衰减（0.20）：minutesSinceExit / 8min
+- 盈亏×方向交互（0.12）：方向变+亏=0.9, 同向+亏=0.1 等
+- 连续同向惩罚（0.08）：3次同向→有效阻止
+- 硬底线：退出后 2min 内一律阻止
+
+**修改文件**:
+- `api/src/services/strategy-scheduler.service.ts` — GroupExitRecord 类型、calculateReentryReadiness()、recordSymbolExit 扩展（9处）、evaluateIdleSymbol 软传递、scoringAuction Phase 1 readiness 检查
+- `docs/analysis/260324-方向感知动态冷却分析.md` — 更新实施记录
+
+---
+
 ### IRON_DOME + 卖单回调竞态条件修复（dailyRealizedPnL 重复计算）
 
 **问题**: `reconciliationCheck`（IRON_DOME）与卖单回调之间存在竞态条件。卖单成交后 broker 持仓瞬间归零，如果监控循环在回调处理前运行，IRON_DOME 会将 `-allocationAmount`（最坏情况估算）写入 `dailyRealizedPnL`；随后卖单回调读取被污染的 context，在此基础上叠加实际 `tradePnL`，导致 PnL 膨胀约 10 倍（如实际亏损 $406 被记为 $4023），误触发熔断器。
