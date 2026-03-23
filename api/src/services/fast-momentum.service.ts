@@ -26,6 +26,7 @@ export interface FastMomentumResult {
   rSquared: number | null;
   deceleration: number | null;
   dataPoints: number;
+  longSlope: number | null;   // 5分钟 slope（null = 数据不足）
 }
 
 interface LinearRegressionResult {
@@ -131,9 +132,12 @@ const BUFFER_CAPACITY = 12; // 12 点 × ~5s = ~60s 窗口
 const MIN_DATA_POINTS = 6;  // 至少 6 个点才做判断
 const DECEL_THRESHOLD = 0.5; // 减速超过 50% 则拒绝
 const NEAR_ZERO_SLOPE = 0.0001; // 斜率接近零的阈值
+const LONG_BUFFER_CAPACITY = 60;   // 60 点 × ~5s = ~5min 窗口
+const LONG_MIN_DATA_POINTS = 20;   // 至少 20 个点（~100s 数据）
 
 class FastMomentumService {
   private buffers = new Map<string, RingBuffer<PriceSample>>();
+  private longBuffers = new Map<string, RingBuffer<PriceSample>>();
 
   /**
    * 批量喂入实时报价
@@ -141,12 +145,20 @@ class FastMomentumService {
    */
   feedQuotes(quotes: Map<string, number>): void {
     for (const [symbol, price] of quotes) {
+      // 短 buffer（60s）
       let buf = this.buffers.get(symbol);
       if (!buf) {
         buf = new RingBuffer<PriceSample>(BUFFER_CAPACITY);
         this.buffers.set(symbol, buf);
       }
       buf.push({ price, timestamp: Date.now() });
+      // 长 buffer（5min）
+      let longBuf = this.longBuffers.get(symbol);
+      if (!longBuf) {
+        longBuf = new RingBuffer<PriceSample>(LONG_BUFFER_CAPACITY);
+        this.longBuffers.set(symbol, longBuf);
+      }
+      longBuf.push({ price, timestamp: Date.now() });
     }
   }
 
@@ -167,6 +179,7 @@ class FastMomentumService {
         rSquared: null,
         deceleration: null,
         dataPoints: buf?.size() ?? 0,
+        longSlope: null,
       };
     }
 
@@ -186,6 +199,7 @@ class FastMomentumService {
         rSquared: fullReg.rSquared,
         deceleration: null,
         dataPoints: n,
+        longSlope: null,
       };
     }
     if (direction === 'PUT' && fullReg.slope >= 0) {
@@ -196,7 +210,40 @@ class FastMomentumService {
         rSquared: fullReg.rSquared,
         deceleration: null,
         dataPoints: n,
+        longSlope: null,
       };
+    }
+
+    // 2.5 长周期趋势方向检查（5分钟）
+    const longBuf = this.longBuffers.get(symbol);
+    let longSlope: number | null = null;
+    if (longBuf && longBuf.size() >= LONG_MIN_DATA_POINTS) {
+      const longPrices = longBuf.getAll().map(s => s.price);
+      const longReg = linearRegression(longPrices);
+      longSlope = longReg.slope;
+      // 如果 5 分钟趋势与入场方向明确相反 → 拒绝
+      if (direction === 'CALL' && longReg.slope < -NEAR_ZERO_SLOPE) {
+        return {
+          pass: false,
+          reason: `5分钟趋势反向: longSlope=${longReg.slope.toFixed(6)}, 60s slope=${fullReg.slope.toFixed(6)}`,
+          slope: fullReg.slope,
+          rSquared: fullReg.rSquared,
+          deceleration: null,
+          dataPoints: n,
+          longSlope,
+        };
+      }
+      if (direction === 'PUT' && longReg.slope > NEAR_ZERO_SLOPE) {
+        return {
+          pass: false,
+          reason: `5分钟趋势反向: longSlope=${longReg.slope.toFixed(6)}, 60s slope=${fullReg.slope.toFixed(6)}`,
+          slope: fullReg.slope,
+          rSquared: fullReg.rSquared,
+          deceleration: null,
+          dataPoints: n,
+          longSlope,
+        };
+      }
     }
 
     // 3. 减速检查：前半段 vs 后半段
@@ -216,6 +263,7 @@ class FastMomentumService {
         rSquared: fullReg.rSquared,
         deceleration: null,
         dataPoints: n,
+        longSlope,
       };
     }
 
@@ -229,6 +277,7 @@ class FastMomentumService {
         rSquared: fullReg.rSquared,
         deceleration: decelRatio,
         dataPoints: n,
+        longSlope,
       };
     }
 
@@ -240,21 +289,24 @@ class FastMomentumService {
       rSquared: fullReg.rSquared,
       deceleration: decelRatio,
       dataPoints: n,
+      longSlope,
     };
   }
 
   /** 停止跟踪某个标的 */
   removeSymbol(symbol: string): void {
     this.buffers.delete(symbol);
+    this.longBuffers.delete(symbol);
   }
 
   /** 日重置 / 策略停止时清空所有数据 */
   reset(): void {
     this.buffers.clear();
+    this.longBuffers.clear();
   }
 }
 
 export default new FastMomentumService();
 
 // 导出类和辅助函数供测试使用
-export { FastMomentumService, RingBuffer, linearRegression, BUFFER_CAPACITY, MIN_DATA_POINTS, DECEL_THRESHOLD, NEAR_ZERO_SLOPE };
+export { FastMomentumService, RingBuffer, linearRegression, BUFFER_CAPACITY, MIN_DATA_POINTS, DECEL_THRESHOLD, NEAR_ZERO_SLOPE, LONG_BUFFER_CAPACITY, LONG_MIN_DATA_POINTS };

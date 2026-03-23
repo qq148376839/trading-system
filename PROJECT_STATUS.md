@@ -7,6 +7,16 @@
 
 ## 🆕 最近更新
 
+### 2026-03-24: 入场优化 P0+P1 — intraScore 极值过滤 + 0DTE 追踪收紧 + 5 分钟长趋势
+
+**改动**: 3 项入场/退出优化 + Peak Reversal 数据采集
+1. |intraScore|>15 时加强 fastMo 门槛（slope>0.001, decel>0.7）
+2. 0DTE trail 收紧: 高波 15→12, 中波 12→10, 低波 10→8
+3. FastMo 增加 5min 长 buffer，longSlope 反向时拒绝入场
+4. |intraScore|>10 自动记录 momentumSnapshot 供后续回测
+
+**修改文件**: `option-intraday-strategy.ts`, `option-dynamic-exit.service.ts`, `fast-momentum.service.ts`
+
 ### 2026-03-24: 方向感知动态冷却（Direction-Aware Dynamic Cooling）
 
 **改动**: 组内冷却从固定时间硬阻止改为五因子动态评分。方向翻转时快速重入（readiness≈0.54），同方向重复时自动阻止（readiness≈0.19）。2min 硬底线防抖动。

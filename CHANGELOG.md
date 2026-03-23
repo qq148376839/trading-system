@@ -2,6 +2,23 @@
 
 ## 2026-03-24
 
+### 入场优化 P0+P1 — intraScore 极值过滤 + 0DTE 追踪收紧 + 5 分钟长趋势
+
+**背景**: 基于 106 笔交易数据分析，后半场（|intraScore|>15）追涨/追跌胜率低，0DTE 追踪回撤过宽导致利润回吐，60s 短窗口 fastMo 缺乏长周期趋势交叉验证。
+
+**改动**:
+1. **intraScore 极值过滤（P0-A）**: |intraScore|>15 时要求 |slope|>0.001 且 decelRatio>0.7，否则拒绝入场。回测可避免 #5 NVDA / #6 SPY 的 -$526 亏损
+2. **0DTE 追踪回撤收紧（P1-B）**: 高波 trail 15→12，中波 12→10，低波 10→8。trigger 保持 8% 不变
+3. **FastMo 5 分钟长 buffer（P1-A）**: 新增 60 点长缓冲区（~5min），checkGate 在短期方向确认后增加 5 分钟趋势方向检查，longSlope 反向时拒绝入场
+4. **Peak Reversal 数据采集**: |intraScore|>10 时自动记录 momentumSnapshot（slope/decel/longSlope/regime），为后续回测做数据积累
+
+**修改文件**:
+- `api/src/services/strategies/option-intraday-strategy.ts` — intraScore 极值过滤 + momentumSnapshot 采集
+- `api/src/services/option-dynamic-exit.service.ts` — 0DTE 波动率分桶 trail 参数收紧
+- `api/src/services/fast-momentum.service.ts` — longBuffers + longSlope + 5min 趋势检查
+
+---
+
 ### 方向感知动态冷却（Direction-Aware Dynamic Cooling）
 
 **背景**: 组内冷却（GROUP_EXIT_COOLDOWN）原为固定时间硬阻止，不区分方向/盈亏/分数变化。方向翻转时错过反转机会，同方向重复亏损时没有额外阻止。

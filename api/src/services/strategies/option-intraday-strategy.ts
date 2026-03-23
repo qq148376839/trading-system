@@ -235,6 +235,15 @@ interface OptionDecisionLogData {
   finalResult: 'SIGNAL_GENERATED' | 'NO_SIGNAL' | 'ERROR';
   rejectionReason?: string;
   rejectionCheckpoint?: string;
+  momentumSnapshot?: {
+    intraScore: number;
+    marketScore: number;
+    slope60s: number | null;
+    decelRatio: number | null;
+    longSlope: number | null;
+    direction: 'CALL' | 'PUT';
+    regime: string;
+  };
 }
 
 export class OptionIntradayStrategy extends StrategyBase {
@@ -717,6 +726,48 @@ export class OptionIntradayStrategy extends StrategyBase {
         `[${symbol}] FastMo过滤: ✓ (${fastMoResult.dataPoints}pts, slope=${fastMoResult.slope?.toFixed(6) ?? 'N/A'})`,
         { module: 'OptionStrategy.FastMo', strategyId: this.strategyId }
       );
+
+      // 5.55) 日内动量极值入场加强过滤
+      // 原理：|intraScore| > 15 表明日内动量已大量释放，继续追涨/追跌的边际收益递减
+      // 此时仅 slope 方向正确不够，需确认 slope 强度和持续性
+      const INTRA_EXTREME_THRESHOLD = 15;
+      const intraAbs = Math.abs(optionRec.intradayScore);
+      if (intraAbs > INTRA_EXTREME_THRESHOLD && fastMoResult.slope !== null) {
+        const slopeAbs = Math.abs(fastMoResult.slope);
+        const decel = fastMoResult.deceleration ?? 1.0;
+        const STRONG_SLOPE_MIN = 0.001;
+        const STRONG_DECEL_MIN = 0.7;
+        if (slopeAbs < STRONG_SLOPE_MIN || decel < STRONG_DECEL_MIN) {
+          logger.info(
+            `[${symbol}] 日内极值入场过滤: ✗ intra=${optionRec.intradayScore.toFixed(1)}, ` +
+            `|slope|=${slopeAbs.toFixed(6)}(需>${STRONG_SLOPE_MIN}), decel=${decel.toFixed(3)}(需>${STRONG_DECEL_MIN})`,
+            { module: 'OptionStrategy.IntraExtremeFilter', strategyId: this.strategyId }
+          );
+          logData.finalResult = 'NO_SIGNAL';
+          logData.rejectionReason = `日内极值过滤: intra=${optionRec.intradayScore.toFixed(1)}, |slope|=${slopeAbs.toFixed(6)}, decel=${decel.toFixed(3)}`;
+          logData.rejectionCheckpoint = 'intra_extreme_filter';
+          this.logDecision(logData);
+          return null;
+        }
+        logger.info(
+          `[${symbol}] 日内极值入场过滤: ✓ intra=${optionRec.intradayScore.toFixed(1)}, ` +
+          `|slope|=${slopeAbs.toFixed(6)}, decel=${decel.toFixed(3)}`,
+          { module: 'OptionStrategy.IntraExtremeFilter', strategyId: this.strategyId }
+        );
+      }
+
+      // Peak Reversal 数据采集：|intraScore| > 10 时记录详细动量快照
+      if (Math.abs(optionRec.intradayScore) > 10) {
+        logData.momentumSnapshot = {
+          intraScore: optionRec.intradayScore,
+          marketScore: optionRec.marketScore,
+          slope60s: fastMoResult.slope,
+          decelRatio: fastMoResult.deceleration,
+          longSlope: fastMoResult.longSlope,
+          direction,
+          regime: regimeResult.regime,
+        };
+      }
 
       // 5.6) 开盘冲量守卫（Opening Impulse Exhaustion Filter）
       const impulseGuard = this.cfg.tradeWindow?.openImpulseGuard;
