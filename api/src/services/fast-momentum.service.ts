@@ -131,6 +131,7 @@ function linearRegression(values: number[]): LinearRegressionResult {
 const BUFFER_CAPACITY = 12; // 12 点 × ~5s = ~60s 窗口
 const MIN_DATA_POINTS = 6;  // 至少 6 个点才做判断
 const DECEL_THRESHOLD = 0.5; // 减速超过 50% 则拒绝
+const DECEL_UPPER_BOUND = 5.0; // 加速超过 5 倍 = 冲量尾端爆发，不可持续
 const NEAR_ZERO_SLOPE = 0.0001; // 斜率接近零的阈值
 const LONG_BUFFER_CAPACITY = 60;   // 60 点 × ~5s = ~5min 窗口
 const LONG_MIN_DATA_POINTS = 20;   // 至少 20 个点（~100s 数据）
@@ -281,6 +282,20 @@ class FastMomentumService {
       };
     }
 
+    // 3.5 异常加速检查：decel >> 1 意味着后半段比前半段快数倍
+    // 这通常是开盘冲量尾端的爆发信号，不可持续，入场即追顶
+    if (decelRatio > DECEL_UPPER_BOUND) {
+      return {
+        pass: false,
+        reason: `异常加速: decel=${decelRatio.toFixed(1)}>${DECEL_UPPER_BOUND}（冲量尾端爆发）`,
+        slope: fullReg.slope,
+        rSquared: fullReg.rSquared,
+        deceleration: decelRatio,
+        dataPoints: n,
+        longSlope,
+      };
+    }
+
     // 4. 全部通过
     return {
       pass: true,
@@ -309,4 +324,4 @@ class FastMomentumService {
 export default new FastMomentumService();
 
 // 导出类和辅助函数供测试使用
-export { FastMomentumService, RingBuffer, linearRegression, BUFFER_CAPACITY, MIN_DATA_POINTS, DECEL_THRESHOLD, NEAR_ZERO_SLOPE, LONG_BUFFER_CAPACITY, LONG_MIN_DATA_POINTS };
+export { FastMomentumService, RingBuffer, linearRegression, BUFFER_CAPACITY, MIN_DATA_POINTS, DECEL_THRESHOLD, DECEL_UPPER_BOUND, NEAR_ZERO_SLOPE, LONG_BUFFER_CAPACITY, LONG_MIN_DATA_POINTS };

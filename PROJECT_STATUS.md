@@ -7,6 +7,12 @@
 
 ## 🆕 最近更新
 
+### 2026-03-24: FastMo decelRatio 加上界 — 拦截开盘冲量尾端爆发
+
+**改动**: decelRatio > 5.0 时拒绝入场（"异常加速: 冲量尾端爆发"）。同步更新日内极值过滤的 decel 上界。修复预存测试。
+
+**修改文件**: `fast-momentum.service.ts`, `option-intraday-strategy.ts`, `fast-momentum.test.ts`
+
 ### 2026-03-24: Peak Reversal (REV_INTRADAY) — FastMo 拒绝后日内极值反向入场
 
 **改动**: FastMo 拒绝顺势信号时，若 |intraScore|>15 且距收盘>90min，尝试反方向入场（半仓 + 止损25%/止盈35%）。默认关闭，需在策略配置中启用 `smartReverse.peakReversal.enabled`。per-position exitRules 使 processOptionDynamicExit 自动应用更紧止损。

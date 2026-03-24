@@ -2,6 +2,22 @@
 
 ## 2026-03-24
 
+### FastMo decelRatio 加上界 — 拦截开盘冲量尾端爆发
+
+**背景**: 3/24 TSLA C392500 在开盘17分钟后入场，2分钟内止损亏损 $395。根因排查发现 decelRatio=47（后半段加速度是前半段的47倍），属于冲量尾端的不可持续爆发，但 FastMo 只有下界检查（<0.5 拒绝），没有上界。极值过滤同样因 decel 结构性虚高而失效。
+
+**改动**:
+1. `fast-momentum.service.ts`: 新增 `DECEL_UPPER_BOUND=5.0`，decelRatio > 5 时拒绝入场（"异常加速: 冲量尾端爆发"）
+2. `option-intraday-strategy.ts`: 日内极值过滤增加 decel 上界检查（decel > 5.0 → 拒绝），与 FastMo 一致
+3. 修复预存测试：buffer 容量溢出测试适配 longSlope 行为 + 新增异常加速测试用例
+
+**修改文件**:
+- `api/src/services/fast-momentum.service.ts` — DECEL_UPPER_BOUND + checkGate 上界检查
+- `api/src/services/strategies/option-intraday-strategy.ts` — 极值过滤 decel 上界
+- `api/src/__tests__/fast-momentum.test.ts` — 异常加速测试 + 修复 longSlope 测试
+
+---
+
 ### Peak Reversal (REV_INTRADAY) — FastMo 拒绝后日内极值反向入场
 
 **背景**: 当日内动量达到极值（|intraScore|>15）后反转，正常顺势信号被 FastMo 拒绝（slope 已反向）。此前这类信号直接丢弃，但极值反转本身是高概率交易机会。

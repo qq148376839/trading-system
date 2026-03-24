@@ -20,6 +20,7 @@ import {
   BUFFER_CAPACITY,
   MIN_DATA_POINTS,
   DECEL_THRESHOLD,
+  DECEL_UPPER_BOUND,
 } from '../services/fast-momentum.service';
 
 // ============================================
@@ -227,6 +228,20 @@ describe('FastMomentumService', () => {
       expect(result.deceleration).toBeGreaterThanOrEqual(DECEL_THRESHOLD);
     });
 
+    it('异常加速（>5x）→ pass: false（冲量尾端爆发）', () => {
+      // 前半段几乎不动，后半段突然暴涨 → decel >> 5
+      // 模拟开盘冲量场景：前30秒缓慢 + 后30秒爆发
+      const prices = [100, 100.01, 100.02, 100.03, 100.04, 100.05,
+                       100.1, 100.5, 101, 102, 103.5, 105];
+      for (const p of prices) {
+        service.feedQuotes(new Map([['BLOW', p]]));
+      }
+      const result = service.checkGate('BLOW', 'CALL');
+      expect(result.pass).toBe(false);
+      expect(result.reason).toContain('异常加速');
+      expect(result.deceleration).toBeGreaterThan(DECEL_UPPER_BOUND);
+    });
+
     it('斜率接近零 → 跳过减速检查，不除零', () => {
       // 前半段几乎平坦，后半段微弱上涨
       const prices = [100, 100.00001, 100.00002, 100.00003, 100.00004, 100.00005,
@@ -277,7 +292,8 @@ describe('FastMomentumService', () => {
     });
 
     it('超过 buffer 容量后只保留最新数据', () => {
-      // 先喂 12 个下跌，再喂 12 个上涨 → 应该只看到上涨
+      // 先喂 12 个下跌，再喂 12 个上涨 → 短 buffer 应该只看到上涨
+      // 注意：长 buffer (60点) 会同时包含下跌和上涨数据，longSlope 可能为负
       for (let i = 0; i < BUFFER_CAPACITY; i++) {
         service.feedQuotes(new Map([['TEST', 100 - i]]));
       }
@@ -285,8 +301,10 @@ describe('FastMomentumService', () => {
         service.feedQuotes(new Map([['TEST', 80 + i * 0.5]]));
       }
       const result = service.checkGate('TEST', 'CALL');
-      expect(result.pass).toBe(true);
+      // 短 buffer slope > 0（上涨），但长 buffer 包含先跌后涨 → longSlope 为负 → 拒绝 CALL
+      expect(result.pass).toBe(false);
       expect(result.slope).toBeGreaterThan(0);
+      expect(result.reason).toContain('5分钟趋势反向');
     });
   });
 

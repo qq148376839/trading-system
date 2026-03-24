@@ -793,14 +793,18 @@ export class OptionIntradayStrategy extends StrategyBase {
         const decel = fastMoResult.deceleration ?? 1.0;
         const STRONG_SLOPE_MIN = 0.001;
         const STRONG_DECEL_MIN = 0.7;
-        if (slopeAbs < STRONG_SLOPE_MIN || decel < STRONG_DECEL_MIN) {
+        const STRONG_DECEL_MAX = 5.0; // 与 FastMo DECEL_UPPER_BOUND 一致
+        if (slopeAbs < STRONG_SLOPE_MIN || decel < STRONG_DECEL_MIN || decel > STRONG_DECEL_MAX) {
+          const reason = decel > STRONG_DECEL_MAX
+            ? `异常加速 decel=${decel.toFixed(1)}>${STRONG_DECEL_MAX}`
+            : `|slope|=${slopeAbs.toFixed(6)}或decel=${decel.toFixed(3)}不足`;
           logger.info(
             `[${symbol}] 日内极值入场过滤: ✗ intra=${optionRec.intradayScore.toFixed(1)}, ` +
-            `|slope|=${slopeAbs.toFixed(6)}(需>${STRONG_SLOPE_MIN}), decel=${decel.toFixed(3)}(需>${STRONG_DECEL_MIN})`,
+            `|slope|=${slopeAbs.toFixed(6)}(需>${STRONG_SLOPE_MIN}), decel=${decel.toFixed(3)}(需∈[${STRONG_DECEL_MIN},${STRONG_DECEL_MAX}]) — ${reason}`,
             { module: 'OptionStrategy.IntraExtremeFilter', strategyId: this.strategyId }
           );
           logData.finalResult = 'NO_SIGNAL';
-          logData.rejectionReason = `日内极值过滤: intra=${optionRec.intradayScore.toFixed(1)}, |slope|=${slopeAbs.toFixed(6)}, decel=${decel.toFixed(3)}`;
+          logData.rejectionReason = `日内极值过滤: intra=${optionRec.intradayScore.toFixed(1)}, ${reason}`;
           logData.rejectionCheckpoint = 'intra_extreme_filter';
           this.logDecision(logData);
           return null;
