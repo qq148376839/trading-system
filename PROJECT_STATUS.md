@@ -7,6 +7,12 @@
 
 ## 🆕 最近更新
 
+### 2026-03-24: Peak Reversal (REV_INTRADAY) — FastMo 拒绝后日内极值反向入场
+
+**改动**: FastMo 拒绝顺势信号时，若 |intraScore|>15 且距收盘>90min，尝试反方向入场（半仓 + 止损25%/止盈35%）。默认关闭，需在策略配置中启用 `smartReverse.peakReversal.enabled`。per-position exitRules 使 processOptionDynamicExit 自动应用更紧止损。
+
+**修改文件**: `market-regime-detector.service.ts`, `option-intraday-strategy.ts`, `strategy-scheduler.service.ts`
+
 ### 2026-03-24: 入场优化 P0+P1 — intraScore 极值过滤 + 0DTE 追踪收紧 + 5 分钟长趋势
 
 **改动**: 3 项入场/退出优化 + Peak Reversal 数据采集

@@ -2,6 +2,27 @@
 
 ## 2026-03-24
 
+### Peak Reversal (REV_INTRADAY) — FastMo 拒绝后日内极值反向入场
+
+**背景**: 当日内动量达到极值（|intraScore|>15）后反转，正常顺势信号被 FastMo 拒绝（slope 已反向）。此前这类信号直接丢弃，但极值反转本身是高概率交易机会。
+
+**改动**:
+1. **SmartReverseConfig 扩展**: 新增 `peakReversal` 子配置（enabled/intradayThreshold/minRemainingMinutes/positionMultiplier/stopLossPercent/takeProfitPercent），默认关闭
+2. **FastMo 拒绝后反向尝试**: 当 peakReversal 启用且 |intraScore|>15 且距收盘>90min 且非宏观 smartReverse 时，反向调用 FastMo，通过则入场
+3. **intra extreme filter 跳过**: REV_INTRADAY 以高 |intraScore| 为触发条件，不被极值过滤拦截
+4. **仓位缩减**: 反向交易使用半仓（×0.5）
+5. **更紧止损止盈**: stopLoss=25%（正常35%）、takeProfit=35%（正常45%），通过 per-position exitRules 自动生效
+6. **per-position exitRules**: processOptionDynamicExit 优先读取持仓级 exitRules，fallback 到策略级配置
+
+**安全保障**: 默认关闭 + 双重反转保护 + FastMo 双向验证 + 半仓 + 更紧止损
+
+**修改文件**:
+- `api/src/services/market-regime-detector.service.ts` — SmartReverseConfig + DEFAULT 扩展
+- `api/src/services/strategies/option-intraday-strategy.ts` — Peak Reversal 核心逻辑 + 仓位 + exitRules
+- `api/src/services/strategy-scheduler.service.ts` — per-position exitRules 支持
+
+---
+
 ### 入场优化 P0+P1 — intraScore 极值过滤 + 0DTE 追踪收紧 + 5 分钟长趋势
 
 **背景**: 基于 106 笔交易数据分析，后半场（|intraScore|>15）追涨/追跌胜率低，0DTE 追踪回撤过宽导致利润回吐，60s 短窗口 fastMo 缺乏长周期趋势交叉验证。
