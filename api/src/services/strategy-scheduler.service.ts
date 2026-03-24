@@ -4437,15 +4437,18 @@ class StrategyScheduler {
         peakPnLPercent: (context.peakPnLPercent && context.entryTime) ? context.peakPnLPercent : 0,
       };
 
-      // 7. 检查是否应该平仓（传入用户配置的止盈止损比例）
-      const exitRulesOverride = (strategyConfig?.exitRules || strategyConfig?.tradeWindow?.zdteCooldownMinutes != null) ? {
-        takeProfitPercent: (() => { const v = Number(strategyConfig?.exitRules?.takeProfitPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
-        stopLossPercent: (() => { const v = Number(strategyConfig?.exitRules?.stopLossPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
+      // 7. 检查是否应该平仓（优先使用 per-position exitRules，fallback 到 strategy-level config）
+      // per-position exitRules 来自 REV_INTRADAY 等特殊入场路径，包含更紧的止损止盈
+      const positionExitRules = context.optionMeta?.exitRules;
+      const effectiveExitRules = positionExitRules || strategyConfig?.exitRules;
+      const exitRulesOverride = (effectiveExitRules || strategyConfig?.tradeWindow?.zdteCooldownMinutes != null) ? {
+        takeProfitPercent: (() => { const v = Number(effectiveExitRules?.takeProfitPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
+        stopLossPercent: (() => { const v = Number(effectiveExitRules?.stopLossPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
         non0DTECooldownMinutes: (() => { const v = Number(strategyConfig?.tradeWindow?.zdteCooldownMinutes); return isNaN(v) || v < 0 ? undefined : v; })(),
-        trailingStopTrigger: (() => { const v = Number(strategyConfig?.exitRules?.trailingStopTrigger); return isNaN(v) || v <= 0 ? undefined : v; })(),
-        trailingStopPercent: (() => { const v = Number(strategyConfig?.exitRules?.trailingStopPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
+        trailingStopTrigger: (() => { const v = Number(effectiveExitRules?.trailingStopTrigger); return isNaN(v) || v <= 0 ? undefined : v; })(),
+        trailingStopPercent: (() => { const v = Number(effectiveExitRules?.trailingStopPercent); return isNaN(v) || v <= 0 ? undefined : v; })(),
         profitLockSteps: (() => {
-          const steps = strategyConfig?.exitRules?.profitLockSteps;
+          const steps = effectiveExitRules?.profitLockSteps;
           if (!Array.isArray(steps) || steps.length === 0) return undefined;
           return steps
             .map((s: Record<string, unknown>) => ({ threshold: Number(s.threshold), floor: Number(s.floor) }))

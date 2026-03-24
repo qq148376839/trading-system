@@ -32,6 +32,14 @@ export interface SmartReverseConfig {
     reversed: number;                 // 反向交易仓位系数，默认 1.0
     uncertain: number;                // UNCERTAIN 仓位系数，默认 0.5
   };
+  peakReversal?: {
+    enabled: boolean;                 // 默认 false
+    intradayThreshold: number;        // |intraScore| 触发阈值，默认 15
+    minRemainingMinutes: number;      // 距收盘最少分钟数，默认 90
+    positionMultiplier: number;       // 仓位系数，默认 0.5（半仓）
+    stopLossPercent: number;          // 止损百分比，默认 25（比正常 35% 更紧）
+    takeProfitPercent: number;        // 止盈百分比，默认 35（比正常 45% 略低）
+  };
 }
 
 export interface RegimeMetrics {
@@ -67,6 +75,14 @@ export const DEFAULT_SMART_REVERSE_CONFIG: SmartReverseConfig = {
   positionMultiplier: {
     reversed: 1.0,
     uncertain: 0.5,
+  },
+  peakReversal: {
+    enabled: false,
+    intradayThreshold: 15,
+    minRemainingMinutes: 90,
+    positionMultiplier: 0.5,
+    stopLossPercent: 25,
+    takeProfitPercent: 35,
   },
 };
 
