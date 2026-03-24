@@ -222,28 +222,15 @@ class FastMomentumService {
       const longPrices = longBuf.getAll().map(s => s.price);
       const longReg = linearRegression(longPrices);
       longSlope = longReg.slope;
-      // 如果 5 分钟趋势与入场方向明确相反 → 拒绝
-      if (direction === 'CALL' && longReg.slope < -NEAR_ZERO_SLOPE) {
-        return {
-          pass: false,
-          reason: `5分钟趋势反向: longSlope=${longReg.slope.toFixed(6)}, 60s slope=${fullReg.slope.toFixed(6)}`,
-          slope: fullReg.slope,
-          rSquared: fullReg.rSquared,
-          deceleration: null,
-          dataPoints: n,
-          longSlope,
-        };
-      }
-      if (direction === 'PUT' && longReg.slope > NEAR_ZERO_SLOPE) {
-        return {
-          pass: false,
-          reason: `5分钟趋势反向: longSlope=${longReg.slope.toFixed(6)}, 60s slope=${fullReg.slope.toFixed(6)}`,
-          slope: fullReg.slope,
-          rSquared: fullReg.rSquared,
-          deceleration: null,
-          dataPoints: n,
-          longSlope,
-        };
+      // 5 分钟趋势与入场方向相反 → 记录日志但不拒绝（降级为观察指标）
+      if (
+        (direction === 'CALL' && longReg.slope < -NEAR_ZERO_SLOPE) ||
+        (direction === 'PUT' && longReg.slope > NEAR_ZERO_SLOPE)
+      ) {
+        logger.info(
+          `[${symbol}] FastMo: 5分钟趋势反向(仅日志) longSlope=${longReg.slope.toFixed(6)}, 60s slope=${fullReg.slope.toFixed(6)}`,
+          { module: 'FastMomentum.LongSlope' }
+        );
       }
     }
 

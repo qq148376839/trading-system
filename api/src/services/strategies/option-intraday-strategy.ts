@@ -711,110 +711,22 @@ export class OptionIntradayStrategy extends StrategyBase {
       logData.selectedStrategy = selectedStrategy;
 
       // 5.5) 快动量 Gate — 防追高
-      let isRevIntraday = false;
       const fastMoResult = fastMomentumService.checkGate(symbol, direction);
       if (!fastMoResult.pass) {
-        // Peak Reversal: FastMo 拒绝后尝试反方向入场
-        const peakCfg = smartReverseConfig.peakReversal!;
-        const intraScore = optionRec.intradayScore;
-        const marketCloseMinutes = 16 * 60; // 16:00 ET
-        const remainingMinutes = marketCloseMinutes - etMinutesCooldown;
-
-        if (
-          peakCfg.enabled &&
-          smartReverseConfig.enabled &&
-          !regimeResult.shouldReverse &&
-          Math.abs(intraScore) > peakCfg.intradayThreshold &&
-          remainingMinutes > peakCfg.minRemainingMinutes
-        ) {
-          // 确定反向方向：intraScore > 0 → 日内已大涨 → 买 PUT；反之买 CALL
-          const revDirection: 'CALL' | 'PUT' = intraScore > 0 ? 'PUT' : 'CALL';
-          const revFastMo = fastMomentumService.checkGate(symbol, revDirection);
-
-          if (revFastMo.pass) {
-            // 反向 FastMo 通过：覆盖方向和策略
-            const originalDirection = direction;
-            direction = revDirection;
-            selectedStrategy = revDirection === 'CALL' ? 'DIRECTIONAL_CALL' : 'DIRECTIONAL_PUT';
-            strategyReason = `[PEAK_REVERSAL] intra=${intraScore.toFixed(1)} → 反向${revDirection} (原${originalDirection})`;
-            isRevIntraday = true;
-            (logData as any).peakReversal = {
-              triggered: true,
-              originalDirection,
-              reversedDirection: revDirection,
-              intraScore,
-              revFastMoSlope: revFastMo.slope,
-              remainingMinutes,
-            };
-            logger.info(
-              `[${symbol}] [PEAK_REVERSAL] 触发: intra=${intraScore.toFixed(1)} > ${peakCfg.intradayThreshold} | ` +
-              `${originalDirection}→${revDirection} | revSlope=${revFastMo.slope?.toFixed(6) ?? 'N/A'} | ` +
-              `剩余${remainingMinutes}min`,
-              { module: 'OptionStrategy.PeakReversal', strategyId: this.strategyId }
-            );
-          } else {
-            logger.info(
-              `[${symbol}] [PEAK_REVERSAL] 反向FastMo未通过: ${revFastMo.reason} | intra=${intraScore.toFixed(1)}`,
-              { module: 'OptionStrategy.PeakReversal', strategyId: this.strategyId }
-            );
-            logData.finalResult = 'NO_SIGNAL';
-            logData.rejectionReason = `快动量过滤: ${fastMoResult.reason} (PeakReversal反向也未通过: ${revFastMo.reason})`;
-            logData.rejectionCheckpoint = 'fast_momentum';
-            this.logDecision(logData);
-            return null;
-          }
-        } else {
-          logger.info(
-            `[${symbol}] FastMo过滤: ✗ ${fastMoResult.reason} slope=${fastMoResult.slope?.toFixed(6) ?? 'N/A'} decel=${fastMoResult.deceleration?.toFixed(3) ?? 'N/A'}`,
-            { module: 'OptionStrategy.FastMo', strategyId: this.strategyId }
-          );
-          logData.finalResult = 'NO_SIGNAL';
-          logData.rejectionReason = `快动量过滤: ${fastMoResult.reason}`;
-          logData.rejectionCheckpoint = 'fast_momentum';
-          this.logDecision(logData);
-          return null;
-        }
-      }
-      if (!isRevIntraday) {
         logger.info(
-          `[${symbol}] FastMo过滤: ✓ (${fastMoResult.dataPoints}pts, slope=${fastMoResult.slope?.toFixed(6) ?? 'N/A'})`,
+          `[${symbol}] FastMo过滤: ✗ ${fastMoResult.reason} slope=${fastMoResult.slope?.toFixed(6) ?? 'N/A'} decel=${fastMoResult.deceleration?.toFixed(3) ?? 'N/A'}`,
           { module: 'OptionStrategy.FastMo', strategyId: this.strategyId }
         );
+        logData.finalResult = 'NO_SIGNAL';
+        logData.rejectionReason = `快动量过滤: ${fastMoResult.reason}`;
+        logData.rejectionCheckpoint = 'fast_momentum';
+        this.logDecision(logData);
+        return null;
       }
-
-      // 5.55) 日内动量极值入场加强过滤
-      // 原理：|intraScore| > 15 表明日内动量已大量释放，继续追涨/追跌的边际收益递减
-      // 此时仅 slope 方向正确不够，需确认 slope 强度和持续性
-      // REV_INTRADAY 跳过：高 |intraScore| 正是其触发条件，不应被此过滤拦截
-      const INTRA_EXTREME_THRESHOLD = 15;
-      const intraAbs = Math.abs(optionRec.intradayScore);
-      if (!isRevIntraday && intraAbs > INTRA_EXTREME_THRESHOLD && fastMoResult.slope !== null) {
-        const slopeAbs = Math.abs(fastMoResult.slope);
-        const decel = fastMoResult.deceleration ?? 1.0;
-        const STRONG_SLOPE_MIN = 0.001;
-        const STRONG_DECEL_MIN = 0.7;
-        const STRONG_DECEL_MAX = 5.0; // 与 FastMo DECEL_UPPER_BOUND 一致
-        if (slopeAbs < STRONG_SLOPE_MIN || decel < STRONG_DECEL_MIN || decel > STRONG_DECEL_MAX) {
-          const reason = decel > STRONG_DECEL_MAX
-            ? `异常加速 decel=${decel.toFixed(1)}>${STRONG_DECEL_MAX}`
-            : `|slope|=${slopeAbs.toFixed(6)}或decel=${decel.toFixed(3)}不足`;
-          logger.info(
-            `[${symbol}] 日内极值入场过滤: ✗ intra=${optionRec.intradayScore.toFixed(1)}, ` +
-            `|slope|=${slopeAbs.toFixed(6)}(需>${STRONG_SLOPE_MIN}), decel=${decel.toFixed(3)}(需∈[${STRONG_DECEL_MIN},${STRONG_DECEL_MAX}]) — ${reason}`,
-            { module: 'OptionStrategy.IntraExtremeFilter', strategyId: this.strategyId }
-          );
-          logData.finalResult = 'NO_SIGNAL';
-          logData.rejectionReason = `日内极值过滤: intra=${optionRec.intradayScore.toFixed(1)}, ${reason}`;
-          logData.rejectionCheckpoint = 'intra_extreme_filter';
-          this.logDecision(logData);
-          return null;
-        }
-        logger.info(
-          `[${symbol}] 日内极值入场过滤: ✓ intra=${optionRec.intradayScore.toFixed(1)}, ` +
-          `|slope|=${slopeAbs.toFixed(6)}, decel=${decel.toFixed(3)}`,
-          { module: 'OptionStrategy.IntraExtremeFilter', strategyId: this.strategyId }
-        );
-      }
+      logger.info(
+        `[${symbol}] FastMo过滤: ✓ (${fastMoResult.dataPoints}pts, slope=${fastMoResult.slope?.toFixed(6) ?? 'N/A'})`,
+        { module: 'OptionStrategy.FastMo', strategyId: this.strategyId }
+      );
 
       // Peak Reversal 数据采集：|intraScore| > 10 时记录详细动量快照
       if (Math.abs(optionRec.intradayScore) > 10) {
@@ -857,15 +769,22 @@ export class OptionIntradayStrategy extends StrategyBase {
               (direction === 'CALL' && moveFromOpen > 0) ||
               (direction === 'PUT' && moveFromOpen < 0);
 
+            const hoursElapsed = Math.max(minutesSinceOpen / 60, 1 / 60); // 至少 1 分钟防除零
+            const moveATRPerHour = moveATR / hoursElapsed;
+
             logger.info(
               `[${symbol}] 开盘冲量: move=${moveFromOpen > 0 ? '+' : ''}${moveFromOpen.toFixed(2)} ` +
-              `(${moveATR.toFixed(2)} ATR) | open=${openPrice.toFixed(2)} now=${currentPrice.toFixed(2)} | ` +
+              `(${moveATR.toFixed(2)} ATR, ${moveATRPerHour.toFixed(2)} ATR/h) | open=${openPrice.toFixed(2)} now=${currentPrice.toFixed(2)} | ` +
               `ATR14=${atr14.toFixed(2)} | 方向一致=${isMoveInSignalDirection} | 开盘${minutesSinceOpen}min`,
               { module: 'OptionStrategy.ImpulseGuard', strategyId: this.strategyId },
             );
 
             const maxOpenMoveATR = impulseGuard?.maxOpenMoveATR ?? 1.5;
-            if (impulseGuard?.enabled && isMoveInSignalDirection && moveATR > maxOpenMoveATR) {
+            const maxMoveATRPerHour = 2.0;
+            const shouldBlock = isMoveInSignalDirection && (
+              moveATR > maxOpenMoveATR || moveATRPerHour > maxMoveATRPerHour
+            );
+            if (impulseGuard?.enabled && shouldBlock) {
               // 检查超强信号覆盖
               const thresholds = this.getThresholds();
               const absScore = Math.abs(optionRec.finalScore);
@@ -878,13 +797,16 @@ export class OptionIntradayStrategy extends StrategyBase {
                   { module: 'OptionStrategy.ImpulseGuard', strategyId: this.strategyId },
                 );
               } else {
+                const blockReason = moveATRPerHour > maxMoveATRPerHour
+                  ? `ATR/h=${moveATRPerHour.toFixed(2)} > ${maxMoveATRPerHour}`
+                  : `moveATR=${moveATR.toFixed(2)} > ${maxOpenMoveATR}`;
                 logger.info(
-                  `[${symbol}] 开盘冲量守卫: 拦截 moveATR=${moveATR.toFixed(2)} > ${maxOpenMoveATR} | ` +
+                  `[${symbol}] 开盘冲量守卫: 拦截 ${blockReason} | ` +
                   `|score|=${absScore.toFixed(1)} < override=${overrideThreshold.toFixed(1)}`,
                   { module: 'OptionStrategy.ImpulseGuard', strategyId: this.strategyId },
                 );
                 logData.finalResult = 'NO_SIGNAL';
-                logData.rejectionReason = `开盘冲量守卫: moveATR=${moveATR.toFixed(2)} > ${maxOpenMoveATR}`;
+                logData.rejectionReason = `开盘冲量守卫: ${blockReason}`;
                 logData.rejectionCheckpoint = 'impulse_guard';
                 this.logDecision(logData);
                 return null;
@@ -1013,17 +935,6 @@ export class OptionIntradayStrategy extends StrategyBase {
         );
       }
 
-      // 8.6) REV_INTRADAY 仓位缩减（反向交易风险更高，使用半仓）
-      if (isRevIntraday && contracts > 1) {
-        const peakMultiplier = smartReverseConfig.peakReversal!.positionMultiplier;
-        const originalContracts = contracts;
-        contracts = Math.max(1, Math.round(contracts * peakMultiplier));
-        logger.info(
-          `[${symbol}] [PEAK_REVERSAL] 仓位缩减: ${originalContracts} → ${contracts} (x${peakMultiplier})`,
-          { module: 'OptionStrategy.PeakReversal', strategyId: this.strategyId }
-        );
-      }
-
       const est = estimateOptionOrderTotalCost({
         premium,
         contracts,
@@ -1060,13 +971,7 @@ export class OptionIntradayStrategy extends StrategyBase {
           timeValue: selected.timeValue,
           estimatedFees: est.fees,
           allocationAmountOverride: est.totalCost,
-          // 新增：止盈止损配置（REV_INTRADAY 使用更紧的止损止盈）
-          exitRules: isRevIntraday
-            ? {
-                stopLossPercent: smartReverseConfig.peakReversal!.stopLossPercent,
-                takeProfitPercent: smartReverseConfig.peakReversal!.takeProfitPercent,
-              }
-            : (this.cfg.exitRules || DEFAULT_OPTION_STRATEGY_CONFIG.exitRules),
+          exitRules: this.cfg.exitRules || DEFAULT_OPTION_STRATEGY_CONFIG.exitRules,
           selectedStrategy: selectedStrategy,
           // R5v2: 评分信息 — 用于跨标的竞价排序
           finalScore: optionRec.finalScore,
@@ -1080,16 +985,6 @@ export class OptionIntradayStrategy extends StrategyBase {
             positionMultiplier: regimeResult.positionMultiplier,
           },
           ...((logData as any).reversed ? { reversed: true, originalDirection: (logData as any).originalDirection } : {}),
-          // Peak Reversal 标记
-          ...(isRevIntraday ? {
-            reversalType: 'REV_INTRADAY',
-            peakReversalInfo: {
-              originalDirection: (logData as any).peakReversal?.originalDirection,
-              intraScore: optionRec.intradayScore,
-              stopLossPercent: smartReverseConfig.peakReversal!.stopLossPercent,
-              takeProfitPercent: smartReverseConfig.peakReversal!.takeProfitPercent,
-            },
-          } : {}),
         },
       };
 

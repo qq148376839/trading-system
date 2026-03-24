@@ -2257,24 +2257,6 @@ class StrategyScheduler {
         return;
       }
 
-      // Fix 12c: 信号方向抑制 — 连续同方向亏损后抑制同方向新信号
-      if (intent.action === 'BUY' && isOptionStrategy) {
-        const suppressState = await stateManager.getInstanceState(strategyId, symbol);
-        const suppressCtx = suppressState?.context;
-        const suppressConsecLosses = suppressCtx?.consecutiveLosses ?? 0;
-        const suppressLastDir = suppressCtx?.lastTradeDirection;
-        const intentDirection = (intent.metadata as any)?.optionDirection;
-
-        if (suppressConsecLosses >= 2 && suppressLastDir && intentDirection && suppressLastDir === intentDirection) {
-          logger.warn(
-            `[SIGNAL_SUPPRESSED] 策略 ${strategyId} 标的 ${symbol}: ` +
-            `信号方向 ${intentDirection} 与最近 ${suppressConsecLosses} 笔连亏方向一致，抑制信号`
-          );
-          summary.idle.push(`${symbol}(SIGNAL_SUPPRESSED_${intentDirection})`);
-          return;
-        }
-      }
-
       // 记录信号日志（关键业务事件）
       logger.info(`策略 ${strategyId} 标的 ${symbol}: 生成信号 ${intent.action}, 价格=${intent.entryPrice?.toFixed(2) || 'N/A'}, 原因=${intent.reason?.substring(0, 50) || 'N/A'}`);
       summary.signals.push(symbol);
@@ -2727,24 +2709,6 @@ class StrategyScheduler {
         );
         summary.idle.push(`${symbol}(PROTECTION_BLOCKED)`);
         return null;
-      }
-
-      // 信号方向抑制
-      if (intent.action === 'BUY') {
-        const suppressState = await stateManager.getInstanceState(strategyId, symbol);
-        const suppressCtx = suppressState?.context;
-        const suppressConsecLosses = suppressCtx?.consecutiveLosses ?? 0;
-        const suppressLastDir = suppressCtx?.lastTradeDirection;
-        const intentDirection = (intent.metadata as Record<string, unknown>)?.optionDirection;
-
-        if (suppressConsecLosses >= 2 && suppressLastDir && intentDirection && suppressLastDir === intentDirection) {
-          logger.warn(
-            `[SIGNAL_SUPPRESSED] 策略 ${strategyId} 标的 ${symbol}: ` +
-            `信号方向 ${intentDirection} 与最近 ${suppressConsecLosses} 笔连亏方向一致，抑制信号`
-          );
-          summary.idle.push(`${symbol}(SIGNAL_SUPPRESSED_${intentDirection})`);
-          return null;
-        }
       }
 
       // 只处理 BUY 信号作为候选

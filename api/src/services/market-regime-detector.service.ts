@@ -66,7 +66,7 @@ export interface RegimeDetectionResult {
 export const DEFAULT_SMART_REVERSE_CONFIG: SmartReverseConfig = {
   enabled: false,
   thresholds: {
-    marketScoreExtreme: 35,
+    marketScoreExtreme: 45,
     intradayScoreExtremeNeg: 14,
     intradayScoreExtremePos: 15,
     divergenceMin: 0.3,

@@ -1,5 +1,27 @@
 # 更新日志
 
+## 2026-03-25
+
+### 入场逻辑简化 — 移除/降级 6 个可疑过滤器
+
+**背景**: 入场链过滤器过多导致真实信号被频繁拦截，复杂度高且多个过滤器缺乏实证支撑。对 6 个可疑环节进行移除或降级。
+
+**改动**:
+1. **移除 Peak Reversal (REV_INTRADAY)**: FastMo 不通过直接拒绝，删除反向尝试逻辑及所有 `isRevIntraday` 下游引用（仓位缩减、exitRules 覆盖、metadata 标记）
+2. **移除 IntraScore 极值过滤**: 删除 `INTRA_EXTREME_THRESHOLD` 代码块，保留 momentumSnapshot 数据采集
+3. **Opening Impulse Guard 增加速率维度**: 新增 `moveATR_per_hour > 2.0` 检测，原绝对值检查保留作为备份
+4. **FastMo 5分钟 longSlope 降级为日志**: 趋势反向不再硬拒绝，改为 `logger.info` 记录，longSlope 仍计算返回
+5. **移除信号方向抑制 (SIGNAL_SUPPRESSED)**: 删除两处连续同方向亏损抑制代码块，circuit breaker 已覆盖更严重场景
+6. **SmartReverse 阈值收紧**: `marketScoreExtreme` 默认值 35 → 45，仅在真正极端市场触发方向翻转
+
+**修改文件**:
+- `api/src/services/strategies/option-intraday-strategy.ts` — 改动 A+B+C
+- `api/src/services/fast-momentum.service.ts` — 改动 D
+- `api/src/services/strategy-scheduler.service.ts` — 改动 E
+- `api/src/services/market-regime-detector.service.ts` — 改动 F
+
+---
+
 ## 2026-03-24
 
 ### FastMo decelRatio 加上界 — 拦截开盘冲量尾端爆发

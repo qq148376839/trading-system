@@ -1,11 +1,17 @@
 # 项目进度总结
 
-**更新时间**: 2026-03-24
+**更新时间**: 2026-03-25
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-03-25: 入场逻辑简化 — 移除/降级 6 个可疑过滤器
+
+**改动**: 移除 Peak Reversal + IntraScore 极值过滤 + SIGNAL_SUPPRESSED；longSlope 降级为日志；Impulse Guard 增加速率维度（ATR/h > 2.0）；SmartReverse 默认阈值 35→45。
+
+**修改文件**: `option-intraday-strategy.ts`, `fast-momentum.service.ts`, `strategy-scheduler.service.ts`, `market-regime-detector.service.ts`
 
 ### 2026-03-24: FastMo decelRatio 加上界 — 拦截开盘冲量尾端爆发
 
