@@ -7,6 +7,12 @@
 
 ## 🆕 最近更新
 
+### 2026-03-25: 0DTE 兜底止损改用策略配置值
+
+**改动**: `zdtePnlFloor` 从硬编码 25% 改为 `dynamicParams.stopLossPercent`（策略配置值）。修复 SPY P655 / QQQ P585 类"方向正确但被过紧兜底误杀"的问题。安全阀 40% 硬上限不变。
+
+**修改文件**: `option-dynamic-exit.service.ts`
+
 ### 2026-03-25: 入场逻辑简化 — 移除/降级 6 个可疑过滤器
 
 **改动**: 移除 Peak Reversal + IntraScore 极值过滤 + SIGNAL_SUPPRESSED；longSlope 降级为日志；Impulse Guard 增加速率维度（ATR/h > 2.0）；SmartReverse 默认阈值 35→45。

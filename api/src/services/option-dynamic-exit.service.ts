@@ -505,13 +505,13 @@ class OptionDynamicExitService {
       }
     }
 
-    // 4. 0DTE PnL 兜底止损（比标准止损更紧，在冷却期逻辑之前检查）
+    // 4. 0DTE PnL 兜底止损（使用策略配置止损，在冷却期逻辑之前检查）
     if (ctx.is0DTE) {
-      const zdtePnlFloor = 25; // 0DTE 兜底止损 -25%
+      const zdtePnlFloor = dynamicParams.stopLossPercent; // 与策略配置一致
       if (pnl.grossPnLPercent <= -zdtePnlFloor) {
         return {
           action: 'STOP_LOSS',
-          reason: `0DTE兜底止损：亏损${pnl.grossPnLPercent.toFixed(1)}% ≤ -${zdtePnlFloor}%(0DTE收紧)`,
+          reason: `0DTE兜底止损：亏损${pnl.grossPnLPercent.toFixed(1)}% ≤ -${zdtePnlFloor}%(0DTE策略止损)`,
           pnl,
           exitTag: '0dte_pnl_floor',
         };
