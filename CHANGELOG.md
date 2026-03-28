@@ -1,5 +1,23 @@
 # 更新日志
 
+## 2026-03-28
+
+### 交易分析模块数据准确性修复
+
+**背景**: 深度诊断发现分析页面 PnL 数据存在严重偏差。最极端案例: 3/27 SPY P640 信号显示盈利 +$10.59，实际订单亏损 -$15.00，盈亏方向完全翻转。根因: 信号 PnL 在退出决策时记录（使用市场中间价），而非实际成交价。详细诊断见 `docs/analysis/260328-交易分析模块深度诊断.md`。
+
+**改动**:
+1. **P0: 前端 PnL 改用实际订单成交价** — `trades` useMemo 新增订单匹配逻辑，通过 symbol + 时间窗口(15s) 关联信号与订单，用 `(sellExecPrice - buyExecPrice) * qty * 100 - fees` 计算真实 PnL
+2. **P0: auto_trades 期权 PnL 乘数修复** — `recordTrade()` 检测期权 symbol 并乘以 ×100，修复 Dashboard 期权 PnL 缩小 100 倍的问题
+3. **P1: BUY 信号配对过滤 FILTERED 状态** — 排除 27 条从未执行的 FILTERED 信号参与配对，防止幽灵交易
+4. **P2: PnL% 语义修正** — 不再使用信号的 `netPnLPercent`（实为 grossPnLPercent），改用订单成交价直接计算
+
+**修改文件**:
+- `frontend/app/quant/analysis/page.tsx` — Fix 1+3+4
+- `api/src/services/basic-execution.service.ts` — Fix 2
+
+---
+
 ## 2026-03-25
 
 ### 0DTE 兜底止损改用策略配置值

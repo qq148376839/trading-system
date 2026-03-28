@@ -1332,7 +1332,9 @@ class BasicExecutionService {
         if (openTrade.rows.length > 0) {
           const openPrice = parseFloat(openTrade.rows[0].avg_price);
           const openQuantity = parseInt(openTrade.rows[0].quantity);
-          const pnl = (avgPrice - openPrice) * Math.min(filledQuantity, openQuantity);
+          const isOption = /^[A-Z]+\d{6}[CP]\d+/.test(symbol);
+          const multiplier = isOption ? 100 : 1;
+          const pnl = (avgPrice - openPrice) * Math.min(filledQuantity, openQuantity) * multiplier;
 
           if (status === 'PartialFilledStatus' && filledQuantity < openQuantity) {
             const remainingQty = openQuantity - filledQuantity;

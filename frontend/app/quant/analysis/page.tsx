@@ -47,11 +47,16 @@ interface OrderRow {
   order_id: string
   symbol: string
   side: string
-  quantity: number
-  executed_price: number
+  quantity: number | string
+  executed_price: number | string
+  executed_quantity?: number | string
   status: string
   created_at: string
   updated_at: string
+  // camelCase variants from API
+  submittedAt?: string
+  executedPrice?: string
+  executedQuantity?: string
 }
 
 interface SignalRow {
@@ -202,7 +207,8 @@ export default function AnalysisPage() {
   // SELL 信号有: netPnL, netPnLPercent, exitAction
   // 按 symbol + strategy_id 配对，SELL 匹配最近的前序 BUY
   const trades = useMemo(() => {
-    const buySignals = signals.filter(s => s.signal_type === 'BUY')
+    // P1 fix: 只匹配 EXECUTED 状态的 BUY 信号，排除 FILTERED
+    const buySignals = signals.filter(s => s.signal_type === 'BUY' && s.status === 'EXECUTED')
     const sellSignals = signals.filter(s => s.signal_type === 'SELL' && (s.metadata as Record<string, unknown>)?.netPnL !== undefined && (s.metadata as Record<string, unknown>)?.netPnL !== null)
 
     // 按 symbol+strategy_id 建立 BUY 索引（按时间排序）
@@ -213,9 +219,34 @@ export default function AnalysisPage() {
       arr.push(b)
       buyIndex.set(key, arr)
     }
-    // 每组按时间排序
     for (const arr of buyIndex.values()) {
       arr.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    }
+
+    // P0 fix: 构建订单索引，用于匹配实际成交价
+    const buyOrders = orders.filter(o => String(o.side) === 'Buy')
+    const sellOrders = orders.filter(o => String(o.side) === 'Sell')
+    const usedBuyOrders = new Set<string>()
+    const usedSellOrders = new Set<string>()
+
+    const findOrder = (list: OrderRow[], used: Set<string>, sym: string, refTime: string): OrderRow | null => {
+      const refTs = new Date(refTime).getTime()
+      let best: OrderRow | null = null
+      let bestDiff = Infinity
+      for (const o of list) {
+        const oid = String(o.order_id)
+        if (used.has(oid)) continue
+        if (String(o.symbol) !== sym) continue
+        const oTs = new Date(String(o.submittedAt || '')).getTime()
+        if (isNaN(oTs)) continue
+        const diff = Math.abs(oTs - refTs)
+        if (diff < 15000 && diff < bestDiff) {
+          best = o
+          bestDiff = diff
+        }
+      }
+      if (best) used.add(String(best.order_id))
+      return best
     }
 
     const usedBuys = new Set<number>()
@@ -241,9 +272,29 @@ export default function AnalysisPage() {
 
       const meta = sell.metadata as Record<string, unknown>
       const buyMeta = matchedBuy?.metadata as Record<string, unknown> | undefined
-      const pnl = Number(meta.netPnL)
-      const pnlPctVal = meta.netPnLPercent
-      const pnlPct = pnlPctVal !== undefined && pnlPctVal !== null ? Number(pnlPctVal) : null
+
+      // 默认使用信号 PnL（作为 fallback）
+      let pnl = Number(meta.netPnL)
+      let pnlPct: number | null = meta.netPnLPercent !== undefined && meta.netPnLPercent !== null ? Number(meta.netPnLPercent) : null
+
+      // P0 fix: 匹配实际订单，用成交价重算 PnL
+      const buyOrder = matchedBuy ? findOrder(buyOrders, usedBuyOrders, sell.symbol, matchedBuy.created_at) : null
+      const sellOrder = findOrder(sellOrders, usedSellOrders, sell.symbol, sell.created_at)
+
+      if (buyOrder && sellOrder) {
+        const buyExecPrice = Number(buyOrder.executedPrice ?? buyOrder.executed_price)
+        const sellExecPrice = Number(sellOrder.executedPrice ?? sellOrder.executed_price)
+        const qty = Math.min(
+          Number(buyOrder.executedQuantity ?? buyOrder.executed_quantity ?? buyOrder.quantity),
+          Number(sellOrder.executedQuantity ?? sellOrder.executed_quantity ?? sellOrder.quantity)
+        )
+        if (buyExecPrice > 0 && sellExecPrice > 0 && qty > 0) {
+          const totalFees = Number(meta.totalFees || 0)
+          const grossPnl = (sellExecPrice - buyExecPrice) * qty * 100
+          pnl = Math.round((grossPnl - totalFees) * 100) / 100
+          pnlPct = Math.round(((sellExecPrice - buyExecPrice) / buyExecPrice) * 10000) / 100
+        }
+      }
 
       records.push({
         id: sell.id,
@@ -262,7 +313,7 @@ export default function AnalysisPage() {
     }
 
     return records
-  }, [signals])
+  }, [signals, orders])
 
   // -- 按策略筛选交易 --
   const filteredTrades = useMemo(() => {
