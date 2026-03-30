@@ -1319,24 +1319,9 @@ class StrategyScheduler {
                     }
                   }
 
-                  // Fix: 检测 IRON_DOME 竞态条件 — 如果 IRON_DOME 已处理此退出，撤销其估算 PnL
-                  // 当卖单成交瞬间 broker 持仓归零，IRON_DOME 可能在回调之前运行，
-                  // 将 -allocationAmount 写入 dailyRealizedPnL（最坏情况估算）
-                  // 此处用实际交易 PnL 替换 IRON_DOME 的估算值
-                  const currentState = await strategyInstance.getCurrentState(instanceKeySymbol);
-                  if (currentState === 'IDLE' && context.exitReason === 'BROKER_TERMINATED') {
-                    const ironDomePnL = Number(context.lastTradePnL || 0);
-                    if (ironDomePnL < 0) {
-                      const rawIronDomePnL = Number(String(context.dailyRealizedPnL ?? 0));
-                      context.dailyRealizedPnL = isNaN(rawIronDomePnL) ? 0 : rawIronDomePnL - ironDomePnL;
-                      context.dailyTradeCount = Math.max(0, (Number(String(context.dailyTradeCount ?? 0)) || 0) - 1);
-                      context.consecutiveLosses = Math.max(0, (Number(String(context.consecutiveLosses ?? 0)) || 0) - 1);
-                      logger.log(
-                        `策略 ${strategyId} 标的 ${instanceKeySymbol}: IRON_DOME竞态修正 — ` +
-                        `撤销估算PnL=${ironDomePnL.toFixed(2)}，使用实际交易PnL`
-                      );
-                    }
-                  }
+                  // 260331: IRON_DOME 竞态修正逻辑已移除
+                  // IRON_DOME 不再写入 dailyRealizedPnL/dailyTradeCount，无需事后撤销
+                  // PnL 统计由订单回调独占写入，从根源消除竞态
 
                   // 检测是否为 MIT 保护单自动成交（止损 or 止盈）
                   const isSLFill = Boolean(context.protectionOrderId && dbOrder.order_id === context.protectionOrderId);
@@ -5495,18 +5480,16 @@ class StrategyScheduler {
           this.recordSymbolExit(strategyId, row.symbol, brokerTermCooldown, {
             direction: ctx.optionMeta?.optionDirection || ctx.lastTradeDirection || null,
             finalScore: Number(ctx.optionMeta?.finalScore ?? 0),
-            pnl: allocationAmount > 0 ? -allocationAmount : 0,
+            pnl: 0,  // 不写估算值，等回调用实际 PnL 填充
             group: getCorrelationGroup(row.symbol),
           });
+          // 260331 Fix: IRON_DOME 不写 dailyRealizedPnL/dailyTradeCount/lastTradePnL
+          // 只做状态清理 + 释放资金，PnL 统计由订单回调独占写入，消除竞态
           await stateManager.updateState(strategyId, row.symbol, 'IDLE', {
             ...POSITION_EXIT_CLEANUP,
             exitReason: 'BROKER_TERMINATED',
             lastExitTime: new Date().toISOString(),
-            // 记录虚拟 PnL = -100%（最坏情况估算）
-            lastTradePnL: allocationAmount > 0 ? -allocationAmount : 0,
-            dailyRealizedPnL: (parseFloat(String(ctx.dailyRealizedPnL ?? 0)) + (allocationAmount > 0 ? -allocationAmount : 0)),
-            consecutiveLosses: (parseInt(String(ctx.consecutiveLosses ?? 0)) + 1),
-            dailyTradeCount: (parseInt(String(ctx.dailyTradeCount ?? 0)) + 1),
+            lastTradePnL: null,
             cooldownUntil: brokerTermCooldown,
           });
 

@@ -1,11 +1,17 @@
 # 项目进度总结
 
-**更新时间**: 2026-03-28
+**更新时间**: 2026-03-31
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-03-31: 修复 IRON_DOME 竞态导致 PnL 虚增 — 消除误熔断
+
+**改动**: IRON_DOME 幽灵仓位检测不再写入 `dailyRealizedPnL`/`dailyTradeCount`/`lastTradePnL` 估算值，PnL 统计由订单回调独占写入。同步删除回调中的竞态修正逻辑。修复 3/30 策略 10 NVDA.US 误熔断（$1055 vs 实际 $115）。
+
+**修改文件**: `api/src/services/strategy-scheduler.service.ts`
 
 ### 2026-03-28: 交易分析模块数据准确性修复
 

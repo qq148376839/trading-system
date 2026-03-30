@@ -1,5 +1,21 @@
 # 更新日志
 
+## 2026-03-31
+
+### 修复 IRON_DOME 竞态导致 PnL 虚增 — 消除误熔断
+
+**背景**: 3/30 交易日策略 10 在 NVDA.US 上触发误熔断（日内累计亏损 $1055 vs 实际 $115），偏差 $940。根因: IRON_DOME 幽灵仓位检测与订单回调存在竞态——IRON_DOME 将 -allocationAmount 估算值写入 dailyRealizedPnL，而回调中的事后撤销逻辑在并发事务下失效（last-writer-wins）。详见 `docs/fixes/260331-熔断PnL虚增Bug分析.md`。
+
+**改动**:
+1. **IRON_DOME 不再写入 PnL 统计字段** — updateState 移除 `dailyRealizedPnL`/`dailyTradeCount`/`lastTradePnL` 的估算写入，`recordSymbolExit` pnl 设为 0
+2. **删除回调竞态修正逻辑** — 原 `:1322-1339` 的 IRON_DOME 撤销逻辑不再需要
+
+**原理**: dailyRealizedPnL 只有一个写入源（订单回调），从根源消除竞态
+
+**修改文件**: `api/src/services/strategy-scheduler.service.ts`
+
+---
+
 ## 2026-03-28
 
 ### 交易分析模块数据准确性修复
