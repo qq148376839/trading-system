@@ -122,10 +122,11 @@ const RULE_MAP = [
               { kw: 'logger', ctx: ['降级', '节流', '级别', 'debug', 'info', '非交易'] },
               { kw: '定时任务', ctx: ['日志', 'logger', '降级', '节流'] }] },
   { id: 16, title: '部署 NAS 标准步骤',
-    action: 'ssh -p 32000 riowang@192.168.31.18 → cd /volume1/docker/trading-system → git pull → docker compose up -d --build',
-    exact: ['nas', 'docker compose'],
-    context: [{ kw: '部署', ctx: ['nas', 'docker', '上线', '发布', 'compose', '服务器'] },
-              { kw: 'docker', ctx: ['部署', 'nas', '上线', 'compose'] }] },
+    action: '必须用单条 SSH 命令: ssh -p 32000 riowang@192.168.31.18 "export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH && cd /volume1/docker/trading-system && git pull && docker compose up -d --build"。端口32000非22，必须export PATH，必须--build，部署前必须先git push',
+    exact: ['nas', 'deploy', '部署nas'],
+    context: [{ kw: '部署', ctx: ['nas', 'docker', '上线', '发布', 'compose', '服务器', '更新'] },
+              { kw: 'docker', ctx: ['部署', 'nas', '上线', 'compose'] },
+              { kw: '上线', ctx: ['nas', 'docker', '部署', '服务器'] }] },
   { id: 17, title: '日期/时间用 market-time.ts',
     action: '周末判断用 isWeekend(date, market)，市场日期用 getMarketLocalDate/formatAsYYYYMMDD，时区映射用 getMarketTimeZone。禁 getDay()/getFullYear()/getMonth()/getDate() 直接用于市场时间逻辑',
     exact: ['market-time', 'getday', 'isweekend', 'getmarketlocaldate', 'naivedate', 'tonaivedate'],
@@ -217,15 +218,15 @@ function formatRules(rules, source, extraAlwaysRules) {
   if (!rules || rules.length === 0) return null;
 
   const lines = rules.map((r) => {
-    if (r.id !== undefined) {
+    if (typeof r.id === 'number') {
       // local match — include action for direct executability
       return r.action
         ? `- 规则 #${r.id}: ${r.title}\n  → ${r.action}`
         : `- 规则 #${r.id}: ${r.title}`;
     }
-    // RAG result
+    // RAG result — r.id may be a chunk ID string like "docs/...::16"
     const content = (r.content || '').trim();
-    const ruleMatch = content.match(/规则\s*(\d+)/);
+    const ruleMatch = content.match(/规则\s*#?(\d+)/);
     const ruleId = ruleMatch ? `#${ruleMatch[1]}` : '';
     const firstLine = content.split('\n').find((l) => l.trim().length > 0) || content.slice(0, 100);
     return `- 规则 ${ruleId}: ${firstLine}`;
