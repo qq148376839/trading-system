@@ -15,6 +15,7 @@
 | **debugger** | 调试专家 | Bug 排查、错误定位、性能诊断 |
 | **security-auditor** | 安全审计 | 安全漏洞、认证授权、交易安全 |
 | **strategy-analyst** | 策略分析大师 | 策略逻辑剖析、实盘数据诊断、自动化推进、冗余冲突消除 |
+| **chaos-engineer** | 混沌工程师 | 极端场景模拟、故障注入、韧性压测、熔断验证 |
 | **project-summarizer** | 文档管理 | 变更后文档整理、导航文件更新（强制执行） |
 
 ## 标准工作流
@@ -35,6 +36,8 @@
   ├─ 需要审查？ → reviewer（代码审查）
   │
   ├─ 需要排错？ → debugger（调试定位）
+  │
+  ├─ 需要韧性压测？ → chaos-engineer（故障注入）
   │
   ├─ 需要安全检查？ → security-auditor（安全审计）
   │
