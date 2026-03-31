@@ -195,6 +195,7 @@ class StrategyScheduler {
   private crossSymbolState = new Map<number, {
     activeEntries: Map<string, number>;          // symbol → entry timestamp (Date.now())
     recentExits: Map<string, GroupExitRecord>;   // symbol → GroupExitRecord，退出后同组冷却
+    correlationMap: Record<string, string>;       // 策略级相关性映射缓存（入场/退出统一使用）
   }>();
 
   /** R5v2: 获取或初始化策略的跨标的保护状态 */
@@ -203,12 +204,16 @@ class StrategyScheduler {
       this.crossSymbolState.set(strategyId, {
         activeEntries: new Map(),
         recentExits: new Map(),
+        correlationMap: DEFAULT_CORRELATION_GROUPS,
       });
     }
     const state = this.crossSymbolState.get(strategyId)!;
     // 兼容旧结构（无 recentExits 的情况）
     if (!state.recentExits) {
       state.recentExits = new Map();
+    }
+    if (!state.correlationMap) {
+      state.correlationMap = DEFAULT_CORRELATION_GROUPS;
     }
     return state;
   }
@@ -235,7 +240,8 @@ class StrategyScheduler {
       ? new Date(cooldownUntilStr).getTime()
       : Date.now() + 60_000;
     if (!isNaN(cooldownEnd) && cooldownEnd > Date.now()) {
-      const exitGroup = exitInfo?.group || symbol;
+      // 260331 Fix: 统一使用缓存的 correlationMap 获取 group，避免退出/入场 group 名不匹配
+      const exitGroup = getCorrelationGroup(symbol, crossState.correlationMap);
       // 查找同组上一条退出记录，计算连续同方向次数
       let prevConsecutive = 0;
       if (exitInfo?.direction) {
@@ -719,6 +725,9 @@ class StrategyScheduler {
       const strategyConfig: Record<string, unknown> = (strategyInstance as any)?.config || {};
       const correlationGroups = strategyConfig?.correlationGroups as { groups?: Record<string, string[]> } | undefined;
       const correlationMap = buildCorrelationMap(correlationGroups?.groups) || DEFAULT_CORRELATION_GROUPS;
+
+      // 260331 Fix: 缓存 correlationMap 到 crossSymbolState，确保退出路径使用与入场一致的 group 映射
+      this.getCrossSymbolState(strategyId).correlationMap = correlationMap;
 
       // Phase A: 状态分类 — 区分 IDLE 和非 IDLE 标的
       const stateChecks = await Promise.all(

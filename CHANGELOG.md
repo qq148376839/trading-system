@@ -2,6 +2,23 @@
 
 ## 2026-03-31
 
+### 修复同组冷却保护失效 — correlationMap 入场/退出不一致
+
+**背景**: 3/31 交易日 SPY 退出后 5 秒 QQQ 立即入场、SPY 自身 76 秒后重新入场，同组冷却 (`R5v2_GROUP_EXIT_COOLDOWN` + `calculateReentryReadiness` 2 分钟硬底线) 完全失效。3 笔交易累计亏损 $897 触发熔断。
+
+**根因**: `recordSymbolExit` 内部调用 `getCorrelationGroup(symbol)` 无 correlationMap 参数，回退到 `DEFAULT_CORRELATION_GROUPS` 得到 group 名 `INDEX_ETF`；而入场评估 `evaluateIdleSymbol` 用策略配置的 correlationMap 得到 `GROUP_0`。两个名字永远不匹配，`recentExits` 的组匹配失败，同组冷却保护被绕过。
+
+**改动**:
+1. `crossSymbolState` 新增 `correlationMap` 缓存字段
+2. 策略执行周期初始化时写入 `correlationMap` 到缓存
+3. `recordSymbolExit` 内部统一使用 `crossState.correlationMap` 获取 group
+
+**新增规则 #18**: correlationMap 入场/退出统一
+
+**修改文件**: `api/src/services/strategy-scheduler.service.ts`, `CLAUDE.md`, `docs/guides/260307-错误规则集.md`, `.claude/hooks/rule-guard.mjs`
+
+---
+
 ### 修复 IRON_DOME 竞态导致 PnL 虚增 — 消除误熔断
 
 **背景**: 3/30 交易日策略 10 在 NVDA.US 上触发误熔断（日内累计亏损 $1055 vs 实际 $115），偏差 $940。根因: IRON_DOME 幽灵仓位检测与订单回调存在竞态——IRON_DOME 将 -allocationAmount 估算值写入 dailyRealizedPnL，而回调中的事后撤销逻辑在并发事务下失效（last-writer-wins）。详见 `docs/fixes/260331-熔断PnL虚增Bug分析.md`。

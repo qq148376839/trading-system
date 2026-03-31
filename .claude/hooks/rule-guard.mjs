@@ -134,6 +134,13 @@ const RULE_MAP = [
               { kw: '周末', ctx: ['判断', '市场', '交易日', '交易', 'weekend'] },
               { kw: 'getDay', ctx: ['周末', '交易', '市场', '时区'] },
               { kw: 'DST', ctx: ['时区', '夏令时', '冬令时', '时间'] }] },
+  { id: 18, title: 'correlationMap 入场/退出统一',
+    action: 'recordSymbolExit 必须用缓存的 crossState.correlationMap 获取 group，禁止无参调用 getCorrelationGroup(symbol)。退出路径和入场路径必须使用同一个 correlationMap',
+    exact: ['recordsymbolexit', 'correlationmap', 'getcorrelationgroup', 'recentexits', 'groupexitrecord'],
+    context: [{ kw: '相关性', ctx: ['组', 'group', '映射', '退出', '入场', '冷却'] },
+              { kw: 'correlation', ctx: ['group', 'map', 'exit', 'entry', 'cooldown'] },
+              { kw: '同组', ctx: ['冷却', '入场', '退出', '保护', '重复'] },
+              { kw: '换仓', ctx: ['退出', '冷却', '同组', '相关', 'spy', 'qqq'] }] },
 ];
 
 // ── Helpers ─────────────────────────────────────────────────────────────
