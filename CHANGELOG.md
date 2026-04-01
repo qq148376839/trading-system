@@ -2,6 +2,21 @@
 
 ## 2026-04-01
 
+### fix: dailyRealizedPnL 竞态修复 — broker_position_zero 不再覆盖订单回调 PnL
+
+**根因**: `processOptionDynamicExit` 检测到退出条件后调用 `checkAvailablePosition()`，如果 MIT 保护单已在券商端成交（broker 报告 0 持仓），`broker_position_zero` 路径抢先触发，将 `-allocatedAmount` 写入 `dailyRealizedPnL`。随后订单回调读取被污染的 `dailyRealizedPnL` 并叠加 `tradePnL`，导致最终值 = -(allocatedAmount) + tradePnL ≈ 全亏。
+
+**数据佐证**: 4/1 实盘 SPY/TSLA/NVDA/QQQ 四标的 dailyRealizedPnL 均为 ≈-allocatedAmount，而实际交易有盈有亏。
+
+**修复**: 在两处 `broker_position_zero` 路径（退出触发 L4448 + 定期核对 L4607）增加前置检查：
+- 如果 MIT 保护单存在（`protectionOrderId/takeProfitOrderId`）→ 等待订单回调计算实际 PnL
+- 如果有近期卖出订单（5分钟内）→ 同上
+- 仅在无任何卖出机制时才使用 `-allocatedAmount` 保守估计
+
+**修改文件**: `strategy-scheduler.service.ts`
+
+---
+
 ### 期权策略结构性缺陷修复 Phase 1 — 5项配置+代码变更
 
 **背景**: 基于 3/17-3/31 实际交易数据分析（28条 option_trade_analysis + 59笔信号），策略10 E[PnL]=-$52/笔，Kelly f*=-50.6%。12笔止损的反向期权100%盈利（$7,522差额），方向准确率仅36%，盈利交易持仓2.5min vs 亏损14.5min。详见 `docs/analysis/260401-期权策略结构性缺陷修复方案.md`。

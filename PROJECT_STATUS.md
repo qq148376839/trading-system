@@ -7,6 +7,12 @@
 
 ## 🆕 最近更新
 
+### 2026-04-01: fix: dailyRealizedPnL 竞态修复
+
+**改动**: broker_position_zero 路径在 MIT 保护单已成交时抢先触发，将 -allocatedAmount 写入 dailyRealizedPnL（应为订单回调计算实际 PnL）。修复: 两处 broker_position_zero 增加前置检查，MIT/卖出订单存在时等待回调。
+
+**修改文件**: `strategy-scheduler.service.ts`
+
 ### 2026-04-01: 期权策略结构性缺陷修复 Phase 1
 
 **改动**: 基于 3/17-3/31 实际交易数据分析（E[PnL]=-$52/笔），实施5项修复：止损30→20%、15min时间止损、阶梯锁利收窄、每标的每日1笔限制、低价期权过滤(>$1.00)。模拟验证PnL从-$2,150→+$477。

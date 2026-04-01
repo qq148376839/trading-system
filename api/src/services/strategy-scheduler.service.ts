@@ -4446,8 +4446,42 @@ class StrategyScheduler {
         }
 
         if (positionCheck.availableQuantity !== undefined && positionCheck.availableQuantity <= 0) {
+          // 260401 Fix: 如果存在 MIT 保护单或近期卖出订单，不假设全亏
+          // 让订单回调计算实际 PnL，避免 -allocatedAmount 污染 dailyRealizedPnL
+          const hasMITOrders = Boolean(context.protectionOrderId || context.takeProfitOrderId);
+          let hasRecentSellOrder = false;
+          if (!hasMITOrders) {
+            const recentSells = await pool.query(
+              `SELECT order_id FROM execution_orders
+               WHERE strategy_id = $1 AND symbol = $2
+               AND side IN ('SELL', 'Sell', '2')
+               AND current_status NOT IN ('CANCELLED', 'REJECTED', 'EXPIRED')
+               AND created_at >= NOW() - INTERVAL '5 minutes'
+               LIMIT 1`,
+              [strategyId, effectiveSymbol]
+            );
+            hasRecentSellOrder = recentSells.rows.length > 0;
+          }
+
+          if (hasMITOrders || hasRecentSellOrder) {
+            // 回调可能已经处理 — 先检查当前状态
+            const latestState = await strategyInstance.getCurrentState(symbol);
+            if (latestState !== 'HOLDING') {
+              logger.log(
+                `策略 ${strategyId} 期权 ${effectiveSymbol}: 券商无持仓，回调已处理(state=${latestState})`
+              );
+              return { actionTaken: true };
+            }
+            logger.log(
+              `策略 ${strategyId} 期权 ${effectiveSymbol}: 券商无持仓但存在卖出机制` +
+              `(MIT=${hasMITOrders}, recentSell=${hasRecentSellOrder})，等待回调处理PnL`
+            );
+            return { actionTaken: false };
+          }
+
+          // 无卖出机制 — 真正的异常持仓消失，使用 -allocatedAmount 作为保守估计
           logger.warn(
-            `策略 ${strategyId} 期权 ${effectiveSymbol}: 券商报告无持仓，自动转为IDLE`
+            `策略 ${strategyId} 期权 ${effectiveSymbol}: 券商报告无持仓（无MIT/卖出订单），自动转为IDLE`
           );
           // 取消残留 MIT 保护单
           for (const [tag, oid] of [['SL', context.protectionOrderId], ['TP', context.takeProfitOrderId]] as const) {
@@ -4609,8 +4643,38 @@ class StrategyScheduler {
         if (!positionCheck.hasPending &&
             positionCheck.availableQuantity !== undefined &&
             positionCheck.availableQuantity <= 0) {
+          // 260401 Fix: 定期核对同样需要检查卖出机制，避免 -allocatedAmount 污染 PnL
+          const hasMITOrdersPeriodic = Boolean(context.protectionOrderId || context.takeProfitOrderId);
+          let hasRecentSellPeriodic = false;
+          if (!hasMITOrdersPeriodic) {
+            const recentSellsPeriodic = await pool.query(
+              `SELECT order_id FROM execution_orders
+               WHERE strategy_id = $1 AND symbol = $2
+               AND side IN ('SELL', 'Sell', '2')
+               AND current_status NOT IN ('CANCELLED', 'REJECTED', 'EXPIRED')
+               AND created_at >= NOW() - INTERVAL '5 minutes'
+               LIMIT 1`,
+              [strategyId, effectiveSymbol]
+            );
+            hasRecentSellPeriodic = recentSellsPeriodic.rows.length > 0;
+          }
+
+          if (hasMITOrdersPeriodic || hasRecentSellPeriodic) {
+            const latestStatePeriodic = await strategyInstance.getCurrentState(symbol);
+            if (latestStatePeriodic !== 'HOLDING') {
+              return { actionTaken: true };
+            }
+            logger.log(
+              `策略 ${strategyId} 期权 ${effectiveSymbol}: 定期核对券商无持仓但存在卖出机制` +
+              `(MIT=${hasMITOrdersPeriodic}, recentSell=${hasRecentSellPeriodic})，等待回调`
+            );
+            // 不进入 broker_position_zero，更新核对时间后等待回调
+            context.lastBrokerCheckTime = new Date().toISOString();
+            return { actionTaken: false };
+          }
+
           logger.warn(
-            `策略 ${strategyId} 期权 ${effectiveSymbol}: 定期核对发现券商无持仓，自动转为IDLE`
+            `策略 ${strategyId} 期权 ${effectiveSymbol}: 定期核对发现券商无持仓（无MIT/卖出订单），自动转为IDLE`
           );
           // 取消残留 MIT 保护单
           for (const [tag, oid] of [['SL', context.protectionOrderId], ['TP', context.takeProfitOrderId]] as const) {
