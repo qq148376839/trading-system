@@ -2638,6 +2638,17 @@ class StrategyScheduler {
         }
       }
 
+      // 每标的每日交易次数限制（配置 riskLimits.maxDailyTradesPerUnderlying）
+      const riskLimits = strategyConfig?.riskLimits as Record<string, unknown> | undefined;
+      const maxDailyTradesPerUnderlying = Number(riskLimits?.maxDailyTradesPerUnderlying);
+      if (!isNaN(maxDailyTradesPerUnderlying) && maxDailyTradesPerUnderlying > 0) {
+        const currentDailyCount = parseInt(String(cancelCtx?.dailyTradeCount ?? 0), 10) || 0;
+        if (currentDailyCount >= maxDailyTradesPerUnderlying) {
+          summary.idle.push(`${symbol}(DAILY_TRADE_LIMIT:${currentDailyCount}/${maxDailyTradesPerUnderlying})`);
+          return null;
+        }
+      }
+
       // 持仓检查
       const hasPosition = await this.checkExistingOptionPositionForUnderlying(strategyId, symbol);
       if (hasPosition) {
@@ -4412,6 +4423,7 @@ class StrategyScheduler {
             .map((s: Record<string, unknown>) => ({ threshold: Number(s.threshold), floor: Number(s.floor) }))
             .filter((s: { threshold: number; floor: number }) => !isNaN(s.threshold) && !isNaN(s.floor) && s.threshold > 0);
         })(),
+        maxHoldMinutes: (() => { const v = Number(effectiveExitRules?.maxHoldMinutes); return isNaN(v) || v <= 0 ? undefined : v; })(),
       } : undefined;
       const exitCondition = optionDynamicExitService.checkExitCondition(positionCtx, undefined, exitRulesOverride);
 

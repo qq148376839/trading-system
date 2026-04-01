@@ -46,6 +46,7 @@ export interface ExitRulesOverride {
   trailingStopTrigger?: number;     // 追踪止损触发点（盈利%），覆盖阶段默认值
   trailingStopPercent?: number;     // 追踪止损回撤幅度%，覆盖阶段默认值
   profitLockSteps?: { threshold: number; floor: number }[];  // 阶梯锁利台阶，覆盖默认值
+  maxHoldMinutes?: number;      // 最大持仓时间（分钟），超时且未盈利则市价退出
 }
 
 /** 持仓上下文（用于计算动态参数） */
@@ -501,6 +502,20 @@ class OptionDynamicExitService {
           reason: `移动止损触发：峰值${peakPnLPercent.toFixed(1)}% → 当前${pnl.grossPnLPercent.toFixed(1)}%，回撤${drawdown.toFixed(1)}% ≥ ${dynamicParams.trailingStopPercent}%`,
           pnl,
           exitTag: 'trailing_stop',
+        };
+      }
+    }
+
+    // 3.5 最大持仓时间止损（配置 exitRules.maxHoldMinutes）
+    const holdingMinutesForMaxHold = (now.getTime() - (ctx.entryTime || now).getTime()) / 60000;
+    if (exitRulesOverride?.maxHoldMinutes != null) {
+      const maxHold = Number(exitRulesOverride.maxHoldMinutes);
+      if (!isNaN(maxHold) && maxHold > 0 && holdingMinutesForMaxHold >= maxHold && pnl.grossPnLPercent < 5) {
+        return {
+          action: 'TIME_STOP',
+          reason: `超过最大持仓时间：${holdingMinutesForMaxHold.toFixed(0)}min ≥ ${maxHold}min，盈亏=${pnl.grossPnLPercent.toFixed(1)}%`,
+          pnl,
+          exitTag: 'max_hold_minutes',
         };
       }
     }

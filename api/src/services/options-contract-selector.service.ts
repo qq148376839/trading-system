@@ -17,6 +17,7 @@ export interface OptionLiquidityFilters {
   minOpenInterest?: number;
   maxBidAskSpreadAbs?: number; // absolute spread in option premium (USD)
   maxBidAskSpreadPct?: number; // spread / mid
+  minEntryPrice?: number;      // 期权最低入场价(USD)，过滤低delta/OTM期权
 }
 
 export interface OptionGreekFilters {
@@ -338,6 +339,10 @@ async function selectOptionContractViaLongPort(
           logger.debug(`[期权-LB ${c.symbol}] 价差% ${spreadPct.toFixed(2)}% > ${liquidity.maxBidAskSpreadPct}%，跳过`);
           continue;
         }
+        if (liquidity.minEntryPrice !== undefined && mid > 0 && mid < liquidity.minEntryPrice) {
+          logger.debug(`[期权-LB ${c.symbol}] 期权价格 $${mid.toFixed(2)} < 最低$${liquidity.minEntryPrice}，跳过低价OTM`);
+          continue;
+        }
 
         // 审计修复: C-5 — Greeks 零值拦截
         // 当 delta 和 theta 均为 0 时，说明 calcIndexes 未返回有效数据，排除自动交易
@@ -613,6 +618,7 @@ async function selectOptionContractViaMoomoo(
       if (liquidity.minOpenInterest !== undefined && openInterest < liquidity.minOpenInterest) continue;
       if (liquidity.maxBidAskSpreadAbs !== undefined && spreadAbs > liquidity.maxBidAskSpreadAbs) continue;
       if (liquidity.maxBidAskSpreadPct !== undefined && spreadPct > liquidity.maxBidAskSpreadPct) continue;
+      if (liquidity.minEntryPrice !== undefined && mid > 0 && mid < liquidity.minEntryPrice) continue;
 
       const absDelta = Math.abs(deltaNum);
       if (greek.deltaMin !== undefined && absDelta < greek.deltaMin) continue;

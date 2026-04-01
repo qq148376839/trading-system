@@ -1,5 +1,32 @@
 # 更新日志
 
+## 2026-04-01
+
+### 期权策略结构性缺陷修复 Phase 1 — 5项配置+代码变更
+
+**背景**: 基于 3/17-3/31 实际交易数据分析（28条 option_trade_analysis + 59笔信号），策略10 E[PnL]=-$52/笔，Kelly f*=-50.6%。12笔止损的反向期权100%盈利（$7,522差额），方向准确率仅36%，盈利交易持仓2.5min vs 亏损14.5min。详见 `docs/analysis/260401-期权策略结构性缺陷修复方案.md`。
+
+**配置变更（strategies表 id=10）**:
+1. `exitRules.stopLossPercent`: 30→20（12笔止损avg -30%，收紧减少尾部损失）
+2. `exitRules.maxHoldMinutes`: 新增=15（3笔>30min亏损合计-$728）
+3. `exitRules.profitLockSteps` floors: [3,6,10,15,20,26]→[4,7,11,16,21,27]（收窄回撤容忍）
+4. `riskLimits.maxDailyTradesPerUnderlying`: 新增=1（TSLA 3/30入场4次净-$20）
+5. `liquidityFilters.minEntryPrice`: 新增=1.00（NVDA $0.42入场-$356）
+
+**代码变更**:
+1. `strategy-scheduler.service.ts`: +maxDailyTradesPerUnderlying检查（evaluateIdleSymbol内，冷却期后）
+2. `option-dynamic-exit.service.ts`: +maxHoldMinutes时间止损（exitType: TIME_STOP, PnL<5%时触发）
+3. `options-contract-selector.service.ts`: +minEntryPrice过滤（LongPort + Moomoo双路径）
+4. `option-intraday-strategy.ts`: liquidityFilters接口增加minEntryPrice字段
+
+**未修改**: SmartReverse（已disabled）、入场阈值（动态阈值已自适应）、marketScore算法（Phase 3）
+
+**模拟验证**: 组合修复可将28笔 option_trade_analysis PnL 从 -$2,150 提升至 +$477
+
+**修改文件**: `strategy-scheduler.service.ts`, `option-dynamic-exit.service.ts`, `options-contract-selector.service.ts`, `option-intraday-strategy.ts`
+
+---
+
 ## 2026-03-31
 
 ### 修复同组冷却保护失效 — correlationMap 入场/退出不一致

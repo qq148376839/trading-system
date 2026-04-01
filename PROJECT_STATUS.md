@@ -1,11 +1,17 @@
 # 项目进度总结
 
-**更新时间**: 2026-03-31
+**更新时间**: 2026-04-01
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-04-01: 期权策略结构性缺陷修复 Phase 1
+
+**改动**: 基于 3/17-3/31 实际交易数据分析（E[PnL]=-$52/笔），实施5项修复：止损30→20%、15min时间止损、阶梯锁利收窄、每标的每日1笔限制、低价期权过滤(>$1.00)。模拟验证PnL从-$2,150→+$477。
+
+**修改文件**: `strategy-scheduler.service.ts`, `option-dynamic-exit.service.ts`, `options-contract-selector.service.ts`, `option-intraday-strategy.ts`, 策略10数据库配置
 
 ### 2026-03-31: 修复同组冷却保护失效 — correlationMap 入场/退出不一致
 

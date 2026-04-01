@@ -138,6 +138,7 @@ export interface OptionIntradayStrategyConfig {
     minOpenInterest?: number;
     maxBidAskSpreadAbs?: number;
     maxBidAskSpreadPct?: number;
+    minEntryPrice?: number;
   };
 
   greekFilters?: {
