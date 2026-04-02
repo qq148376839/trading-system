@@ -20,6 +20,18 @@ import longportOptionQuoteService from './longport-option-quote.service';
 import { getMarketLocalDate, zonedTimeToUtc, getMarketTimeZone } from '../utils/market-time'; // 规则 #17
 
 // ============================================
+// Theta Bleed 检测常量（参数推导: 63 笔实测交易，见 docs/analysis/260402-PnL轨迹检测方案第一性原理分析.md）
+// ============================================
+const BLEED_WARMUP = 5;                    // 预热期 min: 2× 盈利交易平均持仓 2.5min
+const BLEED_STEEP = -0.5;                  // %/min: 超此斜率 = 方向错误（最缓方向错 -0.60 的上方）
+const BLEED_PNL_UPPER = 4;                 // 与阶梯锁利第一台阶对齐
+const BLEED_PNL_LOWER = -10;              // 不抢 STOP_LOSS (20%) 的管辖
+const BLEED_PEAK_THRESHOLD = 4;            // 曾盈利 ≥4% = 有方向证据，不算 theta bleed
+const BLEED_LOOKBACK_MS = 3 * 60 * 1000;  // 3 分钟回看窗口
+const BLEED_MIN_SNAPSHOTS = 8;             // 至少 8 条快照（~2min @15s）才做线性回归
+const BLEED_NON_IMPROVE_TOLERANCE = 0.5;   // 连续非改善容差 %
+
+// ============================================
 // 类型定义
 // ============================================
 
@@ -507,15 +519,7 @@ class OptionDynamicExitService {
     }
 
     // 3.5 Theta Bleed 检测（替代固定计时器 maxHoldMinutes，基于 PnL 轨迹斜率）
-    // 参数推导: 63 笔实测交易数据，见 docs/analysis/260402-PnL轨迹检测方案第一性原理分析.md
     const holdingMinutesForBleed = (now.getTime() - (ctx.entryTime || now).getTime()) / 60000;
-    const BLEED_WARMUP = 5;           // 预热期: 2× 盈利交易平均持仓 2.5min
-    const BLEED_STEEP = -0.5;         // %/min: 超此斜率 = 方向错误（最缓方向错 -0.60 的上方）
-    const BLEED_PNL_UPPER = 4;        // 与阶梯锁利第一台阶对齐
-    const BLEED_PNL_LOWER = -10;      // 不抢 STOP_LOSS (20%) 的管辖
-    const BLEED_PEAK_THRESHOLD = 4;   // 曾盈利 ≥4% = 有方向证据，不算 theta bleed
-    const BLEED_LOOKBACK_MS = 3 * 60 * 1000; // 3 分钟回看窗口
-    const BLEED_MIN_SNAPSHOTS = 8;    // 至少 8 条快照（~2min @15s）才做线性回归
 
     if (holdingMinutesForBleed >= BLEED_WARMUP
         && (ctx.peakPnLPercent ?? 0) < BLEED_PEAK_THRESHOLD
@@ -542,9 +546,9 @@ class OptionDynamicExitService {
         // 核心判断: slope 在 (BLEED_STEEP, 0] = theta bleed（非方向错误）
         const isBleed = slopePerMin > BLEED_STEEP && slopePerMin <= 0;
 
-        // 连续非改善: 窗口内所有点 ≤ 首点 + 0.5% 容差
+        // 连续非改善: 窗口内所有点 ≤ 首点 + 容差
         const baseline = snapshots[0].pnl;
-        const allNonImproving = snapshots.every(s => s.pnl <= baseline + 0.5);
+        const allNonImproving = snapshots.every(s => s.pnl <= baseline + BLEED_NON_IMPROVE_TOLERANCE);
 
         if (isBleed && allNonImproving) {
           return {
