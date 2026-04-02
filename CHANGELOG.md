@@ -2,6 +2,20 @@
 
 ## 2026-04-02
 
+### feat: 期权策略前端配置 — 新增3个 Phase 1 字段的 UI 控件
+
+commit 0c44266 新增的3个后端配置字段原无前端 UI，现补齐：
+
+1. `exitRules.maxHoldMinutes` — 最大持仓时间（退出参数区块）
+2. `riskLimits.maxDailyTradesPerUnderlying` — 每标的每日交易次数上限（新增风控限制区块）
+3. `liquidityFilters.minEntryPrice` — 最低入场价（开仓设置区块）
+
+所有字段默认 0（不限制），用户可按需配置。
+
+**修改文件**: `frontend/components/StrategyFormModal.tsx`
+
+---
+
 ### docs: 三份第一性原理分析文档审计修订
 
 **范围**: NVDA 过早卖出分析、方向准确率分析、动态参数框架分析

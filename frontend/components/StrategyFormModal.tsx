@@ -1297,6 +1297,11 @@ export default function StrategyFormModal({
                         <input {...numberInputProps('stopLossPercent', { path: ['exitRules', 'stopLossPercent'], defaultValue: 30, min: 10, max: 100 })} />
                         <p className="text-xs text-gray-500 mt-1">EARLY基准值，随时段自动递减</p>
                       </div>
+                      <div>
+                        <label className="block text-xs text-gray-700 mb-1 font-medium">最大持仓时间（分钟）</label>
+                        <input {...numberInputProps('maxHoldMinutes', { path: ['exitRules', 'maxHoldMinutes'], defaultValue: 0, min: 0, max: 240 })} />
+                        <p className="text-xs text-gray-500 mt-1">超时且盈利&lt;5%则市价退出（0=不限制）</p>
+                      </div>
                     </div>
                     {/* 追踪止损参数 */}
                     <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1497,6 +1502,18 @@ export default function StrategyFormModal({
                     </div>
                   </div>
 
+                  {/* Section: 风控限制 */}
+                  <div className="mb-4 p-4 border rounded bg-red-50 border-red-200">
+                    <label className="block text-xs text-gray-700 mb-3 font-semibold">风控限制</label>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs text-gray-700 mb-1 font-medium">每标的每日交易次数上限</label>
+                        <input {...numberInputProps('maxDailyTradesPerUnderlying', { path: ['riskLimits', 'maxDailyTradesPerUnderlying'], defaultValue: 0, min: 0, max: 20 })} />
+                        <p className="text-xs text-gray-500 mt-1">同一标的当日最多入场次数（0=不限制）</p>
+                      </div>
+                    </div>
+                  </div>
+
                   {/* Section 6: 开仓设置 */}
                   <div className="mb-4 p-4 border rounded bg-gray-50">
                     <label className="block text-xs text-gray-700 mb-3 font-semibold">开仓设置</label>
@@ -1559,6 +1576,13 @@ export default function StrategyFormModal({
                           <input {...numberInputProps('fixedContracts', { path: ['positionSizing', 'fixedContracts'], defaultValue: 1, min: 1, max: 20 })} />
                         </div>
                       )}
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3">
+                      <div>
+                        <label className="block text-xs text-gray-700 mb-1 font-medium">最低入场价($)</label>
+                        <input {...numberInputProps('minEntryPrice', { path: ['liquidityFilters', 'minEntryPrice'], defaultValue: 0, min: 0, max: 20, step: 0.1, isFloat: true })} />
+                        <p className="text-xs text-gray-500 mt-1">过滤低价OTM期权（0=不过滤）</p>
+                      </div>
                     </div>
                     <div className="mt-3 bg-blue-50 border border-blue-200 rounded p-3">
                       <p className="text-xs text-blue-800">

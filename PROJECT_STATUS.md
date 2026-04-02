@@ -7,6 +7,12 @@
 
 ## 🆕 最近更新
 
+### 2026-04-02: feat: 期权策略前端配置 — 新增3个 Phase 1 字段 UI
+
+**改动**: 补齐 commit 0c44266 新增的后端配置字段的前端 UI：maxHoldMinutes（退出参数）、maxDailyTradesPerUnderlying（风控限制新区块）、minEntryPrice（开仓设置）。默认 0=不限制。
+
+**修改文件**: `frontend/components/StrategyFormModal.tsx`
+
 ### 2026-04-02: docs: 三份第一性原理分析文档审计修订
 
 **改动**: 审计并修正 NVDA 退出分析、方向准确率分析、动态参数框架分析三份文档。关键修正：TIME_STOP 行号(L509-521)、36% vs 44% 指标混淆、Phase 编号统一(1/2/3/4)、Math.round 阈值计算、BTC 噪音双路径。
