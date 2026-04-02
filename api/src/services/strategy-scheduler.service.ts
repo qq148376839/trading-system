@@ -39,6 +39,7 @@ import fastMomentumService from './fast-momentum.service';
 /** 每笔新交易必须重置的持仓级 context 字段 — 防止 JSONB || 合并导致跨交易污染 */
 const POSITION_CONTEXT_RESET = {
   peakPnLPercent: 0,
+  pnlSnapshots: [] as { ts: number; pnl: number }[],
   peakPrice: null as null,
   emergencyStopLoss: null as null,
   protectionRetryPending: null as null,
@@ -57,6 +58,7 @@ const POSITION_CONTEXT_RESET = {
  */
 const POSITION_EXIT_CLEANUP = {
   peakPnLPercent: null as null,
+  pnlSnapshots: null as null,
   peakPrice: null as null,
   emergencyStopLoss: null as null,
   protectionRetryPending: null as null,
@@ -4404,6 +4406,7 @@ class StrategyScheduler {
         recentKlines: vwapData?.recentKlines,
         rangePct: vwapData?.rangePct,
         peakPnLPercent: (context.peakPnLPercent && context.entryTime) ? context.peakPnLPercent : 0,
+        pnlSnapshots: Array.isArray(context.pnlSnapshots) ? context.pnlSnapshots : [],
       };
 
       // 7. 检查是否应该平仓（优先使用 per-position exitRules，fallback 到 strategy-level config）
@@ -4423,7 +4426,7 @@ class StrategyScheduler {
             .map((s: Record<string, unknown>) => ({ threshold: Number(s.threshold), floor: Number(s.floor) }))
             .filter((s: { threshold: number; floor: number }) => !isNaN(s.threshold) && !isNaN(s.floor) && s.threshold > 0);
         })(),
-        maxHoldMinutes: (() => { const v = Number(effectiveExitRules?.maxHoldMinutes); return isNaN(v) || v <= 0 ? undefined : v; })(),
+        // maxHoldMinutes 已被 theta_bleed 检测替代（基于 PnL 轨迹斜率，无需配置值）
       } : undefined;
       const exitCondition = optionDynamicExitService.checkExitCondition(positionCtx, undefined, exitRulesOverride);
 
@@ -4735,12 +4738,18 @@ class StrategyScheduler {
         `${dynamicParams.adjustmentReason}`
       );
 
-      if (currentPnL.grossPnLPercent > peakPnLPercent) {
-        // 更新峰值盈利
+      // 追加 PnL 快照（theta bleed 检测用，保留最近 20 条 ≈ 5min @15s 间隔）
+      const prevSnapshots: { ts: number; pnl: number }[] = Array.isArray(context.pnlSnapshots) ? context.pnlSnapshots : [];
+      const newSnapshots = [...prevSnapshots, { ts: Date.now(), pnl: currentPnL.grossPnLPercent }].slice(-20);
+
+      const newPeak = Math.max(peakPnLPercent, currentPnL.grossPnLPercent);
+      if (newPeak > peakPnLPercent || newSnapshots.length !== prevSnapshots.length) {
+        // 更新峰值盈利 + PnL 快照
         await strategyInstance.updateState(symbol, 'HOLDING', {
           ...context,
-          peakPnLPercent: currentPnL.grossPnLPercent,
-          peakPrice: currentPrice,
+          peakPnLPercent: newPeak,
+          peakPrice: newPeak > peakPnLPercent ? currentPrice : (context.peakPrice ?? currentPrice),
+          pnlSnapshots: newSnapshots,
           lastCheckTime: new Date().toISOString(),
         });
         return { actionTaken: true };

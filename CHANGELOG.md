@@ -2,6 +2,24 @@
 
 ## 2026-04-02
 
+### feat: PnL 轨迹检测替代 maxHoldMinutes — theta bleed detector
+
+基于 63 笔实测交易数据分析，用 PnL 斜率检测替代固定计时器：
+
+**后端** (`option-dynamic-exit.service.ts` + `strategy-scheduler.service.ts`):
+- 移除 maxHoldMinutes 固定计时器（63 笔中 theta bleed 0 次，唯一触发为 4/1 NVDA 误杀 $510）
+- 新增 theta_bleed 检测: 线性回归 PnL 斜率，slope 在 (-0.5, 0] %/min 且连续非改善 → 退出
+- scheduler 每周期记录 pnlSnapshots（最近 20 条），POSITION_CONTEXT_RESET/CLEANUP 同步
+- ExitRulesOverride 移除 maxHoldMinutes 字段
+
+**前端** (`StrategyFormModal.tsx`):
+- 移除 maxHoldMinutes 配置控件（已无后端消费方）
+- 退出参数 grid 3 列→2 列
+
+**分析文档**: `docs/analysis/260402-maxHoldMinutes必要性第一性原理分析.md` + `260402-PnL轨迹检测方案第一性原理分析.md`
+
+---
+
 ### feat: 方向系统 P0-P3 代码实施 — 退出修复 + 去噪 + 消除偏置 + 多窗口趋势
 
 基于5份第一性原理分析文档的代码落地，4个阶段改动：

@@ -7,13 +7,17 @@
 
 ## 🆕 最近更新
 
+### 2026-04-02: feat: PnL 轨迹检测替代 maxHoldMinutes
+
+**改动**: 基于63笔实测数据分析，用PnL线性回归斜率检测(theta_bleed)替代固定计时器maxHoldMinutes。检测条件: 预热5min + slope在(-0.5,0]%/min + 连续非改善 + PnL在[-10%,+4%)。scheduler每周期记录pnlSnapshots(20条)。前端移除maxHoldMinutes配置。
+
+**修改文件**: `option-dynamic-exit.service.ts`, `strategy-scheduler.service.ts`, `StrategyFormModal.tsx`
+
 ### 2026-04-02: feat: 方向系统 P0-P3 代码实施
 
 **改动**: 基于5份分析文档落地4个阶段改动：P0 TIME_STOP A+D修复(亏损下界+delta动态maxHold)；P1 intradayScore去噪(BTC/USD→0%, 权重45/20/35/0/0)；P2 timeWindow改阈值修正(消除CALL偏置, finalScore=mkt×0.2+intraday×0.8)；P3 marketScore多窗口(3d/10d/20d)+Gap检测。
 
 **修改文件**: `option-dynamic-exit.service.ts`, `option-recommendation.service.ts`, `option-intraday-strategy.ts`
-
-**待操作**: 策略10 maxHoldMinutes 配置值改为 25（通过前端UI修改）
 
 ### 2026-04-02: feat: 期权策略前端配置 — 新增3个 Phase 1 字段 UI
 

@@ -46,7 +46,7 @@ export interface ExitRulesOverride {
   trailingStopTrigger?: number;     // 追踪止损触发点（盈利%），覆盖阶段默认值
   trailingStopPercent?: number;     // 追踪止损回撤幅度%，覆盖阶段默认值
   profitLockSteps?: { threshold: number; floor: number }[];  // 阶梯锁利台阶，覆盖默认值
-  maxHoldMinutes?: number;      // 最大持仓时间（分钟），超时且未盈利则市价退出
+  // maxHoldMinutes 已被 theta_bleed 检测替代（见 260402 分析文档）
 }
 
 /** 持仓上下文（用于计算动态参数） */
@@ -80,6 +80,7 @@ export interface PositionContext {
   recentKlines?: { open: number; high: number; low: number; close: number; volume: number; timestamp: number }[];
   rangePct?: number;               // 标的30分钟开盘波动率（VWAP服务返回），用于追踪止盈动态化
   peakPnLPercent?: number;         // 历史最高盈亏百分比（scheduler 追踪），用于精确移动止损
+  pnlSnapshots?: { ts: number; pnl: number }[];  // scheduler 每周期记录的 PnL 快照（最近 20 条，用于 theta bleed 检测）
 }
 
 /** 盈亏计算结果 */
@@ -506,31 +507,52 @@ class OptionDynamicExitService {
       }
     }
 
-    // 3.5 最大持仓时间止损（配置 exitRules.maxHoldMinutes）
-    // A+D 方案: delta-based 动态持仓时间 + 亏损下界（深度亏损交给 STOP_LOSS）
-    const holdingMinutesForMaxHold = (now.getTime() - (ctx.entryTime || now).getTime()) / 60000;
-    if (exitRulesOverride?.maxHoldMinutes != null) {
-      const maxHold = Number(exitRulesOverride.maxHoldMinutes);
-      if (!isNaN(maxHold) && maxHold > 0) {
-        // Delta-based 动态调整: 高delta=慢theta→多时间, 低delta=快theta→少时间
-        let effectiveMaxHold = maxHold;
-        if (ctx.entryDelta != null) {
-          const absDelta = Math.abs(ctx.entryDelta);
-          if (absDelta > 0.6) {
-            effectiveMaxHold = Math.max(maxHold, 25); // 深度ITM，至少25分钟
-          } else if (absDelta < 0.3) {
-            effectiveMaxHold = Math.min(maxHold, 10); // 深度OTM，最多10分钟
-          }
-        }
+    // 3.5 Theta Bleed 检测（替代固定计时器 maxHoldMinutes，基于 PnL 轨迹斜率）
+    // 参数推导: 63 笔实测交易数据，见 docs/analysis/260402-PnL轨迹检测方案第一性原理分析.md
+    const holdingMinutesForBleed = (now.getTime() - (ctx.entryTime || now).getTime()) / 60000;
+    const BLEED_WARMUP = 5;           // 预热期: 2× 盈利交易平均持仓 2.5min
+    const BLEED_STEEP = -0.5;         // %/min: 超此斜率 = 方向错误（最缓方向错 -0.60 的上方）
+    const BLEED_PNL_UPPER = 4;        // 与阶梯锁利第一台阶对齐
+    const BLEED_PNL_LOWER = -10;      // 不抢 STOP_LOSS (20%) 的管辖
+    const BLEED_PEAK_THRESHOLD = 4;   // 曾盈利 ≥4% = 有方向证据，不算 theta bleed
+    const BLEED_LOOKBACK_MS = 3 * 60 * 1000; // 3 分钟回看窗口
+    const BLEED_MIN_SNAPSHOTS = 8;    // 至少 8 条快照（~2min @15s）才做线性回归
 
-        if (holdingMinutesForMaxHold >= effectiveMaxHold
-            && pnl.grossPnLPercent < 5
-            && pnl.grossPnLPercent >= -10) { // 深度亏损(< -10%)交给 STOP_LOSS，TIME_STOP 只管"theta吃死钱"
+    if (holdingMinutesForBleed >= BLEED_WARMUP
+        && (ctx.peakPnLPercent ?? 0) < BLEED_PEAK_THRESHOLD
+        && pnl.grossPnLPercent >= BLEED_PNL_LOWER
+        && pnl.grossPnLPercent < BLEED_PNL_UPPER) {
+
+      const snapshots = (ctx.pnlSnapshots ?? [])
+        .filter(s => now.getTime() - s.ts < BLEED_LOOKBACK_MS);
+
+      if (snapshots.length >= BLEED_MIN_SNAPSHOTS) {
+        // 线性回归斜率（平滑微幅波动）
+        const n = snapshots.length;
+        const tMean = snapshots.reduce((sum, s) => sum + s.ts, 0) / n;
+        const pMean = snapshots.reduce((sum, s) => sum + s.pnl, 0) / n;
+        let num = 0;
+        let den = 0;
+        for (const s of snapshots) {
+          num += (s.ts - tMean) * (s.pnl - pMean);
+          den += (s.ts - tMean) ** 2;
+        }
+        const slopePerMs = den > 0 ? num / den : 0;
+        const slopePerMin = slopePerMs * 60000; // 转为 %/min
+
+        // 核心判断: slope 在 (BLEED_STEEP, 0] = theta bleed（非方向错误）
+        const isBleed = slopePerMin > BLEED_STEEP && slopePerMin <= 0;
+
+        // 连续非改善: 窗口内所有点 ≤ 首点 + 0.5% 容差
+        const baseline = snapshots[0].pnl;
+        const allNonImproving = snapshots.every(s => s.pnl <= baseline + 0.5);
+
+        if (isBleed && allNonImproving) {
           return {
             action: 'TIME_STOP',
-            reason: `超过最大持仓时间：${holdingMinutesForMaxHold.toFixed(0)}min ≥ ${effectiveMaxHold}min${ctx.entryDelta != null ? `(Δ=${ctx.entryDelta.toFixed(2)},base=${maxHold})` : ''}，盈亏=${pnl.grossPnLPercent.toFixed(1)}%`,
+            reason: `Theta侵蚀检测：持仓${holdingMinutesForBleed.toFixed(0)}min，slope=${slopePerMin.toFixed(3)}%/min（${n}点回归），PnL=${pnl.grossPnLPercent.toFixed(1)}%`,
             pnl,
-            exitTag: 'max_hold_minutes',
+            exitTag: 'theta_bleed',
           };
         }
       }

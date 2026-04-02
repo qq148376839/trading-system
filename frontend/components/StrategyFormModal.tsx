@@ -1286,7 +1286,7 @@ export default function StrategyFormModal({
                   {/* Section 4: 退出参数 */}
                   <div className="mb-4 p-4 border rounded bg-gray-50">
                     <label className="block text-xs text-gray-700 mb-3 font-semibold">退出参数</label>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
                         <label className="block text-xs text-gray-700 mb-1 font-medium">止盈 %</label>
                         <input {...numberInputProps('takeProfitPercent', { path: ['exitRules', 'takeProfitPercent'], defaultValue: 40, min: 10, max: 200 })} />
@@ -1296,11 +1296,6 @@ export default function StrategyFormModal({
                         <label className="block text-xs text-gray-700 mb-1 font-medium">止损 %</label>
                         <input {...numberInputProps('stopLossPercent', { path: ['exitRules', 'stopLossPercent'], defaultValue: 30, min: 10, max: 100 })} />
                         <p className="text-xs text-gray-500 mt-1">EARLY基准值，随时段自动递减</p>
-                      </div>
-                      <div>
-                        <label className="block text-xs text-gray-700 mb-1 font-medium">最大持仓时间（分钟）</label>
-                        <input {...numberInputProps('maxHoldMinutes', { path: ['exitRules', 'maxHoldMinutes'], defaultValue: 0, min: 0, max: 240 })} />
-                        <p className="text-xs text-gray-500 mt-1">超时且盈利&lt;5%则市价退出（0=不限制）</p>
                       </div>
                     </div>
                     {/* 追踪止损参数 */}
