@@ -7,6 +7,14 @@
 
 ## 🆕 最近更新
 
+### 2026-04-02: feat: 方向系统 P0-P3 代码实施
+
+**改动**: 基于5份分析文档落地4个阶段改动：P0 TIME_STOP A+D修复(亏损下界+delta动态maxHold)；P1 intradayScore去噪(BTC/USD→0%, 权重45/20/35/0/0)；P2 timeWindow改阈值修正(消除CALL偏置, finalScore=mkt×0.2+intraday×0.8)；P3 marketScore多窗口(3d/10d/20d)+Gap检测。
+
+**修改文件**: `option-dynamic-exit.service.ts`, `option-recommendation.service.ts`, `option-intraday-strategy.ts`
+
+**待操作**: 策略10 maxHoldMinutes 配置值改为 25（通过前端UI修改）
+
 ### 2026-04-02: feat: 期权策略前端配置 — 新增3个 Phase 1 字段 UI
 
 **改动**: 补齐 commit 0c44266 新增的后端配置字段的前端 UI：maxHoldMinutes（退出参数）、maxDailyTradesPerUnderlying（风控限制新区块）、minEntryPrice（开仓设置）。默认 0=不限制。

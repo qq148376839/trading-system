@@ -507,16 +507,32 @@ class OptionDynamicExitService {
     }
 
     // 3.5 最大持仓时间止损（配置 exitRules.maxHoldMinutes）
+    // A+D 方案: delta-based 动态持仓时间 + 亏损下界（深度亏损交给 STOP_LOSS）
     const holdingMinutesForMaxHold = (now.getTime() - (ctx.entryTime || now).getTime()) / 60000;
     if (exitRulesOverride?.maxHoldMinutes != null) {
       const maxHold = Number(exitRulesOverride.maxHoldMinutes);
-      if (!isNaN(maxHold) && maxHold > 0 && holdingMinutesForMaxHold >= maxHold && pnl.grossPnLPercent < 5) {
-        return {
-          action: 'TIME_STOP',
-          reason: `超过最大持仓时间：${holdingMinutesForMaxHold.toFixed(0)}min ≥ ${maxHold}min，盈亏=${pnl.grossPnLPercent.toFixed(1)}%`,
-          pnl,
-          exitTag: 'max_hold_minutes',
-        };
+      if (!isNaN(maxHold) && maxHold > 0) {
+        // Delta-based 动态调整: 高delta=慢theta→多时间, 低delta=快theta→少时间
+        let effectiveMaxHold = maxHold;
+        if (ctx.entryDelta != null) {
+          const absDelta = Math.abs(ctx.entryDelta);
+          if (absDelta > 0.6) {
+            effectiveMaxHold = Math.max(maxHold, 25); // 深度ITM，至少25分钟
+          } else if (absDelta < 0.3) {
+            effectiveMaxHold = Math.min(maxHold, 10); // 深度OTM，最多10分钟
+          }
+        }
+
+        if (holdingMinutesForMaxHold >= effectiveMaxHold
+            && pnl.grossPnLPercent < 5
+            && pnl.grossPnLPercent >= -10) { // 深度亏损(< -10%)交给 STOP_LOSS，TIME_STOP 只管"theta吃死钱"
+          return {
+            action: 'TIME_STOP',
+            reason: `超过最大持仓时间：${holdingMinutesForMaxHold.toFixed(0)}min ≥ ${effectiveMaxHold}min${ctx.entryDelta != null ? `(Δ=${ctx.entryDelta.toFixed(2)},base=${maxHold})` : ''}，盈亏=${pnl.grossPnLPercent.toFixed(1)}%`,
+            pnl,
+            exitTag: 'max_hold_minutes',
+          };
+        }
       }
     }
 

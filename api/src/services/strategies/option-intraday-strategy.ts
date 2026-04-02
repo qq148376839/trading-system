@@ -255,6 +255,8 @@ export class OptionIntradayStrategy extends StrategyBase {
   private capitalPrecheckRejectUntil: Map<string, number> = new Map();
   // 当前评估周期的VIX值（在generateSignal开始时设置）
   private currentCycleVix?: number;
+  // Phase 3B: 时间阈值修正系数（由推荐服务传入）
+  private currentTimeThresholdFactor = 1.0;
 
   constructor(strategyId: number, config: OptionIntradayStrategyConfig = {}) {
     super(strategyId, config as any);
@@ -293,12 +295,15 @@ export class OptionIntradayStrategy extends StrategyBase {
     const tableBase = ENTRY_THRESHOLDS[pref] || ENTRY_THRESHOLDS.CONSERVATIVE;
     const override = this.cfg.entryThresholdOverride;
     const vixFactor = this.getVixThresholdFactor(this.currentCycleVix);
+    // Phase 3B: 时间阈值修正（开盘0.85降低→更易入场，尾盘递增→更难入场，但不偏向方向）
+    const timeFactor = this.currentTimeThresholdFactor;
 
     return {
-      directionalScoreMin: Math.round((override?.directionalScoreMin ?? tableBase.directionalScoreMin) * vixFactor),
-      spreadScoreMin: Math.round((override?.spreadScoreMin ?? tableBase.spreadScoreMin) * vixFactor),
+      directionalScoreMin: Math.round((override?.directionalScoreMin ?? tableBase.directionalScoreMin) * vixFactor * timeFactor),
+      spreadScoreMin: Math.round((override?.spreadScoreMin ?? tableBase.spreadScoreMin) * vixFactor * timeFactor),
       straddleIvThreshold: tableBase.straddleIvThreshold,
       vixFactor,
+      timeFactor,
     };
   }
 
@@ -570,8 +575,9 @@ export class OptionIntradayStrategy extends StrategyBase {
       // 2) 获取市场推荐
       const optionRec = await optionRecommendationService.calculateOptionRecommendation(symbol);
 
-      // 设置当前周期VIX值，供getThresholds()使用
+      // 设置当前周期VIX值和时间阈值因子，供getThresholds()使用
       this.currentCycleVix = optionRec.currentVix;
+      this.currentTimeThresholdFactor = optionRec.timeThresholdFactor ?? 1.0;
 
       logData.marketScore = optionRec.marketScore;
       logData.intradayScore = optionRec.intradayScore;

@@ -7,9 +7,9 @@
  * 3. 降低入场门槛，提高交易频率
  *
  * 决策流程：
- * - 大盘环境评分 (20%): SPX趋势 + 市场温度 + VIX
- * - 分时动量评分 (60%): 底层1m动量(30%) + VWAP位置(15%) + SPX日内(25%) + BTC时K(15%) + USD时K(15%)
- * - 期权特性调整 (20%): 时间窗口 + 波动率
+ * - 大盘环境评分 (20%): SPX多窗口趋势(3d/10d/20d) + Gap信号 + 市场温度 + VIX
+ * - 分时动量评分 (80%): 底层1m动量(45%) + VWAP位置(20%) + SPX日内(35%) + BTC/USD已去噪(0%)
+ * - 时间窗口: 改为阈值修正系数(timeThresholdFactor)，不参与方向得分
  */
 
 import marketDataCacheService from './market-data-cache.service';
@@ -34,6 +34,7 @@ interface OptionRecommendation {
   marketScore: number; // 大盘得分 -100 to 100
   intradayScore: number; // 分时得分 -100 to 100
   finalScore: number; // 综合得分 -100 to 100
+  timeThresholdFactor?: number; // Phase 3B: 时间阈值修正系数（供策略层使用）
   suggestedDelta: {
     min: number;
     max: number;
@@ -154,14 +155,16 @@ class OptionRecommendationService {
         marketData.spxHourly
       );
 
-      // 5. 计算期权时间窗口调整 (20%权重)
-      const timeWindowAdjustment = this.calculateTimeWindowAdjustment();
+      // 5. 时间窗口 — Phase 3B: 改为阈值修正系数，不再参与方向得分
+      // 旧: finalScore = mkt*0.2 + intraday*0.6 + timeWindow*0.2 (timeWindow +20 = CALL偏置)
+      // 新: finalScore = mkt*0.2 + intraday*0.8 (方向完全由市场信号决定)
+      const timeWindowAdjustment = this.calculateTimeWindowAdjustment(); // 保留用于日志
+      const timeThresholdFactor = this.getTimeThresholdFactor(); // 新：阈值修正系数
 
-      // 6. 综合得分计算 (大盘20% + 日内60% + 时间窗口20%)
+      // 6. 综合得分计算 (大盘20% + 日内80%，timeWindow不参与)
       const finalScore =
         marketScore * 0.2 +
-        intradayScore * 0.6 +
-        timeWindowAdjustment * 0.2;
+        intradayScore * 0.8;
 
       // 7. 决策逻辑（降低门槛）
       let direction: 'CALL' | 'PUT' | 'HOLD' = 'HOLD';
@@ -283,6 +286,7 @@ class OptionRecommendationService {
         marketScore,
         intradayScore,
         finalScore,
+        timeThresholdFactor, // Phase 3B: 时间阈值修正系数，供策略层使用
         suggestedDelta,
         entryWindow,
         riskLevel,
@@ -313,27 +317,32 @@ class OptionRecommendationService {
     this.correctDailyCloseWithIntraday(marketData.usdIndex, marketData.usdIndexHourly);
     this.correctDailyCloseWithIntraday(marketData.btc, marketData.btcHourly);
 
-    // 1. SPX趋势分析 (权重40%)
-    const spxAnalysis = this.analyzeMarketTrend(marketData.spx, 'SPX');
+    // 1. SPX趋势分析 — Phase 3B: 多窗口加权（3d/10d/20d），替代单一20日均线
+    const spxAnalysis = this.analyzeMarketTrendMultiWindow(marketData.spx);
     score += spxAnalysis.trendStrength * 0.4;
-    components.push(`SPX趋势${spxAnalysis.trendStrength.toFixed(1)}→${(spxAnalysis.trendStrength * 0.4).toFixed(1)}`);
+    components.push(`SPX多窗口${spxAnalysis.trendStrength.toFixed(1)}(${spxAnalysis.windowWeights})→${(spxAnalysis.trendStrength * 0.4).toFixed(1)}`);
+
+    // 1b. Gap 检测 — Phase 3B: 隔夜信息作为方向补充
+    const gapAnalysis = this.calculateGapSignal(marketData.spx);
+    if (gapAnalysis.gapScore !== 0) {
+      score += gapAnalysis.gapScore;
+      components.push(`Gap${gapAnalysis.gapPct > 0 ? '+' : ''}${gapAnalysis.gapPct.toFixed(2)}%→${gapAnalysis.gapScore > 0 ? '+' : ''}${gapAnalysis.gapScore.toFixed(1)}`);
+    }
 
     // 2. USD Index影响 (权重20%, 反向)
     const usdAnalysis = this.analyzeMarketTrend(marketData.usdIndex, 'USD');
     score += -usdAnalysis.trendStrength * 0.2; // USD上升对股市不利
     components.push(`USD${usdAnalysis.trendStrength.toFixed(1)}→${(-usdAnalysis.trendStrength * 0.2).toFixed(1)}`);
 
-    // 3. BTC支持/阻力 (权重20%)
+    // 3. BTC支持/阻力 — Phase 3A: 降低权重（日K趋势级别保留微量影响，分时已归零）
     const btcAnalysis = this.analyzeMarketTrend(marketData.btc, 'BTC');
     const btcCorrelation = this.checkBTCSPXCorrelation(marketData.spx, marketData.btc);
     if (btcCorrelation > 0.5) {
-      // 共振时BTC影响更大
-      score += btcAnalysis.trendStrength * 0.2;
-      components.push(`BTC${btcAnalysis.trendStrength.toFixed(1)}*0.2→${(btcAnalysis.trendStrength * 0.2).toFixed(1)}`);
+      score += btcAnalysis.trendStrength * 0.1; // was 0.2
+      components.push(`BTC${btcAnalysis.trendStrength.toFixed(1)}*0.1(共振)→${(btcAnalysis.trendStrength * 0.1).toFixed(1)}`);
     } else {
-      // 不共振时降低影响
-      score += btcAnalysis.trendStrength * 0.1;
-      components.push(`BTC${btcAnalysis.trendStrength.toFixed(1)}*0.1→${(btcAnalysis.trendStrength * 0.1).toFixed(1)}`);
+      score += btcAnalysis.trendStrength * 0.05; // was 0.1
+      components.push(`BTC${btcAnalysis.trendStrength.toFixed(1)}*0.05→${(btcAnalysis.trendStrength * 0.05).toFixed(1)}`);
     }
 
     // 4. VIX恐慌指数 (权重10%)
@@ -430,40 +439,43 @@ class OptionRecommendationService {
       usdHourly: 0,
     };
 
-    // 1. Underlying 1m momentum (30%)
+    // Phase 3A 去噪: BTC/USD 小时线对分钟级交易无预测力，权重归零
+    // 权重分配: 底层1min 45% + VWAP 20% + SPX日内 35% + BTC 0% + USD 0%
+
+    // 1. Underlying 1m momentum (45% ← was 30%)
     if (underlyingVWAP?.recentKlines && underlyingVWAP.recentKlines.length >= 5) {
       const recentBars = underlyingVWAP.recentKlines.slice(-20);
       const momentum = this.calculateMomentum(recentBars);
-      const weighted = momentum * 0.3;
+      const weighted = momentum * 0.45;
       componentScores.underlyingMomentum = weighted;
       score += weighted;
-      logParts.push(`底层1m动量=${momentum.toFixed(1)}*0.3→${weighted.toFixed(1)}`);
+      logParts.push(`底层1m动量=${momentum.toFixed(1)}*0.45→${weighted.toFixed(1)}`);
     } else {
       logParts.push(`底层1m动量=N/A(K线${underlyingVWAP?.recentKlines?.length || 0}根<5)`);
     }
 
-    // 2. VWAP position score (15%)
+    // 2. VWAP position score (20% ← was 15%)
     if (underlyingVWAP && underlyingVWAP.vwap > 0 && underlyingVWAP.recentKlines?.length > 0) {
       const lastPrice = underlyingVWAP.recentKlines[underlyingVWAP.recentKlines.length - 1].close;
       const distancePct = ((lastPrice - underlyingVWAP.vwap) / underlyingVWAP.vwap) * 100;
-      const rawScore = Math.max(-100, Math.min(100, distancePct * 50)); // 2%偏离才饱和（旧值200→0.5%饱和）
-      const weighted = rawScore * 0.15;
+      const rawScore = Math.max(-100, Math.min(100, distancePct * 50)); // 2%偏离才饱和
+      const weighted = rawScore * 0.20;
       componentScores.vwapPosition = weighted;
       score += weighted;
-      logParts.push(`VWAP位置=${distancePct.toFixed(3)}%→raw${rawScore.toFixed(1)}*0.15→${weighted.toFixed(1)}`);
+      logParts.push(`VWAP位置=${distancePct.toFixed(3)}%→raw${rawScore.toFixed(1)}*0.20→${weighted.toFixed(1)}`);
     } else {
       logParts.push(`VWAP位置=N/A`);
     }
 
-    // 3. SPX intraday momentum (25%)
+    // 3. SPX intraday momentum (35% ← was 25%)
     if (spxHourly && spxHourly.length >= 5) {
       const filteredSPXHourly = intradayDataFilterService.filterData(spxHourly);
       if (filteredSPXHourly.length >= 5) {
         const spxMomentum = this.calculateMomentum(filteredSPXHourly);
-        const weighted = spxMomentum * 0.25;
+        const weighted = spxMomentum * 0.35;
         componentScores.spxIntraday = weighted;
         score += weighted;
-        logParts.push(`SPX日内=${spxMomentum.toFixed(1)}*0.25→${weighted.toFixed(1)}`);
+        logParts.push(`SPX日内=${spxMomentum.toFixed(1)}*0.35→${weighted.toFixed(1)}`);
       } else {
         logParts.push(`SPX日内=N/A(过滤后${filteredSPXHourly.length}根<5)`);
       }
@@ -471,28 +483,25 @@ class OptionRecommendationService {
       logParts.push(`SPX日内=N/A(${spxHourly?.length || 0}根<5)`);
     }
 
-    // 4. BTC hourly momentum (15%)
+    // 4. BTC hourly momentum — Phase 3A: 权重归零（分钟级交易无预测力）
+    // 保留计算用于日志观察，但不计入得分
     if (marketData.btcHourly && marketData.btcHourly.length >= 10) {
       const filteredBTCHourly = intradayDataFilterService.filterData(
         marketData.btcHourly
       );
       const btcHourlyMomentum = this.calculateMomentum(filteredBTCHourly);
-      const weighted = btcHourlyMomentum * 0.15;
-      componentScores.btcHourly = weighted;
-      score += weighted;
-      logParts.push(`BTC时K=${btcHourlyMomentum.toFixed(1)}*0.15→${weighted.toFixed(1)}`);
+      componentScores.btcHourly = 0; // 权重=0，不计入得分
+      logParts.push(`BTC时K=${btcHourlyMomentum.toFixed(1)}*0→0(去噪)`);
     }
 
-    // 5. USD hourly momentum (15%, inverted)
+    // 5. USD hourly momentum — Phase 3A: 权重归零（分钟级交易无预测力）
     if (marketData.usdIndexHourly && marketData.usdIndexHourly.length >= 10) {
       const filteredUSDHourly = intradayDataFilterService.filterData(
         marketData.usdIndexHourly
       );
       const usdHourlyMomentum = this.calculateMomentum(filteredUSDHourly);
-      const weighted = -usdHourlyMomentum * 0.15;
-      componentScores.usdHourly = weighted;
-      score += weighted;
-      logParts.push(`USD时K=${usdHourlyMomentum.toFixed(1)}*-0.15→${weighted.toFixed(1)}`);
+      componentScores.usdHourly = 0; // 权重=0，不计入得分
+      logParts.push(`USD时K=${usdHourlyMomentum.toFixed(1)}*0→0(去噪)`);
     }
 
     const finalIntradayScore = Math.max(-100, Math.min(100, score));
@@ -539,6 +548,99 @@ class OptionRecommendationService {
     else if (trendStrength < -5) trend = '下跌';
 
     return { trendStrength, trend };
+  }
+
+  /**
+   * Phase 3B: 多窗口趋势分析（仅用于SPX）
+   * 3d/10d/20d 窗口加权 — 权重由趋势一致性动态决定
+   * 所有窗口同向 → 长期权重高（强趋势确认）
+   * 短期与长期反向 → 短期权重高（可能是转折点）
+   */
+  private analyzeMarketTrendMultiWindow(
+    data: CandlestickData[]
+  ): { trendStrength: number; trend: string; windowWeights: string } {
+    if (!data || data.length < 20) {
+      return { trendStrength: 0, trend: '数据不足', windowWeights: 'N/A' };
+    }
+
+    const currentPrice = data[data.length - 1].close;
+
+    // 计算三个时间窗口的趋势
+    const avg3 = data.slice(-3).reduce((s, d) => s + d.close, 0) / Math.min(3, data.length);
+    const avg10 = data.slice(-10).reduce((s, d) => s + d.close, 0) / Math.min(10, data.length);
+    const avg20 = data.slice(-20).reduce((s, d) => s + d.close, 0) / Math.min(20, data.length);
+
+    const trend3d = ((currentPrice - avg3) / avg3) * 100;
+    const trend10d = ((currentPrice - avg10) / avg10) * 100;
+    const trend20d = ((currentPrice - avg20) / avg20) * 100;
+
+    // 权重由趋势一致性决定
+    let weights: { d3: number; d10: number; d20: number };
+    const sign3 = Math.sign(trend3d);
+    const sign10 = Math.sign(trend10d);
+    const sign20 = Math.sign(trend20d);
+
+    if (sign3 === sign10 && sign10 === sign20 && sign3 !== 0) {
+      // 所有窗口同向 → 强趋势 → 中长期权重高
+      weights = { d3: 0.3, d10: 0.4, d20: 0.3 };
+    } else if (sign3 !== sign20 && sign3 !== 0 && sign20 !== 0) {
+      // 短期与长期反向 → 转折点 → 短期权重高
+      weights = { d3: 0.7, d10: 0.2, d20: 0.1 };
+    } else {
+      // 混合状态
+      weights = { d3: 0.5, d10: 0.3, d20: 0.2 };
+    }
+
+    // 硬限: 短期窗口最大 0.8, 长期最小 0.05
+    weights.d3 = Math.min(0.8, weights.d3);
+    weights.d20 = Math.max(0.05, weights.d20);
+
+    const trendScore = trend3d * weights.d3 + trend10d * weights.d10 + trend20d * weights.d20;
+
+    // 放大5倍（与原 analyzeMarketTrend 尺度一致）+ 短期趋势加成
+    let trendStrength = trendScore * 5;
+    if (currentPrice > avg10 && avg10 > avg20) {
+      trendStrength += 20;
+    } else if (currentPrice < avg10 && avg10 < avg20) {
+      trendStrength -= 20;
+    }
+
+    trendStrength = Math.max(-100, Math.min(100, trendStrength));
+
+    let trend = '盘整';
+    if (trendStrength > 20) trend = '强势上涨';
+    else if (trendStrength > 5) trend = '上涨';
+    else if (trendStrength < -20) trend = '强势下跌';
+    else if (trendStrength < -5) trend = '下跌';
+
+    const windowWeights = `d3=${weights.d3}|d10=${weights.d10}|d20=${weights.d20}`;
+    return { trendStrength, trend, windowWeights };
+  }
+
+  /**
+   * Phase 3B: Gap 信号检测
+   * 隔夜跳空作为方向补充信号
+   * gapPct > +0.5% → 多头信号 | gapPct < -0.5% → 空头信号
+   */
+  private calculateGapSignal(
+    dailyData: CandlestickData[]
+  ): { gapPct: number; gapScore: number } {
+    if (!dailyData || dailyData.length < 2) {
+      return { gapPct: 0, gapScore: 0 };
+    }
+
+    const today = dailyData[dailyData.length - 1];
+    const prevDay = dailyData[dailyData.length - 2];
+    const gapPct = ((today.open - prevDay.close) / prevDay.close) * 100;
+
+    // 只有显著跳空才产生信号（±0.3% 以上）
+    if (Math.abs(gapPct) < 0.3) {
+      return { gapPct, gapScore: 0 };
+    }
+
+    // Gap 信号强度: 线性映射，0.3%→2分，1%→8分，2%→15分，封顶±15
+    const gapScore = Math.max(-15, Math.min(15, gapPct * 8));
+    return { gapPct, gapScore };
   }
 
   /**
@@ -906,19 +1008,24 @@ class OptionRecommendationService {
   }
 
   /**
-   * 0DTE 尾盘阈值递增因子（与 Schwartz 策略同曲线）
-   * 9:30-12:00: 1.0 | 12:00-14:00: 1.0→1.3 | 14:00-15:00: 1.3→1.8
-   * 15:00-15:30: 1.8→2.5 | 15:30+: 3.0
+   * Phase 3B: 策略层时间阈值修正系数
+   * 替代 timeWindowAdjustment 的方向偏置，改为对称性阈值调整
+   * 开盘第1小时: 0.85（降低阈值更容易入场，但不偏向任何方向）
+   * 正常时段: 1.0
+   * 尾盘: 递增（更难入场，与 get0DTETimeThresholdFactor 合并）
    */
-  private get0DTETimeThresholdFactor(): number {
+  private getTimeThresholdFactor(): number {
     const etMinutes = this.getETMinutes();
-
+    const marketOpen = 570; // 9:30
+    const firstHourEnd = marketOpen + 60; // 10:30
     const midDay = 12 * 60;
     const afternoon = 14 * 60;
     const lateAfternoon = 15 * 60;
     const finalWindow = 15 * 60 + 30;
 
-    if (etMinutes <= midDay) {
+    if (etMinutes < firstHourEnd) {
+      return 0.85; // 开盘第1小时：降低阈值但不偏向方向
+    } else if (etMinutes <= midDay) {
       return 1.0;
     } else if (etMinutes <= afternoon) {
       const progress = (etMinutes - midDay) / (afternoon - midDay);
@@ -932,6 +1039,13 @@ class OptionRecommendationService {
     } else {
       return 3.0;
     }
+  }
+
+  /**
+   * 0DTE 尾盘阈值递增因子（推荐层使用，与 getTimeThresholdFactor 对齐）
+   */
+  private get0DTETimeThresholdFactor(): number {
+    return this.getTimeThresholdFactor();
   }
 }
 

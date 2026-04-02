@@ -2,6 +2,31 @@
 
 ## 2026-04-02
 
+### feat: 方向系统 P0-P3 代码实施 — 退出修复 + 去噪 + 消除偏置 + 多窗口趋势
+
+基于5份第一性原理分析文档的代码落地，4个阶段改动：
+
+**P0 — TIME_STOP A+D 退出修复** (`option-dynamic-exit.service.ts`):
+- 增加亏损下界 `pnlPercent >= -10%`，深度亏损交给 STOP_LOSS
+- Delta-based 动态 maxHold: |delta|>0.6→25min, <0.3→10min
+
+**P1 — intradayScore 去噪** (`option-recommendation.service.ts`):
+- 权重重分配: 底层1min 30→45%, VWAP 15→20%, SPX 25→35%, BTC/USD 15→0%
+- marketScore 中 BTC 权重减半 (0.2→0.1 / 0.1→0.05)
+
+**P2 — timeWindow 改阈值修正** (`option-recommendation.service.ts` + `option-intraday-strategy.ts`):
+- finalScore 公式: `mkt×0.2 + intraday×0.6 + timeWindow×0.2` → `mkt×0.2 + intraday×0.8`
+- timeWindow 改为 timeThresholdFactor，开盘0.85(降阈值)/正常1.0/尾盘递增
+- 策略层 getThresholds() 集成: `directionalScoreMin × vixFactor × timeFactor`
+
+**P3 — marketScore 多窗口 + Gap** (`option-recommendation.service.ts`):
+- SPX 趋势: 单一20日均线 → 3d/10d/20d 多窗口加权（一致性驱动权重分配）
+- 新增 Gap 信号: 隔夜跳空 ±0.3%+ 映射为 ±15 分
+
+**关联文档**: `docs/features/260402-方向系统P0-P3代码实施.md`
+
+---
+
 ### feat: 期权策略前端配置 — 新增3个 Phase 1 字段的 UI 控件
 
 commit 0c44266 新增的3个后端配置字段原无前端 UI，现补齐：
