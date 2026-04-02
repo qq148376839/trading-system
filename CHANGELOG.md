@@ -10,6 +10,7 @@
 - 移除 maxHoldMinutes 固定计时器（63 笔中 theta bleed 0 次，唯一触发为 4/1 NVDA 误杀 $510）
 - 新增 theta_bleed 检测: 线性回归 PnL 斜率，slope 在 (-0.5, 0] %/min 且连续非改善 → 退出
 - scheduler 每周期记录 pnlSnapshots（最近 20 条），POSITION_CONTEXT_RESET/CLEANUP 同步
+- 修复快照持久化 bug: 快照满 20 条后 updateState 条件恒 false，导致 theta_bleed 8min 后失效
 - ExitRulesOverride 移除 maxHoldMinutes 字段
 
 **前端** (`StrategyFormModal.tsx`):

@@ -4743,17 +4743,15 @@ class StrategyScheduler {
       const newSnapshots = [...prevSnapshots, { ts: Date.now(), pnl: currentPnL.grossPnLPercent }].slice(-20);
 
       const newPeak = Math.max(peakPnLPercent, currentPnL.grossPnLPercent);
-      if (newPeak > peakPnLPercent || newSnapshots.length !== prevSnapshots.length) {
-        // 更新峰值盈利 + PnL 快照
-        await strategyInstance.updateState(symbol, 'HOLDING', {
-          ...context,
-          peakPnLPercent: newPeak,
-          peakPrice: newPeak > peakPnLPercent ? currentPrice : (context.peakPrice ?? currentPrice),
-          pnlSnapshots: newSnapshots,
-          lastCheckTime: new Date().toISOString(),
-        });
-        return { actionTaken: true };
-      }
+      // 每周期都持久化：快照每次都有新增，peakPnL 可能更新
+      await strategyInstance.updateState(symbol, 'HOLDING', {
+        ...context,
+        peakPnLPercent: newPeak,
+        peakPrice: newPeak > peakPnLPercent ? currentPrice : (context.peakPrice ?? currentPrice),
+        pnlSnapshots: newSnapshots,
+        lastCheckTime: new Date().toISOString(),
+      });
+      return { actionTaken: true };
 
       return { actionTaken: false };
     } catch (error: any) {

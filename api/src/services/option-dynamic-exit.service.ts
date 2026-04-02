@@ -46,7 +46,6 @@ export interface ExitRulesOverride {
   trailingStopTrigger?: number;     // 追踪止损触发点（盈利%），覆盖阶段默认值
   trailingStopPercent?: number;     // 追踪止损回撤幅度%，覆盖阶段默认值
   profitLockSteps?: { threshold: number; floor: number }[];  // 阶梯锁利台阶，覆盖默认值
-  // maxHoldMinutes 已被 theta_bleed 检测替代（见 260402 分析文档）
 }
 
 /** 持仓上下文（用于计算动态参数） */

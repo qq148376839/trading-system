@@ -9,7 +9,7 @@
 
 ### 2026-04-02: feat: PnL 轨迹检测替代 maxHoldMinutes
 
-**改动**: 基于63笔实测数据分析，用PnL线性回归斜率检测(theta_bleed)替代固定计时器maxHoldMinutes。检测条件: 预热5min + slope在(-0.5,0]%/min + 连续非改善 + PnL在[-10%,+4%)。scheduler每周期记录pnlSnapshots(20条)。前端移除maxHoldMinutes配置。
+**改动**: 基于63笔实测数据分析，用PnL线性回归斜率检测(theta_bleed)替代固定计时器maxHoldMinutes。检测条件: 预热5min + slope在(-0.5,0]%/min + 连续非改善 + PnL在[-10%,+4%)。scheduler每周期记录pnlSnapshots(20条)。修复快照持久化bug(满20条后updateState条件恒false)。前端移除maxHoldMinutes配置。
 
 **修改文件**: `option-dynamic-exit.service.ts`, `strategy-scheduler.service.ts`, `StrategyFormModal.tsx`
 
