@@ -1,11 +1,17 @@
 # 项目进度总结
 
-**更新时间**: 2026-04-02
+**更新时间**: 2026-04-03
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-04-03: feat: 行情订阅架构升级 — WebSocket 实时推送
+
+**改动**: 新增 QuoteSubscriptionService 管理 LongPort WebSocket 行情推送。数据延迟从 0~5s 降至 ~50-200ms。setOnQuote/setOnCandlestick 回调实时驱动 FastMomentum 数据喂入。心跳检测(30s)+指数退避重连+5s轮询降级。Buffer 扩容 12→120/60→600。原轮询保留为 fallback。
+
+**修改文件**: `quote-subscription.service.ts`(新增), `fast-momentum.service.ts`, `strategy-scheduler.service.ts`
 
 ### 2026-04-02: feat: PnL 轨迹检测替代 maxHoldMinutes
 

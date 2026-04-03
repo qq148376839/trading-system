@@ -1,5 +1,28 @@
 # 更新日志
 
+## 2026-04-03
+
+### feat: 行情订阅架构升级 — WebSocket 实时推送替代 5 秒轮询
+
+数据延迟从 0~5s 降至 ~50-200ms，原轮询保留为 fallback。
+
+**新增** (`quote-subscription.service.ts`):
+- 单例 QuoteSubscriptionService 管理 LongPort WebSocket 订阅生命周期
+- `setOnQuote` / `setOnCandlestick` 回调驱动实时数据消费
+- 心跳检测(30s) + 指数退避重连(2s→60s) + 5s 轮询降级
+- 状态机: IDLE → ACTIVE <-> DEGRADED → STOPPED
+
+**修改** (`fast-momentum.service.ts`):
+- 新增 `feedSingleQuote(symbol, price, timestamp)` 单条实时报价喂入
+- Buffer 扩容: BUFFER_CAPACITY 12→120, LONG_BUFFER_CAPACITY 60→600
+
+**修改** (`strategy-scheduler.service.ts`):
+- 期权策略启动时初始化 WebSocket 订阅服务
+- 持仓标的 + IDLE 标的均通过 subscription 订阅实时行情
+- Phase A.5 优先使用 WebSocket 推送，降级时回退到批量轮询
+
+---
+
 ## 2026-04-02
 
 ### feat: PnL 轨迹检测替代 maxHoldMinutes — theta bleed detector
