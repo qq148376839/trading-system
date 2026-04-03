@@ -507,7 +507,7 @@ class OptionRecommendationService {
     }
 
     // 2. 5min 趋势确认 (15%) — Phase 3 新增
-    if (underlying5minKlines && underlying5minKlines.length >= 10) {
+    if (underlying5minKlines && underlying5minKlines.length >= 15) {
       const trendConfirmation = this.calculate5minTrendConfirmation(
         underlying5minKlines,
         underlying1mMomentum
@@ -516,7 +516,7 @@ class OptionRecommendationService {
       score += weighted;
       logParts.push(`5min确认=${trendConfirmation.toFixed(1)}*0.15→${weighted.toFixed(1)}`);
     } else {
-      logParts.push(`5min确认=N/A(${underlying5minKlines?.length || 0}根<10)`);
+      logParts.push(`5min确认=N/A(${underlying5minKlines?.length || 0}根<15)`);
     }
 
     // 3. VWAP position score (15%)
@@ -728,7 +728,7 @@ class OptionRecommendationService {
     klines5min: CandlestickData[],
     momentum1min: number
   ): number {
-    if (!klines5min || klines5min.length < 10) return 0;
+    if (!klines5min || klines5min.length < 15) return 0;
 
     // 1. 计算 5min 级别的 volume-weighted momentum
     const fiveMinMomentum = this.calculateMomentum(klines5min);
