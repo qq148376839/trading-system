@@ -1186,7 +1186,7 @@ quoteRouter.get('/market-data-test', async (req: Request, res: Response) => {
     // 3. 完整 getAllMarketData 竞速测试
     await runStep('完整 getAllMarketData（三源竞速）', async () => {
       const start = Date.now();
-      const data = await MarketDataSvc.getAllMarketData(5, false);
+      const data = await MarketDataSvc.getAllMarketData(100, false);
       const elapsed = Date.now() - start;
       return {
         elapsed_ms: elapsed,
