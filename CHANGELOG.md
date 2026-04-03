@@ -2,6 +2,30 @@
 
 ## 2026-04-03
 
+### feat: Phase 1 PnL 修复 — 前端分析页改读 auto_trades
+
+前端分析页 PnL 从 `strategy_signals.metadata.netPnL`（决策时估算）改为从 `auto_trades.pnl`（broker 成交价）读取。
+
+**后端** (`api/src/routes/quant.ts`):
+- 新增 `GET /api/quant/analysis/trades` 端点，从 auto_trades 查询真实 PnL
+- LATERAL JOIN strategy_signals 获取 BUY/SELL 信号元数据（评分、方向、退出原因）
+- 信号表估算值保留为 `estimatedPnl` 字段，用于滑点分析
+
+**前端** (`frontend/app/quant/analysis/page.tsx`, `frontend/lib/api.ts`):
+- 删除 ~90 行客户端 BUY/SELL 信号配对 + 订单匹配逻辑
+- 改调新 API，TradeRecord 改为 AnalysisTrade 类型别名
+
+### feat: Phase 0 入场时机数据验证脚本
+
+新增 `scripts/analyze-entry-timing.ts`，验证"提前 3-5 分钟入场可提高盈利 30%+"假设。
+
+- 拉取 3 月至今所有 EXECUTED BUY 信号 + 对应 SELL + auto_trades 实际 PnL
+- 查询 `option_strategy_decision_logs` 获取入场前 6 分钟评分轨迹
+- 从 `option_trade_kline` 获取历史 K 线反推假设入场价
+- 输出: 控制台详情 + `scripts/results/entry-timing-analysis.json`
+
+---
+
 ### refactor: Phase 3 — K线增强 + 权重恢复 20/60/20
 
 策略评分引擎核心重构，修复 4-01 方向系统重构导致的盈亏比 0.03:1 灾难性结果。

@@ -1555,6 +1555,128 @@ quantRouter.get('/signals', async (req: Request, res: Response, next: NextFuncti
 
 // ==================== 交易记录 API ====================
 
+/**
+ * GET /api/quant/analysis/trades
+ * 获取分析页交易数据 — 从 auto_trades 获取真实 PnL，JOIN 信号表获取元数据
+ * 替代前端 BUY/SELL 信号配对 + 订单匹配的不准确方式
+ */
+quantRouter.get('/analysis/trades', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { startDate, endDate, strategyId, limit = 500 } = req.query;
+
+    const params: (string | number)[] = [];
+    let paramIndex = 1;
+
+    // 基础查询：auto_trades（已平仓，有 PnL）
+    // JOIN execution_orders 获取 BUY 信号 ID → JOIN strategy_signals 获取入场元数据
+    // 子查询获取 SELL 信号元数据（exit type）
+    let query = `
+      SELECT
+        at.id,
+        at.strategy_id,
+        at.symbol,
+        at.quantity,
+        at.avg_price AS entry_price,
+        at.pnl,
+        at.fees,
+        at.open_time,
+        at.close_time,
+        at.order_id,
+        -- BUY 信号元数据
+        buy_sig.metadata AS buy_metadata,
+        buy_sig.id AS buy_signal_id,
+        -- SELL 信号元数据（最近的 SELL 信号，匹配 symbol + strategy_id + 时间窗口）
+        sell_sig.metadata AS sell_metadata,
+        sell_sig.id AS sell_signal_id
+      FROM auto_trades at
+      -- JOIN BUY 信号：auto_trades.order_id → execution_orders.order_id → signal_id → strategy_signals
+      LEFT JOIN execution_orders eo ON eo.order_id = at.order_id
+      LEFT JOIN strategy_signals buy_sig ON buy_sig.id = eo.signal_id AND buy_sig.signal_type = 'BUY'
+      -- LATERAL JOIN SELL 信号：同 symbol + strategy_id，在 close_time 附近的最近 SELL 信号
+      LEFT JOIN LATERAL (
+        SELECT ss.id, ss.metadata
+        FROM strategy_signals ss
+        WHERE ss.strategy_id = at.strategy_id
+          AND ss.symbol = at.symbol
+          AND ss.signal_type = 'SELL'
+          AND ss.created_at BETWEEN at.open_time AND at.close_time + INTERVAL '5 minutes'
+        ORDER BY ss.created_at DESC
+        LIMIT 1
+      ) sell_sig ON true
+      WHERE at.pnl IS NOT NULL
+        AND at.close_time IS NOT NULL
+    `;
+
+    if (startDate) {
+      query += ` AND at.close_time >= $${paramIndex++}`;
+      params.push(startDate as string);
+    }
+
+    if (endDate) {
+      // endDate 需要包含当天结束
+      query += ` AND at.close_time < ($${paramIndex++})::date + INTERVAL '1 day'`;
+      params.push(endDate as string);
+    }
+
+    if (strategyId) {
+      const sid = Number(strategyId);
+      if (!isNaN(sid)) {
+        query += ` AND at.strategy_id = $${paramIndex++}`;
+        params.push(sid);
+      }
+    }
+
+    query += ` ORDER BY at.close_time DESC LIMIT $${paramIndex++}`;
+    const limitVal = Number(limit);
+    params.push(isNaN(limitVal) ? 500 : Math.min(limitVal, 1000));
+
+    const result = await pool.query(query, params);
+
+    // 转换为前端友好格式
+    const trades = result.rows.map((row) => {
+      const buyMeta = row.buy_metadata as Record<string, unknown> | null;
+      const sellMeta = row.sell_metadata as Record<string, unknown> | null;
+      const pnl = Number(row.pnl);
+      const entryPrice = Number(row.entry_price);
+      const pnlPct = entryPrice > 0
+        ? Math.round((pnl / (entryPrice * Number(row.quantity) * 100)) * 10000) / 100
+        : null;
+
+      return {
+        id: row.id,
+        symbol: row.symbol,
+        strategy_id: row.strategy_id,
+        trade_date: row.close_time ? new Date(row.close_time).toISOString().split('T')[0] : null,
+        open_time: row.open_time,
+        close_time: row.close_time,
+        entry_price: entryPrice,
+        quantity: Number(row.quantity),
+        pnl,
+        pnlPct,
+        fees: Number(row.fees) || 0,
+        // BUY 信号元数据
+        score: buyMeta?.finalScore !== undefined && buyMeta?.finalScore !== null
+          ? Number(buyMeta.finalScore) : null,
+        direction: String(buyMeta?.optionDirection ?? buyMeta?.selectedStrategy ?? ''),
+        strategyName: String(buyMeta?.selectedStrategy ?? ''),
+        regime: (buyMeta?.regimeDetection as Record<string, unknown>) ?? null,
+        // SELL 信号元数据
+        exitType: String(sellMeta?.exitAction ?? ''),
+        // 信号中的估算 PnL（供滑点分析用）
+        estimatedPnl: sellMeta?.netPnL !== undefined ? Number(sellMeta.netPnL) : null,
+      };
+    });
+
+    res.json({
+      success: true,
+      data: trades,
+    });
+  } catch (error: unknown) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
 // ==================== Dashboard 统计 API ====================
 
 /**

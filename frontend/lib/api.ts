@@ -737,6 +737,27 @@ export const optionBacktestApi = {
   },
 };
 
+/** 分析页交易记录（来源: auto_trades + 信号元数据） */
+export interface AnalysisTrade {
+  id: number
+  symbol: string
+  strategy_id: number
+  trade_date: string | null
+  open_time: string
+  close_time: string
+  entry_price: number
+  quantity: number
+  pnl: number
+  pnlPct: number | null
+  fees: number
+  score: number | null
+  direction: string
+  strategyName: string
+  regime: Record<string, unknown> | null
+  exitType: string
+  estimatedPnl: number | null
+}
+
 export const quantApi = {
   // 策略管理
   getStrategies: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
@@ -811,6 +832,11 @@ export const quantApi = {
   // 信号日志
   getSignals: (params?: { strategyId?: number; status?: string; signalType?: string; startDate?: string; endDate?: string; limit?: number }): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/quant/signals', { params })
+  },
+
+  // 分析页交易数据（从 auto_trades 获取真实 PnL）
+  getAnalysisTrades: (params?: { startDate?: string; endDate?: string; strategyId?: number; limit?: number }): Promise<{ success: boolean; data?: AnalysisTrade[]; error?: { message: string } }> => {
+    return api.get('/quant/analysis/trades', { params })
   },
 
   // Dashboard统计

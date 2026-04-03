@@ -5,7 +5,7 @@ import { Card, Tabs, Table, Tag, Statistic, Row, Col, DatePicker, Select, Spin, 
 import { BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, ScatterChart, Scatter, LineChart, Line, ReferenceLine, Legend } from 'recharts'
 import dayjs, { Dayjs } from 'dayjs'
 import AppLayout from '@/components/AppLayout'
-import { ordersApi, quantApi } from '@/lib/api'
+import { quantApi, AnalysisTrade } from '@/lib/api'
 import { useIsMobile } from '@/hooks/useIsMobile'
 
 const { RangePicker } = DatePicker
@@ -43,54 +43,13 @@ interface AnalysisRow {
   collection_status: string
 }
 
-interface OrderRow {
-  order_id: string
-  symbol: string
-  side: string
-  quantity: number | string
-  executed_price: number | string
-  executed_quantity?: number | string
-  status: string
-  created_at: string
-  updated_at: string
-  // camelCase variants from API
-  submittedAt?: string
-  executedPrice?: string
-  executedQuantity?: string
-}
-
-interface SignalRow {
-  id: number
-  symbol: string
-  signal_type: string
-  price: number
-  reason: string
-  metadata: Record<string, unknown>
-  status: string
-  created_at: string
-  strategy_id: number
-}
-
 interface StrategyInfo {
   id: number
   name: string
 }
 
-/** 配对后的完整交易记录（BUY + SELL 合并） */
-interface TradeRecord {
-  id: number           // SELL signal id
-  symbol: string
-  strategy_id: number
-  trade_date: string   // SELL created_at 日期
-  created_at: string   // SELL created_at
-  pnl: number
-  pnlPct: number | null
-  exitType: string
-  score: number | null
-  direction: string
-  regime: Record<string, unknown> | null  // regimeDetection from BUY
-  strategyName: string // from BUY metadata.selectedStrategy
-}
+/** 交易记录 — 直接来自 auto_trades + 信号元数据 */
+type TradeRecord = AnalysisTrade
 
 export default function AnalysisPage() {
   const isMobile = useIsMobile()
@@ -107,8 +66,7 @@ export default function AnalysisPage() {
   const [selectedStrategyId, setSelectedStrategyId] = useState<number | null>(null)
 
   // 数据
-  const [orders, setOrders] = useState<OrderRow[]>([])
-  const [signals, setSignals] = useState<SignalRow[]>([])
+  const [trades, setTrades] = useState<TradeRecord[]>([])
   const [analysis, setAnalysis] = useState<AnalysisRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -136,30 +94,15 @@ export default function AnalysisPage() {
     try {
       const startDate = dateRange[0].format('YYYY-MM-DD')
       const endDate = dateRange[1].format('YYYY-MM-DD')
-      const startTs = Math.floor(dateRange[0].startOf('day').valueOf() / 1000)
-      const endTs = Math.floor(dateRange[1].endOf('day').valueOf() / 1000)
 
-      const [ordersRes, signalsRes, analysisRes] = await Promise.all([
-        ordersApi.getHistoryOrders({
-          market: 'US',
-          status: ['FilledStatus'],
-          start_at: startTs,
-          end_at: endTs,
-        }),
-        quantApi.getSignals({ startDate, endDate, limit: 500 }),
+      const [tradesRes, analysisRes] = await Promise.all([
+        quantApi.getAnalysisTrades({ startDate, endDate, limit: 500 }),
         quantApi.getOptionKlineAnalysis({ startDate, endDate }),
       ])
 
-      // 过滤期权订单
-      const allOrders = ((ordersRes as Record<string, unknown>)?.data as Record<string, unknown>)?.orders || (ordersRes as Record<string, unknown>)?.data || []
-      const optionOrders = (allOrders as OrderRow[]).filter((o) => {
-        const sym = String(o.symbol || '')
-        return /^[A-Z]+\d{6}[CP]\d+\.US$/i.test(sym)
-      })
-      setOrders(optionOrders)
-
-      const allSignals = ((signalsRes as Record<string, unknown>)?.data as Record<string, unknown>)?.signals || (signalsRes as Record<string, unknown>)?.data || []
-      setSignals(allSignals as SignalRow[])
+      // auto_trades 真实 PnL 数据
+      const tradeList = (tradesRes as Record<string, unknown>)?.data || []
+      setTrades(tradeList as TradeRecord[])
 
       const allAnalysis = (analysisRes as Record<string, unknown>)?.data || []
       setAnalysis(allAnalysis as AnalysisRow[])
@@ -202,120 +145,7 @@ export default function AnalysisPage() {
 
   const strategyNameById = (id: number) => strategies.find(s => s.id === id)?.name || `策略 ${id}`
 
-  // -- BUY/SELL 信号配对 → 统一 TradeRecord --
-  // BUY 信号有: finalScore, optionDirection, selectedStrategy, regimeDetection
-  // SELL 信号有: netPnL, netPnLPercent, exitAction
-  // 按 symbol + strategy_id 配对，SELL 匹配最近的前序 BUY
-  const trades = useMemo(() => {
-    // P1 fix: 只匹配 EXECUTED 状态的 BUY 信号，排除 FILTERED
-    const buySignals = signals.filter(s => s.signal_type === 'BUY' && s.status === 'EXECUTED')
-    const sellSignals = signals.filter(s => s.signal_type === 'SELL' && (s.metadata as Record<string, unknown>)?.netPnL !== undefined && (s.metadata as Record<string, unknown>)?.netPnL !== null)
-
-    // 按 symbol+strategy_id 建立 BUY 索引（按时间排序）
-    const buyIndex = new Map<string, SignalRow[]>()
-    for (const b of buySignals) {
-      const key = `${b.symbol}::${b.strategy_id || 0}`
-      const arr = buyIndex.get(key) || []
-      arr.push(b)
-      buyIndex.set(key, arr)
-    }
-    for (const arr of buyIndex.values()) {
-      arr.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-    }
-
-    // P0 fix: 构建订单索引，用于匹配实际成交价
-    const buyOrders = orders.filter(o => String(o.side) === 'Buy')
-    const sellOrders = orders.filter(o => String(o.side) === 'Sell')
-    const usedBuyOrders = new Set<string>()
-    const usedSellOrders = new Set<string>()
-
-    const findOrder = (list: OrderRow[], used: Set<string>, sym: string, refTime: string): OrderRow | null => {
-      const refTs = new Date(refTime).getTime()
-      let best: OrderRow | null = null
-      let bestDiff = Infinity
-      for (const o of list) {
-        const oid = String(o.order_id)
-        if (used.has(oid)) continue
-        if (String(o.symbol) !== sym) continue
-        const oTs = new Date(String(o.submittedAt || '')).getTime()
-        if (isNaN(oTs)) continue
-        const diff = Math.abs(oTs - refTs)
-        if (diff < 15000 && diff < bestDiff) {
-          best = o
-          bestDiff = diff
-        }
-      }
-      if (best) used.add(String(best.order_id))
-      return best
-    }
-
-    const usedBuys = new Set<number>()
-    const records: TradeRecord[] = []
-
-    for (const sell of sellSignals) {
-      const key = `${sell.symbol}::${sell.strategy_id || 0}`
-      const buys = buyIndex.get(key)
-      const sellTime = new Date(sell.created_at).getTime()
-
-      // 找最近的未使用 BUY（在 SELL 之前）
-      let matchedBuy: SignalRow | null = null
-      if (buys) {
-        for (let i = buys.length - 1; i >= 0; i--) {
-          const b = buys[i]
-          if (!usedBuys.has(b.id) && new Date(b.created_at).getTime() <= sellTime) {
-            matchedBuy = b
-            usedBuys.add(b.id)
-            break
-          }
-        }
-      }
-
-      const meta = sell.metadata as Record<string, unknown>
-      const buyMeta = matchedBuy?.metadata as Record<string, unknown> | undefined
-
-      // 默认使用信号 PnL（作为 fallback）
-      let pnl = Number(meta.netPnL)
-      let pnlPct: number | null = meta.netPnLPercent !== undefined && meta.netPnLPercent !== null ? Number(meta.netPnLPercent) : null
-
-      // P0 fix: 匹配实际订单，用成交价重算 PnL
-      const buyOrder = matchedBuy ? findOrder(buyOrders, usedBuyOrders, sell.symbol, matchedBuy.created_at) : null
-      const sellOrder = findOrder(sellOrders, usedSellOrders, sell.symbol, sell.created_at)
-
-      if (buyOrder && sellOrder) {
-        const buyExecPrice = Number(buyOrder.executedPrice ?? buyOrder.executed_price)
-        const sellExecPrice = Number(sellOrder.executedPrice ?? sellOrder.executed_price)
-        const qty = Math.min(
-          Number(buyOrder.executedQuantity ?? buyOrder.executed_quantity ?? buyOrder.quantity),
-          Number(sellOrder.executedQuantity ?? sellOrder.executed_quantity ?? sellOrder.quantity)
-        )
-        if (buyExecPrice > 0 && sellExecPrice > 0 && qty > 0) {
-          const totalFees = Number(meta.totalFees || 0)
-          const grossPnl = (sellExecPrice - buyExecPrice) * qty * 100
-          pnl = Math.round((grossPnl - totalFees) * 100) / 100
-          pnlPct = Math.round(((sellExecPrice - buyExecPrice) / buyExecPrice) * 10000) / 100
-        }
-      }
-
-      records.push({
-        id: sell.id,
-        symbol: sell.symbol,
-        strategy_id: sell.strategy_id || 0,
-        trade_date: (sell.created_at || '').split('T')[0],
-        created_at: sell.created_at,
-        pnl,
-        pnlPct,
-        exitType: String(meta.exitAction ?? ''),
-        score: buyMeta?.finalScore !== undefined ? Number(buyMeta.finalScore) : null,
-        direction: String(buyMeta?.optionDirection ?? buyMeta?.selectedStrategy ?? ''),
-        regime: (buyMeta?.regimeDetection as Record<string, unknown>) ?? null,
-        strategyName: String(buyMeta?.selectedStrategy ?? ''),
-      })
-    }
-
-    return records
-  }, [signals, orders])
-
-  // -- 按策略筛选交易 --
+  // -- 按策略筛选交易（trades 直接来自 API，无需前端配对）--
   const filteredTrades = useMemo(() => {
     if (!selectedStrategyId) return trades
     return trades.filter(t => t.strategy_id === selectedStrategyId)

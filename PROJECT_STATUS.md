@@ -7,6 +7,18 @@
 
 ## 🆕 最近更新
 
+### 2026-04-03: feat: Phase 1 PnL 修复 — 分析页改读 auto_trades
+
+**改动**: 新增 `GET /api/quant/analysis/trades` 端点从 auto_trades 读真实 PnL。前端删除 ~90 行 BUY/SELL 配对逻辑，改调新 API。信号估算值保留为 estimatedPnl 供滑点分析。
+
+**修改文件**: `api/src/routes/quant.ts`, `frontend/app/quant/analysis/page.tsx`, `frontend/lib/api.ts`
+
+### 2026-04-03: feat: Phase 0 入场时机验证脚本
+
+**改动**: 新增 `scripts/analyze-entry-timing.ts`，验证提前入场假设。查询交易信号+决策日志+K线数据，计算假设提前 1/3/5 分钟入场的 PnL 改善。用法: `cd api && npx tsx ../scripts/analyze-entry-timing.ts`。
+
+**新增文件**: `scripts/analyze-entry-timing.ts`
+
 ### 2026-04-03: refactor: Phase 3 — K线增强 + 权重恢复 20/60/20
 
 **改动**: 策略评分引擎核心重构。权重从 20/80/0 恢复到 20/60/20。calculateMomentum 改为 Volume-Weighted（全部 K 线+最低 15 根）。新增 5min K 线获取 + 趋势确认（1min/5min 方向一致性检查）。市场评分新增 SPX 分钟级趋势（日线 40%→20% + 分钟级 20%）。BTC/USD 时K恢复 15% 权重（BTC 10% + USD 5% 反向）。时间窗口去偏置恢复（移除 +20 CALL 偏向）。清理 C1 不可达代码。
