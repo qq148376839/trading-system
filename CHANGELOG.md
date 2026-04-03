@@ -2,6 +2,22 @@
 
 ## 2026-04-03
 
+### fix: 订阅生命周期管理 — 修复 WebSocket 订阅泄漏
+
+`quote-subscription.service.ts` 的 `unsubscribeSymbols()` 已实现但从未被调用（除全局 stop()），导致订阅只增不减。新增集中式对账机制：
+
+**quote-subscription.service.ts**:
+- 新增 `reconcile(neededSymbols)` 对账方法：与实际需要的 symbol 集合对比，批量取消废弃订阅
+- 新增 `getSubscribedSymbols()` / `getSubscriptionCount()` 公共查询方法
+- 订阅数超 80%（400/500）时自动 warn 预警
+
+**strategy-scheduler.service.ts**:
+- 每 60 秒周期对账：查询所有运行中策略的 symbol，清理不再需要的订阅
+- 收盘后一次性清理：仅保留 HOLDING 状态标的的订阅，释放 IDLE 标的
+- 每日开盘自动重置清理标记
+
+---
+
 ### feat: 三源竞速市场数据架构 — LongPort + FutuOpenD 竞速，Moomoo 兜底
 
 消除 Moomoo 爬虫单点故障。SPX/USD/BTC 日K+分时数据改为 `Promise.any([LongPort ETF, FutuOpenD bridge])` 竞速获取，双源失败时降级 Moomoo。VIX 保持 LongPort `.VIX.US` 直连。

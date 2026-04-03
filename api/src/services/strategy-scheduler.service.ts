@@ -194,6 +194,10 @@ class StrategyScheduler {
   private readonly PROTECTION_FAILURE_THRESHOLD = 2; // 失败 >= 2 次禁止开仓
   // H2 修复：每日重置追踪（per strategy）
   private lastDailyResetDate: Map<number, string> = new Map();
+  // 订阅对账：上次对账时间 + 收盘清理标记
+  private lastReconcileTime: number = 0;
+  private static readonly RECONCILE_INTERVAL_MS = 60_000;
+  private postCloseCleanupDone: boolean = false;
   // R5v2: 跨标的入场保护状态（策略级共享内存）
   private crossSymbolState = new Map<number, {
     activeEntries: Map<string, number>;          // symbol → entry timestamp (Date.now())
@@ -640,6 +644,7 @@ class StrategyScheduler {
         this.protectionFailureCount.set(strategyId, 0);
         this.crossSymbolState.delete(strategyId); // R5: 新交易日重置跨标的保护状态
         fastMomentumService.reset(); // 新交易日重置快动量缓冲区
+        this.postCloseCleanupDone = false; // 新交易日重置收盘清理标记
       }
     }
 
@@ -657,6 +662,28 @@ class StrategyScheduler {
             [strategyId]
           );
           if (parseInt(activeResult.rows[0].cnt) === 0) {
+            // 收盘清理：取消所有非持仓订阅（每日仅执行一次）
+            if (!this.postCloseCleanupDone) {
+              try {
+                const holdingResult = await pool.query(
+                  `SELECT DISTINCT si.symbol FROM strategy_instances si
+                   JOIN strategies s ON si.strategy_id = s.id
+                   WHERE s.status = 'RUNNING' AND si.current_state IN ('HOLDING','OPENING','CLOSING')`
+                );
+                const holdingSymbols = new Set<string>(holdingResult.rows.map((r: any) => r.symbol));
+                const cleaned = await quoteSubscriptionService.reconcile(holdingSymbols);
+                if (cleaned.length > 0) {
+                  logger.info(
+                    `[QuoteSub] 收盘清理: 取消 ${cleaned.length} 个非持仓订阅, ` +
+                    `保留 ${holdingSymbols.size} 个持仓订阅`
+                  );
+                }
+                this.postCloseCleanupDone = true;
+              } catch (cleanupErr: any) {
+                logger.debug(`[QuoteSub] 收盘清理异常: ${cleanupErr?.message}`);
+              }
+            }
+
             // 限频日志：每5分钟记录一次
             const now = Date.now();
             const lastLogKey = `0dte_idle_skip_${strategyId}`;
@@ -872,7 +899,31 @@ class StrategyScheduler {
       }
     }
 
-    // 4. 输出汇总日志
+    // 4. 订阅对账（每 60 秒一次，跨所有策略统一清理）
+    const reconcileNow = Date.now();
+    if (reconcileNow - this.lastReconcileTime > StrategyScheduler.RECONCILE_INTERVAL_MS) {
+      this.lastReconcileTime = reconcileNow;
+      try {
+        const neededResult = await pool.query(
+          `SELECT DISTINCT si.symbol
+           FROM strategy_instances si
+           JOIN strategies s ON si.strategy_id = s.id
+           WHERE s.status = 'RUNNING'`
+        );
+        const neededSymbols = new Set<string>(neededResult.rows.map((r: any) => r.symbol));
+        const cleaned = await quoteSubscriptionService.reconcile(neededSymbols);
+        if (cleaned.length > 0) {
+          logger.info(
+            `[QuoteSub] 周期对账: 清理 ${cleaned.length} 个废弃订阅, ` +
+            `剩余 ${quoteSubscriptionService.getSubscriptionCount()} 个`
+          );
+        }
+      } catch (reconcileErr: any) {
+        logger.debug(`[QuoteSub] 对账异常: ${reconcileErr?.message}`);
+      }
+    }
+
+    // 5. 输出汇总日志
     this.logExecutionSummary(summary);
   }
 

@@ -60,6 +60,12 @@ const FALLBACK_POLL_INTERVAL_MS = 5_000;
 /** 日志节流间隔 */
 const LOG_THROTTLE_MS = 60_000;
 
+/** LongPort 订阅上限（单连接） */
+const SUBSCRIPTION_LIMIT = 500;
+
+/** 订阅预警阈值（80%） */
+const SUBSCRIPTION_WARN_THRESHOLD = Math.floor(SUBSCRIPTION_LIMIT * 0.8);
+
 // ============================================
 // QuoteSubscriptionService
 // ============================================
@@ -176,6 +182,15 @@ class QuoteSubscriptionService {
         this.subscribedCandlestickSymbols.add(sym); // 降级处理
       }
     }
+
+    // 订阅数量预警
+    const totalSubs = this.subscribedQuoteSymbols.size;
+    if (totalSubs > SUBSCRIPTION_WARN_THRESHOLD) {
+      logger.warn(
+        `[QuoteSub] 订阅数量预警: ${totalSubs}/${SUBSCRIPTION_LIMIT} (${Math.round(totalSubs / SUBSCRIPTION_LIMIT * 100)}%)，` +
+        `接近上限，请检查是否有订阅泄漏`
+      );
+    }
   }
 
   /**
@@ -245,6 +260,44 @@ class QuoteSubscriptionService {
    */
   isWebSocketActive(): boolean {
     return this.status === 'ACTIVE';
+  }
+
+  /**
+   * 获取当前已订阅的 symbol 列表
+   */
+  getSubscribedSymbols(): string[] {
+    return Array.from(this.subscribedQuoteSymbols);
+  }
+
+  /**
+   * 获取当前订阅数量
+   */
+  getSubscriptionCount(): number {
+    return this.subscribedQuoteSymbols.size;
+  }
+
+  /**
+   * 对账：与实际需要的 symbol 集合对比，取消不再需要的订阅
+   * @param neededSymbols 当前所有运行中策略需要的 symbol 集合
+   * @returns 被清理的 symbol 列表
+   */
+  async reconcile(neededSymbols: Set<string>): Promise<string[]> {
+    const staleSymbols: string[] = [];
+    for (const sym of this.subscribedQuoteSymbols) {
+      if (!neededSymbols.has(sym)) {
+        staleSymbols.push(sym);
+      }
+    }
+
+    if (staleSymbols.length === 0) return [];
+
+    await this.unsubscribeSymbols(staleSymbols);
+    logger.info(
+      `[QuoteSub] 对账清理 ${staleSymbols.length} 个废弃订阅: ${staleSymbols.join(', ')}，` +
+      `剩余 ${this.subscribedQuoteSymbols.size} 个`
+    );
+
+    return staleSymbols;
   }
 
   /**

@@ -7,6 +7,12 @@
 
 ## 🆕 最近更新
 
+### 2026-04-03: 订阅生命周期管理 — 修复订阅泄漏
+
+**改动**: WebSocket 行情订阅只增不减（`unsubscribeSymbols()` 从未被调用），长期运行会累积废弃订阅直到触达 LongPort 500 标的上限。新增集中式对账机制：60秒周期对账清理废弃订阅 + 收盘后仅保留 HOLDING 订阅 + 订阅数量 80% 预警。
+
+**修改文件**: `quote-subscription.service.ts`, `strategy-scheduler.service.ts`
+
 ### 2026-04-03: 三源竞速市场数据架构
 
 **改动**: Moomoo 爬虫单点故障消除。SPX/USD/BTC 数据改为 LongPort ETF + FutuOpenD bridge 竞速（`Promise.any`），Moomoo 降级兜底。新增 futu-bridge Python 微服务（FastAPI + Docker）。`getAllMarketData()` 从串行 3-6s 改为全并发竞速（目标<1s）。`/api/quote/market-data-test?mode=racing` 测试端点。

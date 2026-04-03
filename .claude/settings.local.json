@@ -1,17 +1,4 @@
 {
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/opt/homebrew/bin/node $CLAUDE_PROJECT_DIR/.claude/hooks/rule-guard.mjs",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  },
   "permissions": {
     "allow": [
       "Bash(npm run dev:*)",
@@ -40,9 +27,23 @@
       "Bash(wc:*)",
       "Bash(docker compose ps:*)",
       "Bash(docker compose logs:*)",
-      "Bash(bash scripts/claude-init.sh)"
+      "Bash(bash scripts/claude-init.sh)",
+      "WebFetch(domain:192.168.31.18)"
     ],
     "deny": [],
     "ask": []
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/homebrew/bin/node $CLAUDE_PROJECT_DIR/.claude/hooks/rule-guard.mjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
   }
 }
