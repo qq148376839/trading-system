@@ -72,6 +72,7 @@ const DEFAULT_CONFIGS: Record<string, any> = {
     riskPreference: 'AGGRESSIVE',
     entryThresholdOverride: { directionalScoreMin: 8, spreadScoreMin: 8 },
     exitRules: { takeProfitPercent: 40, stopLossPercent: 30 },
+    accelerationBonus: { enabled: true, accelRatioThreshold: 1.15, bonusMultiplier: 5.0, bonusCap: 8.0 },
   },
   OPTION_SCHWARTZ_V1: {
     assetClass: 'OPTION',
@@ -96,6 +97,7 @@ const DEFAULT_CONFIGS: Record<string, any> = {
       positionShrinkAfterBigWin: true,
       bigWinThreshold: 30,
     },
+    accelerationBonus: { enabled: true, accelRatioThreshold: 1.15, bonusMultiplier: 5.0, bonusCap: 8.0 },
   },
 };
 
@@ -1489,6 +1491,54 @@ export default function StrategyFormModal({
                             disabled={!(formData.config.tradeWindow?.openImpulseGuard?.enabled)}
                           />
                           <p className="text-xs text-gray-500 mt-1">超强信号(score&ge;阈值&times;N)可覆盖拦截</p>
+                        </div>
+                      </div>
+                    </div>
+                    {/* 动量加速度 bonus */}
+                    <div className="mt-4 p-3 border rounded bg-white">
+                      <div className="flex items-center gap-2 mb-3">
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.config.accelerationBonus?.enabled ?? true}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  accelerationBonus: {
+                                    ...(formData.config.accelerationBonus || { accelRatioThreshold: 1.15, bonusMultiplier: 5.0, bonusCap: 8.0 }),
+                                    enabled: e.target.checked,
+                                  },
+                                },
+                              })
+                            }
+                          />
+                          <span className="text-xs font-semibold text-gray-700">动量加速度 Bonus</span>
+                        </label>
+                        <span className="text-xs text-gray-500">检测价格加速构建阶段，提前触发入场信号（基于 FastMo 实时数据）</span>
+                      </div>
+                      <div className={`grid grid-cols-1 md:grid-cols-3 gap-4 ${!(formData.config.accelerationBonus?.enabled ?? true) ? 'opacity-50' : ''}`}>
+                        <div>
+                          <label className="block text-xs text-gray-700 mb-1 font-medium">加速阈值</label>
+                          <input {...numberInputProps('accelRatioThreshold', { path: ['accelerationBonus', 'accelRatioThreshold'], defaultValue: 1.15, min: 1.05, max: 2.0, step: 0.05, isFloat: true })}
+                            disabled={!(formData.config.accelerationBonus?.enabled ?? true)}
+                          />
+                          <p className="text-xs text-gray-500 mt-1">decelRatio 超过此值视为加速（低=灵敏，高=保守）</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-700 mb-1 font-medium">Bonus 系数</label>
+                          <input {...numberInputProps('bonusMultiplier', { path: ['accelerationBonus', 'bonusMultiplier'], defaultValue: 5.0, min: 1.0, max: 15.0, step: 0.5, isFloat: true })}
+                            disabled={!(formData.config.accelerationBonus?.enabled ?? true)}
+                          />
+                          <p className="text-xs text-gray-500 mt-1">加速度幅度到分数的映射倍数（越大 bonus 越强）</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-700 mb-1 font-medium">Bonus 上限</label>
+                          <input {...numberInputProps('bonusCap', { path: ['accelerationBonus', 'bonusCap'], defaultValue: 8.0, min: 2.0, max: 15.0, step: 0.5, isFloat: true })}
+                            disabled={!(formData.config.accelerationBonus?.enabled ?? true)}
+                          />
+                          <p className="text-xs text-gray-500 mt-1">finalScore 最大 bonus（安全阀，防止单靠加速度过阈值）</p>
                         </div>
                       </div>
                     </div>

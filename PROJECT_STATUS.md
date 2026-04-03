@@ -17,7 +17,13 @@
 | 1 | PnL数据源修复 | ✅ | 分析页改读auto_trades |
 | 2 | WebSocket行情订阅 | ✅ | 延迟5s→50-200ms |
 | 3 | K线增强+权重恢复 | ✅ | 20/60/20+VW momentum |
-| 4 | 入场时机微调 | ⏳ | 待决策方向 |
+| 4 | 入场时机微调 — 加速度 bonus | ✅ | FastMo 加速度检测 + 前端可调参数 |
+
+### 2026-04-03: feat: Phase 4 — 动量加速度 bonus 入场提前
+
+**改动**: 检测 FastMo 60s 窗口内价格加速构建阶段，在 K 线评分累积完成前给 finalScore 加分。`getAccelerationInfo()` 计算前后半段 slope 比值。bonus 注入 `generateSignal()` Step 2 后。4 个参数（enabled/accelRatioThreshold/bonusMultiplier/bonusCap）前端可调。
+
+**修改文件**: `fast-momentum.service.ts`, `option-intraday-strategy.ts`, `StrategyFormModal.tsx`
 
 ### 2026-04-03: feat: Phase 1 PnL 修复 — 分析页改读 auto_trades
 

@@ -165,6 +165,18 @@ export interface OptionIntradayStrategyConfig {
 
   // ===== 智能反向配置（替代 REVERSE_BEAR/BULL_SPREAD）=====
   smartReverse?: SmartReverseConfig;
+
+  // ===== 动量加速度 bonus 配置（Phase 4）=====
+  accelerationBonus?: {
+    /** 总开关（默认 true） */
+    enabled?: boolean;
+    /** decelRatio 超过此值才视为"加速中"（默认 1.15，范围 1.05-2.0） */
+    accelRatioThreshold?: number;
+    /** 加速度幅度到 bonus 的映射系数（默认 5.0，范围 1.0-15.0） */
+    bonusMultiplier?: number;
+    /** finalScore bonus 上限，绝对值（默认 8.0，范围 2.0-15.0） */
+    bonusCap?: number;
+  };
 }
 
 // ============================================
@@ -192,6 +204,12 @@ export const DEFAULT_OPTION_STRATEGY_CONFIG: Partial<OptionIntradayStrategyConfi
     fixedContracts: 1,
   },
   entryPriceMode: 'ASK',
+  accelerationBonus: {
+    enabled: true,
+    accelRatioThreshold: 1.15,
+    bonusMultiplier: 5.0,
+    bonusCap: 8.0,
+  },
 };
 
 // ============================================
@@ -363,10 +381,11 @@ export class OptionIntradayStrategy extends StrategyBase {
    */
   private evaluateDirectionalBuyer(
     optionRec: any,
-    strategyType: 'DIRECTIONAL_CALL' | 'DIRECTIONAL_PUT'
+    strategyType: 'DIRECTIONAL_CALL' | 'DIRECTIONAL_PUT',
+    adjustedScore?: number
   ): { shouldTrade: boolean; direction: 'CALL' | 'PUT'; reason: string } {
     const thresholds = this.getThresholds();
-    const score = optionRec.finalScore;
+    const score = adjustedScore ?? optionRec.finalScore;
     const vixInfo = `VIX因子=${thresholds.vixFactor.toFixed(2)}`;
 
     if (strategyType === 'DIRECTIONAL_CALL') {
@@ -595,6 +614,44 @@ export class OptionIntradayStrategy extends StrategyBase {
         reasoning: optionRec.reasoning
       });
 
+      // 2.5) 动量加速度 bonus — 在构建阶段提前入场（Phase 4）
+      let accelBonus = 0;
+      const accelCfg = this.cfg.accelerationBonus;
+      const accelEnabled = accelCfg?.enabled ?? true;
+
+      if (accelEnabled) {
+        const accelThreshold = accelCfg?.accelRatioThreshold ?? 1.15;
+        const accelMultiplier = accelCfg?.bonusMultiplier ?? 5.0;
+        const accelCap = accelCfg?.bonusCap ?? 8.0;
+
+        const accelInfo = fastMomentumService.getAccelerationInfo(symbol, accelThreshold);
+
+        if (accelInfo.reliable && accelInfo.isAccelerating && accelInfo.direction) {
+          const rawBonus = accelInfo.magnitude * accelMultiplier;
+          const cappedBonus = Math.min(rawBonus, accelCap);
+          accelBonus = accelInfo.direction === 'CALL' ? cappedBonus : -cappedBonus;
+
+          logger.info(
+            `[${symbol}] 加速度bonus: ${accelBonus > 0 ? '+' : ''}${accelBonus.toFixed(1)} ` +
+            `(mag=${accelInfo.magnitude.toFixed(2)}, decel=${accelInfo.decelRatio?.toFixed(2) ?? 'N/A'}, ` +
+            `slope=${accelInfo.slope?.toFixed(6) ?? 'N/A'}, pts=${accelInfo.dataPoints})`,
+            { module: 'OptionStrategy.AccelBonus', strategyId: this.strategyId }
+          );
+        }
+
+        // 记录到 logData（无论是否触发）
+        (logData as any).accelerationBonus = {
+          enabled: true,
+          bonus: accelBonus,
+          info: accelInfo,
+          config: { accelThreshold, accelMultiplier, accelCap },
+        };
+      }
+
+      // 调整 finalScore
+      const baseFinalScore = optionRec.finalScore;
+      const adjustedFinalScore = Math.max(-100, Math.min(100, baseFinalScore + accelBonus));
+
       // 3) 检查风险等级
       if (optionRec.riskLevel === 'EXTREME') {
         logger.warn(`[${symbol}跳过] 风险等级EXTREME，不生成信号`);
@@ -650,7 +707,7 @@ export class OptionIntradayStrategy extends StrategyBase {
         switch (strategy) {
           case 'DIRECTIONAL_CALL':
           case 'DIRECTIONAL_PUT':
-            evaluation = this.evaluateDirectionalBuyer(optionRec, strategy);
+            evaluation = this.evaluateDirectionalBuyer(optionRec, strategy, adjustedFinalScore);
             break;
 
           case 'STRADDLE_BUY':
@@ -982,6 +1039,9 @@ export class OptionIntradayStrategy extends StrategyBase {
           selectedStrategy: selectedStrategy,
           // R5v2: 评分信息 — 用于跨标的竞价排序
           finalScore: optionRec.finalScore,
+          baseFinalScore,
+          accelBonus,
+          adjustedFinalScore,
           marketScore: optionRec.marketScore,
           intradayScore: optionRec.intradayScore,
           // 智能反向: regime detection 结果

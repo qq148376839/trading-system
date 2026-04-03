@@ -2,6 +2,27 @@
 
 ## 2026-04-03
 
+### feat: Phase 4 — 动量加速度 bonus 入场提前
+
+Phase 0 数据验证结论（166笔交易，-3min 改善 71%）驱动。检测 FastMo 60s 窗口内价格加速构建阶段（二阶导 > 0），在 K 线评分累积完成前提前给 finalScore 加分。
+
+**fast-momentum.service.ts**:
+- 新增 `AccelerationInfo` 接口 + `getAccelerationInfo(symbol, accelRatioThreshold)` 方法
+- 前后半段 slope 比值判断加速/启动/减速/反向状态
+
+**option-intraday-strategy.ts**:
+- 配置接口新增 `accelerationBonus` 字段（enabled/accelRatioThreshold/bonusMultiplier/bonusCap）
+- `generateSignal()` Step 2 后注入 bonus：`adjustedFinalScore = baseFinalScore + accelBonus`
+- `evaluateDirectionalBuyer()` 使用 adjustedFinalScore 与阈值比较
+- intent.metadata 记录 baseFinalScore/accelBonus/adjustedFinalScore
+
+**StrategyFormModal.tsx**:
+- 新增"动量加速度 Bonus"配置 UI（checkbox 总开关 + 3 个参数输入）
+
+安全边界：bonusCap 上限（默认8）+ FastMo checkGate 不变 + 冲量守卫不变 + WebSocket 降级自动禁用。
+
+---
+
 ### data: Phase 0 入场时机验证 — 假设成立，-3min 最优
 
 166 笔交易数据验证结果：提前 1min 改善 64%（+$7.16/笔）、3min 改善 71%（+$16.27/笔）、5min 反而恶化。
