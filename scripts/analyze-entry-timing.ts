@@ -57,7 +57,8 @@ interface TradeRow {
   exit_reason: string | null;
   actual_pnl: string | null;
   buy_price: string | null;
-  sell_price: string | null;
+  actual_close_time: Date | null;
+  quantity: number | null;
 }
 
 interface ScoreSnapshot {
@@ -130,9 +131,10 @@ async function fetchTrades(): Promise<TradeRow[]> {
       eo_buy.created_at   AS buy_order_time,
       ss.created_at       AS exit_signal_time,
       ss.metadata->>'exitReason' AS exit_reason,
-      at_sell.pnl::text    AS actual_pnl,
+      at_buy.pnl::text     AS actual_pnl,
       at_buy.avg_price::text  AS buy_price,
-      at_sell.avg_price::text AS sell_price
+      at_buy.close_time    AS actual_close_time,
+      at_buy.quantity       AS quantity
     FROM strategy_signals bs
     JOIN execution_orders eo_buy
       ON bs.id = eo_buy.signal_id AND eo_buy.side = 'BUY'
@@ -148,26 +150,16 @@ async function fetchTrades(): Promise<TradeRow[]> {
       LIMIT 1
     ) ss ON true
     LEFT JOIN LATERAL (
-      SELECT at1.avg_price
+      SELECT at1.avg_price, at1.pnl, at1.close_time, at1.quantity
       FROM auto_trades at1
       WHERE at1.symbol = bs.symbol
         AND at1.side = 'BUY'
+        AND at1.pnl IS NOT NULL
         AND at1.open_time BETWEEN bs.created_at - INTERVAL '1 minute'
                                AND bs.created_at + INTERVAL '5 minutes'
       ORDER BY at1.open_time ASC
       LIMIT 1
     ) at_buy ON true
-    LEFT JOIN LATERAL (
-      SELECT at2.pnl, at2.avg_price
-      FROM auto_trades at2
-      WHERE at2.symbol = bs.symbol
-        AND at2.side = 'SELL'
-        AND ss.created_at IS NOT NULL
-        AND at2.open_time BETWEEN ss.created_at - INTERVAL '2 minutes'
-                               AND ss.created_at + INTERVAL '5 minutes'
-      ORDER BY at2.open_time ASC
-      LIMIT 1
-    ) at_sell ON true
     WHERE bs.signal_type = 'BUY'
       AND bs.status = 'EXECUTED'
       AND bs.created_at >= $1
@@ -212,8 +204,9 @@ async function fetchKlineAroundEntry(
   symbol: string,
   entryTime: Date,
 ): Promise<KlinePoint[]> {
-  const startTs = Math.floor(entryTime.getTime() / 1000) - 6 * 60;
-  const endTs = Math.floor(entryTime.getTime() / 1000) + 60;
+  // option_trade_kline.timestamp 存储为毫秒级 Unix 时间戳
+  const startTs = entryTime.getTime() - 6 * 60 * 1000;
+  const endTs = entryTime.getTime() + 60 * 1000;
 
   const query = `
     SELECT timestamp, open::float, high::float, low::float, close::float
@@ -238,8 +231,8 @@ function findPriceAtMinutesBefore(
   entryTime: Date,
   minutesBefore: number,
 ): number | null {
-  const targetTs = Math.floor(entryTime.getTime() / 1000) - minutesBefore * 60;
-  // Find the kline bar closest to targetTs (within 90 seconds tolerance)
+  // timestamps are in milliseconds
+  const targetTs = entryTime.getTime() - minutesBefore * 60 * 1000;
   let best: KlinePoint | null = null;
   let bestDiff = Infinity;
   for (const k of klines) {
@@ -249,7 +242,8 @@ function findPriceAtMinutesBefore(
       best = k;
     }
   }
-  if (best && bestDiff <= 90) {
+  // 90 秒容差（毫秒）
+  if (best && bestDiff <= 90_000) {
     return best.close;
   }
   return null;
@@ -263,9 +257,13 @@ async function analyzeTrade(trade: TradeRow): Promise<TimingAnalysis> {
   const entryScore = trade.entry_score !== null ? Number(trade.entry_score) : null;
   const actualPnl = trade.actual_pnl !== null ? Number(trade.actual_pnl) : null;
   const buyPrice = trade.buy_price !== null ? Number(trade.buy_price) : null;
-  const sellPrice = trade.sell_price !== null ? Number(trade.sell_price) : null;
+  const quantity = trade.quantity !== null ? Number(trade.quantity) : null;
+  // 从 BUY 侧数据反推卖出价: sellPrice = buyPrice + pnl / (quantity * 100)
+  const sellPrice = (buyPrice !== null && actualPnl !== null && quantity !== null && quantity > 0)
+    ? buyPrice + actualPnl / (quantity * 100)
+    : null;
 
-  // Fetch scoring trail
+  // Fetch scoring trail (注: decision_logs 仅有 2 月数据，3 月后无)
   const snapshots = await fetchScoreSnapshots(underlying, entryTime);
 
   // Build score snapshots at each lookback interval
@@ -300,19 +298,16 @@ async function analyzeTrade(trade: TradeRow): Promise<TimingAnalysis> {
     let pnlImprovement: number | null = null;
     let pnlImprovementPct: string | null = null;
 
-    if (earlierPrice !== null && sellPrice !== null) {
-      // Hypothetical: bought at earlierPrice, sold at same sellPrice
-      // For options: PnL = (sellPrice - buyPrice) * quantity
-      // We approximate: hypothetical PnL = actual PnL + (buyPrice - earlierPrice) * quantity
-      // Since we may not have quantity, use price diff ratio
-      if (buyPrice !== null && actualPnl !== null && buyPrice > 0) {
-        const priceDiff = buyPrice - earlierPrice;
-        // Scale the improvement by quantity ratio: improvement = priceDiff / buyPrice * |contract value|
-        hypotheticalPnl = actualPnl + priceDiff * (Math.abs(actualPnl) / Math.abs(sellPrice - buyPrice || 1));
-        pnlImprovement = hypotheticalPnl - actualPnl;
-        if (Math.abs(actualPnl) > 0.001) {
-          pnlImprovementPct = ((pnlImprovement / Math.abs(actualPnl)) * 100).toFixed(1);
-        }
+    if (earlierPrice !== null && buyPrice !== null && actualPnl !== null && quantity !== null && quantity > 0) {
+      // 假设: 提前入场买入价 = earlierPrice, 卖出价不变 = sellPrice
+      // 期权 PnL = (sellPrice - buyPrice) * quantity * 100
+      // 假设 PnL = (sellPrice - earlierPrice) * quantity * 100
+      // 即: hypotheticalPnl = actualPnl + (buyPrice - earlierPrice) * quantity * 100
+      const priceDiff = buyPrice - earlierPrice;
+      hypotheticalPnl = actualPnl + priceDiff * quantity * 100;
+      pnlImprovement = hypotheticalPnl - actualPnl;
+      if (Math.abs(actualPnl) > 0.01) {
+        pnlImprovementPct = ((pnlImprovement / Math.abs(actualPnl)) * 100).toFixed(1);
       }
     }
 
