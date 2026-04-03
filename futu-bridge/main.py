@@ -165,7 +165,6 @@ async def get_kline(
             end=end_date,
             ktype=kl_type,
             autype=AuType.QFQ,
-            max_count=count,
         )
 
         if ret != RET_OK:
