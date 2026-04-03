@@ -2,6 +2,26 @@
 
 ## 2026-04-03
 
+### feat: 三源竞速市场数据架构 — LongPort + FutuOpenD 竞速，Moomoo 兜底
+
+消除 Moomoo 爬虫单点故障。SPX/USD/BTC 日K+分时数据改为 `Promise.any([LongPort ETF, FutuOpenD bridge])` 竞速获取，双源失败时降级 Moomoo。VIX 保持 LongPort `.VIX.US` 直连。
+
+**futu-bridge/** (新增):
+- Python FastAPI HTTP 桥接服务（~200行），将 FutuOpenD TCP+Protobuf 翻译为 JSON REST
+- `/kline`, `/snapshot`, `/health` 三个端点，返回归一化 CandlestickData 格式
+- Docker 容器化，连接 NAS FutuOpenD `192.168.31.18:11111`
+
+**market-data.service.ts**:
+- 新增 `fetchFromFutuBridge()` / `fetchFromLongportETF()` / `getRacedKline()` 方法
+- `getAllMarketData()` 从串行+800ms延迟（3-6s）改为全并发竞速（目标<1s）
+- Symbol 映射：SPX→SPY.US/US.SPY, USD→UUP.US/US.UUP, BTC→IBIT.US/US.IBIT
+
+**docker-compose.yml**: 新增 futu-bridge 服务 + FUTU_BRIDGE_URL 环境变量
+
+**quote.ts**: market-data-test 端点新增 `racing` 模式，分别测试各源 + 竞速结果
+
+---
+
 ### feat: Phase 4 — 动量加速度 bonus 入场提前
 
 Phase 0 数据验证结论（166笔交易，-3min 改善 71%）驱动。检测 FastMo 60s 窗口内价格加速构建阶段（二阶导 > 0），在 K 线评分累积完成前提前给 finalScore 加分。

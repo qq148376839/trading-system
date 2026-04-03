@@ -7,6 +7,13 @@
 
 ## 🆕 最近更新
 
+### 2026-04-03: 三源竞速市场数据架构
+
+**改动**: Moomoo 爬虫单点故障消除。SPX/USD/BTC 数据改为 LongPort ETF + FutuOpenD bridge 竞速（`Promise.any`），Moomoo 降级兜底。新增 futu-bridge Python 微服务（FastAPI + Docker）。`getAllMarketData()` 从串行 3-6s 改为全并发竞速（目标<1s）。`/api/quote/market-data-test?mode=racing` 测试端点。
+
+**新增文件**: `futu-bridge/main.py`, `futu-bridge/Dockerfile`, `futu-bridge/requirements.txt`
+**修改文件**: `market-data.service.ts`, `docker-compose.yml`, `quote.ts`
+
 ### 2026-04-03: 策略大修 Phase 0-3 全部完成
 
 **总览**: 4-01 方向系统重构导致盈亏比 0.03:1 灾难性结果，4-03 完成大修 Phase 0-3 并部署。Phase 4（入场时机微调）待决策。

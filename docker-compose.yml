@@ -58,6 +58,9 @@ services:
 
       # 标记跳过长桥初始化（当长桥原生模块不可用时）
       SKIP_LONGPORT_INIT: "true"
+
+      # FutuOpenD 桥接服务地址（Docker 内部网络）
+      FUTU_BRIDGE_URL: "http://futu-bridge:8765"
     ports:
       # 单端口访问 - 通过后端代理访问前端
       # 访问 http://your-host:3001 可同时使用前端和 API
@@ -80,6 +83,27 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+
+  # FutuOpenD HTTP 桥接服务（将 TCP+Protobuf 协议翻译为 JSON REST）
+  futu-bridge:
+    build: ./futu-bridge
+    container_name: futu-bridge
+    restart: unless-stopped
+    environment:
+      - FUTU_HOST=192.168.31.18
+      - FUTU_PORT=11111
+      - BRIDGE_PORT=8765
+      - TZ=UTC
+    ports:
+      - "8765:8765"
+    networks:
+      - trading-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8765/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
   postgres_data:

@@ -12,6 +12,7 @@ import { retryWithBackoff } from '../utils/longport-rate-limiter';
 import { logger } from '../utils/logger';
 import pool from '../config/database';
 import { toNaiveDateParts } from '../utils/market-time'; // 规则 #17
+import { formatLongbridgeCandlestick } from '../utils/candlestick-formatter';
 
 interface CandlestickData {
   close: number;
@@ -116,6 +117,140 @@ class MarketDataService {
       subInstrumentType: '6001',
     },
   };
+
+  // ============================================
+  // 三源竞速架构：LongPort + FutuOpenD 竞速，Moomoo 兜底
+  // ============================================
+
+  private readonly FUTU_BRIDGE_URL = process.env.FUTU_BRIDGE_URL || 'http://futu-bridge:8765';
+  private readonly RACING_TIMEOUT_MS = 8000; // 单源超时 8s
+
+  /** 竞速数据源映射：市场 → LongPort symbol + FutuOpenD symbol */
+  private readonly racingSymbolMap = {
+    spx: { longport: 'SPY.US', futu: 'US.SPY' },
+    usd: { longport: 'UUP.US', futu: 'US.UUP' },
+    btc: { longport: 'IBIT.US', futu: 'US.IBIT' },
+  };
+
+  /**
+   * 从 FutuOpenD bridge 获取 K 线数据
+   * @param futuSymbol FutuOpenD 格式的 symbol（如 US.SPY）
+   * @param ktype K 线类型（K_DAY, K_1M, K_5M 等）
+   * @param count 请求数量
+   */
+  private async fetchFromFutuBridge(futuSymbol: string, ktype: string, count: number): Promise<CandlestickData[]> {
+    const url = `${this.FUTU_BRIDGE_URL}/kline?symbol=${futuSymbol}&ktype=${ktype}&count=${count}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.RACING_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) {
+        throw new Error(`futu-bridge HTTP ${response.status}: ${await response.text()}`);
+      }
+      const json = await response.json() as { source: string; data: CandlestickData[] };
+      if (!json.data || json.data.length === 0) {
+        throw new Error(`futu-bridge 返回空数据: ${futuSymbol} ${ktype}`);
+      }
+      logger.debug(`[竞速] FutuOpenD 返回 ${json.data.length} 条 ${futuSymbol} ${ktype}`);
+      return json.data;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * 从 LongPort SDK 获取 ETF K 线数据
+   * @param symbol LongPort 格式的 symbol（如 SPY.US）
+   * @param periodStr 周期：'day' | 'min1' | 'min5'
+   * @param count 请求数量
+   */
+  private async fetchFromLongportETF(symbol: string, periodStr: 'day' | 'min1' | 'min5', count: number): Promise<CandlestickData[]> {
+    const longport = require('longport');
+    const { Period, AdjustType } = longport;
+
+    const periodMap: Record<string, any> = {
+      day: Period.Day,
+      min1: Period.Min_1,
+      min5: Period.Min_5,
+    };
+    const period = periodMap[periodStr];
+    if (!period) throw new Error(`不支持的 period: ${periodStr}`);
+
+    let tradeSessionsAll = 100;
+    try {
+      const TradeSessions = (longport as any).TradeSessions;
+      if (TradeSessions && typeof TradeSessions.All === 'number') {
+        tradeSessionsAll = TradeSessions.All;
+      }
+    } catch { /* 使用默认值 */ }
+
+    const quoteCtx = await getQuoteContext();
+    const candles = await quoteCtx.candlesticks(
+      symbol,
+      period,
+      count,
+      AdjustType.NoAdjust,
+      tradeSessionsAll
+    );
+
+    if (!candles || candles.length === 0) {
+      throw new Error(`LongPort 返回空数据: ${symbol} ${periodStr}`);
+    }
+
+    const result = candles.map((c: any) => formatLongbridgeCandlestick(c));
+    logger.debug(`[竞速] LongPort 返回 ${result.length} 条 ${symbol} ${periodStr}`);
+    return result;
+  }
+
+  /**
+   * 三源竞速获取 K 线：LongPort + FutuOpenD 同时发出，先到先用，双失败降级 Moomoo
+   * @param marketType 市场类型：spx | usd | btc
+   * @param period 周期：day | min1 | min5
+   * @param count 请求数量
+   * @param moomooFallback Moomoo 兜底函数
+   */
+  async getRacedKline(
+    marketType: 'spx' | 'usd' | 'btc',
+    period: 'day' | 'min1' | 'min5',
+    count: number,
+    moomooFallback: () => Promise<CandlestickData[]>
+  ): Promise<CandlestickData[]> {
+    const symbols = this.racingSymbolMap[marketType];
+    const futuKtype = period === 'day' ? 'K_DAY' : period === 'min5' ? 'K_5M' : 'K_1M';
+
+    const raceStart = Date.now();
+
+    try {
+      const result = await Promise.any([
+        this.fetchFromLongportETF(symbols.longport, period, count)
+          .then(data => ({ source: 'longport' as const, data })),
+        this.fetchFromFutuBridge(symbols.futu, futuKtype, count)
+          .then(data => ({ source: 'futu' as const, data })),
+      ]);
+
+      const elapsed = Date.now() - raceStart;
+      logger.info(
+        `[竞速] ${marketType} ${period}: ${result.source} 胜出 (${elapsed}ms, ${result.data.length}条)`
+      );
+      return result.data;
+    } catch (aggregateError) {
+      // 两个都失败 → Moomoo 兜底
+      const elapsed = Date.now() - raceStart;
+      logger.warn(
+        `[竞速] ${marketType} ${period}: LongPort+FutuOpenD 双源失败 (${elapsed}ms)，降级 Moomoo`
+      );
+      try {
+        const fallbackData = await moomooFallback();
+        logger.info(`[竞速] ${marketType} ${period}: Moomoo 兜底成功 (${fallbackData.length}条)`);
+        return fallbackData;
+      } catch (moomooErr: unknown) {
+        const msg = moomooErr instanceof Error ? moomooErr.message : String(moomooErr);
+        logger.error(`[竞速] ${marketType} ${period}: 三源全部失败! Moomoo: ${msg}`);
+        return [];
+      }
+    }
+  }
 
   /**
    * 获取富途API的headers（使用统一配置）
@@ -1027,119 +1162,86 @@ class MarketDataService {
    */
   async getAllMarketData(count: number = 100, includeIntraday: boolean = false, options?: { timeout?: number }) {
     const timeout = options?.timeout ?? 15000;
+    const overallStart = Date.now();
     try {
-      // 关键市场指标：串行获取，避免并发触发 Moomoo 403 限频
-      // 每次请求间隔 800ms，每个指标内部仍有 3 次重试
-      const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
-
-      const spxData = await retryWithBackoff(
-        () => this.getSPXCandlesticks(count, timeout),
-        { maxRetries: 3, initialDelayMs: 1000 }
-      ).catch(err => {
-        logger.error(`获取SPX数据失败（已重试3次）:`, err.message);
-        return [] as CandlestickData[];
-      });
-
-      await delay(800);
-
-      const usdIndexData = await retryWithBackoff(
-        () => this.getUSDIndexCandlesticks(count, timeout),
-        { maxRetries: 3, initialDelayMs: 1000 }
-      ).catch(err => {
-        logger.error(`获取USD Index日K数据失败（已重试3次）:`, err.message);
-        return [] as CandlestickData[];
-      });
-
-      await delay(800);
-
-      const btcData = await retryWithBackoff(
-        () => this.getBTCCandlesticks(count, timeout),
-        { maxRetries: 3, initialDelayMs: 1000 }
-      ).catch(err => {
-        logger.error(`获取BTC数据失败（已重试3次）:`, err.message);
-        return [] as CandlestickData[];
-      });
-
-      const criticalResults = [spxData, usdIndexData, btcData];
-
-      // VIX 和 市场温度（非关键，允许失败，可并发）
-      const vixPromise = this.getVIXCandlesticks(count).catch(err => {
-        logger.warn(`获取VIX数据失败:`, err.message);
-        return [];
-      });
-
-      const marketTempPromise = this.getMarketTemperature().catch(err => {
-        logger.warn(`获取实时市场温度失败:`, err.message);
-        return null;
-      });
-
-      // 分时数据：可选，串行获取避免限频
-      const optionalPromises: Promise<any[]>[] = [];
-      if (includeIntraday) {
-        optionalPromises.push(
-          (async () => {
-            await delay(800);
-            return this.getUSDIndexHourlyCandlesticks(count, timeout).catch(err => {
-              logger.warn(`获取USD Index分时数据失败（非关键）:`, err.message);
-              return [];
-            });
-          })(),
-          (async () => {
-            await delay(1600);
-            return this.getBTCHourlyCandlesticks(count, timeout).catch(err => {
-              logger.warn(`获取BTC分时数据失败（非关键）:`, err.message);
-              return [];
-            });
-          })(),
-          (async () => {
-            await delay(2400);
-            return this.getSPXHourlyCandlesticks(count, timeout).catch(err => {
-              logger.warn(`获取SPX分时数据失败（非关键）:`, err.message);
-              return [];
-            });
-          })()
-        );
-      }
+      // ── 三源竞速 + 全部并发 ──
+      // LongPort + FutuOpenD 竞速，Moomoo 兜底
+      // 不再串行+800ms延迟，所有指标同时发出
+      const [spxData, usdIndexData, btcData, vixData, marketTemp] = await Promise.all([
+        this.getRacedKline('spx', 'day', count, () =>
+          retryWithBackoff(() => this.getSPXCandlesticks(count, timeout), { maxRetries: 3, initialDelayMs: 1000 })
+        ),
+        this.getRacedKline('usd', 'day', count, () =>
+          retryWithBackoff(() => this.getUSDIndexCandlesticks(count, timeout), { maxRetries: 3, initialDelayMs: 1000 })
+        ),
+        this.getRacedKline('btc', 'day', count, () =>
+          retryWithBackoff(() => this.getBTCCandlesticks(count, timeout), { maxRetries: 3, initialDelayMs: 1000 })
+        ),
+        // VIX：LongPort .VIX.US 直接获取（已验证），不参与竞速
+        this.getVIXCandlesticks(count).catch(err => {
+          logger.warn(`获取VIX数据失败:`, err.message);
+          return [] as CandlestickData[];
+        }),
+        this.getMarketTemperature().catch(err => {
+          logger.warn(`获取实时市场温度失败:`, err.message);
+          return null;
+        }),
+      ]);
 
       // 检查关键数据是否充足
-      if (!criticalResults[0] || criticalResults[0].length < 50) {
-        throw new Error(`SPX数据不足（${criticalResults[0]?.length || 0} < 50），无法提供交易建议`);
+      if (!spxData || spxData.length < 50) {
+        throw new Error(`SPX数据不足（${spxData?.length || 0} < 50），无法提供交易建议`);
       }
-      if (!criticalResults[1] || criticalResults[1].length < 50) {
-        throw new Error(`USD Index数据不足（${criticalResults[1]?.length || 0} < 50），无法提供交易建议`);
+      if (!usdIndexData || usdIndexData.length < 50) {
+        throw new Error(`USD Index数据不足（${usdIndexData?.length || 0} < 50），无法提供交易建议`);
       }
-      if (!criticalResults[2] || criticalResults[2].length < 50) {
-        throw new Error(`BTC数据不足（${criticalResults[2]?.length || 0} < 50），无法提供交易建议`);
+      if (!btcData || btcData.length < 50) {
+        throw new Error(`BTC数据不足（${btcData?.length || 0} < 50），无法提供交易建议`);
       }
-
-      // 获取可选数据（分时数据）
-      const optionalResults = includeIntraday ? await Promise.all(optionalPromises) : [];
-      
-      const vixData = await vixPromise;
-      const marketTemp = await marketTempPromise;
 
       const result: any = {
-        spx: criticalResults[0],
-        usdIndex: criticalResults[1],
-        btc: criticalResults[2],
+        spx: spxData,
+        usdIndex: usdIndexData,
+        btc: btcData,
         vix: vixData,
         marketTemperature: marketTemp,
       };
 
+      // ── 分时数据：竞速 + 全部并发 ──
       if (includeIntraday) {
-        result.usdIndexHourly = optionalResults[0] || [];
-        result.btcHourly = optionalResults[1] || [];
-        result.spxHourly = optionalResults[2] || [];
+        const [usdHourly, btcHourly, spxHourly] = await Promise.all([
+          this.getRacedKline('usd', 'min1', count, () =>
+            this.getUSDIndexHourlyCandlesticks(count, timeout)
+          ).catch(err => {
+            logger.warn(`获取USD Index分时数据失败（非关键）:`, err instanceof Error ? err.message : String(err));
+            return [] as CandlestickData[];
+          }),
+          this.getRacedKline('btc', 'min1', count, () =>
+            this.getBTCHourlyCandlesticks(count, timeout)
+          ).catch(err => {
+            logger.warn(`获取BTC分时数据失败（非关键）:`, err instanceof Error ? err.message : String(err));
+            return [] as CandlestickData[];
+          }),
+          this.getRacedKline('spx', 'min1', count, () =>
+            this.getSPXHourlyCandlesticks(count, timeout)
+          ).catch(err => {
+            logger.warn(`获取SPX分时数据失败（非关键）:`, err instanceof Error ? err.message : String(err));
+            return [] as CandlestickData[];
+          }),
+        ]);
+        result.usdIndexHourly = usdHourly;
+        result.btcHourly = btcHourly;
+        result.spxHourly = spxHourly;
       }
 
       // 输出数据获取结果摘要
+      const totalElapsed = Date.now() - overallStart;
       const dataSummary: Record<string, string> = {
-        SPX: `${criticalResults[0].length}条`,
-        'USD Index': `${criticalResults[1].length}条`,
-        BTC: `${criticalResults[2].length}条`,
+        SPX: `${spxData.length}条`,
+        'USD Index': `${usdIndexData.length}条`,
+        BTC: `${btcData.length}条`,
       };
 
-      // 添加VIX和市场温度信息
       if (vixData && vixData.length > 0) {
         const lastVix = vixData[vixData.length - 1];
         const vixValue = typeof lastVix.close === 'number' ? lastVix.close : parseFloat(String(lastVix.close));
@@ -1147,25 +1249,25 @@ class MarketDataService {
       } else {
         dataSummary['VIX'] = '未获取';
       }
-      
+
       if (marketTemp !== null && marketTemp !== undefined) {
-        const tempValue = typeof marketTemp === 'number' ? marketTemp : (marketTemp?.value || marketTemp?.temperature || 50);
+        const tempValue = typeof marketTemp === 'number' ? marketTemp : ((marketTemp as any)?.value || (marketTemp as any)?.temperature || 50);
         dataSummary['市场温度'] = `${tempValue.toFixed(1)}`;
       } else {
         dataSummary['市场温度'] = '未获取';
       }
-      
+
       if (includeIntraday) {
-        dataSummary['USD Index分时'] = `${optionalResults[0]?.length || 0}条`;
-        dataSummary['BTC分时'] = `${optionalResults[1]?.length || 0}条`;
-        dataSummary['SPX分时'] = `${optionalResults[2]?.length || 0}条`;
+        dataSummary['USD Index分时'] = `${result.usdIndexHourly?.length || 0}条`;
+        dataSummary['BTC分时'] = `${result.btcHourly?.length || 0}条`;
+        dataSummary['SPX分时'] = `${result.spxHourly?.length || 0}条`;
       }
-      logger.info(`市场数据获取完成:`, dataSummary);
+      dataSummary['总耗时'] = `${totalElapsed}ms`;
+      logger.info(`市场数据获取完成（三源竞速）:`, dataSummary);
 
       return result;
     } catch (error: any) {
       logger.error('批量获取市场数据失败:', error.message);
-      // 关键市场指标获取失败，抛出错误，不返回空数据
       throw new Error(`市场数据获取失败，无法提供交易建议: ${error.message}`);
     }
   }

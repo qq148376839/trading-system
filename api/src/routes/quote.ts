@@ -936,7 +936,8 @@ quoteRouter.get('/market-temperature', rateLimiter, async (req: Request, res: Re
  *         - Level 5: LongPort quote()
  *         - Level 6: 富途三步流程 getFutunnOptionQuote()（仅需 symbol）
  *         - 综合: getOptionPrice() 完整 fallback 链
- *       - **market-kline**：测试 SPX/USD/BTC/VIX K线数据获取
+ *       - **market-kline**：测试 SPX/USD/BTC/VIX K线数据获取（Moomoo 直连）
+ *       - **racing**：测试三源竞速架构（LongPort ETF + FutuOpenD bridge + Moomoo 兜底）
  *       - **moomoo-proxy**：直接测试 Moomoo 边缘函数代理（原始 API 调用）
  *       - **all**：同时测试以上所有
  *     security:
@@ -952,7 +953,7 @@ quoteRouter.get('/market-temperature', rateLimiter, async (req: Request, res: Re
  *         name: mode
  *         schema:
  *           type: string
- *           enum: [option-price, market-kline, moomoo-proxy, all]
+ *           enum: [option-price, market-kline, racing, moomoo-proxy, all]
  *           default: option-price
  *         description: 测试模式
  *     responses:
@@ -1114,6 +1115,87 @@ quoteRouter.get('/market-data-test', async (req: Request, res: Response) => {
       if (!data || data.length === 0) return null;
       const last = data[data.length - 1];
       return { count: data.length, latest: { close: last.close, timestamp: last.timestamp } };
+    });
+  }
+
+  // ── racing 模式：测试三源竞速架构 ──
+  if (testMode === 'racing' || testMode === 'all') {
+    const MarketDataSvc = (await import('../services/market-data.service')).default;
+
+    // 1. 分别测试各数据源
+    const racingTargets: Array<{ name: string; market: 'spx' | 'usd' | 'btc'; period: 'day' | 'min1' }> = [
+      { name: 'SPX 日K', market: 'spx', period: 'day' },
+      { name: 'USD 日K', market: 'usd', period: 'day' },
+      { name: 'BTC 日K', market: 'btc', period: 'day' },
+    ];
+
+    for (const target of racingTargets) {
+      // LongPort ETF 单独测试
+      await runStep(`LongPort ETF: ${target.name}`, async () => {
+        const data = await (MarketDataSvc as any).fetchFromLongportETF(
+          (MarketDataSvc as any).racingSymbolMap[target.market].longport,
+          target.period,
+          5
+        );
+        if (!data || data.length === 0) return null;
+        const last = data[data.length - 1];
+        return { source: 'longport', count: data.length, latest: { close: last.close, timestamp: last.timestamp } };
+      });
+
+      // FutuOpenD bridge 单独测试
+      await runStep(`FutuOpenD Bridge: ${target.name}`, async () => {
+        const futuKtype = target.period === 'day' ? 'K_DAY' : 'K_1M';
+        const data = await (MarketDataSvc as any).fetchFromFutuBridge(
+          (MarketDataSvc as any).racingSymbolMap[target.market].futu,
+          futuKtype,
+          5
+        );
+        if (!data || data.length === 0) return null;
+        const last = data[data.length - 1];
+        return { source: 'futu', count: data.length, latest: { close: last.close, timestamp: last.timestamp } };
+      });
+
+      // 竞速综合测试
+      await runStep(`竞速: ${target.name}`, async () => {
+        const data = await MarketDataSvc.getRacedKline(
+          target.market,
+          target.period,
+          5,
+          async () => [] // 不触发 Moomoo 兜底
+        );
+        if (!data || data.length === 0) return null;
+        const last = data[data.length - 1];
+        return { count: data.length, latest: { close: last.close, timestamp: last.timestamp } };
+      });
+    }
+
+    // 2. FutuOpenD bridge 健康检查
+    await runStep('FutuOpenD Bridge 健康检查', async () => {
+      const bridgeUrl = process.env.FUTU_BRIDGE_URL || 'http://futu-bridge:8765';
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      try {
+        const resp = await fetch(`${bridgeUrl}/health`, { signal: controller.signal });
+        const json = await resp.json() as Record<string, unknown>;
+        return json;
+      } finally {
+        clearTimeout(timer);
+      }
+    });
+
+    // 3. 完整 getAllMarketData 竞速测试
+    await runStep('完整 getAllMarketData（三源竞速）', async () => {
+      const start = Date.now();
+      const data = await MarketDataSvc.getAllMarketData(5, false);
+      const elapsed = Date.now() - start;
+      return {
+        elapsed_ms: elapsed,
+        spx: data.spx?.length || 0,
+        usdIndex: data.usdIndex?.length || 0,
+        btc: data.btc?.length || 0,
+        vix: data.vix?.length || 0,
+        marketTemperature: data.marketTemperature,
+      };
     });
   }
 
