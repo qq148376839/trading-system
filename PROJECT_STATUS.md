@@ -9,7 +9,7 @@
 
 ### 2026-04-03: 交易日历双源冗余 — 修复假日仍执行策略
 
-**改动**: Good Friday 等假日 LongPort API 失败时降级为周末判断，非交易日仍执行。新增 FutuOpenD `request_trading_days()` 作为冗余源，`isTradingDay()` 改为双源交叉验证（任一源说非交易日就不执行）。futu-bridge 新增 `/trading-days` 端点。
+**改动**: Good Friday 等假日 LongPort API 失败时降级为周末判断，非交易日仍执行。新增 FutuOpenD `request_trading_days()` 作为冗余源，`isTradingDay()` 改为双源交叉验证（任一源说非交易日就不执行）。futu-bridge 新增 `/trading-days` 端点。修复 `request_trading_days` 返回值解析 bug（返回 list[dict] 非 DataFrame，导致端点 500 错误）。
 
 **修改文件**: `futu-bridge/main.py`, `trading-days.service.ts`
 

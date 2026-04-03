@@ -260,8 +260,8 @@ async def get_trading_days(
         if ret != RET_OK:
             raise HTTPException(status_code=502, detail=f"FutuOpenD 返回错误: {data}")
 
-        # data 是 DataFrame: columns=[time, trade_date_type]
-        trading_days = data["time"].tolist()
+        # request_trading_days 返回 list[dict]，每个元素形如 {'time': '2026-04-01', 'trade_date_type': 'WHOLE'}
+        trading_days = [d["time"] for d in data]
         return {
             "source": "futu",
             "market": market.upper(),
