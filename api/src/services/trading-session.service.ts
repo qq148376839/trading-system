@@ -414,15 +414,19 @@ class TradingSessionService {
     }
     try {
       const now = currentTime || new Date();
+
+      // ✅ 先检查是否为交易日（假日 + 周末拦截）
+      // tradingSession() API 在假日仍返回标准时段，不能仅靠时段数据判断
+      const isTradDay = await tradingDaysService.isTradingDay(now, market);
+      if (!isTradDay) {
+        return false; // 非交易日（周末/节假日），直接拒绝
+      }
+
       const sessions = await this.getMarketTradingSessions(market);
 
       if (sessions.length === 0) {
-        // 无交易时段数据（周末/节假日 API 不返回时段）→ 用交易日 API 二次确认
-        const isTradDay = await tradingDaysService.isTradingDay(now, market);
-        if (!isTradDay) {
-          return false; // 非交易日（周末/节假日），不执行
-        }
-        logger.warn(`[交易时段服务] ${market}市场无交易时段数据但交易日API确认为交易日，降级允许执行`);
+        // 交易日但无时段数据 → 降级允许执行
+        logger.warn(`[交易时段服务] ${market}市场交易日但无时段数据，降级允许执行`);
         return true;
       }
 

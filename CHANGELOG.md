@@ -8,6 +8,7 @@ Good Friday 等假日 LongPort API 失败时降级为周末判断，导致非交
 
 **futu-bridge/main.py**: 新增 `GET /trading-days` 端点，调用 FutuOpenD 交易日历 API；修复 `request_trading_days` 返回值解析（返回 list[dict] 非 DataFrame）
 **trading-days.service.ts**: `isTradingDay()` 改为双源交叉验证，保守策略（任一源说非交易日就不执行）
+**trading-session.service.ts**: `isInTradingSession()` 前置 `isTradingDay()` 检查 — LongPort `tradingSession()` 假日仍返回标准时段，必须先拦截非交易日
 
 ---
 
