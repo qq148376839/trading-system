@@ -128,12 +128,12 @@ function linearRegression(values: number[]): LinearRegressionResult {
 // FastMomentumService
 // ============================================
 
-const BUFFER_CAPACITY = 12; // 12 点 × ~5s = ~60s 窗口
-const MIN_DATA_POINTS = 6;  // 至少 6 个点才做判断
-const DECEL_THRESHOLD = 0.5; // 减速超过 50% 则拒绝
+const BUFFER_CAPACITY = 120;  // 120 点 — WebSocket 推送 ~200ms 间隔，覆盖 ~60s 窗口
+const MIN_DATA_POINTS = 6;    // 至少 6 个点才做判断
+const DECEL_THRESHOLD = 0.5;  // 减速超过 50% 则拒绝
 const DECEL_UPPER_BOUND = 5.0; // 加速超过 5 倍 = 冲量尾端爆发，不可持续
 const NEAR_ZERO_SLOPE = 0.0001; // 斜率接近零的阈值
-const LONG_BUFFER_CAPACITY = 60;   // 60 点 × ~5s = ~5min 窗口
+const LONG_BUFFER_CAPACITY = 600;  // 600 点 — WebSocket 推送覆盖 ~5min 窗口
 const LONG_MIN_DATA_POINTS = 20;   // 至少 20 个点（~100s 数据）
 
 class FastMomentumService {
@@ -161,6 +161,28 @@ class FastMomentumService {
       }
       longBuf.push({ price, timestamp: Date.now() });
     }
+  }
+
+  /**
+   * 单条实时报价喂入（WebSocket 推送驱动）
+   * 由 QuoteSubscriptionService 每收到一条推送时调用
+   */
+  feedSingleQuote(symbol: string, price: number, timestamp: number): void {
+    // 短 buffer
+    let buf = this.buffers.get(symbol);
+    if (!buf) {
+      buf = new RingBuffer<PriceSample>(BUFFER_CAPACITY);
+      this.buffers.set(symbol, buf);
+    }
+    buf.push({ price, timestamp });
+
+    // 长 buffer
+    let longBuf = this.longBuffers.get(symbol);
+    if (!longBuf) {
+      longBuf = new RingBuffer<PriceSample>(LONG_BUFFER_CAPACITY);
+      this.longBuffers.set(symbol, longBuf);
+    }
+    longBuf.push({ price, timestamp });
   }
 
   /**

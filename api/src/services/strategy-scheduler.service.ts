@@ -35,6 +35,7 @@ import marketDataService from './market-data.service';
 import trailingStopProtectionService from './trailing-stop-protection.service';
 import { buildCorrelationMap } from '../utils/correlation';
 import fastMomentumService from './fast-momentum.service';
+import quoteSubscriptionService from './quote-subscription.service';
 
 /** 每笔新交易必须重置的持仓级 context 字段 — 防止 JSONB || 合并导致跨交易污染 */
 const POSITION_CONTEXT_RESET = {
@@ -316,6 +317,13 @@ class StrategyScheduler {
       this.ironDomeIntervals.clear();
     }
 
+    // 停止 WebSocket 行情订阅服务
+    try {
+      await quoteSubscriptionService.stop();
+    } catch {
+      // 停止时忽略错误
+    }
+
     logger.log('策略调度器已停止', { dbWrite: false });
   }
 
@@ -456,6 +464,17 @@ class StrategyScheduler {
         }
       }, 60 * 1000); // 60秒 — 不需要5秒那么频繁，但足够捕捉归零和幽灵仓位
       this.ironDomeIntervals.set(strategyId, ironDomeId);
+    }
+
+    // 260403 WebSocket 行情订阅：初始化实时推送服务（期权策略使用）
+    if (isOptionStrategy) {
+      try {
+        await quoteSubscriptionService.init();
+        logger.log(`[QuoteSub] 策略 ${strategyId}: WebSocket 行情订阅服务已绑定`);
+      } catch (subErr: unknown) {
+        const subMsg = subErr instanceof Error ? subErr.message : String(subErr);
+        logger.warn(`[QuoteSub] 策略 ${strategyId}: 行情订阅初始化失败，将使用轮询降级: ${subMsg}`);
+      }
     }
 
     logger.log(`策略 ${strategy.name} (ID: ${strategyId}) 已启动（策略周期: ${intervalDesc}，订单监控: ${orderMonitorDesc}${isOptionStrategy ? '，Iron Dome: 60秒' : ''}）`, { dbWrite: false });
@@ -741,6 +760,11 @@ class StrategyScheduler {
       const idleSymbols = stateChecks.filter(s => s.state === 'IDLE').map(s => s.symbol);
       const nonIdleSymbols = stateChecks.filter(s => s.state !== 'IDLE').map(s => s.symbol);
 
+      // Phase A: 订阅持仓标的的实时行情（用于止盈止损的快速响应）
+      if (nonIdleSymbols.length > 0) {
+        await quoteSubscriptionService.subscribeSymbols(nonIdleSymbols);
+      }
+
       // Phase A: 并行处理非 IDLE（HOLDING/CLOSING 等走原 processSymbol）
       for (let i = 0; i < nonIdleSymbols.length; i += BATCH_SIZE) {
         const batch = nonIdleSymbols.slice(i, i + BATCH_SIZE);
@@ -748,25 +772,36 @@ class StrategyScheduler {
         if (i + BATCH_SIZE < nonIdleSymbols.length) await new Promise(r => setTimeout(r, 100));
       }
 
-      // Phase A.5: 批量获取实时报价 → 喂入快动量服务
+      // Phase A.5: 实时报价 → 喂入快动量服务
+      // 优先使用 WebSocket 推送（延迟 ~50-200ms），降级时回退到 5s 轮询
       if (idleSymbols.length > 0) {
-        try {
-          const { getQuoteContext } = await import('../config/longport');
-          const quoteCtx = await getQuoteContext();
-          const quotes = await quoteCtx.quote(idleSymbols);
-          const priceMap = new Map<string, number>();
-          for (const q of quotes) {
-            const price = Number(q.lastDone?.toString() || '0');
-            if (isNaN(price) || price <= 0) continue;
-            priceMap.set(q.symbol, price);
+        // 确保 idle 标的已订阅 WebSocket 推送
+        await quoteSubscriptionService.subscribeSymbols(idleSymbols);
+
+        if (quoteSubscriptionService.isWebSocketActive()) {
+          // WebSocket 活跃：数据已通过 onQuote 回调实时喂入 fastMomentumService
+          // 此处无需额外请求，仅确认订阅即可
+        } else {
+          // 降级模式：回退到批量轮询（5s 间隔已由 subscription 服务管理）
+          // 若 subscription 服务的 fallback 也未运行，则手动拉取一次
+          try {
+            const { getQuoteContext: getQuoteCtxFn } = await import('../config/longport');
+            const quoteCtx = await getQuoteCtxFn();
+            const quotes = await quoteCtx.quote(idleSymbols);
+            const priceMap = new Map<string, number>();
+            for (const q of quotes) {
+              const price = Number(q.lastDone?.toString() || '0');
+              if (isNaN(price) || price <= 0) continue;
+              priceMap.set(q.symbol, price);
+            }
+            if (priceMap.size > 0) {
+              fastMomentumService.feedQuotes(priceMap);
+            }
+          } catch (err: unknown) {
+            // 降级：快动量 gate 会因数据不足自动跳过
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.debug(`[FAST_MOMENTUM] 批量报价获取失败: ${msg}`);
           }
-          if (priceMap.size > 0) {
-            fastMomentumService.feedQuotes(priceMap);
-          }
-        } catch (err: unknown) {
-          // 降级：快动量 gate 会因数据不足自动跳过
-          const msg = err instanceof Error ? err.message : String(err);
-          logger.debug(`[FAST_MOMENTUM] 批量报价获取失败: ${msg}`);
         }
       }
 
