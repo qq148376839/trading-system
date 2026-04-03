@@ -1310,6 +1310,99 @@ class MarketDataService {
     }
   }
 
+  // ============================================
+  // 5min K 线获取（Phase 3 — 趋势确认用）
+  // ============================================
+
+  // 5min K 线缓存：symbol → { klines, timestamp }
+  private kline5minCache: Map<string, {
+    klines: { open: number; high: number; low: number; close: number; volume: number; timestamp: number }[];
+    timestamp: number;
+  }> = new Map();
+  private readonly KLINE_5MIN_CACHE_TTL = 60_000; // 60 秒
+
+  /**
+   * 获取标的 5 分钟 K 线数据
+   * 用于 Phase 3 趋势确认信号（1min 与 5min 方向一致性检查）
+   *
+   * @param symbol 标的代码，如 "SPY.US" 或 ".SPX.US"
+   * @param count 获取数量，默认 48 根（4 小时）
+   * @returns 5min K 线数组或 null
+   */
+  async getIntraday5minKlines(
+    symbol: string,
+    count: number = 48
+  ): Promise<{ open: number; high: number; low: number; close: number; volume: number; timestamp: number }[] | null> {
+    // 1. 检查缓存
+    const cached = this.kline5minCache.get(symbol);
+    const now = Date.now();
+    if (cached && (now - cached.timestamp) < this.KLINE_5MIN_CACHE_TTL) {
+      return cached.klines;
+    }
+
+    // 2. 从 LongPort 获取 5min K 线
+    try {
+      const longport = await import('longport');
+      const { Period, AdjustType } = longport;
+      let tradeSessionsAll = 100;
+      try {
+        const TradeSessions = (longport as any).TradeSessions;
+        if (TradeSessions && typeof TradeSessions.All === 'number') {
+          tradeSessionsAll = TradeSessions.All;
+        }
+      } catch {
+        // 使用默认值 100
+      }
+      const quoteCtx = await getQuoteContext();
+
+      const candles = await quoteCtx.candlesticks(
+        symbol,
+        Period.Min_5,
+        count,
+        AdjustType.NoAdjust,
+        tradeSessionsAll
+      );
+
+      if (!candles || candles.length === 0) {
+        logger.debug(`[5minK线] ${symbol} LongPort 返回空数据`);
+        // 降级到过期缓存（最长 5 分钟）
+        if (cached && (now - cached.timestamp) < 5 * 60_000) {
+          return cached.klines;
+        }
+        return null;
+      }
+
+      // 3. 解析 K 线数据（复用 VWAP 的解析模式）
+      const klines = candles.map((c: any) => ({
+        open: parseFloat(c.open?.toString() || c.o?.toString() || '0'),
+        high: parseFloat(c.high?.toString() || c.h?.toString() || '0'),
+        low: parseFloat(c.low?.toString() || c.l?.toString() || '0'),
+        close: parseFloat(c.close?.toString() || c.c?.toString() || '0'),
+        volume: parseInt(c.volume?.toString() || c.v?.toString() || '0', 10),
+        timestamp: c.timestamp ? new Date(c.timestamp).getTime() : 0,
+      })).filter((k: { volume: number; close: number }) => k.volume > 0 && k.close > 0);
+
+      if (klines.length === 0) {
+        logger.debug(`[5minK线] ${symbol} 无有效数据（volume=0 或 close=0）`);
+        return null;
+      }
+
+      // 4. 写入缓存
+      this.kline5minCache.set(symbol, { klines, timestamp: now });
+
+      logger.debug(`[5minK线] ${symbol}: ${klines.length}根5分钟K线`);
+      return klines;
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      logger.warn(`[5minK线] ${symbol} 获取失败: ${errMsg}`);
+      // 降级到过期缓存（最长 5 分钟）
+      if (cached && (now - cached.timestamp) < 5 * 60_000) {
+        return cached.klines;
+      }
+      return null;
+    }
+  }
+
   /**
    * 获取标的日K收盘价历史（用于相关性计算）
    * 使用 Longport SDK candlesticks 获取日级 K 线数据

@@ -4787,8 +4787,6 @@ class StrategyScheduler {
         lastCheckTime: new Date().toISOString(),
       });
       return { actionTaken: true };
-
-      return { actionTaken: false };
     } catch (error: any) {
       logger.error(`策略 ${strategyId} 期权动态止盈止损处理失败 (${symbol}):`, error);
       return { actionTaken: false };

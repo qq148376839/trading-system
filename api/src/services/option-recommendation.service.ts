@@ -3,13 +3,13 @@
  *
  * 设计理念：
  * 1. 针对0DTE日内期权交易，不依赖底层股票的日K线趋势
- * 2. 核心决策因子：大盘方向预测 + 分时动量 + 期权特性
+ * 2. 核心决策因子：大盘方向预测 + 分时动量 + 时间窗口
  * 3. 降低入场门槛，提高交易频率
  *
- * 决策流程：
- * - 大盘环境评分 (20%): SPX多窗口趋势(3d/10d/20d) + Gap信号 + 市场温度 + VIX
- * - 分时动量评分 (80%): 底层1m动量(45%) + VWAP位置(20%) + SPX日内(35%) + BTC/USD已去噪(0%)
- * - 时间窗口: 改为阈值修正系数(timeThresholdFactor)，不参与方向得分
+ * Phase 3 决策流程（权重恢复 20/60/20）：
+ * - 大盘环境评分 (20%): SPX日K多窗口趋势(20%) + SPX分钟级趋势(20%) + Gap + USD + BTC + VIX + 温度
+ * - 分时动量评分 (60%): 底层1m VW动量(30%) + 5min趋势确认(15%) + VWAP位置(15%) + SPX日内(25%) + BTC(15%)
+ * - 时间窗口评分 (20%): 去偏置的中性时间衰减信号
  */
 
 import marketDataCacheService from './market-data-cache.service';
@@ -34,7 +34,8 @@ interface OptionRecommendation {
   marketScore: number; // 大盘得分 -100 to 100
   intradayScore: number; // 分时得分 -100 to 100
   finalScore: number; // 综合得分 -100 to 100
-  timeThresholdFactor?: number; // Phase 3B: 时间阈值修正系数（供策略层使用）
+  timeWindowScore?: number; // Phase 3: 时间窗口得分（去偏置版本）
+  timeThresholdFactor?: number; // 时间阈值修正系数（供策略层使用）
   suggestedDelta: {
     min: number;
     max: number;
@@ -144,27 +145,55 @@ class OptionRecommendationService {
         logger.warn(`[${underlyingSymbol}] VWAP数据获取失败: ${err instanceof Error ? err.message : err}`);
       }
 
-      // 3. 计算大盘环境得分 (20%权重)
-      const marketScore = await this.calculateMarketScore(marketData);
+      // 2b. 获取底层标的 5min K 线（用于趋势确认）
+      let underlying5minKlines: CandlestickData[] | null = null;
+      try {
+        const raw5min = await marketDataService.getIntraday5minKlines(underlyingSymbol);
+        if (raw5min) {
+          underlying5minKlines = raw5min.map(k => ({
+            open: k.open, high: k.high, low: k.low, close: k.close,
+            volume: k.volume, turnover: 0, timestamp: k.timestamp,
+          }));
+        }
+      } catch (err) {
+        logger.warn(`[${underlyingSymbol}] 5min K线获取失败: ${err instanceof Error ? err.message : err}`);
+      }
 
-      // 4. 计算分时动量得分 (60%权重)
+      // 2c. 获取 SPX 5min K 线（用于市场评分分钟级趋势）
+      let spx5minKlines: CandlestickData[] | null = null;
+      try {
+        const rawSpx5min = await marketDataService.getIntraday5minKlines('.SPX.US');
+        if (rawSpx5min) {
+          spx5minKlines = rawSpx5min.map(k => ({
+            open: k.open, high: k.high, low: k.low, close: k.close,
+            volume: k.volume, turnover: 0, timestamp: k.timestamp,
+          }));
+        }
+      } catch (err) {
+        logger.warn(`[SPX] 5min K线获取失败: ${err instanceof Error ? err.message : err}`);
+      }
+
+      // 3. 计算大盘环境得分 (20%权重) — Phase 3: 日线趋势20% + SPX分钟级趋势20%
+      const marketScore = await this.calculateMarketScore(marketData, marketData.spxHourly, spx5minKlines);
+
+      // 4. 计算分时动量得分 (60%权重) — Phase 3: VW动量 + 5min确认 + VWAP + SPX + BTC
       const { score: intradayScore, components: intradayComponents } = await this.calculateIntradayScore(
         marketData,
         underlyingSymbol,
         underlyingVWAP,
-        marketData.spxHourly
+        marketData.spxHourly,
+        underlying5minKlines
       );
 
-      // 5. 时间窗口 — Phase 3B: 改为阈值修正系数，不再参与方向得分
-      // 旧: finalScore = mkt*0.2 + intraday*0.6 + timeWindow*0.2 (timeWindow +20 = CALL偏置)
-      // 新: finalScore = mkt*0.2 + intraday*0.8 (方向完全由市场信号决定)
-      const timeWindowAdjustment = this.calculateTimeWindowAdjustment(); // 保留用于日志
-      const timeThresholdFactor = this.getTimeThresholdFactor(); // 新：阈值修正系数
+      // 5. 时间窗口评分 (20%权重) — Phase 3: 去偏置，恢复为独立方向信号
+      const timeWindowAdjustment = this.calculateTimeWindowAdjustment(); // 去偏置版本
+      const timeThresholdFactor = this.getTimeThresholdFactor(); // 阈值修正系数（供策略层使用）
 
-      // 6. 综合得分计算 (大盘20% + 日内80%，timeWindow不参与)
+      // 6. 综合得分计算 — Phase 3: 恢复 20/60/20 权重
       const finalScore =
         marketScore * 0.2 +
-        intradayScore * 0.8;
+        intradayScore * 0.6 +
+        timeWindowAdjustment * 0.2;
 
       // 7. 决策逻辑（降低门槛）
       let direction: 'CALL' | 'PUT' | 'HOLD' = 'HOLD';
@@ -286,7 +315,8 @@ class OptionRecommendationService {
         marketScore,
         intradayScore,
         finalScore,
-        timeThresholdFactor, // Phase 3B: 时间阈值修正系数，供策略层使用
+        timeWindowScore: timeWindowAdjustment, // Phase 3: 去偏置时间窗口得分
+        timeThresholdFactor, // 时间阈值修正系数，供策略层使用
         suggestedDelta,
         entryWindow,
         riskLevel,
@@ -306,9 +336,14 @@ class OptionRecommendationService {
 
   /**
    * 计算大盘环境得分
-   * 考虑因素：SPX趋势、USD Index、BTC、VIX、市场温度
+   * Phase 3: 日线趋势权重从 40% → 20%，新增 SPX 分钟级趋势 20%
+   * 考虑因素：SPX日线趋势(20%) + SPX分钟级趋势(20%) + Gap + USD + BTC + VIX + 温度
    */
-  private async calculateMarketScore(marketData: any): Promise<number> {
+  private async calculateMarketScore(
+    marketData: any,
+    spxHourly?: CandlestickData[] | null,
+    spx5minKlines?: CandlestickData[] | null
+  ): Promise<number> {
     let score = 0;
     const components: string[] = [];
 
@@ -317,10 +352,16 @@ class OptionRecommendationService {
     this.correctDailyCloseWithIntraday(marketData.usdIndex, marketData.usdIndexHourly);
     this.correctDailyCloseWithIntraday(marketData.btc, marketData.btcHourly);
 
-    // 1. SPX趋势分析 — Phase 3B: 多窗口加权（3d/10d/20d），替代单一20日均线
+    // 1. SPX日线趋势分析 — Phase 3: 权重从 40% → 20%
     const spxAnalysis = this.analyzeMarketTrendMultiWindow(marketData.spx);
-    score += spxAnalysis.trendStrength * 0.4;
-    components.push(`SPX多窗口${spxAnalysis.trendStrength.toFixed(1)}(${spxAnalysis.windowWeights})→${(spxAnalysis.trendStrength * 0.4).toFixed(1)}`);
+    score += spxAnalysis.trendStrength * 0.2;
+    components.push(`SPX日线${spxAnalysis.trendStrength.toFixed(1)}(${spxAnalysis.windowWeights})*0.2→${(spxAnalysis.trendStrength * 0.2).toFixed(1)}`);
+
+    // 1c. SPX 分钟级趋势 — Phase 3: 新增 20% 权重
+    // 使用 SPX 1min/5min K 线计算分钟级方向，降低日线滞后性
+    const spxMinuteTrend = this.calculateSpxMinuteTrend(spxHourly, spx5minKlines);
+    score += spxMinuteTrend * 0.2;
+    components.push(`SPX分钟级=${spxMinuteTrend.toFixed(1)}*0.2→${(spxMinuteTrend * 0.2).toFixed(1)}`);
 
     // 1b. Gap 检测 — Phase 3B: 隔夜信息作为方向补充
     const gapAnalysis = this.calculateGapSignal(marketData.spx);
@@ -420,14 +461,20 @@ class OptionRecommendationService {
   }
 
   /**
-   * 计算分时动量得分 (5-component scoring)
-   * 底层1m动量(30%) + VWAP位置(15%) + SPX日内(25%) + BTC时K(15%) + USD时K(15%)
+   * 计算分时动量得分 — Phase 3 重构
+   * 内部权重（恢复后的 60% 总权重内）：
+   *   底层1min VW动量: 30%  (原 45%)
+   *   5min趋势确认:    15%  (新增)
+   *   VWAP位置:        15%  (原 20%)
+   *   SPX分时:         25%  (原 35%)
+   *   BTC/USD时K:      15%  (恢复，原 0%，降噪但不归零)
    */
   private async calculateIntradayScore(
     marketData: any,
     underlyingSymbol: string,
     underlyingVWAP?: { vwap: number; dataPoints: number; rangePct: number; recentKlines: CandlestickData[] } | null,
-    spxHourly?: CandlestickData[] | null
+    spxHourly?: CandlestickData[] | null,
+    underlying5minKlines?: CandlestickData[] | null
   ): Promise<{ score: number; components: { underlyingMomentum: number; vwapPosition: number; spxIntraday: number; btcHourly: number; usdHourly: number } }> {
     let score = 0;
     const logParts: string[] = [];
@@ -439,69 +486,94 @@ class OptionRecommendationService {
       usdHourly: 0,
     };
 
-    // Phase 3A 去噪: BTC/USD 小时线对分钟级交易无预测力，权重归零
-    // 权重分配: 底层1min 45% + VWAP 20% + SPX日内 35% + BTC 0% + USD 0%
+    // Phase 3 权重分配: 底层1min VW 30% + 5min确认 15% + VWAP 15% + SPX日内 25% + BTC/USD 15%
 
-    // 1. Underlying 1m momentum (45% ← was 30%)
-    if (underlyingVWAP?.recentKlines && underlyingVWAP.recentKlines.length >= 5) {
-      const recentBars = underlyingVWAP.recentKlines.slice(-20);
-      const momentum = this.calculateMomentum(recentBars);
-      const weighted = momentum * 0.45;
-      componentScores.underlyingMomentum = weighted;
-      score += weighted;
-      logParts.push(`底层1m动量=${momentum.toFixed(1)}*0.45→${weighted.toFixed(1)}`);
+    // 1. Underlying 1m volume-weighted momentum (30%)
+    // Phase 3: 标的 K 线也过 intradayDataFilterService + 最低 15 根
+    let underlying1mMomentum = 0;
+    if (underlyingVWAP?.recentKlines && underlyingVWAP.recentKlines.length >= 15) {
+      const filteredUnderlying = intradayDataFilterService.filterData(underlyingVWAP.recentKlines);
+      if (filteredUnderlying.length >= 15) {
+        underlying1mMomentum = this.calculateMomentum(filteredUnderlying);
+        const weighted = underlying1mMomentum * 0.30;
+        componentScores.underlyingMomentum = weighted;
+        score += weighted;
+        logParts.push(`底层1mVW=${underlying1mMomentum.toFixed(1)}*0.30→${weighted.toFixed(1)}`);
+      } else {
+        logParts.push(`底层1mVW=N/A(过滤后${filteredUnderlying.length}根<15)`);
+      }
     } else {
-      logParts.push(`底层1m动量=N/A(K线${underlyingVWAP?.recentKlines?.length || 0}根<5)`);
+      logParts.push(`底层1mVW=N/A(K线${underlyingVWAP?.recentKlines?.length || 0}根<15)`);
     }
 
-    // 2. VWAP position score (20% ← was 15%)
+    // 2. 5min 趋势确认 (15%) — Phase 3 新增
+    if (underlying5minKlines && underlying5minKlines.length >= 10) {
+      const trendConfirmation = this.calculate5minTrendConfirmation(
+        underlying5minKlines,
+        underlying1mMomentum
+      );
+      const weighted = trendConfirmation * 0.15;
+      score += weighted;
+      logParts.push(`5min确认=${trendConfirmation.toFixed(1)}*0.15→${weighted.toFixed(1)}`);
+    } else {
+      logParts.push(`5min确认=N/A(${underlying5minKlines?.length || 0}根<10)`);
+    }
+
+    // 3. VWAP position score (15%)
     if (underlyingVWAP && underlyingVWAP.vwap > 0 && underlyingVWAP.recentKlines?.length > 0) {
       const lastPrice = underlyingVWAP.recentKlines[underlyingVWAP.recentKlines.length - 1].close;
       const distancePct = ((lastPrice - underlyingVWAP.vwap) / underlyingVWAP.vwap) * 100;
       const rawScore = Math.max(-100, Math.min(100, distancePct * 50)); // 2%偏离才饱和
-      const weighted = rawScore * 0.20;
+      const weighted = rawScore * 0.15;
       componentScores.vwapPosition = weighted;
       score += weighted;
-      logParts.push(`VWAP位置=${distancePct.toFixed(3)}%→raw${rawScore.toFixed(1)}*0.20→${weighted.toFixed(1)}`);
+      logParts.push(`VWAP位置=${distancePct.toFixed(3)}%→raw${rawScore.toFixed(1)}*0.15→${weighted.toFixed(1)}`);
     } else {
       logParts.push(`VWAP位置=N/A`);
     }
 
-    // 3. SPX intraday momentum (35% ← was 25%)
-    if (spxHourly && spxHourly.length >= 5) {
+    // 4. SPX intraday momentum (25%)
+    if (spxHourly && spxHourly.length >= 15) {
       const filteredSPXHourly = intradayDataFilterService.filterData(spxHourly);
-      if (filteredSPXHourly.length >= 5) {
+      if (filteredSPXHourly.length >= 15) {
         const spxMomentum = this.calculateMomentum(filteredSPXHourly);
-        const weighted = spxMomentum * 0.35;
+        const weighted = spxMomentum * 0.25;
         componentScores.spxIntraday = weighted;
         score += weighted;
-        logParts.push(`SPX日内=${spxMomentum.toFixed(1)}*0.35→${weighted.toFixed(1)}`);
+        logParts.push(`SPX日内=${spxMomentum.toFixed(1)}*0.25→${weighted.toFixed(1)}`);
       } else {
-        logParts.push(`SPX日内=N/A(过滤后${filteredSPXHourly.length}根<5)`);
+        logParts.push(`SPX日内=N/A(过滤后${filteredSPXHourly.length}根<15)`);
       }
     } else {
-      logParts.push(`SPX日内=N/A(${spxHourly?.length || 0}根<5)`);
+      logParts.push(`SPX日内=N/A(${spxHourly?.length || 0}根<15)`);
     }
 
-    // 4. BTC hourly momentum — Phase 3A: 权重归零（分钟级交易无预测力）
-    // 保留计算用于日志观察，但不计入得分
-    if (marketData.btcHourly && marketData.btcHourly.length >= 10) {
+    // 5. BTC/USD hourly momentum — Phase 3: 恢复 15% 权重（降噪但不归零）
+    // BTC 10% + USD 5%（反向），合计 15%
+    if (marketData.btcHourly && marketData.btcHourly.length >= 15) {
       const filteredBTCHourly = intradayDataFilterService.filterData(
         marketData.btcHourly
       );
       const btcHourlyMomentum = this.calculateMomentum(filteredBTCHourly);
-      componentScores.btcHourly = 0; // 权重=0，不计入得分
-      logParts.push(`BTC时K=${btcHourlyMomentum.toFixed(1)}*0→0(去噪)`);
+      const btcWeighted = btcHourlyMomentum * 0.10;
+      componentScores.btcHourly = btcWeighted;
+      score += btcWeighted;
+      logParts.push(`BTC时K=${btcHourlyMomentum.toFixed(1)}*0.10→${btcWeighted.toFixed(1)}`);
+    } else {
+      logParts.push(`BTC时K=N/A`);
     }
 
-    // 5. USD hourly momentum — Phase 3A: 权重归零（分钟级交易无预测力）
-    if (marketData.usdIndexHourly && marketData.usdIndexHourly.length >= 10) {
+    if (marketData.usdIndexHourly && marketData.usdIndexHourly.length >= 15) {
       const filteredUSDHourly = intradayDataFilterService.filterData(
         marketData.usdIndexHourly
       );
       const usdHourlyMomentum = this.calculateMomentum(filteredUSDHourly);
-      componentScores.usdHourly = 0; // 权重=0，不计入得分
-      logParts.push(`USD时K=${usdHourlyMomentum.toFixed(1)}*0→0(去噪)`);
+      const usdWeighted = -usdHourlyMomentum * 0.05; // USD 反向
+      componentScores.usdHourly = usdWeighted;
+      score += usdWeighted;
+      logParts.push(`USD时K=${usdHourlyMomentum.toFixed(1)}*-0.05→${usdWeighted.toFixed(1)}`);
+    } else {
+      logParts.push(`USD时K=N/A`);
     }
 
     const finalIntradayScore = Math.max(-100, Math.min(100, score));
@@ -644,14 +716,100 @@ class OptionRecommendationService {
   }
 
   /**
-   * 计算动量 (ATR归一化)
-   * 用 avgChange / atrPct 衡量价格变动相对于波动率的强度
-   * 解决旧公式 avgChange*1000 在正常行情下输出接近零的问题
+   * Phase 3: 5min 趋势确认
+   * 计算 5min 级别的 volume-weighted momentum + 趋势方向
+   * 当 1min 和 5min 方向不一致时，降低信号置信度
+   *
+   * @param klines5min 5分钟 K 线（至少 10 根）
+   * @param momentum1min 1 分钟 momentum（用于方向一致性检查）
+   * @returns 趋势确认分数 (-100 ~ +100)
+   */
+  private calculate5minTrendConfirmation(
+    klines5min: CandlestickData[],
+    momentum1min: number
+  ): number {
+    if (!klines5min || klines5min.length < 10) return 0;
+
+    // 1. 计算 5min 级别的 volume-weighted momentum
+    const fiveMinMomentum = this.calculateMomentum(klines5min);
+
+    // 2. 方向一致性检查
+    const sign1m = Math.sign(momentum1min);
+    const sign5m = Math.sign(fiveMinMomentum);
+
+    if (sign1m !== 0 && sign5m !== 0 && sign1m !== sign5m) {
+      // 1min 和 5min 方向不一致 → 衰减系数 0.5-0.7
+      // 分歧越大衰减越多
+      const divergence = Math.abs(momentum1min - fiveMinMomentum);
+      const decayFactor = divergence > 50 ? 0.5 : 0.7;
+      const dampened = fiveMinMomentum * decayFactor;
+      logger.debug(
+        `[5min趋势确认] 方向分歧: 1m=${momentum1min.toFixed(1)} vs 5m=${fiveMinMomentum.toFixed(1)}, 衰减=${decayFactor}→${dampened.toFixed(1)}`
+      );
+      return dampened;
+    }
+
+    // 方向一致 → 直接使用 5min momentum 作为确认分数
+    return fiveMinMomentum;
+  }
+
+  /**
+   * Phase 3: SPX 分钟级趋势
+   * 使用 SPX 1min/5min K 线计算分钟级方向
+   * 权重: 1min 40% + 5min 60%（5min 更稳定）
+   *
+   * @param spxHourly SPX 分时 K 线（实际是 1min 数据）
+   * @param spx5min SPX 5min K 线
+   * @returns 趋势分数 (-100 ~ +100)
+   */
+  private calculateSpxMinuteTrend(
+    spxHourly?: CandlestickData[] | null,
+    spx5min?: CandlestickData[] | null
+  ): number {
+    let momentum1m = 0;
+    let momentum5m = 0;
+    let has1m = false;
+    let has5m = false;
+
+    // 1min 趋势
+    if (spxHourly && spxHourly.length >= 15) {
+      const filtered = intradayDataFilterService.filterData(spxHourly);
+      if (filtered.length >= 15) {
+        momentum1m = this.calculateMomentum(filtered);
+        has1m = true;
+      }
+    }
+
+    // 5min 趋势
+    if (spx5min && spx5min.length >= 15) {
+      const filtered5m = intradayDataFilterService.filterData(spx5min);
+      if (filtered5m.length >= 15) {
+        momentum5m = this.calculateMomentum(filtered5m);
+        has5m = true;
+      }
+    }
+
+    // 混合: 1min 40% + 5min 60%
+    if (has1m && has5m) {
+      return Math.max(-100, Math.min(100, momentum1m * 0.4 + momentum5m * 0.6));
+    } else if (has5m) {
+      return momentum5m;
+    } else if (has1m) {
+      return momentum1m;
+    }
+    return 0;
+  }
+
+  /**
+   * 计算动量 — Phase 3: Volume-Weighted + ATR归一化
+   * vwChanges = Σ((close[i] - close[i-1]) / close[i-1] * volume[i]) / Σ(volume[i])
+   * momentum = (vwChanges / atrPct) * 50
+   * 使用全部可用 K 线（不再 slice），最低数据要求从 5 根提高到 15 根
    */
   private calculateMomentum(data: CandlestickData[]): number {
-    if (!data || data.length < 5) return 0;
+    if (!data || data.length < 15) return 0;
 
-    // 计算ATR（Average True Range）作为归一化基准
+    // 1. 计算ATR（Average True Range）作为归一化基准
     const trueRanges: number[] = [];
     for (let i = 1; i < data.length; i++) {
       const high = data[i].high;
@@ -664,23 +822,24 @@ class OptionRecommendationService {
     const currentPrice = data[data.length - 1].close;
     const atrPct = currentPrice > 0 ? atr / currentPrice : 0;
 
-    // 计算最近几根K线的价格变化率
-    const changes: number[] = [];
-    for (let i = 1; i < Math.min(data.length, 10); i++) {
+    // 2. Volume-weighted 价格变化率（使用全部可用 K 线）
+    let sumWeightedChange = 0;
+    let sumVolume = 0;
+    for (let i = 1; i < data.length; i++) {
+      if (data[i - 1].close <= 0) continue;
       const change = (data[i].close - data[i - 1].close) / data[i - 1].close;
-      changes.push(change);
+      const vol = data[i].volume > 0 ? data[i].volume : 1; // 防零除
+      sumWeightedChange += change * vol;
+      sumVolume += vol;
     }
+    const vwChange = sumVolume > 0 ? sumWeightedChange / sumVolume : 0;
 
-    // 平均变化率
-    const avgChange = changes.reduce((sum, c) => sum + c, 0) / changes.length;
-
-    // ATR归一化: avgChange / atrPct 衡量变动占波动率的比例
-    // 乘以50使输出范围覆盖 ±100（当avgChange = 2×atrPct时饱和）
+    // 3. ATR归一化: vwChange / atrPct，乘以50覆盖 ±100 范围
     let momentum: number;
     if (atrPct > 0) {
-      momentum = (avgChange / atrPct) * 50;
+      momentum = (vwChange / atrPct) * 50;
     } else {
-      momentum = avgChange * 1000; // ATR为0时降级到旧公式
+      momentum = vwChange * 1000; // ATR为0时降级
     }
     return Math.max(-100, Math.min(100, momentum));
   }
@@ -746,8 +905,12 @@ class OptionRecommendationService {
   }
 
   /**
-   * 计算时间窗口调整
-   * 美股交易时间: 9:30 - 16:00 ET (14个交易小时，每小时约7.14%时间价值)
+   * 计算时间窗口调整 — Phase 3: 去偏置版本
+   * 原版有方向偏置（开盘 +20 = CALL偏向）。恢复时去除偏置，确保中性。
+   * 输出范围 -100 ~ +100，仅反映时间衰减对信号可靠性的影响：
+   *   正值 = 交易时段好（不偏向任何方向，仅表示时间窗口有利于开仓）
+   *   负值 = 时间不利（尾盘衰减，应该提高入场门槛而非偏向方向）
+   *   0 = 中性
    */
   private calculateTimeWindowAdjustment(): number {
     const etMinutes = this.getETMinutes();
@@ -757,23 +920,30 @@ class OptionRecommendationService {
     const marketClose = 960;
     const forceCloseTime = marketClose - 30; // 15:30
 
-    let adjustment = 0;
-
-    if (etMinutes < marketOpen + 60) {
-      // 开盘后1小时：最佳交易时段，+20分
-      adjustment = 20;
-    } else if (etMinutes > forceCloseTime) {
-      // 收盘前30分钟：时间价值急速衰减，-50分
-      adjustment = -50;
-    } else if (etMinutes > forceCloseTime - 60) {
-      // 收盘前90-30分钟：时间价值衰减加速，-30分
-      adjustment = -30;
-    } else if (etMinutes > marketOpen + 120) {
-      // 开盘后2小时以上：时间价值正常衰减，-10分
-      adjustment = -10;
+    // Phase 3 去偏置: 所有值都是对称的（不含方向偏置）
+    // 正值表示"时间条件好，可以放宽信号"，负值表示"时间不利，应收紧信号"
+    if (etMinutes < marketOpen || etMinutes > marketClose) {
+      return 0; // 盘外中性
     }
 
-    return adjustment;
+    if (etMinutes < marketOpen + 30) {
+      // 开盘前30分钟：波动大但流动性好，轻微正向（对称：不偏多也不偏空）
+      return 10;
+    } else if (etMinutes < marketOpen + 60) {
+      // 开盘30-60分钟：最佳交易窗口
+      return 5;
+    } else if (etMinutes > forceCloseTime) {
+      // 收盘前30分钟：时间价值急速衰减，强烈负向
+      return -50;
+    } else if (etMinutes > forceCloseTime - 60) {
+      // 收盘前90-30分钟：时间价值衰减加速
+      return -30;
+    } else if (etMinutes > marketOpen + 120) {
+      // 开盘后2小时以上：时间价值正常衰减
+      return -10;
+    }
+
+    return 0; // 开盘1-2小时：中性
   }
 
   /**

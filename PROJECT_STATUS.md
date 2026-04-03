@@ -7,6 +7,12 @@
 
 ## 🆕 最近更新
 
+### 2026-04-03: refactor: Phase 3 — K线增强 + 权重恢复 20/60/20
+
+**改动**: 策略评分引擎核心重构。权重从 20/80/0 恢复到 20/60/20。calculateMomentum 改为 Volume-Weighted（全部 K 线+最低 15 根）。新增 5min K 线获取 + 趋势确认（1min/5min 方向一致性检查）。市场评分新增 SPX 分钟级趋势（日线 40%→20% + 分钟级 20%）。BTC/USD 时K恢复 15% 权重（BTC 10% + USD 5% 反向）。时间窗口去偏置恢复（移除 +20 CALL 偏向）。清理 C1 不可达代码。
+
+**修改文件**: `market-data.service.ts`, `option-recommendation.service.ts`, `strategy-scheduler.service.ts`
+
 ### 2026-04-03: feat: 行情订阅架构升级 — WebSocket 实时推送
 
 **改动**: 新增 QuoteSubscriptionService 管理 LongPort WebSocket 行情推送。数据延迟从 0~5s 降至 ~50-200ms。setOnQuote/setOnCandlestick 回调实时驱动 FastMomentum 数据喂入。心跳检测(30s)+指数退避重连+5s轮询降级。Buffer 扩容 12→120/60→600。原轮询保留为 fallback。

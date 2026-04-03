@@ -2,6 +2,27 @@
 
 ## 2026-04-03
 
+### refactor: Phase 3 — K线增强 + 权重恢复 20/60/20
+
+策略评分引擎核心重构，修复 4-01 方向系统重构导致的盈亏比 0.03:1 灾难性结果。
+
+**数据层** (`market-data.service.ts`):
+- 新增 `getIntraday5minKlines()` 方法，获取 LongPort 5min K 线（48 根），60s TTL 缓存
+
+**评分层** (`option-recommendation.service.ts`):
+- `calculateMomentum()` 重写: Volume-Weighted 公式 + 使用全部可用 K 线 + 最低数据要求 5→15 根
+- 新增 `calculate5minTrendConfirmation()`: 1min/5min 方向一致性检查，不一致时乘 0.5-0.7 衰减
+- 新增 `calculateSpxMinuteTrend()`: SPX 1min(40%) + 5min(60%) 分钟级趋势信号
+- `calculateMarketScore()`: 日线趋势权重 40%→20%，新增 SPX 分钟级趋势 20%
+- `calculateIntradayScore()` 内部权重: 底层VW 30% + 5min确认 15% + VWAP 15% + SPX 25% + BTC/USD 15%(恢复)
+- **权重恢复 20/60/20**: `finalScore = market*0.2 + intraday*0.6 + timeWindow*0.2` (was 20/80/0)
+- `calculateTimeWindowAdjustment()` 去偏置: 移除 +20 CALL 偏向，改为对称中性信号
+
+**清理** (`strategy-scheduler.service.ts`):
+- 删除 C1 bug: 不可达的 `return { actionTaken: false }` (原第 4791 行)
+
+---
+
 ### feat: 行情订阅架构升级 — WebSocket 实时推送替代 5 秒轮询
 
 数据延迟从 0~5s 降至 ~50-200ms，原轮询保留为 fallback。
