@@ -2,6 +2,13 @@
 
 ## 2026-04-03
 
+### data: Phase 0 入场时机验证 — 假设成立，-3min 最优
+
+166 笔交易数据验证结果：提前 1min 改善 64%（+$7.16/笔）、3min 改善 71%（+$16.27/笔）、5min 反而恶化。
+支持"入场时 momentum 已达峰值"假设。详见 `docs/analysis/260403-入场时机数据验证结果.md`。
+
+---
+
 ### feat: Phase 1 PnL 修复 — 前端分析页改读 auto_trades
 
 前端分析页 PnL 从 `strategy_signals.metadata.netPnL`（决策时估算）改为从 `auto_trades.pnl`（broker 成交价）读取。
