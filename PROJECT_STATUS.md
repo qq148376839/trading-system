@@ -7,6 +7,12 @@
 
 ## 🆕 最近更新
 
+### 2026-04-03: 交易日历双源冗余 — 修复假日仍执行策略
+
+**改动**: Good Friday 等假日 LongPort API 失败时降级为周末判断，非交易日仍执行。新增 FutuOpenD `request_trading_days()` 作为冗余源，`isTradingDay()` 改为双源交叉验证（任一源说非交易日就不执行）。futu-bridge 新增 `/trading-days` 端点。
+
+**修改文件**: `futu-bridge/main.py`, `trading-days.service.ts`
+
 ### 2026-04-03: 订阅生命周期管理 — 修复订阅泄漏
 
 **改动**: WebSocket 行情订阅只增不减（`unsubscribeSymbols()` 从未被调用），长期运行会累积废弃订阅直到触达 LongPort 500 标的上限。新增集中式对账机制：60秒周期对账清理废弃订阅 + 收盘后仅保留 HOLDING 订阅 + 订阅数量 80% 预警。

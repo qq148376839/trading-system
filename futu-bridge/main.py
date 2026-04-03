@@ -13,7 +13,7 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import JSONResponse
 from futu import (
     OpenQuoteContext, RET_OK, KLType, AuType, SubType,
-    StockQuoteHandlerBase
+    StockQuoteHandlerBase, TradeDateMarket
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -234,6 +234,47 @@ async def get_snapshot(
         raise
     except Exception as e:
         log.error(f"获取快照失败: symbols={futu_symbols}, error={e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+MARKET_MAP = {
+    "US": TradeDateMarket.US,
+    "HK": TradeDateMarket.HK,
+}
+
+
+@app.get("/trading-days")
+async def get_trading_days(
+    market: str = Query("US", description="市场: US, HK"),
+    start: str = Query(..., description="开始日期 YYYY-MM-DD"),
+    end: str = Query(..., description="结束日期 YYYY-MM-DD"),
+):
+    """获取交易日列表"""
+    futu_market = MARKET_MAP.get(market.upper())
+    if futu_market is None:
+        raise HTTPException(status_code=400, detail=f"不支持的市场: {market}，支持: {list(MARKET_MAP.keys())}")
+
+    try:
+        ctx = get_ctx()
+        ret, data = ctx.request_trading_days(futu_market, start, end)
+        if ret != RET_OK:
+            raise HTTPException(status_code=502, detail=f"FutuOpenD 返回错误: {data}")
+
+        # data 是 DataFrame: columns=[time, trade_date_type]
+        trading_days = data["time"].tolist()
+        return {
+            "source": "futu",
+            "market": market.upper(),
+            "start": start,
+            "end": end,
+            "count": len(trading_days),
+            "trading_days": trading_days,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"获取交易日失败: market={market}, error={e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

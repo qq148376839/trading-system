@@ -21,9 +21,19 @@ interface TradingDaysCache {
  * 交易日服务（单例）
  * 使用Longbridge API获取真实的交易日数据，并实现缓存机制
  */
+/** FutuOpenD 交易日缓存 */
+interface FutuTradingDaysCache {
+  tradeDays: Set<string>; // YYYYMMDD 格式
+  expiresAt: number;
+}
+
 class TradingDaysService {
   private cache: Map<string, TradingDaysCache> = new Map();
   private readonly CACHE_TTL = 24 * 60 * 60 * 1000; // 24小时缓存
+  /** FutuOpenD 交易日缓存（独立于 LongPort 缓存） */
+  private futuCache: Map<string, FutuTradingDaysCache> = new Map();
+  private readonly FUTU_BRIDGE_URL = process.env.FUTU_BRIDGE_URL || 'http://futu-bridge:8765';
+  private readonly FUTU_FETCH_TIMEOUT = 5_000; // 5秒超时
 
   /**
    * 将Date转换为YYYYMMDD格式字符串
@@ -362,17 +372,45 @@ class TradingDaysService {
     const { year, month } = getMarketLocalDate(date, market);
     const monthStart = new Date(Date.UTC(year, month - 1, 1));
     const monthEnd = new Date(Date.UTC(year, month, 0));
+    const dateStr = this.dateToYYMMDD(date, market);
 
+    // 双源交叉验证：LongPort + FutuOpenD
+    let longportResult: boolean | null = null;
+    let futuResult: boolean | null = null;
+
+    // 源 1: LongPort
     try {
       const tradingDays = await this.getTradingDays(market, monthStart, monthEnd);
-      const dateStr = this.dateToYYMMDD(date, market);
-      return tradingDays.has(dateStr);
+      longportResult = tradingDays.has(dateStr);
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
-      logger.warn(`[交易日服务] 获取交易日数据失败，使用周末判断: ${errMsg}`);
-      // 如果API调用失败，降级到周末判断（已用市场时区）
-      return !isWeekend(date, market);
+      logger.debug(`[交易日服务] LongPort 交易日查询失败: ${errMsg}`);
     }
+
+    // 源 2: FutuOpenD（仅 US/HK）
+    try {
+      futuResult = await this.checkFutuTradingDay(dateStr, market);
+    } catch {
+      // checkFutuTradingDay 内部已处理异常，这里兜底
+    }
+
+    // 双源决策（保守策略：任一源说非交易日就不执行）
+    if (longportResult !== null && futuResult !== null) {
+      if (longportResult !== futuResult) {
+        logger.warn(
+          `[交易日服务] 双源不一致 ${dateStr}: LongPort=${longportResult}, FutuOpenD=${futuResult}，` +
+          `采用保守策略(非交易日)`
+        );
+      }
+      return longportResult && futuResult;
+    }
+    // 仅一个源可用
+    if (longportResult !== null) return longportResult;
+    if (futuResult !== null) return futuResult;
+
+    // 双源都挂了，降级到周末判断
+    logger.warn(`[交易日服务] 双源均不可用，降级到周末判断: ${dateStr}`);
+    return !isWeekend(date, market);
   }
 
   /**
@@ -418,10 +456,76 @@ class TradingDaysService {
   }
 
   /**
+   * 通过 FutuOpenD Bridge 检查指定日期是否为交易日
+   * @param dateStr YYYYMMDD 格式
+   * @param market 市场
+   * @returns true=交易日, false=非交易日, null=API失败
+   */
+  private async checkFutuTradingDay(
+    dateStr: string,
+    market: 'US' | 'HK' | 'SH' | 'SZ'
+  ): Promise<boolean | null> {
+    // FutuOpenD 仅支持 US/HK 市场
+    const futuMarket = market === 'SH' || market === 'SZ' ? null : market;
+    if (!futuMarket) return null;
+
+    // 检查缓存
+    const cacheKey = `futu_${futuMarket}_${dateStr.substring(0, 6)}`; // 按月缓存
+    const cached = this.futuCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.tradeDays.has(dateStr);
+    }
+
+    // 构造月份日期范围
+    const year = dateStr.substring(0, 4);
+    const month = dateStr.substring(4, 6);
+    const startDate = `${year}-${month}-01`;
+    const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate();
+    const endDate = `${year}-${month}-${String(lastDay).padStart(2, '0')}`;
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.FUTU_FETCH_TIMEOUT);
+
+      const resp = await fetch(
+        `${this.FUTU_BRIDGE_URL}/trading-days?market=${futuMarket}&start=${startDate}&end=${endDate}`,
+        { signal: controller.signal }
+      );
+      clearTimeout(timeout);
+
+      if (!resp.ok) {
+        logger.debug(`[交易日服务] FutuOpenD 交易日历返回 ${resp.status}`);
+        return null;
+      }
+
+      const json = await resp.json() as { trading_days: string[] };
+      const tradeDays = new Set<string>();
+      for (const day of json.trading_days) {
+        // FutuOpenD 返回 "YYYY-MM-DD" 格式，转为 YYYYMMDD
+        tradeDays.add(day.replace(/-/g, ''));
+      }
+
+      // 写入缓存
+      this.futuCache.set(cacheKey, {
+        tradeDays,
+        expiresAt: Date.now() + this.CACHE_TTL,
+      });
+
+      logger.debug(`[交易日服务] FutuOpenD ${futuMarket} ${month}月: ${tradeDays.size} 个交易日`);
+      return tradeDays.has(dateStr);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.debug(`[交易日服务] FutuOpenD 交易日历查询失败: ${msg}`);
+      return null;
+    }
+  }
+
+  /**
    * 清除缓存
    */
   clearCache(): void {
     this.cache.clear();
+    this.futuCache.clear();
     logger.log('[交易日服务] 缓存已清除');
   }
 }

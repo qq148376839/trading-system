@@ -2,6 +2,15 @@
 
 ## 2026-04-03
 
+### fix: 交易日历双源冗余 — FutuOpenD + LongPort 交叉验证
+
+Good Friday 等假日 LongPort API 失败时降级为周末判断，导致非交易日仍执行策略。新增 FutuOpenD `request_trading_days()` 作为冗余源。
+
+**futu-bridge/main.py**: 新增 `GET /trading-days` 端点，调用 FutuOpenD 交易日历 API
+**trading-days.service.ts**: `isTradingDay()` 改为双源交叉验证，保守策略（任一源说非交易日就不执行）
+
+---
+
 ### fix: 订阅生命周期管理 — 修复 WebSocket 订阅泄漏
 
 `quote-subscription.service.ts` 的 `unsubscribeSymbols()` 已实现但从未被调用（除全局 stop()），导致订阅只增不减。新增集中式对账机制：
