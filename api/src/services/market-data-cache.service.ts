@@ -6,6 +6,7 @@
 
 import marketDataService from './market-data.service';
 import klineHistoryService from './kline-history.service';
+import quoteSubscriptionService from './quote-subscription.service';
 import { getCacheDuration, isTradingHours } from '../utils/trading-hours';
 import { logger } from '../utils/logger';
 
@@ -23,7 +24,8 @@ interface MarketDataCache {
   spx: CandlestickData[];
   usdIndex: CandlestickData[];
   btc: CandlestickData[];
-  vix?: CandlestickData[]; // VIX恐慌指数
+  vix?: CandlestickData[]; // VIX恐慌指数（日K）
+  vixHourly?: CandlestickData[]; // VIX分时K线（从订阅推送获取，可能为空）
   marketTemperature?: any; // 市场温度
   timestamp: number;
   // 分时数据（可选）
@@ -207,6 +209,9 @@ class MarketDataCacheService {
         this.cache.usdIndexHourly = marketData.usdIndexHourly || [];
         this.cache.btcHourly = marketData.btcHourly || [];
         this.cache.spxHourly = marketData.spxHourly || [];
+        // VIX 分时：从订阅缓冲获取（VIX 可能不支持分K订阅，此处可能为空数组）
+        const vixKlines = quoteSubscriptionService.getRecentKlines('.VIX.US');
+        this.cache.vixHourly = vixKlines.length > 0 ? vixKlines as CandlestickData[] : undefined;
         this.cache.hourlyTimestamp = Date.now();
       }
 

@@ -1,11 +1,17 @@
 # 项目进度总结
 
-**更新时间**: 2026-04-03
+**更新时间**: 2026-04-04
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-04-04: 大盘评分 USD/BTC/VIX 分K实时化 + 订阅推送
+
+**改动**: `calculateMarketScore()` 从纯日K升级为日K+分K双层评分。USD/BTC 各拆分为日线趋势+分钟趋势双权重，VIX 改为三级数据源（分K>推送>日K）。LongPort + FutuOpenD 双通道订阅 SPY/UUP/IBIT 1min K线，环形缓冲 120 bars，数据层优先读取订阅缓冲跳过 API 竞速。
+
+**修改文件**: `option-recommendation.service.ts`, `quote-subscription.service.ts`, `market-data.service.ts`, `market-data-cache.service.ts`, `futu-bridge/main.py`
 
 ### 2026-04-03: 交易日历双源冗余 — 修复假日仍执行策略
 

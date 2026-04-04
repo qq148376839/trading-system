@@ -9,11 +9,14 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
+from collections import deque
+import threading
+
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import JSONResponse
 from futu import (
     OpenQuoteContext, RET_OK, KLType, AuType, SubType,
-    StockQuoteHandlerBase, TradeDateMarket
+    StockQuoteHandlerBase, CurKlineHandlerBase, TradeDateMarket
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -95,6 +98,47 @@ def format_kline_row(row: dict) -> dict:
     }
 
 
+# ---------- K 线实时订阅缓冲 ----------
+
+# 订阅标的列表
+SUBSCRIBE_SYMBOLS = ["US.SPY", "US.UUP", "US.IBIT"]
+# 每个标的最多保留 120 根 1min K 线（2 小时）
+KLINE_BUFFER_MAX = 120
+
+kline_buffers: dict[str, deque] = {}
+kline_lock = threading.Lock()
+
+
+class KlineHandler(CurKlineHandlerBase):
+    """接收实时 K 线推送，写入环形缓冲"""
+
+    def on_recv_rsp(self, rsp_pb):
+        ret, data = super().on_recv_rsp(rsp_pb)
+        if ret == RET_OK and data is not None and not data.empty:
+            for _, row in data.iterrows():
+                code = row.get("code", "")
+                time_key = row.get("time_key", "")
+                try:
+                    ts = int(datetime.strptime(time_key, "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+                except (ValueError, TypeError):
+                    ts = int(time.time() * 1000)
+
+                bar = {
+                    "timestamp": ts,
+                    "open": float(row.get("open", 0)),
+                    "high": float(row.get("high", 0)),
+                    "low": float(row.get("low", 0)),
+                    "close": float(row.get("close", 0)),
+                    "volume": int(row.get("volume", 0)),
+                    "turnover": float(row.get("turnover", 0)),
+                }
+                with kline_lock:
+                    if code not in kline_buffers:
+                        kline_buffers[code] = deque(maxlen=KLINE_BUFFER_MAX)
+                    kline_buffers[code].append(bar)
+        return RET_OK, data
+
+
 # ---------- Lifespan ----------
 
 @asynccontextmanager
@@ -107,10 +151,23 @@ async def lifespan(app: FastAPI):
             log.info(f"FutuOpenD 连接成功: {state}")
         else:
             log.warning(f"FutuOpenD 全局状态获取失败: {state}")
+
+        # 注册 K 线推送处理器 + 订阅 1min K 线
+        ctx.set_handler(KlineHandler())
+        sub_ret, sub_err = ctx.subscribe(SUBSCRIBE_SYMBOLS, [SubType.K_1M], subscribe_push=True)
+        if sub_ret == RET_OK:
+            log.info(f"K 线实时订阅成功: {SUBSCRIBE_SYMBOLS}")
+        else:
+            log.warning(f"K 线实时订阅失败: {sub_err}")
     except Exception as e:
-        log.error(f"FutuOpenD 初始连接失败: {e}")
+        log.error(f"FutuOpenD 初始连接/订阅失败: {e}")
     yield
     if quote_ctx is not None:
+        # 取消订阅后关闭
+        try:
+            quote_ctx.unsubscribe(SUBSCRIBE_SYMBOLS, [SubType.K_1M])
+        except Exception:
+            pass
         quote_ctx.close()
         log.info("FutuOpenD 连接已关闭")
 
@@ -235,6 +292,22 @@ async def get_snapshot(
     except Exception as e:
         log.error(f"获取快照失败: symbols={futu_symbols}, error={e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/realtime-kline")
+async def get_realtime_kline(
+    symbol: str = Query(..., description="FutuOpenD 格式，如 US.SPY"),
+):
+    """返回订阅缓冲中的实时 1min K 线"""
+    with kline_lock:
+        buf = kline_buffers.get(symbol, deque())
+        data = list(buf)
+    return {
+        "source": "futu-realtime",
+        "symbol": to_longport_symbol(symbol),
+        "count": len(data),
+        "data": data,
+    }
 
 
 MARKET_MAP = {

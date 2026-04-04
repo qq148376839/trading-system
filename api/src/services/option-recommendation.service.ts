@@ -6,8 +6,10 @@
  * 2. 核心决策因子：大盘方向预测 + 分时动量 + 时间窗口
  * 3. 降低入场门槛，提高交易频率
  *
- * Phase 3 决策流程（权重恢复 20/60/20）：
- * - 大盘环境评分 (20%): SPX日K多窗口趋势(20%) + SPX分钟级趋势(20%) + Gap + USD + BTC + VIX + 温度
+ * Phase 3+ 决策流程（权重 20/60/20）：
+ * - 大盘环境评分 (20%): SPX日K多窗口趋势(20%) + SPX分钟级趋势(20%) + Gap
+ *                        + USD日线(10%)+USD分钟(10%) + BTC日线(2-5%)+BTC分钟(3-5%)
+ *                        + VIX(实时三级取值) + 温度
  * - 分时动量评分 (60%): 底层1m VW动量(30%) + 5min趋势确认(15%) + VWAP位置(15%) + SPX日内(25%) + BTC(15%)
  * - 时间窗口评分 (20%): 去偏置的中性时间衰减信号
  */
@@ -15,6 +17,7 @@
 import marketDataCacheService from './market-data-cache.service';
 import marketDataService from './market-data.service';
 import intradayDataFilterService from './intraday-data-filter.service';
+import quoteSubscriptionService from './quote-subscription.service';
 import { logger } from '../utils/logger';
 
 interface CandlestickData {
@@ -173,8 +176,11 @@ class OptionRecommendationService {
         logger.warn(`[SPX] 5min K线获取失败: ${err instanceof Error ? err.message : err}`);
       }
 
-      // 3. 计算大盘环境得分 (20%权重) — Phase 3: 日线趋势20% + SPX分钟级趋势20%
-      const marketScore = await this.calculateMarketScore(marketData, marketData.spxHourly, spx5minKlines);
+      // 3. 计算大盘环境得分 (20%权重) — Phase 3+: 日线趋势 + 分钟级趋势(SPX/USD/BTC) + VIX实时
+      const marketScore = await this.calculateMarketScore(
+        marketData, marketData.spxHourly, spx5minKlines,
+        marketData.usdIndexHourly, marketData.btcHourly
+      );
 
       // 4. 计算分时动量得分 (60%权重) — Phase 3: VW动量 + 5min确认 + VWAP + SPX + BTC
       const { score: intradayScore, components: intradayComponents } = await this.calculateIntradayScore(
@@ -342,7 +348,9 @@ class OptionRecommendationService {
   private async calculateMarketScore(
     marketData: any,
     spxHourly?: CandlestickData[] | null,
-    spx5minKlines?: CandlestickData[] | null
+    spx5minKlines?: CandlestickData[] | null,
+    usdHourly?: CandlestickData[] | null,
+    btcHourly?: CandlestickData[] | null,
   ): Promise<number> {
     let score = 0;
     const components: string[] = [];
@@ -370,37 +378,58 @@ class OptionRecommendationService {
       components.push(`Gap${gapAnalysis.gapPct > 0 ? '+' : ''}${gapAnalysis.gapPct.toFixed(2)}%→${gapAnalysis.gapScore > 0 ? '+' : ''}${gapAnalysis.gapScore.toFixed(1)}`);
     }
 
-    // 2. USD Index影响 (权重20%, 反向)
+    // 2. USD Index 日线趋势 (权重10%, 反向) — 从20%降至10%，分钟级补充10%
     const usdAnalysis = this.analyzeMarketTrend(marketData.usdIndex, 'USD');
-    score += -usdAnalysis.trendStrength * 0.2; // USD上升对股市不利
-    components.push(`USD${usdAnalysis.trendStrength.toFixed(1)}→${(-usdAnalysis.trendStrength * 0.2).toFixed(1)}`);
+    score += -usdAnalysis.trendStrength * 0.1;
+    components.push(`USD日线${usdAnalysis.trendStrength.toFixed(1)}*-0.1→${(-usdAnalysis.trendStrength * 0.1).toFixed(1)}`);
 
-    // 3. BTC支持/阻力 — Phase 3A: 降低权重（日K趋势级别保留微量影响，分时已归零）
+    // 2b. USD 分钟级趋势 (权重10%, 反向) — 当日实时状态
+    const usdMinuteTrend = this.calculateMinuteTrend(usdHourly);
+    score += -usdMinuteTrend * 0.1;
+    components.push(`USD分钟级=${usdMinuteTrend.toFixed(1)}*-0.1→${(-usdMinuteTrend * 0.1).toFixed(1)}`);
+
+    // 3. BTC 日线趋势 — 降至: 共振5%, 非共振2%（分钟级补充同等权重）
     const btcAnalysis = this.analyzeMarketTrend(marketData.btc, 'BTC');
     const btcCorrelation = this.checkBTCSPXCorrelation(marketData.spx, marketData.btc);
-    if (btcCorrelation > 0.5) {
-      score += btcAnalysis.trendStrength * 0.1; // was 0.2
-      components.push(`BTC${btcAnalysis.trendStrength.toFixed(1)}*0.1(共振)→${(btcAnalysis.trendStrength * 0.1).toFixed(1)}`);
-    } else {
-      score += btcAnalysis.trendStrength * 0.05; // was 0.1
-      components.push(`BTC${btcAnalysis.trendStrength.toFixed(1)}*0.05→${(btcAnalysis.trendStrength * 0.05).toFixed(1)}`);
-    }
+    const btcDayWeight = btcCorrelation > 0.5 ? 0.05 : 0.02;
+    score += btcAnalysis.trendStrength * btcDayWeight;
+    components.push(`BTC日线${btcAnalysis.trendStrength.toFixed(1)}*${btcDayWeight}${btcCorrelation > 0.5 ? '(共振)' : ''}→${(btcAnalysis.trendStrength * btcDayWeight).toFixed(1)}`);
 
-    // 4. VIX恐慌指数 (权重10%)
-    if (marketData.vix && marketData.vix.length > 0) {
-      const currentVix = marketData.vix[marketData.vix.length - 1].close;
+    // 3b. BTC 分钟级趋势 — 共振5%, 非共振3%
+    const btcMinuteTrend = this.calculateMinuteTrend(btcHourly);
+    const btcMinWeight = btcCorrelation > 0.5 ? 0.05 : 0.03;
+    score += btcMinuteTrend * btcMinWeight;
+    components.push(`BTC分钟级=${btcMinuteTrend.toFixed(1)}*${btcMinWeight}→${(btcMinuteTrend * btcMinWeight).toFixed(1)}`);
+
+
+    // 4. VIX恐慌指数 — 三级取值：分K缓冲 > 推送报价 > 日K收盘
+    let currentVix = 0;
+    let vixSource = '';
+    if (marketData.vixHourly && marketData.vixHourly.length > 0) {
+      currentVix = marketData.vixHourly[marketData.vixHourly.length - 1].close;
+      vixSource = '分K';
+    } else {
+      const vixPrice = quoteSubscriptionService.getPrice('.VIX.US');
+      if (vixPrice && vixPrice > 0) {
+        currentVix = vixPrice;
+        vixSource = '推送';
+      } else if (marketData.vix && marketData.vix.length > 0) {
+        currentVix = marketData.vix[marketData.vix.length - 1].close;
+        vixSource = '日K';
+      }
+    }
+    if (currentVix > 0) {
       if (currentVix > 35) {
-        // 极度恐慌，强制-50分
         score -= 50;
-        components.push(`VIX=${currentVix.toFixed(1)}→-50`);
+        components.push(`VIX=${currentVix.toFixed(1)}(${vixSource})→-50`);
       } else if (currentVix > 25) {
-        // 高恐慌，减20分
         score -= 20;
-        components.push(`VIX=${currentVix.toFixed(1)}→-20`);
+        components.push(`VIX=${currentVix.toFixed(1)}(${vixSource})→-20`);
       } else if (currentVix < 15) {
-        // 低恐慌，加10分
         score += 10;
-        components.push(`VIX=${currentVix.toFixed(1)}→+10`);
+        components.push(`VIX=${currentVix.toFixed(1)}(${vixSource})→+10`);
+      } else {
+        components.push(`VIX=${currentVix.toFixed(1)}(${vixSource})`);
       }
     }
 
@@ -798,6 +827,17 @@ class OptionRecommendationService {
       return momentum1m;
     }
     return 0;
+  }
+
+  /**
+   * 通用分钟级趋势计算（用于 USD/BTC 等）
+   * 只使用 1min K 线计算 VW 动量，过滤后最低 15 根
+   */
+  private calculateMinuteTrend(hourlyData?: CandlestickData[] | null): number {
+    if (!hourlyData || hourlyData.length < 15) return 0;
+    const filtered = intradayDataFilterService.filterData(hourlyData);
+    if (filtered.length < 15) return 0;
+    return Math.max(-100, Math.min(100, this.calculateMomentum(filtered)));
   }
 
   /**

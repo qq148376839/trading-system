@@ -1,5 +1,34 @@
 # 更新日志
 
+## 2026-04-04
+
+### feat: 大盘评分 USD/BTC/VIX 分K实时化 + 订阅推送
+
+`calculateMarketScore()` 原来只用日K（T-1 历史），当日盘中大盘状态完全是盲的。升级为日K+分K双层评分 + 订阅推送降低延迟。
+
+**评分权重重分配** (`option-recommendation.service.ts`):
+- USD: 日线 20% → 10% + 分钟趋势 10%（新增）
+- BTC: 日线 10% → 2-5% + 分钟趋势 3-5%（新增）
+- VIX: 日K收盘 → 三级取值（分K缓冲 > 推送报价 > 日K收盘）
+- 新增通用 `calculateMinuteTrend()` 方法
+
+**LongPort K线订阅缓冲** (`quote-subscription.service.ts`):
+- 新增 SPY/UUP/IBIT 1min K线自动订阅（`subscribeMarketIndices()`）
+- VIX 尝试分K订阅，失败降级到报价订阅
+- 环形缓冲（120 bars = 2小时），`getRecentKlines()` 公开接口
+- 对账清理时保护大盘指数订阅不被回收
+
+**FutuOpenD K线订阅缓冲** (`futu-bridge/main.py`):
+- `CurKlineHandlerBase` 接收实时 K 线推送写入环形缓冲
+- 启动时自动订阅 SPY/UUP/IBIT 的 1min K 线
+- 新增 `/realtime-kline` 端点返回缓冲数据
+
+**数据层集成** (`market-data.service.ts`, `market-data-cache.service.ts`):
+- `getRacedKline()` 优先读取订阅缓冲（>=15 bars 跳过 API 竞速）
+- 缓存结构新增 `vixHourly` 字段，从订阅缓冲获取
+
+---
+
 ## 2026-04-03
 
 ### fix: 交易日历双源冗余 — FutuOpenD + LongPort 交叉验证

@@ -16,6 +16,17 @@ import { logger } from '../utils/logger';
 import { getQuoteContext } from '../config/longport';
 import fastMomentumService from './fast-momentum.service';
 
+/** 标准化 K 线数据（与 market-data.service 一致） */
+interface CandlestickBar {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  turnover: number;
+  timestamp: number;
+}
+
 // LongPort SDK 枚举——延迟 require 避免模块加载顺序问题
 let SubType: { Quote: number };
 let Period: { Min_1: number };
@@ -59,6 +70,15 @@ const FALLBACK_POLL_INTERVAL_MS = 5_000;
 
 /** 日志节流间隔 */
 const LOG_THROTTLE_MS = 60_000;
+
+/** 大盘指数 K 线环形缓冲最大容量（120 根 = 2 小时 1min K 线） */
+const KLINE_BUFFER_MAX = 120;
+
+/** 大盘指数订阅列表 */
+const MARKET_INDEX_SYMBOLS = ['SPY.US', 'UUP.US', 'IBIT.US'];
+
+/** VIX 标的 */
+const VIX_SYMBOL = '.VIX.US';
 
 /** LongPort 订阅上限（单连接） */
 const SUBSCRIPTION_LIMIT = 500;
@@ -107,6 +127,12 @@ class QuoteSubscriptionService {
   /** 日志节流缓存 */
   private lastLogTime = new Map<string, number>();
 
+  /** 大盘指数 1min K 线环形缓冲（symbol → 最近 N 根 K 线） */
+  private klineBuffers = new Map<string, CandlestickBar[]>();
+
+  /** 大盘指数是否已订阅 */
+  private marketIndicesSubscribed = false;
+
   // ========================================
   // 公共 API
   // ========================================
@@ -129,6 +155,12 @@ class QuoteSubscriptionService {
       this.status = 'ACTIVE';
       this.reconnectAttempts = 0;
       logger.log('[QuoteSub] WebSocket 行情订阅服务已初始化');
+
+      // 自动订阅大盘指数 K 线（USD/BTC/VIX 分K实时化）
+      this.subscribeMarketIndices().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn(`[QuoteSub] 大盘指数订阅失败（不影响主流程）: ${msg}`);
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn(`[QuoteSub] 初始化失败，进入降级模式: ${msg}`);
@@ -282,9 +314,11 @@ class QuoteSubscriptionService {
    * @returns 被清理的 symbol 列表
    */
   async reconcile(neededSymbols: Set<string>): Promise<string[]> {
+    // 大盘指数标的受保护，不被对账清理
+    const protectedSymbols = new Set([...MARKET_INDEX_SYMBOLS, VIX_SYMBOL]);
     const staleSymbols: string[] = [];
     for (const sym of this.subscribedQuoteSymbols) {
-      if (!neededSymbols.has(sym)) {
+      if (!neededSymbols.has(sym) && !protectedSymbols.has(sym)) {
         staleSymbols.push(sym);
       }
     }
@@ -329,6 +363,8 @@ class QuoteSubscriptionService {
     this.subscribedQuoteSymbols.clear();
     this.subscribedCandlestickSymbols.clear();
     this.priceMap.clear();
+    this.klineBuffers.clear();
+    this.marketIndicesSubscribed = false;
     this.quoteConsumers = [];
     this.callbacksRegistered = false;
 
@@ -377,7 +413,7 @@ class QuoteSubscriptionService {
     });
 
     // K 线推送回调
-    this.quoteCtx.setOnCandlestick((err: Error | null, event: { symbol: string; data: { isConfirmed: boolean; candlestick: { close: { toNumber(): number }; timestamp: Date } } }) => {
+    this.quoteCtx.setOnCandlestick((err: Error | null, event: { symbol: string; data: { isConfirmed: boolean; candlestick: { open: { toNumber(): number }; high: { toNumber(): number }; low: { toNumber(): number }; close: { toNumber(): number }; volume: number; timestamp: Date } } }) => {
       if (err) {
         this.throttledLog('onCandleErr', `[QuoteSub] onCandlestick 错误: ${err.message}`);
         return;
@@ -393,6 +429,20 @@ class QuoteSubscriptionService {
           this.priceMap.set(symbol, closePrice);
           // 收线价格同样喂入快动量作为补充数据点
           fastMomentumService.feedSingleQuote(symbol, closePrice, event.data.candlestick.timestamp.getTime());
+
+          // 大盘指数 K 线写入环形缓冲
+          if (MARKET_INDEX_SYMBOLS.includes(symbol) || symbol === VIX_SYMBOL) {
+            const bar: CandlestickBar = {
+              open: Number(event.data.candlestick.open?.toNumber() || closePrice),
+              high: Number(event.data.candlestick.high?.toNumber() || closePrice),
+              low: Number(event.data.candlestick.low?.toNumber() || closePrice),
+              close: closePrice,
+              volume: Number(event.data.candlestick.volume || 0),
+              turnover: 0,
+              timestamp: event.data.candlestick.timestamp.getTime(),
+            };
+            this.appendKlineBuffer(symbol, bar);
+          }
         }
       }
     });
@@ -546,8 +596,100 @@ class QuoteSubscriptionService {
       this.lastLogTime.set(key, now);
     }
   }
+
+  // ========================================
+  // 大盘指数 K 线订阅 + 缓冲
+  // ========================================
+
+  /**
+   * 订阅大盘指数 1min K 线推送（SPY/UUP/IBIT + VIX）
+   * 应在 init() 成功后调用一次
+   */
+  async subscribeMarketIndices(): Promise<void> {
+    if (this.marketIndicesSubscribed) return;
+    if (this.status !== 'ACTIVE') {
+      logger.debug('[QuoteSub] 非 ACTIVE 状态，跳过大盘指数订阅');
+      return;
+    }
+
+    ensureLongportEnums();
+
+    // 1. 订阅 SPY/UUP/IBIT 1min K 线
+    for (const sym of MARKET_INDEX_SYMBOLS) {
+      if (!this.subscribedCandlestickSymbols.has(sym)) {
+        try {
+          await this.quoteCtx.subscribeCandlesticks(sym, Period.Min_1);
+          this.subscribedCandlestickSymbols.add(sym);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.warn(`[QuoteSub] 大盘 K 线订阅失败 ${sym}: ${msg}`);
+        }
+      }
+    }
+
+    // 同时订阅报价（保证 priceMap 有最新价）
+    const newQuoteSymbols = MARKET_INDEX_SYMBOLS.filter(s => !this.subscribedQuoteSymbols.has(s));
+    if (newQuoteSymbols.length > 0) {
+      try {
+        await this.quoteCtx.subscribe(newQuoteSymbols, [SubType.Quote], true);
+        for (const s of newQuoteSymbols) this.subscribedQuoteSymbols.add(s);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn(`[QuoteSub] 大盘报价订阅失败: ${msg}`);
+      }
+    }
+
+    // 2. VIX：尝试 K 线订阅，失败降级到报价订阅
+    if (!this.subscribedCandlestickSymbols.has(VIX_SYMBOL) && !this.subscribedQuoteSymbols.has(VIX_SYMBOL)) {
+      try {
+        await this.quoteCtx.subscribeCandlesticks(VIX_SYMBOL, Period.Min_1);
+        this.subscribedCandlestickSymbols.add(VIX_SYMBOL);
+        logger.info('[QuoteSub] VIX K 线订阅成功');
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn(`[QuoteSub] VIX K 线订阅失败，降级到报价: ${msg}`);
+        try {
+          await this.quoteCtx.subscribe([VIX_SYMBOL], [SubType.Quote], true);
+          this.subscribedQuoteSymbols.add(VIX_SYMBOL);
+        } catch (err2: unknown) {
+          const msg2 = err2 instanceof Error ? err2.message : String(err2);
+          logger.warn(`[QuoteSub] VIX 报价订阅也失败: ${msg2}`);
+        }
+      }
+    }
+
+    this.marketIndicesSubscribed = true;
+    logger.info(
+      `[QuoteSub] 大盘指数订阅完成: ${[...MARKET_INDEX_SYMBOLS, VIX_SYMBOL].join(', ')}` +
+      ` (K线: ${this.subscribedCandlestickSymbols.size}, 报价: ${this.subscribedQuoteSymbols.size})`
+    );
+  }
+
+  /**
+   * 获取指定标的的近期 K 线缓冲（从推送数据）
+   * @returns 按时间升序排列的 K 线数组，无数据时返回空数组
+   */
+  getRecentKlines(symbol: string): CandlestickBar[] {
+    return this.klineBuffers.get(symbol) || [];
+  }
+
+  /**
+   * 追加 K 线到环形缓冲
+   */
+  private appendKlineBuffer(symbol: string, bar: CandlestickBar): void {
+    let buffer = this.klineBuffers.get(symbol);
+    if (!buffer) {
+      buffer = [];
+      this.klineBuffers.set(symbol, buffer);
+    }
+    buffer.push(bar);
+    // 环形：超过上限则移除最早的
+    while (buffer.length > KLINE_BUFFER_MAX) {
+      buffer.shift();
+    }
+  }
 }
 
 export default new QuoteSubscriptionService();
 export { QuoteSubscriptionService };
-export type { QuoteConsumer, ServiceStatus };
+export type { QuoteConsumer, ServiceStatus, CandlestickBar };

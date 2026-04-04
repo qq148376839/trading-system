@@ -13,6 +13,7 @@ import { logger } from '../utils/logger';
 import pool from '../config/database';
 import { toNaiveDateParts } from '../utils/market-time'; // 规则 #17
 import { formatLongbridgeCandlestick } from '../utils/candlestick-formatter';
+import quoteSubscriptionService from './quote-subscription.service';
 
 interface CandlestickData {
   close: number;
@@ -218,6 +219,15 @@ class MarketDataService {
   ): Promise<CandlestickData[]> {
     const symbols = this.racingSymbolMap[marketType];
     const futuKtype = period === 'day' ? 'K_DAY' : period === 'min5' ? 'K_5M' : 'K_1M';
+
+    // 分钟级数据：优先检查 LongPort 订阅缓冲（延迟 < 1s vs 拉取 1-8s）
+    if (period === 'min1') {
+      const subKlines = quoteSubscriptionService.getRecentKlines(symbols.longport);
+      if (subKlines.length >= 15) {
+        logger.debug(`[竞速] ${marketType} ${period}: 使用订阅缓冲 (${subKlines.length}条)`);
+        return subKlines as CandlestickData[];
+      }
+    }
 
     const raceStart = Date.now();
 
