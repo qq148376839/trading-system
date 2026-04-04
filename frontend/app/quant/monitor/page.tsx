@@ -39,26 +39,6 @@ interface MarketScoreData {
   timestamp: number
 }
 
-interface StrategyOverview {
-  strategyId: number
-  strategyName: string
-  strategyType: string
-  todayPnl: number
-  todayTrades: number
-  instances: Array<{
-    symbol: string
-    state: string
-    entryPrice: number | null
-    quantity: number | null
-    stopLoss: number | null
-    takeProfit: number | null
-    unrealizedPnl: number | null
-    cooldownUntil: string | null
-    lastUpdated: string
-  }>
-  summary: { total: number; idle: number; holding: number; opening: number; closing: number; cooldown: number }
-}
-
 interface Signal {
   id: number
   strategy_id: number
@@ -96,17 +76,6 @@ const scoreColor = (v: number) =>
 
 const pnlColor = (v: number) =>
   v > 0 ? COLORS.positive : v < 0 ? COLORS.negative : COLORS.textSecondary
-
-const stateColor = (state: string) => {
-  const map: Record<string, string> = {
-    IDLE: '#4a5568',
-    HOLDING: COLORS.accent,
-    OPENING: COLORS.neutral,
-    CLOSING: COLORS.neutral,
-    COOLDOWN: '#718096',
-  }
-  return map[state] || COLORS.textSecondary
-}
 
 // ============================================
 // Sub-components
@@ -226,52 +195,6 @@ function ComponentBadges({ components, isMobile }: { components: MarketScoreData
   )
 }
 
-function StrategyCard({ strategy, isMobile }: { strategy: StrategyOverview; isMobile: boolean }) {
-  const { summary } = strategy
-
-  return (
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <span style={{ fontWeight: 600, fontSize: 14, color: COLORS.text }}>{strategy.strategyName}</span>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {summary.holding > 0 && <span style={{ fontSize: 12, color: COLORS.accent }}>持仓 {summary.holding}</span>}
-          {summary.cooldown > 0 && <span style={{ fontSize: 12, color: '#718096' }}>冷却 {summary.cooldown}</span>}
-          <span className="monitor-number" style={{ fontSize: 13, color: pnlColor(strategy.todayPnl) }}>
-            {strategy.todayPnl > 0 ? '+' : ''}{strategy.todayPnl !== 0 ? `$${strategy.todayPnl.toFixed(2)}` : '--'}
-          </span>
-        </div>
-      </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {strategy.instances.map(inst => (
-          <Tooltip
-            key={inst.symbol}
-            title={
-              inst.state === 'HOLDING'
-                ? `入场: $${inst.entryPrice?.toFixed(2) || '--'} | 止损: $${inst.stopLoss?.toFixed(2) || '--'} | 止盈: $${inst.takeProfit?.toFixed(2) || '--'}`
-                : inst.state === 'COOLDOWN' && inst.cooldownUntil
-                  ? `冷却至 ${dayjs(inst.cooldownUntil).format('HH:mm:ss')}`
-                  : undefined
-            }
-          >
-            <span className="monitor-badge" style={{ borderColor: `${stateColor(inst.state)}40` }}>
-              <span style={{ color: COLORS.text, fontSize: isMobile ? 12 : 13 }}>{inst.symbol.replace('.US', '')}</span>
-              <span style={{ color: stateColor(inst.state), fontSize: 11, fontWeight: 600 }}>{inst.state}</span>
-              {inst.state === 'HOLDING' && inst.unrealizedPnl != null && (
-                <span className="monitor-number" style={{ fontSize: 11, color: pnlColor(inst.unrealizedPnl) }}>
-                  {inst.unrealizedPnl > 0 ? '+' : ''}{`$${inst.unrealizedPnl.toFixed(2)}`}
-                </span>
-              )}
-            </span>
-          </Tooltip>
-        ))}
-        {strategy.instances.length === 0 && (
-          <span style={{ color: COLORS.textSecondary, fontSize: 12 }}>无实例</span>
-        )}
-      </div>
-    </div>
-  )
-}
-
 function SignalFeed({ signals, isMobile }: { signals: Signal[]; isMobile: boolean }) {
   if (signals.length === 0) {
     return <Empty description="暂无信号" image={Empty.PRESENTED_IMAGE_SIMPLE} />
@@ -331,10 +254,8 @@ export default function MonitorPage() {
   // State
   const [marketScore, setMarketScore] = useState<MarketScoreData | null>(null)
   const [scoreHistory, setScoreHistory] = useState<ScoreHistoryPoint[]>([])
-  const [strategies, setStrategies] = useState<StrategyOverview[]>([])
   const [signals, setSignals] = useState<Signal[]>([])
   const [dashboardStats, setDashboardStats] = useState<{ todayPnl?: number; closedTradesPnl?: number; holdingPnl?: number; todayTrades?: number } | null>(null)
-  const [loading, setLoading] = useState(true)
   const [errors, setErrors] = useState<Record<string, string>>({})
 
   // Fetch market score
@@ -354,18 +275,6 @@ export default function MonitorPage() {
     }
   }, [])
 
-  // Fetch strategies overview
-  const fetchStrategies = useCallback(async () => {
-    try {
-      const res = await quantApi.getMonitorStrategiesOverview()
-      if (res.success && res.data) {
-        setStrategies(res.data)
-      }
-    } catch {
-      // silent
-    }
-  }, [])
-
   // Fetch signals + stats
   const fetchSignalsAndStats = useCallback(async () => {
     try {
@@ -378,8 +287,6 @@ export default function MonitorPage() {
       if (stats.success && stats.data) setDashboardStats(stats.data as { todayPnl?: number; closedTradesPnl?: number; holdingPnl?: number; todayTrades?: number })
     } catch {
       // silent
-    } finally {
-      setLoading(false)
     }
   }, [])
 
@@ -391,21 +298,14 @@ export default function MonitorPage() {
   }, [fetchMarketScore])
 
   useEffect(() => {
-    fetchStrategies()
-    const id = setInterval(fetchStrategies, 10000)
-    return () => clearInterval(id)
-  }, [fetchStrategies])
-
-  useEffect(() => {
     fetchSignalsAndStats()
     const id = setInterval(fetchSignalsAndStats, 30000)
     return () => clearInterval(id)
   }, [fetchSignalsAndStats])
 
-  // Aggregate P&L across strategies
-  const totalTodayPnl = strategies.reduce((sum, s) => sum + s.todayPnl, 0)
-  const totalTodayTrades = strategies.reduce((sum, s) => sum + s.todayTrades, 0)
+  const closedPnl = Number(dashboardStats?.closedTradesPnl || 0)
   const holdingPnl = Number(dashboardStats?.holdingPnl || 0)
+  const todayTrades = Number(dashboardStats?.todayTrades || 0)
 
   return (
     <AppLayout>
@@ -502,26 +402,7 @@ export default function MonitorPage() {
               )}
             </div>
 
-            {/* Section 2: Strategy Overview */}
-            <div className="monitor-card">
-              <div className="monitor-card-title">
-                <span className="monitor-live-dot" />
-                <span>策略状态</span>
-                <span style={{ marginLeft: 'auto', fontSize: 11, color: COLORS.textSecondary }}>
-                  {strategies.length} 个运行中
-                </span>
-              </div>
-
-              {strategies.length > 0 ? (
-                strategies.map(s => <StrategyCard key={s.strategyId} strategy={s} isMobile={isMobile} />)
-              ) : (
-                <div style={{ color: COLORS.textSecondary, fontSize: 13, textAlign: 'center', padding: 20 }}>
-                  {loading ? '加载中...' : '无运行中的策略'}
-                </div>
-              )}
-            </div>
-
-            {/* Sections 3+4: Signal Feed + P&L */}
+            {/* Sections 2+3: Signal Feed + P&L */}
             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16 }}>
 
               {/* Signal Feed */}
@@ -543,10 +424,10 @@ export default function MonitorPage() {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                   <Statistic
                     title="已实现"
-                    value={totalTodayPnl}
+                    value={closedPnl}
                     precision={2}
                     prefix="$"
-                    valueStyle={{ color: pnlColor(totalTodayPnl), fontSize: isMobile ? 18 : 22, fontFamily: "'SF Mono', monospace" }}
+                    valueStyle={{ color: pnlColor(closedPnl), fontSize: isMobile ? 18 : 22, fontFamily: "'SF Mono', monospace" }}
                   />
                   <Statistic
                     title="未实现"
@@ -557,32 +438,17 @@ export default function MonitorPage() {
                   />
                   <Statistic
                     title="总计"
-                    value={totalTodayPnl + holdingPnl}
+                    value={closedPnl + holdingPnl}
                     precision={2}
                     prefix="$"
-                    valueStyle={{ color: pnlColor(totalTodayPnl + holdingPnl), fontSize: isMobile ? 20 : 26, fontWeight: 700, fontFamily: "'SF Mono', monospace" }}
+                    valueStyle={{ color: pnlColor(closedPnl + holdingPnl), fontSize: isMobile ? 20 : 26, fontWeight: 700, fontFamily: "'SF Mono', monospace" }}
                   />
                   <Statistic
                     title="交易笔数"
-                    value={totalTodayTrades}
+                    value={todayTrades}
                     valueStyle={{ color: COLORS.text, fontSize: isMobile ? 18 : 22, fontFamily: "'SF Mono', monospace" }}
                   />
                 </div>
-
-                {/* Per-strategy breakdown */}
-                {strategies.filter(s => s.todayPnl !== 0 || s.todayTrades > 0).length > 0 && (
-                  <div style={{ marginTop: 16, borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 12 }}>
-                    <div style={{ fontSize: 12, color: COLORS.textSecondary, marginBottom: 8 }}>分策略明细</div>
-                    {strategies.filter(s => s.todayPnl !== 0 || s.todayTrades > 0).map(s => (
-                      <div key={s.strategyId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0' }}>
-                        <span style={{ color: COLORS.text }}>{s.strategyName}</span>
-                        <span className="monitor-number" style={{ color: pnlColor(s.todayPnl) }}>
-                          {s.todayPnl > 0 ? '+' : ''}${s.todayPnl.toFixed(2)} ({s.todayTrades}笔)
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
             </div>
 
