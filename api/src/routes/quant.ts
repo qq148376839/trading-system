@@ -2928,3 +2928,76 @@ quantRouter.get('/option-rank', async (req: Request, res: Response, next: NextFu
   }
 });
 
+// ==================== Monitor API ====================
+
+/**
+ * 获取当前市场评分（监控大屏专用）
+ * 返回完整评分 + 组件明细 + 市场环境判定 + 适用策略推荐
+ */
+quantRouter.get('/monitor/market-score', async (req, res, next) => {
+  try {
+    const result = await optionRecommendationService.getCurrentMarketScore();
+    res.json({ success: true, data: result });
+  } catch (error: unknown) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+/**
+ * 获取所有运行中策略的监控概览
+ * 聚合策略实例状态 + 当日P&L
+ */
+quantRouter.get('/monitor/strategies-overview', async (req, res, next) => {
+  try {
+    const strategiesResult = await pool.query(
+      `SELECT id, name, type, status FROM strategies WHERE status = 'RUNNING' ORDER BY id`
+    );
+
+    const overview = [];
+    for (const strategy of strategiesResult.rows) {
+      const instances = await stateManager.getStrategyInstances(strategy.id);
+
+      const pnlResult = await pool.query(
+        `SELECT COALESCE(SUM(pnl), 0) as total_pnl, COUNT(*) as trade_count
+         FROM auto_trades
+         WHERE strategy_id = $1 AND DATE(close_time) = CURRENT_DATE
+           AND status = 'FILLED' AND pnl IS NOT NULL`,
+        [strategy.id]
+      );
+
+      overview.push({
+        strategyId: strategy.id,
+        strategyName: strategy.name,
+        strategyType: strategy.type,
+        todayPnl: Number(pnlResult.rows[0]?.total_pnl || 0),
+        todayTrades: Number(pnlResult.rows[0]?.trade_count || 0),
+        instances: instances.map(inst => ({
+          symbol: inst.symbol,
+          state: inst.state,
+          entryPrice: inst.context?.entryPrice || null,
+          quantity: inst.context?.quantity || null,
+          stopLoss: inst.context?.stopLoss || null,
+          takeProfit: inst.context?.takeProfit || null,
+          unrealizedPnl: inst.context?.unrealizedPnl || null,
+          cooldownUntil: inst.context?.cooldownUntil || null,
+          lastUpdated: inst.lastUpdated,
+        })),
+        summary: {
+          total: instances.length,
+          idle: instances.filter(i => i.state === 'IDLE').length,
+          holding: instances.filter(i => i.state === 'HOLDING').length,
+          opening: instances.filter(i => i.state === 'OPENING').length,
+          closing: instances.filter(i => i.state === 'CLOSING').length,
+          cooldown: instances.filter(i => i.state === 'COOLDOWN').length,
+        },
+      });
+    }
+
+    res.json({ success: true, data: overview });
+  } catch (error: unknown) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+

@@ -18,6 +18,7 @@ import marketDataCacheService from './market-data-cache.service';
 import marketDataService from './market-data.service';
 import intradayDataFilterService from './intraday-data-filter.service';
 import quoteSubscriptionService from './quote-subscription.service';
+import marketRegimeDetector, { DEFAULT_SMART_REVERSE_CONFIG } from './market-regime-detector.service';
 import { logger } from '../utils/logger';
 
 interface CandlestickData {
@@ -87,6 +88,36 @@ interface OptionRecommendation {
     finalDirection: string;
     reason: string;
   };
+}
+
+interface MarketScoreComponents {
+  spxDaily: { raw: number; weighted: number };
+  spxMinute: { raw: number; weighted: number };
+  gap: { pct: number; score: number };
+  usdDaily: { raw: number; weighted: number };
+  usdMinute: { raw: number; weighted: number };
+  btcDaily: { raw: number; weighted: number; resonance: boolean };
+  btcMinute: { raw: number; weighted: number };
+  vix: { value: number; source: string; impact: number };
+  temperature: { value: number; impact: number };
+}
+
+interface MonitorMarketScore {
+  marketScore: number;
+  marketComponents: MarketScoreComponents;
+  intradayScore: number;
+  timeWindowScore: number;
+  finalScore: number;
+  direction: 'CALL' | 'PUT' | 'HOLD';
+  confidence: number;
+  regime: {
+    type: 'MOMENTUM' | 'MEAN_REVERSION' | 'UNCERTAIN';
+    confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+    label: string;
+  };
+  suitableStrategies: string[];
+  scoreLabel: string;
+  timestamp: number;
 }
 
 class OptionRecommendationService {
@@ -177,7 +208,7 @@ class OptionRecommendationService {
       }
 
       // 3. 计算大盘环境得分 (20%权重) — Phase 3+: 日线趋势 + 分钟级趋势(SPX/USD/BTC) + VIX实时
-      const marketScore = await this.calculateMarketScore(
+      const { score: marketScore } = await this.calculateMarketScore(
         marketData, marketData.spxHourly, spx5minKlines,
         marketData.usdIndexHourly, marketData.btcHourly
       );
@@ -341,6 +372,123 @@ class OptionRecommendationService {
   }
 
   /**
+   * 获取当前市场评分（监控大屏专用，不依赖特定标的）
+   * 使用缓存的市场数据 + SPX 作为日内代理
+   */
+  async getCurrentMarketScore(): Promise<MonitorMarketScore> {
+    // 1. 获取缓存的市场数据
+    const marketData = await marketDataCacheService.getMarketData(100, true);
+
+    // 2. 获取 SPX 5min K线
+    let spx5minKlines: CandlestickData[] | null = null;
+    try {
+      const raw = await marketDataService.getIntraday5minKlines('.SPX.US');
+      if (raw) {
+        spx5minKlines = raw.map(k => ({
+          open: k.open, high: k.high, low: k.low, close: k.close,
+          volume: k.volume, turnover: 0, timestamp: k.timestamp,
+        }));
+      }
+    } catch (err) {
+      logger.warn(`[Monitor] SPX 5min K线获取失败: ${err instanceof Error ? err.message : err}`);
+    }
+
+    // 3. 计算大盘环境评分
+    const { score: marketScore, components: marketComponents } = await this.calculateMarketScore(
+      marketData, marketData.spxHourly, spx5minKlines,
+      marketData.usdIndexHourly, marketData.btcHourly
+    );
+
+    // 4. 简化版日内评分 — 用 SPX momentum 作为代理（无需标的 VWAP）
+    let intradayScore = 0;
+    if (marketData.spxHourly && marketData.spxHourly.length >= 15) {
+      const filteredSPX = intradayDataFilterService.filterData(marketData.spxHourly);
+      if (filteredSPX.length >= 15) {
+        intradayScore = this.calculateMomentum(filteredSPX);
+      }
+    }
+    intradayScore = Math.max(-100, Math.min(100, intradayScore));
+
+    // 5. 时间窗口评分
+    const timeWindowScore = this.calculateTimeWindowAdjustment();
+
+    // 6. 加权合成
+    const finalScore = marketScore * 0.2 + intradayScore * 0.6 + timeWindowScore * 0.2;
+
+    // 7. 方向判定
+    const baseThreshold = 15;
+    const entryTimeFactor = this.get0DTETimeThresholdFactor();
+    const dynamicThreshold = baseThreshold * entryTimeFactor;
+
+    let direction: 'CALL' | 'PUT' | 'HOLD' = 'HOLD';
+    let confidence = 0;
+    if (finalScore > dynamicThreshold) {
+      direction = 'CALL';
+      confidence = Math.min(Math.round((finalScore / 100) * 100), 100);
+    } else if (finalScore < -dynamicThreshold) {
+      direction = 'PUT';
+      confidence = Math.min(Math.round((Math.abs(finalScore) / 100) * 100), 100);
+    } else {
+      confidence = Math.round(100 - Math.abs(finalScore) * 2);
+    }
+
+    // 8. 市场环境判定
+    const regimeResult = marketRegimeDetector.detectRegime(
+      marketScore, intradayScore, DEFAULT_SMART_REVERSE_CONFIG
+    );
+    const regimeLabels: Record<string, string> = {
+      MOMENTUM: '趋势行情',
+      MEAN_REVERSION: '均值回归',
+      UNCERTAIN: '方向不明',
+    };
+
+    // 9. 适用策略推荐
+    let suitableStrategies: string[] = [];
+    if (regimeResult.regime === 'MOMENTUM') {
+      if (direction === 'CALL') {
+        suitableStrategies = ['单边做多(CALL)', '牛市价差'];
+      } else if (direction === 'PUT') {
+        suitableStrategies = ['单边做空(PUT)', '熊市价差'];
+      } else {
+        suitableStrategies = ['等待方向确认'];
+      }
+    } else if (regimeResult.regime === 'MEAN_REVERSION') {
+      suitableStrategies = ['卖出跨式/宽跨式', '铁鹰策略'];
+    } else {
+      suitableStrategies = ['观望为主', '小仓位跨式买入'];
+    }
+
+    // 10. 总分中文解读
+    const absFinal = Math.abs(finalScore);
+    let scoreLabel: string;
+    if (absFinal > 40) {
+      scoreLabel = finalScore > 0 ? '强烈看涨' : '强烈看跌';
+    } else if (absFinal > 20) {
+      scoreLabel = finalScore > 0 ? '温和看涨' : '温和看跌';
+    } else {
+      scoreLabel = '中性震荡';
+    }
+
+    return {
+      marketScore,
+      marketComponents,
+      intradayScore,
+      timeWindowScore,
+      finalScore,
+      direction,
+      confidence,
+      regime: {
+        type: regimeResult.regime,
+        confidence: regimeResult.confidence,
+        label: regimeLabels[regimeResult.regime] || regimeResult.regime,
+      },
+      suitableStrategies,
+      scoreLabel,
+      timestamp: Date.now(),
+    };
+  }
+
+  /**
    * 计算大盘环境得分
    * Phase 3: 日线趋势权重从 40% → 20%，新增 SPX 分钟级趋势 20%
    * 考虑因素：SPX日线趋势(20%) + SPX分钟级趋势(20%) + Gap + USD + BTC + VIX + 温度
@@ -351,9 +499,20 @@ class OptionRecommendationService {
     spx5minKlines?: CandlestickData[] | null,
     usdHourly?: CandlestickData[] | null,
     btcHourly?: CandlestickData[] | null,
-  ): Promise<number> {
+  ): Promise<{ score: number; components: MarketScoreComponents }> {
     let score = 0;
-    const components: string[] = [];
+    const logParts: string[] = [];
+    const comp: MarketScoreComponents = {
+      spxDaily: { raw: 0, weighted: 0 },
+      spxMinute: { raw: 0, weighted: 0 },
+      gap: { pct: 0, score: 0 },
+      usdDaily: { raw: 0, weighted: 0 },
+      usdMinute: { raw: 0, weighted: 0 },
+      btcDaily: { raw: 0, weighted: 0, resonance: false },
+      btcMinute: { raw: 0, weighted: 0 },
+      vix: { value: 0, source: '', impact: 0 },
+      temperature: { value: 0, impact: 0 },
+    };
 
     // 用分时/时K最新价修正当天日K的close，消除日K缓存延迟
     this.correctDailyCloseWithIntraday(marketData.spx, marketData.spxHourly);
@@ -362,45 +521,50 @@ class OptionRecommendationService {
 
     // 1. SPX日线趋势分析 — Phase 3: 权重从 40% → 20%
     const spxAnalysis = this.analyzeMarketTrendMultiWindow(marketData.spx);
-    score += spxAnalysis.trendStrength * 0.2;
-    components.push(`SPX日线${spxAnalysis.trendStrength.toFixed(1)}(${spxAnalysis.windowWeights})*0.2→${(spxAnalysis.trendStrength * 0.2).toFixed(1)}`);
+    comp.spxDaily = { raw: spxAnalysis.trendStrength, weighted: spxAnalysis.trendStrength * 0.2 };
+    score += comp.spxDaily.weighted;
+    logParts.push(`SPX日线${spxAnalysis.trendStrength.toFixed(1)}(${spxAnalysis.windowWeights})*0.2→${comp.spxDaily.weighted.toFixed(1)}`);
 
     // 1c. SPX 分钟级趋势 — Phase 3: 新增 20% 权重
-    // 使用 SPX 1min/5min K 线计算分钟级方向，降低日线滞后性
     const spxMinuteTrend = this.calculateSpxMinuteTrend(spxHourly, spx5minKlines);
-    score += spxMinuteTrend * 0.2;
-    components.push(`SPX分钟级=${spxMinuteTrend.toFixed(1)}*0.2→${(spxMinuteTrend * 0.2).toFixed(1)}`);
+    comp.spxMinute = { raw: spxMinuteTrend, weighted: spxMinuteTrend * 0.2 };
+    score += comp.spxMinute.weighted;
+    logParts.push(`SPX分钟级=${spxMinuteTrend.toFixed(1)}*0.2→${comp.spxMinute.weighted.toFixed(1)}`);
 
     // 1b. Gap 检测 — Phase 3B: 隔夜信息作为方向补充
     const gapAnalysis = this.calculateGapSignal(marketData.spx);
+    comp.gap = { pct: gapAnalysis.gapPct, score: gapAnalysis.gapScore };
     if (gapAnalysis.gapScore !== 0) {
       score += gapAnalysis.gapScore;
-      components.push(`Gap${gapAnalysis.gapPct > 0 ? '+' : ''}${gapAnalysis.gapPct.toFixed(2)}%→${gapAnalysis.gapScore > 0 ? '+' : ''}${gapAnalysis.gapScore.toFixed(1)}`);
+      logParts.push(`Gap${gapAnalysis.gapPct > 0 ? '+' : ''}${gapAnalysis.gapPct.toFixed(2)}%→${gapAnalysis.gapScore > 0 ? '+' : ''}${gapAnalysis.gapScore.toFixed(1)}`);
     }
 
-    // 2. USD Index 日线趋势 (权重10%, 反向) — 从20%降至10%，分钟级补充10%
+    // 2. USD Index 日线趋势 (权重10%, 反向)
     const usdAnalysis = this.analyzeMarketTrend(marketData.usdIndex, 'USD');
-    score += -usdAnalysis.trendStrength * 0.1;
-    components.push(`USD日线${usdAnalysis.trendStrength.toFixed(1)}*-0.1→${(-usdAnalysis.trendStrength * 0.1).toFixed(1)}`);
+    comp.usdDaily = { raw: usdAnalysis.trendStrength, weighted: -usdAnalysis.trendStrength * 0.1 };
+    score += comp.usdDaily.weighted;
+    logParts.push(`USD日线${usdAnalysis.trendStrength.toFixed(1)}*-0.1→${comp.usdDaily.weighted.toFixed(1)}`);
 
-    // 2b. USD 分钟级趋势 (权重10%, 反向) — 当日实时状态
+    // 2b. USD 分钟级趋势 (权重10%, 反向)
     const usdMinuteTrend = this.calculateMinuteTrend(usdHourly);
-    score += -usdMinuteTrend * 0.1;
-    components.push(`USD分钟级=${usdMinuteTrend.toFixed(1)}*-0.1→${(-usdMinuteTrend * 0.1).toFixed(1)}`);
+    comp.usdMinute = { raw: usdMinuteTrend, weighted: -usdMinuteTrend * 0.1 };
+    score += comp.usdMinute.weighted;
+    logParts.push(`USD分钟级=${usdMinuteTrend.toFixed(1)}*-0.1→${comp.usdMinute.weighted.toFixed(1)}`);
 
-    // 3. BTC 日线趋势 — 降至: 共振5%, 非共振2%（分钟级补充同等权重）
+    // 3. BTC 日线趋势 — 共振5%, 非共振2%
     const btcAnalysis = this.analyzeMarketTrend(marketData.btc, 'BTC');
     const btcCorrelation = this.checkBTCSPXCorrelation(marketData.spx, marketData.btc);
     const btcDayWeight = btcCorrelation > 0.5 ? 0.05 : 0.02;
-    score += btcAnalysis.trendStrength * btcDayWeight;
-    components.push(`BTC日线${btcAnalysis.trendStrength.toFixed(1)}*${btcDayWeight}${btcCorrelation > 0.5 ? '(共振)' : ''}→${(btcAnalysis.trendStrength * btcDayWeight).toFixed(1)}`);
+    comp.btcDaily = { raw: btcAnalysis.trendStrength, weighted: btcAnalysis.trendStrength * btcDayWeight, resonance: btcCorrelation > 0.5 };
+    score += comp.btcDaily.weighted;
+    logParts.push(`BTC日线${btcAnalysis.trendStrength.toFixed(1)}*${btcDayWeight}${btcCorrelation > 0.5 ? '(共振)' : ''}→${comp.btcDaily.weighted.toFixed(1)}`);
 
     // 3b. BTC 分钟级趋势 — 共振5%, 非共振3%
     const btcMinuteTrend = this.calculateMinuteTrend(btcHourly);
     const btcMinWeight = btcCorrelation > 0.5 ? 0.05 : 0.03;
-    score += btcMinuteTrend * btcMinWeight;
-    components.push(`BTC分钟级=${btcMinuteTrend.toFixed(1)}*${btcMinWeight}→${(btcMinuteTrend * btcMinWeight).toFixed(1)}`);
-
+    comp.btcMinute = { raw: btcMinuteTrend, weighted: btcMinuteTrend * btcMinWeight };
+    score += comp.btcMinute.weighted;
+    logParts.push(`BTC分钟级=${btcMinuteTrend.toFixed(1)}*${btcMinWeight}→${comp.btcMinute.weighted.toFixed(1)}`);
 
     // 4. VIX恐慌指数 — 三级取值：分K缓冲 > 推送报价 > 日K收盘
     let currentVix = 0;
@@ -418,48 +582,53 @@ class OptionRecommendationService {
         vixSource = '日K';
       }
     }
+    let vixImpact = 0;
     if (currentVix > 0) {
       if (currentVix > 35) {
-        score -= 50;
-        components.push(`VIX=${currentVix.toFixed(1)}(${vixSource})→-50`);
+        vixImpact = -50;
       } else if (currentVix > 25) {
-        score -= 20;
-        components.push(`VIX=${currentVix.toFixed(1)}(${vixSource})→-20`);
+        vixImpact = -20;
       } else if (currentVix < 15) {
-        score += 10;
-        components.push(`VIX=${currentVix.toFixed(1)}(${vixSource})→+10`);
+        vixImpact = 10;
+      }
+      score += vixImpact;
+      if (vixImpact !== 0) {
+        logParts.push(`VIX=${currentVix.toFixed(1)}(${vixSource})→${vixImpact > 0 ? '+' : ''}${vixImpact}`);
       } else {
-        components.push(`VIX=${currentVix.toFixed(1)}(${vixSource})`);
+        logParts.push(`VIX=${currentVix.toFixed(1)}(${vixSource})`);
       }
     }
+    comp.vix = { value: currentVix, source: vixSource, impact: vixImpact };
 
     // 5. 市场温度 (权重10%)
+    let tempValue = 0;
+    let tempImpact = 0;
     if (marketData.marketTemperature) {
-      let temp = 0;
       if (typeof marketData.marketTemperature === 'number') {
-        temp = marketData.marketTemperature;
+        tempValue = marketData.marketTemperature;
       } else if (marketData.marketTemperature.value) {
-        temp = marketData.marketTemperature.value;
+        tempValue = marketData.marketTemperature.value;
       } else if (marketData.marketTemperature.temperature) {
-        temp = marketData.marketTemperature.temperature;
+        tempValue = marketData.marketTemperature.temperature;
       }
 
-      if (temp > 50) {
-        const tempCoeff = temp >= 65 ? 0.5 : 0.3; // 高温时提升权重，Goldilocks环境不被看空信号压制
-        const tempScore = (temp - 50) * tempCoeff;
-        score += tempScore;
-        components.push(`温度=${temp.toFixed(0)}(coeff=${tempCoeff})→+${tempScore.toFixed(1)}`);
-      } else if (temp < 20) {
-        const tempScore = (20 - temp) * 0.5; // 低温减分
-        score -= tempScore;
-        components.push(`温度=${temp.toFixed(0)}→-${tempScore.toFixed(1)}`);
+      if (tempValue > 50) {
+        const tempCoeff = tempValue >= 65 ? 0.5 : 0.3;
+        tempImpact = (tempValue - 50) * tempCoeff;
+        score += tempImpact;
+        logParts.push(`温度=${tempValue.toFixed(0)}(coeff=${tempCoeff})→+${tempImpact.toFixed(1)}`);
+      } else if (tempValue < 20) {
+        tempImpact = -(20 - tempValue) * 0.5;
+        score += tempImpact;
+        logParts.push(`温度=${tempValue.toFixed(0)}→${tempImpact.toFixed(1)}`);
       }
     }
+    comp.temperature = { value: tempValue, impact: tempImpact };
 
     const finalMarketScore = Math.max(-100, Math.min(100, score));
-    logger.info(`[大盘评分明细] 总分=${finalMarketScore.toFixed(1)} | ${components.join(' | ')}`);
+    logger.info(`[大盘评分明细] 总分=${finalMarketScore.toFixed(1)} | ${logParts.join(' | ')}`);
 
-    return finalMarketScore;
+    return { score: finalMarketScore, components: comp };
   }
 
   /**

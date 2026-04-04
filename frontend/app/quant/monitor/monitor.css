@@ -1,0 +1,208 @@
+/* Tech/Futuristic Dark Theme - scoped to monitor page only */
+
+.monitor-page {
+  --monitor-bg: #0a0f1c;
+  --monitor-card-bg: rgba(16, 24, 48, 0.8);
+  --monitor-border: rgba(0, 212, 255, 0.15);
+  --monitor-accent: #00d4ff;
+  --monitor-positive: #00ff88;
+  --monitor-negative: #ff4757;
+  --monitor-neutral: #ffa502;
+  --monitor-text: #e8eaed;
+  --monitor-text-secondary: #8892a4;
+  --monitor-glow: 0 0 20px rgba(0, 212, 255, 0.08);
+}
+
+.monitor-page {
+  background: var(--monitor-bg);
+  color: var(--monitor-text);
+  min-height: 100vh;
+  padding: 16px;
+}
+
+/* Override AppLayout content background */
+.monitor-page-wrapper .ant-layout-content {
+  background: var(--monitor-bg) !important;
+  padding: 0 !important;
+}
+
+/* Override breadcrumb for dark bg */
+.monitor-page-wrapper .ant-layout-header {
+  background: #0d1321 !important;
+  border-bottom: 1px solid var(--monitor-border);
+}
+.monitor-page-wrapper .ant-breadcrumb,
+.monitor-page-wrapper .ant-breadcrumb a,
+.monitor-page-wrapper .ant-breadcrumb .ant-breadcrumb-separator {
+  color: var(--monitor-text-secondary) !important;
+}
+
+.monitor-card {
+  background: var(--monitor-card-bg);
+  border: 1px solid var(--monitor-border);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: var(--monitor-glow);
+  transition: border-color 0.3s ease;
+}
+
+.monitor-card:hover {
+  border-color: rgba(0, 212, 255, 0.3);
+}
+
+.monitor-card-title {
+  color: var(--monitor-text);
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.monitor-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--monitor-accent);
+  animation: monitor-pulse 2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes monitor-pulse {
+  0%, 100% { opacity: 0.4; box-shadow: 0 0 0 0 rgba(0, 212, 255, 0.4); }
+  50% { opacity: 1; box-shadow: 0 0 8px 2px rgba(0, 212, 255, 0.3); }
+}
+
+/* Monospace numbers */
+.monitor-number {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Score label */
+.monitor-score-label {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-shadow: 0 0 12px currentColor;
+}
+
+/* Regime indicator */
+.monitor-regime-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid rgba(0, 212, 255, 0.3);
+  background: rgba(0, 212, 255, 0.08);
+  color: var(--monitor-accent);
+}
+
+/* Strategy instance badges */
+.monitor-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  transition: background 0.2s ease;
+}
+
+.monitor-badge:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Score component badges */
+.monitor-score-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Signal feed scrollable */
+.monitor-signal-feed {
+  max-height: 360px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 212, 255, 0.2) transparent;
+}
+
+.monitor-signal-feed::-webkit-scrollbar {
+  width: 4px;
+}
+
+.monitor-signal-feed::-webkit-scrollbar-thumb {
+  background: rgba(0, 212, 255, 0.2);
+  border-radius: 2px;
+}
+
+.monitor-signal-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 13px;
+}
+
+.monitor-signal-item:last-child {
+  border-bottom: none;
+}
+
+/* Strategy suitable tags */
+.monitor-strategy-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  background: rgba(0, 255, 136, 0.08);
+  border: 1px solid rgba(0, 255, 136, 0.2);
+  color: var(--monitor-positive);
+  margin-right: 6px;
+  margin-top: 4px;
+}
+
+/* Override Ant Design components within monitor page */
+.monitor-page .ant-statistic-title {
+  color: var(--monitor-text-secondary) !important;
+  font-size: 12px !important;
+}
+.monitor-page .ant-statistic-content {
+  color: var(--monitor-text) !important;
+}
+.monitor-page .ant-statistic-content-value {
+  font-family: 'SF Mono', 'Fira Code', monospace !important;
+}
+.monitor-page .ant-empty-description {
+  color: var(--monitor-text-secondary) !important;
+}
+
+/* Mobile adjustments */
+@media (max-width: 767px) {
+  .monitor-page {
+    padding: 8px;
+  }
+  .monitor-card {
+    padding: 12px;
+    border-radius: 8px;
+  }
+  .monitor-signal-feed {
+    max-height: 280px;
+  }
+  .monitor-score-label {
+    font-size: 15px;
+  }
+}

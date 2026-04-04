@@ -2,6 +2,32 @@
 
 ## 2026-04-04
 
+### feat: 盘中实时监控大屏 (`/quant/monitor`)
+
+新增科技感暗黑主题的盘中监控聚合页面，一屏展示市场评分、策略状态、信号流、今日P&L。
+
+**后端**:
+- 重构 `calculateMarketScore()` 返回组件明细（`MarketScoreComponents`），原返回 number 改为 `{ score, components }`
+- 新增 `getCurrentMarketScore()` 公开方法 — 不依赖特定标的，使用缓存数据计算评分 + 市场环境判定（MOMENTUM/MEAN_REVERSION/UNCERTAIN）+ 适用策略推荐 + 中文总分解读
+- 新增 `GET /quant/monitor/market-score` — 完整评分 + 组件明细 + regime
+- 新增 `GET /quant/monitor/strategies-overview` — 所有运行策略的实例状态 + 当日P&L 聚合
+
+**前端**:
+- 新增 `/quant/monitor` 页面（科技感暗黑主题，页面级作用域 CSS）
+- SVG 半圆仪表盘（分值 -100~+100，颜色渐变）
+- 评分趋势 AreaChart（前端累积，30s 采样，最多 2h）
+- 总分中文解读（强烈看涨/温和看涨/中性震荡/温和看跌/强烈看跌）
+- 市场环境类型 + 适用策略推荐
+- 策略全局状态卡片（实例 badges + 持仓P&L）
+- 信号流（最近 20 条，高亮 BUY/SELL）
+- 今日 P&L 汇总（已实现/未实现/总计 + 分策略明细）
+- 三组独立 Polling（评分 30s / 策略 10s / 信号+P&L 30s）
+- 移动端适配（375px）
+
+**修改文件**: `option-recommendation.service.ts`, `quant.ts`, `api.ts`, `AppLayout.tsx`, 新增 `monitor/page.tsx`, `monitor/monitor.css`
+
+---
+
 ### feat: 大盘评分 USD/BTC/VIX 分K实时化 + 订阅推送
 
 `calculateMarketScore()` 原来只用日K（T-1 历史），当日盘中大盘状态完全是盲的。升级为日K+分K双层评分 + 订阅推送降低延迟。

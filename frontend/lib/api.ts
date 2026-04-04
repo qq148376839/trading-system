@@ -965,6 +965,55 @@ export const quantApi = {
   getOptionKlineStatus: (): Promise<{ success: boolean; data?: any; error?: { message: string } }> => {
     return api.get('/quant/option-kline/status')
   },
+
+  // Monitor APIs
+  getMonitorMarketScore: (): Promise<{ success: boolean; data?: {
+    marketScore: number;
+    marketComponents: {
+      spxDaily: { raw: number; weighted: number };
+      spxMinute: { raw: number; weighted: number };
+      gap: { pct: number; score: number };
+      usdDaily: { raw: number; weighted: number };
+      usdMinute: { raw: number; weighted: number };
+      btcDaily: { raw: number; weighted: number; resonance: boolean };
+      btcMinute: { raw: number; weighted: number };
+      vix: { value: number; source: string; impact: number };
+      temperature: { value: number; impact: number };
+    };
+    intradayScore: number;
+    timeWindowScore: number;
+    finalScore: number;
+    direction: 'CALL' | 'PUT' | 'HOLD';
+    confidence: number;
+    regime: { type: string; confidence: string; label: string };
+    suitableStrategies: string[];
+    scoreLabel: string;
+    timestamp: number;
+  }; error?: { message: string } }> => {
+    return api.get('/quant/monitor/market-score')
+  },
+
+  getMonitorStrategiesOverview: (): Promise<{ success: boolean; data?: Array<{
+    strategyId: number;
+    strategyName: string;
+    strategyType: string;
+    todayPnl: number;
+    todayTrades: number;
+    instances: Array<{
+      symbol: string;
+      state: string;
+      entryPrice: number | null;
+      quantity: number | null;
+      stopLoss: number | null;
+      takeProfit: number | null;
+      unrealizedPnl: number | null;
+      cooldownUntil: string | null;
+      lastUpdated: string;
+    }>;
+    summary: { total: number; idle: number; holding: number; opening: number; closing: number; cooldown: number };
+  }>; error?: { message: string } }> => {
+    return api.get('/quant/monitor/strategies-overview')
+  },
 }
 
 // 日志查询 API

@@ -16,6 +16,7 @@ import {
   FileSearchOutlined,
   ApiOutlined,
   MenuOutlined,
+  DashboardOutlined,
 } from '@ant-design/icons'
 import { usePathname, useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -83,6 +84,11 @@ export default function AppLayout({ children }: AppLayoutProps) {
       icon: <BarChartOutlined />,
       label: '量化交易',
       children: [
+        {
+          key: '/quant/monitor',
+          icon: <DashboardOutlined />,
+          label: <Link href="/quant/monitor">实时监控</Link>,
+        },
         {
           key: '/quant',
           icon: <BarChartOutlined />,
@@ -188,6 +194,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
         items.push({ title: isLast ? '交易记录' : <Link href={currentPath}>交易记录</Link> })
       } else if (path === 'backtest') {
         items.push({ title: isLast ? '回测管理' : <Link href={currentPath}>回测管理</Link> })
+      } else if (path === 'monitor') {
+        items.push({ title: isLast ? '实时监控' : <Link href={currentPath}>实时监控</Link> })
       } else if (path === 'analysis') {
         items.push({ title: isLast ? '交易分析' : <Link href={currentPath}>交易分析</Link> })
       } else if (path === 'orders') {

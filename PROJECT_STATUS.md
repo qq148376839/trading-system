@@ -7,6 +7,12 @@
 
 ## 🆕 最近更新
 
+### 2026-04-04: 盘中实时监控大屏 (`/quant/monitor`)
+
+**改动**: 新增科技感暗黑主题监控页面，一屏聚合市场评分、策略状态、信号流、今日P&L。后端重构 `calculateMarketScore()` 返回组件明细，新增 `getCurrentMarketScore()` 含市场环境判定（MOMENTUM/MEAN_REVERSION/UNCERTAIN）+ 适用策略推荐 + 中文总分解读。前端 SVG 仪表盘 + AreaChart 趋势图 + 三组独立 Polling。
+
+**修改文件**: `option-recommendation.service.ts`, `quant.ts`, `api.ts`, `AppLayout.tsx`, 新增 `monitor/page.tsx`, `monitor/monitor.css`
+
 ### 2026-04-04: 大盘评分 USD/BTC/VIX 分K实时化 + 订阅推送
 
 **改动**: `calculateMarketScore()` 从纯日K升级为日K+分K双层评分。USD/BTC 各拆分为日线趋势+分钟趋势双权重，VIX 改为三级数据源（分K>推送>日K）。LongPort + FutuOpenD 双通道订阅 SPY/UUP/IBIT 1min K线，环形缓冲 120 bars，数据层优先读取订阅缓冲跳过 API 竞速。
