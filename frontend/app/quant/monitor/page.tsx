@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Empty, Statistic, Tooltip } from 'antd'
 import {
   AreaChart, Area, XAxis, YAxis, ResponsiveContainer, ReferenceLine, Tooltip as RechartsTooltip,
@@ -257,12 +257,11 @@ export default function MonitorPage() {
   const [signals, setSignals] = useState<Signal[]>([])
   const [dashboardStats, setDashboardStats] = useState<{ todayPnl?: number; closedTradesPnl?: number; holdingPnl?: number; todayTrades?: number } | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
-  const [secondsAgo, setSecondsAgo] = useState(0)
-  const scoreTimestampRef = useRef(0)
+  const [now, setNow] = useState(() => Date.now())
 
-  // Tick every second to update data freshness
+  // Tick every second for live clock
   useEffect(() => {
-    const id = setInterval(() => setSecondsAgo(s => s + 1), 1000)
+    const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [])
 
@@ -272,10 +271,6 @@ export default function MonitorPage() {
       const res = await quantApi.getMonitorMarketScore()
       if (res.success && res.data) {
         setMarketScore(res.data)
-        if (res.data.timestamp !== scoreTimestampRef.current) {
-          scoreTimestampRef.current = res.data.timestamp
-          setSecondsAgo(0)
-        }
         setScoreHistory(prev => {
           const next = [...prev, { time: res.data!.timestamp, score: res.data!.finalScore, label: res.data!.scoreLabel }]
           return next.length > 240 ? next.slice(-240) : next
@@ -331,8 +326,8 @@ export default function MonitorPage() {
                 <span className="monitor-live-dot" />
                 <span>市场评分</span>
                 {marketScore && (
-                  <span className="monitor-number" style={{ marginLeft: 'auto', fontSize: 11, color: secondsAgo > 60 ? COLORS.negative : COLORS.textSecondary }}>
-                    {dayjs(marketScore.timestamp).format('HH:mm:ss')} · {secondsAgo}s
+                  <span className="monitor-number" style={{ marginLeft: 'auto', fontSize: 11, color: COLORS.textSecondary }}>
+                    {dayjs(now).format('HH:mm:ss')}
                   </span>
                 )}
               </div>
