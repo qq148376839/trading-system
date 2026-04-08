@@ -372,14 +372,16 @@ class OptionRecommendationService {
   }
 
   /**
-   * 获取当前市场评分（监控大屏专用，不依赖特定标的）
-   * 使用缓存的市场数据 + SPX 作为日内代理
+   * 获取当前市场评分（监控大屏专用）
+   * 直接复用 calculateOptionRecommendation 的完整计算路径（SPX 作为标的），
+   * 确保 finalScore / direction / intradayScore 与策略实际使用的值一致。
    */
   async getCurrentMarketScore(): Promise<MonitorMarketScore> {
-    // 1. 获取缓存的市场数据
-    const marketData = await marketDataCacheService.getMarketData(100, true);
+    // 直接调用策略使用的完整推荐计算（SPX 作为代理标的）
+    const rec = await this.calculateOptionRecommendation('.SPX.US');
 
-    // 2. 获取 SPX 5min K线
+    // 补算 marketComponents（rec 里没有，需要单独取）
+    const marketData = await marketDataCacheService.getMarketData(100, true);
     let spx5minKlines: CandlestickData[] | null = null;
     try {
       const raw = await marketDataService.getIntraday5minKlines('.SPX.US');
@@ -389,52 +391,17 @@ class OptionRecommendationService {
           volume: k.volume, turnover: 0, timestamp: k.timestamp,
         }));
       }
-    } catch (err) {
-      logger.warn(`[Monitor] SPX 5min K线获取失败: ${err instanceof Error ? err.message : err}`);
+    } catch {
+      // marketComponents 获取失败不影响核心数据
     }
-
-    // 3. 计算大盘环境评分
-    const { score: marketScore, components: marketComponents } = await this.calculateMarketScore(
+    const { components: marketComponents } = await this.calculateMarketScore(
       marketData, marketData.spxHourly, spx5minKlines,
       marketData.usdIndexHourly, marketData.btcHourly
     );
 
-    // 4. 简化版日内评分 — 用 SPX momentum 作为代理（无需标的 VWAP）
-    let intradayScore = 0;
-    if (marketData.spxHourly && marketData.spxHourly.length >= 15) {
-      const filteredSPX = intradayDataFilterService.filterData(marketData.spxHourly);
-      if (filteredSPX.length >= 15) {
-        intradayScore = this.calculateMomentum(filteredSPX);
-      }
-    }
-    intradayScore = Math.max(-100, Math.min(100, intradayScore));
-
-    // 5. 时间窗口评分
-    const timeWindowScore = this.calculateTimeWindowAdjustment();
-
-    // 6. 加权合成
-    const finalScore = marketScore * 0.2 + intradayScore * 0.6 + timeWindowScore * 0.2;
-
-    // 7. 方向判定
-    const baseThreshold = 15;
-    const entryTimeFactor = this.get0DTETimeThresholdFactor();
-    const dynamicThreshold = baseThreshold * entryTimeFactor;
-
-    let direction: 'CALL' | 'PUT' | 'HOLD' = 'HOLD';
-    let confidence = 0;
-    if (finalScore > dynamicThreshold) {
-      direction = 'CALL';
-      confidence = Math.min(Math.round((finalScore / 100) * 100), 100);
-    } else if (finalScore < -dynamicThreshold) {
-      direction = 'PUT';
-      confidence = Math.min(Math.round((Math.abs(finalScore) / 100) * 100), 100);
-    } else {
-      confidence = Math.round(100 - Math.abs(finalScore) * 2);
-    }
-
-    // 8. 市场环境判定
+    // 市场环境判定（使用与策略一致的 marketScore + intradayScore）
     const regimeResult = marketRegimeDetector.detectRegime(
-      marketScore, intradayScore, DEFAULT_SMART_REVERSE_CONFIG
+      rec.marketScore, rec.intradayScore, DEFAULT_SMART_REVERSE_CONFIG
     );
     const regimeLabels: Record<string, string> = {
       MOMENTUM: '趋势行情',
@@ -442,12 +409,12 @@ class OptionRecommendationService {
       UNCERTAIN: '方向不明',
     };
 
-    // 9. 适用策略推荐
+    // 适用策略推荐
     let suitableStrategies: string[] = [];
     if (regimeResult.regime === 'MOMENTUM') {
-      if (direction === 'CALL') {
+      if (rec.direction === 'CALL') {
         suitableStrategies = ['单边做多(CALL)', '牛市价差'];
-      } else if (direction === 'PUT') {
+      } else if (rec.direction === 'PUT') {
         suitableStrategies = ['单边做空(PUT)', '熊市价差'];
       } else {
         suitableStrategies = ['等待方向确认'];
@@ -458,25 +425,25 @@ class OptionRecommendationService {
       suitableStrategies = ['观望为主', '小仓位跨式买入'];
     }
 
-    // 10. 总分中文解读
-    const absFinal = Math.abs(finalScore);
+    // 总分中文解读
+    const absFinal = Math.abs(rec.finalScore);
     let scoreLabel: string;
     if (absFinal > 40) {
-      scoreLabel = finalScore > 0 ? '强烈看涨' : '强烈看跌';
+      scoreLabel = rec.finalScore > 0 ? '强烈看涨' : '强烈看跌';
     } else if (absFinal > 20) {
-      scoreLabel = finalScore > 0 ? '温和看涨' : '温和看跌';
+      scoreLabel = rec.finalScore > 0 ? '温和看涨' : '温和看跌';
     } else {
       scoreLabel = '中性震荡';
     }
 
     return {
-      marketScore,
+      marketScore: rec.marketScore,
       marketComponents,
-      intradayScore,
-      timeWindowScore,
-      finalScore,
-      direction,
-      confidence,
+      intradayScore: rec.intradayScore,
+      timeWindowScore: rec.timeWindowScore ?? 0,
+      finalScore: rec.finalScore,
+      direction: rec.direction,
+      confidence: rec.confidence,
       regime: {
         type: regimeResult.regime,
         confidence: regimeResult.confidence,

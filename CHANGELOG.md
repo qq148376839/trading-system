@@ -1,10 +1,22 @@
 # 更新日志
 
+## 2026-04-08
+
+### fix: 监控大屏评分数据与策略实际值不一致
+
+**问题**: `getCurrentMarketScore()` 使用简化版 intradayScore（仅 SPX 动量），而策略实际用完整版（标的 VW 30% + 5min 确认 15% + VWAP 15% + SPX 25% + BTC/USD 15%）。intradayScore 占 finalScore 60% 权重，导致大屏显示的分数、regime、适用策略全部与实际策略运行不一致。
+
+**修复**: 重写 `getCurrentMarketScore()` 直接调用 `calculateOptionRecommendation('.SPX.US')` 复用完整计算路径，确保 finalScore / direction / intradayScore / regime 与策略使用的值完全一致。
+
+**修改文件**: `option-recommendation.service.ts`
+
+---
+
 ## 2026-04-06
 
 ### fix: 监控大屏时间戳实时读秒
 
-市场评分卡片右上角时间戳新增每秒递增计数器（`HH:mm:ss · Xs`），新数据到达时归零，超过 60s 未更新变红色警示。
+市场评分卡片右上角时间戳改为实时时钟（`Date.now()` 每秒刷新），显示真实当前时间。
 
 ---
 
