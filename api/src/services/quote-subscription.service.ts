@@ -15,6 +15,7 @@
 import { logger } from '../utils/logger';
 import { getQuoteContext } from '../config/longport';
 import fastMomentumService from './fast-momentum.service';
+import tradingSessionService from './trading-session.service';
 
 /** 标准化 K 线数据（与 market-data.service 一致） */
 interface CandlestickBar {
@@ -64,6 +65,9 @@ const RECONNECT_BASE_DELAY_MS = 2_000;
 
 /** 最大重连延迟 */
 const RECONNECT_MAX_DELAY_MS = 60_000;
+
+/** 非交易时段休眠轮询间隔（5 分钟检查一次是否开盘） */
+const OFF_HOURS_CHECK_INTERVAL_MS = 5 * 60_000;
 
 /** 降级轮询间隔 */
 const FALLBACK_POLL_INTERVAL_MS = 5_000;
@@ -453,15 +457,25 @@ class QuoteSubscriptionService {
 
   /**
    * 心跳检测：定期检查是否仍在接收推送数据
+   * 非交易时段跳过检测 — 没有推送是正常的，不触发重连
    */
   private startHeartbeatCheck(): void {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
     }
 
-    this.heartbeatTimer = setInterval(() => {
+    this.heartbeatTimer = setInterval(async () => {
       if (this.status !== 'ACTIVE') return;
-      if (this.subscribedQuoteSymbols.size === 0) return; // 无订阅时不检测
+      if (this.subscribedQuoteSymbols.size === 0) return;
+
+      // 非交易时段不检测心跳 — 没有推送是正常的
+      try {
+        const inSession = await tradingSessionService.isInTradingSession('US');
+        if (!inSession) return;
+      } catch {
+        // 交易时段查询失败时保守跳过，不误触重连
+        return;
+      }
 
       const elapsed = Date.now() - this.lastPushTimestamp;
       if (this.lastPushTimestamp > 0 && elapsed > HEARTBEAT_TIMEOUT_MS) {
@@ -483,6 +497,7 @@ class QuoteSubscriptionService {
 
   /**
    * 调度重连（指数退避）
+   * 非交易时段自动暂停重连，转入休眠轮询等待开盘
    */
   private scheduleReconnect(): void {
     this.reconnectAttempts++;
@@ -494,17 +509,27 @@ class QuoteSubscriptionService {
     logger.info(`[QuoteSub] 将在 ${(delay / 1000).toFixed(0)}s 后尝试第 ${this.reconnectAttempts} 次重连`);
 
     setTimeout(async () => {
-      // 异步回调中 status 可能已被外部 stop() 修改，需重新读取
       const currentStatus: ServiceStatus = this.status;
       if (currentStatus === 'STOPPED') return;
 
+      // 非交易时段：暂停重连，进入休眠等待开盘
       try {
-        // 重新获取 quoteCtx（可能已通过 token 刷新重建）
+        const inSession = await tradingSessionService.isInTradingSession('US');
+        if (!inSession) {
+          logger.info(`[QuoteSub] 非交易时段，暂停重连（已尝试 ${this.reconnectAttempts} 次），${OFF_HOURS_CHECK_INTERVAL_MS / 60_000} 分钟后重新检查`);
+          this.reconnectAttempts = 0; // 重置计数，开盘后从头退避
+          this.waitForTradingSession();
+          return;
+        }
+      } catch {
+        // 交易时段查询失败，保守继续重连
+      }
+
+      try {
         this.quoteCtx = await getQuoteContext();
         this.registerCallbacks();
-        this.lastPushTimestamp = Date.now(); // 重置心跳基准
+        this.lastPushTimestamp = Date.now();
 
-        // 重新订阅所有标的
         const allSymbols = Array.from(this.subscribedQuoteSymbols);
         if (allSymbols.length > 0) {
           await this.quoteCtx.subscribe(allSymbols, [SubType.Quote], true);
@@ -513,7 +538,6 @@ class QuoteSubscriptionService {
           }
         }
 
-        // 重连成功：恢复为 ACTIVE
         this.status = 'ACTIVE';
         this.reconnectAttempts = 0;
         this.stopFallbackPolling();
@@ -521,13 +545,39 @@ class QuoteSubscriptionService {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn(`[QuoteSub] 重连失败(第${this.reconnectAttempts}次): ${msg}`);
-        // 继续调度下一次重连（status 可能在 await 期间被改为 STOPPED）
         const statusAfter: ServiceStatus = this.status;
         if (statusAfter !== 'STOPPED') {
           this.scheduleReconnect();
         }
       }
     }, delay);
+  }
+
+  /**
+   * 非交易时段休眠：每 5 分钟检查一次是否进入交易时段，是则触发重连
+   */
+  private waitForTradingSession(): void {
+    const timer = setTimeout(async () => {
+      if (this.status === 'STOPPED') return;
+      if (this.status === 'ACTIVE') return; // 已被外部恢复
+
+      try {
+        const inSession = await tradingSessionService.isInTradingSession('US');
+        if (inSession) {
+          logger.info('[QuoteSub] 交易时段已开始，触发重连');
+          this.scheduleReconnect();
+        } else {
+          this.waitForTradingSession(); // 继续等待
+        }
+      } catch {
+        this.waitForTradingSession(); // 查询失败也继续等待
+      }
+    }, OFF_HOURS_CHECK_INTERVAL_MS);
+
+    // 如果服务被 stop()，需要能清理这个 timer
+    // 复用 heartbeatTimer 不合适，用一次性 setTimeout 让 GC 自然回收
+    // stop() 时 status=STOPPED 会在回调入口处拦截
+    if (timer.unref) timer.unref(); // 不阻止进程退出
   }
 
   /**
