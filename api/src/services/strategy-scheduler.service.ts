@@ -3194,7 +3194,8 @@ class StrategyScheduler {
       if (cached) {
       return cached.positions;
       }
-      return [];
+      // 无缓存时必须 throw —— 返回 [] 会导致 IRON_DOME 误判为"broker 无持仓"触发假熔断（P0）
+      throw sdkError;
     }
   }
 
@@ -5603,8 +5604,9 @@ class StrategyScheduler {
     let allPositions: any[];
     try {
       allPositions = await this.getCachedPositions();
-    } catch {
-      return; // API 失败不阻塞
+    } catch (posErr: any) {
+      logger.info(`[IRON_DOME:RECONCILIATION] 持仓API不可用（${posErr?.message}），跳过本轮核对`);
+      return;
     }
 
     for (const row of holdingRows) {

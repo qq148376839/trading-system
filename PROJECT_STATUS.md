@@ -7,6 +7,12 @@
 
 ## 🆕 最近更新
 
+### 2026-04-09: IRON_DOME 假阳性熔断修复
+
+**改动**: `getCachedPositions()` API 失败且无缓存时从 `return []` 改为 `throw sdkError`，防止 `reconciliationCheck()` 误判为 broker 强平触发全策略熔断。4/6-4/8 三天 5 次假阳性已消除。
+
+**修改文件**: `strategy-scheduler.service.ts`
+
 ### 2026-04-09: Strategy-Check 数据预处理端点
 
 **改动**: 新增 `GET /api/quant/strategy-check-digest` 聚合端点。服务端直接查 DB + Longport SDK 计算五层分析指标（EV/退出效率/信号质量/风险/SmartReverse），日志按模式去重聚合+关键事件提取。`/strategy-check` 技能从多端点拉取改为单端点 fetch，token 消耗降低 ~85%。

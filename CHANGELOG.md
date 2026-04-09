@@ -2,6 +2,18 @@
 
 ## 2026-04-09
 
+### fix: IRON_DOME 假阳性熔断 — API 失败不再误判为 broker 强平
+
+**问题**: `getCachedPositions()` 在 broker API 失败且无缓存时返回空数组 `[]`，`reconciliationCheck()` 将其误判为"broker 无持仓"，触发 BROKER_TERMINATED 全策略熔断。4/6-4/8 三天触发 5 次假阳性（TSLA 3 次、NVDA 1 次、QQQ 1 次），每次都释放资金+冻结策略。
+
+**根因**: `getCachedPositions()` catch 块 `return []` 无法区分"API 确认无持仓"和"API 调用失败"。`basic-execution.service.ts:calculateAvailablePosition()` 注释已指出此风险（"P0 事故"）但 `getCachedPositions` 未遵循同一模式。
+
+**修复**: API 失败且无缓存时改为 `throw sdkError`（不再静默返回空数组），`reconciliationCheck()` 现有 catch 块捕获后打日志跳过本轮核对。其他 6 个调用点均有 try/catch 包裹，throw 后安全降级。
+
+**修改文件**: `strategy-scheduler.service.ts`
+
+---
+
 ### feat: Strategy-Check 数据预处理端点
 
 新增 `GET /api/quant/strategy-check-digest` 聚合端点，服务端完成 DB 查询 + Longport SDK 订单拉取 + 五层分析指标预计算（EV/退出效率/信号质量/风险检查/SmartReverse），系统日志按 module+message 模式去重聚合并提取关键事件。`/strategy-check` 技能改为 fetch 单一端点，token 消耗降低 ~85%。
