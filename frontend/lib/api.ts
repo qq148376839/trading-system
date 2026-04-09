@@ -989,6 +989,13 @@ export const quantApi = {
     suitableStrategies: string[];
     scoreLabel: string;
     timestamp: number;
+    symbolScores?: Array<{
+      symbol: string;
+      finalScore: number;
+      direction: string;
+      confidence: number;
+      scoreLabel: string;
+    }>;
   }; error?: { message: string } }> => {
     return api.get('/quant/monitor/market-score')
   },

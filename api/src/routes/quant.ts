@@ -2932,12 +2932,56 @@ quantRouter.get('/option-rank', async (req: Request, res: Response, next: NextFu
 
 /**
  * 获取当前市场评分（监控大屏专用）
- * 返回完整评分 + 组件明细 + 市场环境判定 + 适用策略推荐
+ * 返回完整评分 + 组件明细 + 市场环境判定 + 适用策略推荐 + 各标的评分
  */
 quantRouter.get('/monitor/market-score', async (req, res, next) => {
   try {
     const result = await optionRecommendationService.getCurrentMarketScore();
-    res.json({ success: true, data: result });
+
+    // 获取运行中策略的标的池，计算各标的评分
+    let symbolScores: Array<{
+      symbol: string;
+      finalScore: number;
+      direction: string;
+      confidence: number;
+      scoreLabel: string;
+    }> = [];
+    try {
+      const strategyResult = await pool.query(
+        `SELECT symbol_pool_config FROM strategies WHERE status = 'RUNNING' LIMIT 1`
+      );
+      if (strategyResult.rows.length > 0) {
+        const config = strategyResult.rows[0].symbol_pool_config || {};
+        const symbols = await stockSelector.getSymbolPool(config);
+        const scoreResults = await Promise.all(
+          symbols.map(async (symbol: string) => {
+            try {
+              const rec = await optionRecommendationService.calculateOptionRecommendation(symbol);
+              const abs = Math.abs(rec.finalScore);
+              const label = abs > 40
+                ? (rec.finalScore > 0 ? '强烈看涨' : '强烈看跌')
+                : abs > 20
+                  ? (rec.finalScore > 0 ? '温和看涨' : '温和看跌')
+                  : '中性震荡';
+              return {
+                symbol,
+                finalScore: rec.finalScore,
+                direction: rec.direction,
+                confidence: rec.confidence,
+                scoreLabel: label,
+              };
+            } catch {
+              return null;
+            }
+          })
+        );
+        symbolScores = scoreResults.filter((s): s is NonNullable<typeof s> => s !== null);
+      }
+    } catch {
+      // 标的评分获取失败不影响核心市场评分
+    }
+
+    res.json({ success: true, data: { ...result, symbolScores } });
   } catch (error: unknown) {
     const appError = normalizeError(error);
     return next(appError);

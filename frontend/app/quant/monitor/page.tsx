@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Empty, Statistic, Tooltip } from 'antd'
 import {
-  AreaChart, Area, XAxis, YAxis, ResponsiveContainer, ReferenceLine, Tooltip as RechartsTooltip,
+  AreaChart, Area, LineChart, Line, XAxis, YAxis, ResponsiveContainer, ReferenceLine, Tooltip as RechartsTooltip, Legend,
 } from 'recharts'
 import AppLayout from '@/components/AppLayout'
 import { quantApi } from '@/lib/api'
@@ -37,6 +37,15 @@ interface MarketScoreData {
   suitableStrategies: string[]
   scoreLabel: string
   timestamp: number
+  symbolScores?: SymbolScore[]
+}
+
+interface SymbolScore {
+  symbol: string
+  finalScore: number
+  direction: string
+  confidence: number
+  scoreLabel: string
 }
 
 interface Signal {
@@ -57,6 +66,11 @@ interface ScoreHistoryPoint {
   label: string
 }
 
+interface SymbolScoreHistoryPoint {
+  time: number
+  [symbol: string]: number // dynamic keys per symbol
+}
+
 // ============================================
 // Theme constants
 // ============================================
@@ -70,6 +84,8 @@ const COLORS = {
   textSecondary: '#8892a4',
   cardBg: 'rgba(16, 24, 48, 0.8)',
 }
+
+const SYMBOL_COLORS = ['#00d4ff', '#ff6b9d', '#ffa502', '#00ff88', '#a855f7', '#ff4757', '#38bdf8', '#facc15']
 
 const scoreColor = (v: number) =>
   v > 20 ? COLORS.positive : v < -20 ? COLORS.negative : COLORS.neutral
@@ -114,8 +130,12 @@ function ScoreGauge({ score }: { score: number }) {
   )
 }
 
-function ScoreTrendChart({ data, isMobile }: { data: ScoreHistoryPoint[]; isMobile: boolean }) {
-  if (data.length < 2) {
+function ScoreTrendChart({ data, symbols, isMobile }: {
+  data: SymbolScoreHistoryPoint[];
+  symbols: string[];
+  isMobile: boolean;
+}) {
+  if (data.length < 2 || symbols.length === 0) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: isMobile ? 120 : 160, color: COLORS.textSecondary, fontSize: 13 }}>
         数据采集中...
@@ -123,15 +143,11 @@ function ScoreTrendChart({ data, isMobile }: { data: ScoreHistoryPoint[]; isMobi
     )
   }
 
+  const shortName = (s: string) => s.replace('.US', '')
+
   return (
-    <ResponsiveContainer width="100%" height={isMobile ? 120 : 160}>
-      <AreaChart data={data} margin={{ top: 5, right: 5, bottom: 0, left: -20 }}>
-        <defs>
-          <linearGradient id="scoreGradient" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor={COLORS.accent} stopOpacity={0.3} />
-            <stop offset="95%" stopColor={COLORS.accent} stopOpacity={0} />
-          </linearGradient>
-        </defs>
+    <ResponsiveContainer width="100%" height={isMobile ? 140 : 180}>
+      <LineChart data={data} margin={{ top: 5, right: 5, bottom: 0, left: -20 }}>
         <XAxis
           dataKey="time"
           tickFormatter={(t: number) => dayjs(t).format('HH:mm')}
@@ -152,11 +168,71 @@ function ScoreTrendChart({ data, isMobile }: { data: ScoreHistoryPoint[]; isMobi
         <RechartsTooltip
           contentStyle={{ background: '#0d1321', border: '1px solid rgba(0,212,255,0.2)', borderRadius: 6, fontSize: 12, color: COLORS.text }}
           labelFormatter={(t: number) => dayjs(t).format('HH:mm:ss')}
-          formatter={(value: number) => [`${value > 0 ? '+' : ''}${value.toFixed(1)}`, '评分']}
+          formatter={(value: number, name: string) => [`${value > 0 ? '+' : ''}${value.toFixed(1)}`, shortName(name)]}
         />
-        <Area type="monotone" dataKey="score" stroke={COLORS.accent} fill="url(#scoreGradient)" strokeWidth={2} dot={false} animationDuration={300} />
-      </AreaChart>
+        <Legend
+          verticalAlign="top"
+          height={20}
+          formatter={(value: string) => shortName(value)}
+          wrapperStyle={{ fontSize: 11, color: COLORS.textSecondary }}
+        />
+        {symbols.map((symbol, i) => (
+          <Line
+            key={symbol}
+            type="monotone"
+            dataKey={symbol}
+            stroke={SYMBOL_COLORS[i % SYMBOL_COLORS.length]}
+            strokeWidth={2}
+            dot={false}
+            animationDuration={300}
+            connectNulls
+          />
+        ))}
+      </LineChart>
     </ResponsiveContainer>
+  )
+}
+
+function SymbolScoreCards({ scores, isMobile }: { scores: SymbolScore[]; isMobile: boolean }) {
+  if (scores.length === 0) return null
+
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: isMobile ? 6 : 10, marginTop: 8 }}>
+      {scores.map((s, i) => {
+        const color = scoreColor(s.finalScore)
+        const dirColor = s.direction === 'CALL' ? COLORS.positive : s.direction === 'PUT' ? COLORS.negative : COLORS.neutral
+        return (
+          <div
+            key={s.symbol}
+            style={{
+              flex: isMobile ? '1 1 calc(50% - 6px)' : '0 0 auto',
+              minWidth: isMobile ? 0 : 90,
+              padding: '6px 10px',
+              borderRadius: 8,
+              background: 'rgba(255,255,255,0.03)',
+              borderLeft: `3px solid ${SYMBOL_COLORS[i % SYMBOL_COLORS.length]}`,
+              textAlign: 'center',
+            }}
+          >
+            <div style={{ fontSize: 11, color: COLORS.textSecondary, marginBottom: 2 }}>
+              {s.symbol.replace('.US', '')}
+            </div>
+            <div className="monitor-number" style={{ fontSize: 18, fontWeight: 700, color }}>
+              {s.finalScore > 0 ? '+' : ''}{s.finalScore.toFixed(1)}
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: dirColor, marginTop: 2 }}>
+              {s.direction}
+              <span style={{ color: COLORS.textSecondary, fontWeight: 400, marginLeft: 4 }}>
+                {s.confidence}%
+              </span>
+            </div>
+            <div style={{ fontSize: 10, color: COLORS.textSecondary, marginTop: 2 }}>
+              {s.scoreLabel}
+            </div>
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -254,6 +330,8 @@ export default function MonitorPage() {
   // State
   const [marketScore, setMarketScore] = useState<MarketScoreData | null>(null)
   const [scoreHistory, setScoreHistory] = useState<ScoreHistoryPoint[]>([])
+  const [symbolScoreHistory, setSymbolScoreHistory] = useState<SymbolScoreHistoryPoint[]>([])
+  const [symbolKeys, setSymbolKeys] = useState<string[]>([])
   const [signals, setSignals] = useState<Signal[]>([])
   const [dashboardStats, setDashboardStats] = useState<{ todayPnl?: number; closedTradesPnl?: number; holdingPnl?: number; todayTrades?: number } | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -275,6 +353,22 @@ export default function MonitorPage() {
           const next = [...prev, { time: res.data!.timestamp, score: res.data!.finalScore, label: res.data!.scoreLabel }]
           return next.length > 240 ? next.slice(-240) : next
         })
+
+        // 更新标的评分历史
+        const symScores = res.data.symbolScores
+        if (symScores && symScores.length > 0) {
+          const keys = symScores.map(s => s.symbol)
+          setSymbolKeys(keys)
+          setSymbolScoreHistory(prev => {
+            const point: SymbolScoreHistoryPoint = { time: res.data!.timestamp }
+            for (const s of symScores) {
+              point[s.symbol] = s.finalScore
+            }
+            const next = [...prev, point]
+            return next.length > 240 ? next.slice(-240) : next
+          })
+        }
+
         setErrors(prev => { const { score, ...rest } = prev; return rest })
       }
     } catch (err: unknown) {
@@ -393,9 +487,10 @@ export default function MonitorPage() {
                       </div>
                     </div>
 
-                    {/* Right: Trend Chart */}
+                    {/* Right: Trend Chart + Symbol Scores */}
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <ScoreTrendChart data={scoreHistory} isMobile={isMobile} />
+                      <ScoreTrendChart data={symbolScoreHistory} symbols={symbolKeys} isMobile={isMobile} />
+                      <SymbolScoreCards scores={marketScore.symbolScores || []} isMobile={isMobile} />
                     </div>
                   </div>
 
