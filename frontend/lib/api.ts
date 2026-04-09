@@ -983,6 +983,7 @@ export const quantApi = {
     intradayScore: number;
     timeWindowScore: number;
     finalScore: number;
+    dynamicThreshold: number;
     direction: 'CALL' | 'PUT' | 'HOLD';
     confidence: number;
     regime: { type: string; confidence: string; label: string };

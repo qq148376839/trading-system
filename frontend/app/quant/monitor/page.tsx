@@ -31,6 +31,7 @@ interface MarketScoreData {
   intradayScore: number
   timeWindowScore: number
   finalScore: number
+  dynamicThreshold: number
   direction: 'CALL' | 'PUT' | 'HOLD'
   confidence: number
   regime: { type: string; confidence: string; label: string }
@@ -130,9 +131,10 @@ function ScoreGauge({ score }: { score: number }) {
   )
 }
 
-function ScoreTrendChart({ data, symbols, isMobile }: {
+function ScoreTrendChart({ data, symbols, threshold, isMobile }: {
   data: SymbolScoreHistoryPoint[];
   symbols: string[];
+  threshold: number;
   isMobile: boolean;
 }) {
   if (data.length < 2 || symbols.length === 0) {
@@ -144,6 +146,24 @@ function ScoreTrendChart({ data, symbols, isMobile }: {
   }
 
   const shortName = (s: string) => s.replace('.US', '')
+
+  // 自适应 Y 轴：基于实际数据范围 + 阈值线 + padding
+  const allValues: number[] = []
+  for (const pt of data) {
+    for (const sym of symbols) {
+      const v = pt[sym]
+      if (typeof v === 'number' && !isNaN(v)) allValues.push(v)
+    }
+  }
+  if (threshold > 0) {
+    allValues.push(threshold, -threshold)
+  }
+  const dataMin = allValues.length > 0 ? Math.min(...allValues) : -100
+  const dataMax = allValues.length > 0 ? Math.max(...allValues) : 100
+  const range = dataMax - dataMin || 20
+  const padding = range * 0.15
+  const yMin = Math.max(-100, Math.floor((dataMin - padding) / 5) * 5)
+  const yMax = Math.min(100, Math.ceil((dataMax + padding) / 5) * 5)
 
   return (
     <ResponsiveContainer width="100%" height={isMobile ? 140 : 180}>
@@ -157,14 +177,35 @@ function ScoreTrendChart({ data, symbols, isMobile }: {
           tickLine={false}
         />
         <YAxis
-          domain={[-100, 100]}
+          domain={[yMin, yMax]}
           stroke="#4a5568"
           tick={{ fontSize: 10, fill: COLORS.textSecondary }}
           axisLine={false}
           tickLine={false}
-          ticks={[-100, -50, 0, 50, 100]}
         />
-        <ReferenceLine y={0} stroke="#4a5568" strokeDasharray="3 3" />
+        {/* 零线 */}
+        {yMin < 0 && yMax > 0 && (
+          <ReferenceLine y={0} stroke="#4a5568" strokeDasharray="3 3" />
+        )}
+        {/* 动态阈值线 */}
+        {threshold > 0 && (
+          <>
+            <ReferenceLine
+              y={threshold}
+              stroke={COLORS.positive}
+              strokeDasharray="6 3"
+              strokeOpacity={0.5}
+              label={{ value: `+${threshold.toFixed(0)}`, position: 'right', fill: COLORS.positive, fontSize: 10 }}
+            />
+            <ReferenceLine
+              y={-threshold}
+              stroke={COLORS.negative}
+              strokeDasharray="6 3"
+              strokeOpacity={0.5}
+              label={{ value: `-${threshold.toFixed(0)}`, position: 'right', fill: COLORS.negative, fontSize: 10 }}
+            />
+          </>
+        )}
         <RechartsTooltip
           contentStyle={{ background: '#0d1321', border: '1px solid rgba(0,212,255,0.2)', borderRadius: 6, fontSize: 12, color: COLORS.text }}
           labelFormatter={(t: number) => dayjs(t).format('HH:mm:ss')}
@@ -464,7 +505,7 @@ export default function MonitorPage() {
                         ))}
                       </div>
 
-                      {/* Sub-scores */}
+                      {/* Sub-scores + threshold */}
                       <div style={{ marginTop: 12, display: 'flex', justifyContent: 'center', gap: 12, fontSize: 11 }}>
                         <div>
                           <div style={{ color: COLORS.textSecondary }}>大盘</div>
@@ -484,12 +525,18 @@ export default function MonitorPage() {
                             {marketScore.timeWindowScore > 0 ? '+' : ''}{marketScore.timeWindowScore.toFixed(1)}
                           </div>
                         </div>
+                        <div style={{ borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: 12 }}>
+                          <div style={{ color: COLORS.textSecondary }}>阈值</div>
+                          <div className="monitor-number" style={{ color: COLORS.accent }}>
+                            {'\u00B1'}{marketScore.dynamicThreshold?.toFixed(1) ?? '15.0'}
+                          </div>
+                        </div>
                       </div>
                     </div>
 
                     {/* Right: Trend Chart + Symbol Scores */}
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <ScoreTrendChart data={symbolScoreHistory} symbols={symbolKeys} isMobile={isMobile} />
+                      <ScoreTrendChart data={symbolScoreHistory} symbols={symbolKeys} threshold={marketScore.dynamicThreshold || 0} isMobile={isMobile} />
                       <SymbolScoreCards scores={marketScore.symbolScores || []} isMobile={isMobile} />
                     </div>
                   </div>

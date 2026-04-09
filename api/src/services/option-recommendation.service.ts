@@ -108,6 +108,7 @@ interface MonitorMarketScore {
   intradayScore: number;
   timeWindowScore: number;
   finalScore: number;
+  dynamicThreshold: number;
   direction: 'CALL' | 'PUT' | 'HOLD';
   confidence: number;
   regime: {
@@ -436,12 +437,15 @@ class OptionRecommendationService {
       scoreLabel = '中性震荡';
     }
 
+    const dynamicThreshold = 15 * this.get0DTETimeThresholdFactor();
+
     return {
       marketScore: rec.marketScore,
       marketComponents,
       intradayScore: rec.intradayScore,
       timeWindowScore: rec.timeWindowScore ?? 0,
       finalScore: rec.finalScore,
+      dynamicThreshold,
       direction: rec.direction,
       confidence: rec.confidence,
       regime: {
