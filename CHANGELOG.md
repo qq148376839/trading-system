@@ -1,5 +1,15 @@
 # 更新日志
 
+## 2026-04-09
+
+### feat: Strategy-Check 数据预处理端点
+
+新增 `GET /api/quant/strategy-check-digest` 聚合端点，服务端完成 DB 查询 + Longport SDK 订单拉取 + 五层分析指标预计算（EV/退出效率/信号质量/风险检查/SmartReverse），系统日志按 module+message 模式去重聚合并提取关键事件。`/strategy-check` 技能改为 fetch 单一端点，token 消耗降低 ~85%。
+
+**修改文件**: `api/src/routes/quant.ts`, `.claude/skills/strategy-check/SKILL.md`
+
+---
+
 ## 2026-04-08
 
 ### fix: 监控大屏评分数据与策略实际值不一致

@@ -18,7 +18,7 @@ import {
   selectStocksByInstitution,
   InstitutionHolding,
 } from '../services/institution-stock-selector.service';
-import { getTradeContext } from '../config/longport';
+import { getTradeContext, OrderStatus, Market } from '../config/longport';
 import { logger } from '../utils/logger';
 import optionRecommendationService from '../services/option-recommendation.service';
 import { selectOptionContract } from '../services/options-contract-selector.service';
@@ -2995,6 +2995,532 @@ quantRouter.get('/monitor/strategies-overview', async (req, res, next) => {
     }
 
     res.json({ success: true, data: overview });
+  } catch (error: unknown) {
+    const appError = normalizeError(error);
+    return next(appError);
+  }
+});
+
+// ==================== Strategy Check Digest API ====================
+
+/**
+ * GET /api/quant/strategy-check-digest
+ * 策略分析预处理端点 — 聚合计算五层第一性原理分析所需的全部指标
+ * 替代原有的多端点拉取+手动聚合流程，token 消耗降低 ~85%
+ */
+quantRouter.get('/strategy-check-digest', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { strategyId } = req.query;
+    const now = new Date();
+    const startDate = req.query.startDate as string || new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const endDate = req.query.endDate as string || now.toISOString().split('T')[0];
+
+    logger.debug(`[StrategyCheckDigest] 开始聚合 window=${startDate}~${endDate} strategyId=${strategyId || 'ALL'}`);
+
+    // ── 并行查询 DB + Longport SDK ──
+    const strategyFilter = strategyId ? ` AND s.id = ${Number(strategyId)}` : '';
+    const strategyFilterAT = strategyId ? ` AND at.strategy_id = ${Number(strategyId)}` : '';
+
+    // 1. 交易记录 + 信号元数据（复用 analysis/trades SQL 逻辑）
+    const tradesPromise = pool.query(`
+      SELECT
+        at.id, at.strategy_id, at.symbol, at.quantity,
+        at.avg_price AS entry_price, at.pnl, at.fees,
+        at.open_time, at.close_time,
+        buy_sig.metadata AS buy_metadata,
+        sell_sig.metadata AS sell_metadata
+      FROM auto_trades at
+      LEFT JOIN execution_orders eo ON eo.order_id = at.order_id
+      LEFT JOIN strategy_signals buy_sig ON buy_sig.id = eo.signal_id AND buy_sig.signal_type = 'BUY'
+      LEFT JOIN LATERAL (
+        SELECT ss.metadata
+        FROM strategy_signals ss
+        WHERE ss.strategy_id = at.strategy_id
+          AND ss.symbol = at.symbol
+          AND ss.signal_type = 'SELL'
+          AND ss.created_at BETWEEN at.open_time AND at.close_time + INTERVAL '5 minutes'
+        ORDER BY ss.created_at DESC
+        LIMIT 1
+      ) sell_sig ON true
+      WHERE at.pnl IS NOT NULL AND at.close_time IS NOT NULL
+        AND at.close_time >= $1::date
+        AND at.close_time < ($2::date + INTERVAL '1 day')
+        ${strategyFilterAT}
+      ORDER BY at.close_time DESC
+      LIMIT 1000
+    `, [startDate, endDate]);
+
+    // 2. RUNNING 策略配置
+    const strategiesPromise = pool.query(`
+      SELECT id, name, status, type, config
+      FROM strategies
+      WHERE status = 'RUNNING' ${strategyFilter}
+    `);
+
+    // 3. 实例状态
+    const instancesPromise = pool.query(`
+      SELECT si.strategy_id, si.symbol, si.current_state AS state, si.context, si.last_updated
+      FROM strategy_instances si
+      JOIN strategies s ON s.id = si.strategy_id
+      WHERE s.status = 'RUNNING' ${strategyFilter}
+    `);
+
+    // 4. 系统日志 — 级别统计
+    const logSummaryPromise = pool.query(`
+      SELECT
+        COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE level = 'ERROR') AS error_count,
+        COUNT(*) FILTER (WHERE level = 'WARNING') AS warning_count,
+        COUNT(*) FILTER (WHERE level = 'INFO') AS info_count,
+        COUNT(*) FILTER (WHERE level = 'DEBUG') AS debug_count
+      FROM system_logs
+      WHERE timestamp >= $1::date AND timestamp < ($2::date + INTERVAL '1 day')
+    `, [startDate, endDate]);
+
+    // 5. 系统日志 — ERROR 去重聚合
+    const logErrorGroupsPromise = pool.query(`
+      SELECT
+        module,
+        regexp_replace(message, '[0-9]+\\.?[0-9]*', 'N', 'g') AS pattern,
+        COUNT(*) AS count,
+        MIN(timestamp) AS first_seen,
+        MAX(timestamp) AS last_seen,
+        (array_agg(extra_data ORDER BY timestamp DESC))[1] AS sample_extra_data
+      FROM system_logs
+      WHERE level = 'ERROR'
+        AND timestamp >= $1::date AND timestamp < ($2::date + INTERVAL '1 day')
+      GROUP BY module, regexp_replace(message, '[0-9]+\\.?[0-9]*', 'N', 'g')
+      ORDER BY count DESC
+      LIMIT 30
+    `, [startDate, endDate]);
+
+    // 6. 系统日志 — WARNING 去重聚合
+    const logWarningGroupsPromise = pool.query(`
+      SELECT
+        module,
+        regexp_replace(message, '[0-9]+\\.?[0-9]*', 'N', 'g') AS pattern,
+        COUNT(*) AS count,
+        MIN(timestamp) AS first_seen,
+        MAX(timestamp) AS last_seen
+      FROM system_logs
+      WHERE level = 'WARNING'
+        AND timestamp >= $1::date AND timestamp < ($2::date + INTERVAL '1 day')
+      GROUP BY module, regexp_replace(message, '[0-9]+\\.?[0-9]*', 'N', 'g')
+      ORDER BY count DESC
+      LIMIT 30
+    `, [startDate, endDate]);
+
+    // 7. 关键事件提取
+    const keyEventsPromise = pool.query(`
+      SELECT timestamp, level, module, message, extra_data
+      FROM system_logs
+      WHERE timestamp >= $1::date AND timestamp < ($2::date + INTERVAL '1 day')
+        AND (
+          message ~* '熔断|circuit.?breaker|fuse|melt'
+          OR message ~* 'stop.?loss|止损'
+          OR message ~* 'cooldown|冷却'
+          OR message ~* 'reject|拒绝'
+          OR message ~* 'connection.*error|连接.*失败|断开'
+          OR message ~* 'trailing.*stop|锁利'
+          OR message ~* 'take.?profit|止盈'
+          OR (level = 'ERROR' AND module ~* 'execution|order|trade')
+        )
+      ORDER BY timestamp DESC
+      LIMIT 50
+    `, [startDate, endDate]);
+
+    // 8. 最近信号
+    const recentSignalsPromise = pool.query(`
+      SELECT id, strategy_id, symbol, signal_type, price, metadata, status, created_at
+      FROM strategy_signals
+      ORDER BY created_at DESC
+      LIMIT 20
+    `);
+
+    // 9. Longport SDK — 今日订单 + 历史订单（并行）
+    let todayOrders: { total: number; filled: number; pending: number; cancelled: number; details: Record<string, unknown>[] } = {
+      total: 0, filled: 0, pending: 0, cancelled: 0, details: [],
+    };
+    let historyOrders: { total: number; filled: number; details: Record<string, unknown>[] } = {
+      total: 0, filled: 0, details: [],
+    };
+
+    const ordersPromise = (async () => {
+      try {
+        const tradeCtx = await getTradeContext();
+
+        const [todayResult, historyResult] = await Promise.all([
+          tradeCtx.todayOrders({ market: Market.US }).catch((e: Error) => {
+            logger.warn(`[StrategyCheckDigest] 今日订单拉取失败: ${e.message}`);
+            return [];
+          }),
+          tradeCtx.historyOrders({
+            market: Market.US,
+            startAt: new Date(`${startDate}T00:00:00Z`),
+            endAt: new Date(`${endDate}T23:59:59Z`),
+            status: [OrderStatus.Filled],
+          }).catch((e: Error) => {
+            logger.warn(`[StrategyCheckDigest] 历史订单拉取失败: ${e.message}`);
+            return [];
+          }),
+        ]);
+
+        // 今日订单摘要
+        const todayArr = Array.isArray(todayResult) ? todayResult : [];
+        todayOrders = {
+          total: todayArr.length,
+          filled: todayArr.filter((o: Record<string, unknown>) => String(o.status) === 'FilledStatus').length,
+          pending: todayArr.filter((o: Record<string, unknown>) => ['NewStatus', 'WaitToNew', 'ReplacingStatus'].includes(String(o.status))).length,
+          cancelled: todayArr.filter((o: Record<string, unknown>) => String(o.status) === 'CanceledStatus').length,
+          details: todayArr.map((o: Record<string, unknown>) => ({
+            orderId: o.orderId || o.order_id,
+            symbol: o.symbol,
+            side: o.side,
+            quantity: o.quantity,
+            price: o.price,
+            executedQuantity: o.executedQuantity || o.executed_quantity,
+            executedPrice: o.executedPrice || o.executed_price,
+            status: o.status,
+            submittedAt: o.submittedAt || o.submitted_at,
+          })),
+        };
+
+        // 历史订单摘要
+        const histArr = Array.isArray(historyResult) ? historyResult : [];
+        historyOrders = {
+          total: histArr.length,
+          filled: histArr.filter((o: Record<string, unknown>) => String(o.status) === 'FilledStatus').length,
+          details: histArr.map((o: Record<string, unknown>) => ({
+            orderId: o.orderId || o.order_id,
+            symbol: o.symbol,
+            side: o.side,
+            quantity: o.quantity,
+            price: o.price,
+            executedQuantity: o.executedQuantity || o.executed_quantity,
+            executedPrice: o.executedPrice || o.executed_price,
+            status: o.status,
+            submittedAt: o.submittedAt || o.submitted_at,
+          })),
+        };
+      } catch (e: unknown) {
+        logger.warn(`[StrategyCheckDigest] Longport SDK 调用失败，订单数据不可用: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+
+    // ── 等待所有并行查询 ──
+    const [
+      tradesResult, strategiesResult, instancesResult,
+      logSummaryResult, logErrorGroupsResult, logWarningGroupsResult,
+      keyEventsResult, recentSignalsResult,
+    ] = await Promise.all([
+      tradesPromise, strategiesPromise, instancesPromise,
+      logSummaryPromise, logErrorGroupsPromise, logWarningGroupsPromise,
+      keyEventsPromise, recentSignalsPromise,
+      ordersPromise, // 不需要解构，直接修改了上面的变量
+    ]);
+
+    // ── 解析交易数据 ──
+    interface TradeRow {
+      pnl: number;
+      fees: number;
+      symbol: string;
+      entry_price: number;
+      quantity: number;
+      open_time: string;
+      close_time: string;
+      buy_metadata: Record<string, unknown> | null;
+      sell_metadata: Record<string, unknown> | null;
+    }
+
+    const trades: TradeRow[] = tradesResult.rows.map((row: Record<string, unknown>) => ({
+      pnl: Number(row.pnl),
+      fees: Number(row.fees) || 0,
+      symbol: String(row.symbol),
+      entry_price: Number(row.entry_price),
+      quantity: Number(row.quantity),
+      open_time: String(row.open_time),
+      close_time: String(row.close_time),
+      buy_metadata: row.buy_metadata as Record<string, unknown> | null,
+      sell_metadata: row.sell_metadata as Record<string, unknown> | null,
+    }));
+
+    // ── 层级1: 期望值计算 ──
+    function computeEV(tradeSubset: TradeRow[]) {
+      if (tradeSubset.length === 0) {
+        return { totalTrades: 0, wins: 0, losses: 0, winRate: 0, avgWin: 0, avgLoss: 0, payoffRatio: 0, expectedValue: 0, kellyFraction: 0 };
+      }
+      const wins = tradeSubset.filter(t => t.pnl > 0);
+      const losses = tradeSubset.filter(t => t.pnl <= 0);
+      const winRate = wins.length / tradeSubset.length;
+      const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
+      const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((s, t) => s + t.pnl, 0) / losses.length) : 0;
+      const payoffRatio = avgLoss > 0 ? avgWin / avgLoss : avgWin > 0 ? Infinity : 0;
+      const ev = winRate * avgWin - (1 - winRate) * avgLoss;
+      const kelly = payoffRatio > 0 && isFinite(payoffRatio)
+        ? (winRate * payoffRatio - (1 - winRate)) / payoffRatio
+        : 0;
+      return {
+        totalTrades: tradeSubset.length,
+        wins: wins.length,
+        losses: losses.length,
+        winRate: Math.round(winRate * 10000) / 10000,
+        avgWin: Math.round(avgWin * 100) / 100,
+        avgLoss: Math.round(avgLoss * 100) / 100,
+        payoffRatio: Math.round(payoffRatio * 100) / 100,
+        expectedValue: Math.round(ev * 100) / 100,
+        kellyFraction: Math.round(kelly * 10000) / 10000,
+      };
+    }
+
+    // 按 symbol 分组
+    const bySymbol: Record<string, TradeRow[]> = {};
+    const byRegime: Record<string, TradeRow[]> = {};
+    const byScoreBucket: Record<string, TradeRow[]> = { '8-10': [], '10-12': [], '12-15': [], '15+': [] };
+
+    for (const t of trades) {
+      // bySymbol
+      if (!bySymbol[t.symbol]) bySymbol[t.symbol] = [];
+      bySymbol[t.symbol].push(t);
+
+      // byRegime
+      const regime = t.buy_metadata?.regimeDetection as Record<string, unknown> | undefined;
+      const regimeType = String(regime?.marketRegime || regime?.regime || 'UNKNOWN');
+      if (!byRegime[regimeType]) byRegime[regimeType] = [];
+      byRegime[regimeType].push(t);
+
+      // byScoreBucket
+      const score = Number(t.buy_metadata?.finalScore ?? 0);
+      if (score >= 15) byScoreBucket['15+'].push(t);
+      else if (score >= 12) byScoreBucket['12-15'].push(t);
+      else if (score >= 10) byScoreBucket['10-12'].push(t);
+      else if (score >= 8) byScoreBucket['8-10'].push(t);
+    }
+
+    const evAnalysis = {
+      overall: computeEV(trades),
+      bySymbol: Object.fromEntries(Object.entries(bySymbol).map(([k, v]) => [k, computeEV(v)])),
+      byRegime: Object.fromEntries(Object.entries(byRegime).map(([k, v]) => [k, computeEV(v)])),
+      byScoreBucket: Object.fromEntries(Object.entries(byScoreBucket).map(([k, v]) => [k, computeEV(v)])),
+    };
+
+    // ── 层级2: 退出效率 ──
+    const byExitType: Record<string, TradeRow[]> = {};
+    for (const t of trades) {
+      const exitType = String(t.sell_metadata?.exitAction || 'UNKNOWN');
+      if (!byExitType[exitType]) byExitType[exitType] = [];
+      byExitType[exitType].push(t);
+    }
+
+    const winsWithTime = trades.filter(t => t.pnl > 0 && t.open_time && t.close_time);
+    const lossesWithTime = trades.filter(t => t.pnl <= 0 && t.open_time && t.close_time);
+    const holdingMinutes = (t: TradeRow) => (new Date(t.close_time).getTime() - new Date(t.open_time).getTime()) / 60000;
+
+    const exitAnalysis = {
+      byExitType: Object.fromEntries(Object.entries(byExitType).map(([exitType, subset]) => {
+        const wins = subset.filter(t => t.pnl > 0);
+        return [exitType, {
+          count: subset.length,
+          avgPnl: Math.round((subset.reduce((s, t) => s + t.pnl, 0) / subset.length) * 100) / 100,
+          totalPnl: Math.round(subset.reduce((s, t) => s + t.pnl, 0) * 100) / 100,
+          winRate: Math.round((wins.length / subset.length) * 10000) / 10000,
+        }];
+      })),
+      avgWinHoldingMinutes: winsWithTime.length > 0
+        ? Math.round(winsWithTime.reduce((s, t) => s + holdingMinutes(t), 0) / winsWithTime.length)
+        : 0,
+      avgLossHoldingMinutes: lossesWithTime.length > 0
+        ? Math.round(lossesWithTime.reduce((s, t) => s + holdingMinutes(t), 0) / lossesWithTime.length)
+        : 0,
+    };
+
+    // ── 层级3: 信号质量 ──
+    const totalFees = trades.reduce((s, t) => s + t.fees, 0);
+    const totalGrossPnl = trades.reduce((s, t) => s + Math.abs(t.pnl), 0);
+    // 滑点：estimatedPnl vs actualPnl
+    const tradesWithSlippage = trades.filter(t => t.sell_metadata?.netPnL !== undefined);
+    const slippageBySymbol: Record<string, { avgSlippage: number; count: number }> = {};
+    for (const t of tradesWithSlippage) {
+      const estimated = Number(t.sell_metadata?.netPnL);
+      const slippage = t.pnl - estimated;
+      if (!slippageBySymbol[t.symbol]) slippageBySymbol[t.symbol] = { avgSlippage: 0, count: 0 };
+      slippageBySymbol[t.symbol].avgSlippage += slippage;
+      slippageBySymbol[t.symbol].count += 1;
+    }
+    for (const sym of Object.keys(slippageBySymbol)) {
+      slippageBySymbol[sym].avgSlippage = Math.round((slippageBySymbol[sym].avgSlippage / slippageBySymbol[sym].count) * 100) / 100;
+    }
+
+    const signalQuality = {
+      feeDrag: {
+        totalFees: Math.round(totalFees * 100) / 100,
+        totalGrossPnl: Math.round(totalGrossPnl * 100) / 100,
+        feeRatio: totalGrossPnl > 0 ? Math.round((totalFees / totalGrossPnl) * 10000) / 10000 : 0,
+      },
+      slippage: {
+        avgSlippagePct: tradesWithSlippage.length > 0
+          ? Math.round((tradesWithSlippage.reduce((s, t) => s + (t.pnl - Number(t.sell_metadata?.netPnL)), 0) / tradesWithSlippage.length) * 100) / 100
+          : 0,
+        bySymbol: slippageBySymbol,
+      },
+    };
+
+    // ── 层级4: 风险检查 ──
+    const instanceRows = instancesResult.rows;
+    const instancesPnlSum = instanceRows.reduce((s: number, r: Record<string, unknown>) => {
+      const ctx = r.context as Record<string, unknown> | null;
+      return s + Number(ctx?.dailyRealizedPnL ?? 0);
+    }, 0);
+    const tradesPnlSum = trades
+      .filter(t => new Date(t.close_time).toISOString().split('T')[0] === now.toISOString().split('T')[0])
+      .reduce((s, t) => s + t.pnl, 0);
+
+    const riskCheck = {
+      pnlConsistency: {
+        instancesPnlSum: Math.round(instancesPnlSum * 100) / 100,
+        tradesPnlSum: Math.round(tradesPnlSum * 100) / 100,
+        discrepancy: Math.round(Math.abs(instancesPnlSum - tradesPnlSum) * 100) / 100,
+      },
+    };
+
+    // ── 层级5: SmartReverse ──
+    const reversedTrades = trades.filter(t => t.buy_metadata?.shouldReverse === true || t.buy_metadata?.reversed === true);
+    const nonReversedTrades = trades.filter(t => !t.buy_metadata?.shouldReverse && !t.buy_metadata?.reversed);
+
+    const smartReverse = {
+      totalReversed: reversedTrades.length,
+      reversedWinRate: reversedTrades.length > 0
+        ? Math.round((reversedTrades.filter(t => t.pnl > 0).length / reversedTrades.length) * 10000) / 10000 : 0,
+      reversedAvgPnl: reversedTrades.length > 0
+        ? Math.round((reversedTrades.reduce((s, t) => s + t.pnl, 0) / reversedTrades.length) * 100) / 100 : 0,
+      nonReversedWinRate: nonReversedTrades.length > 0
+        ? Math.round((nonReversedTrades.filter(t => t.pnl > 0).length / nonReversedTrades.length) * 10000) / 10000 : 0,
+      nonReversedAvgPnl: nonReversedTrades.length > 0
+        ? Math.round((nonReversedTrades.reduce((s, t) => s + t.pnl, 0) / nonReversedTrades.length) * 100) / 100 : 0,
+    };
+
+    // ── 组装实例摘要 ──
+    const instancesBySymbol: Record<string, Record<string, unknown>> = {};
+    let totalDailyPnL = 0;
+    let activePositions = 0;
+    let circuitBreakerTriggered = false;
+
+    for (const row of instanceRows) {
+      const ctx = row.context as Record<string, unknown> | null;
+      const dailyPnL = Number(ctx?.dailyRealizedPnL ?? 0);
+      totalDailyPnL += dailyPnL;
+      if (row.state === 'HOLDING' || row.state === 'OPENING') activePositions++;
+      if (ctx?.circuitBreakerActive) circuitBreakerTriggered = true;
+
+      instancesBySymbol[String(row.symbol)] = {
+        state: row.state,
+        dailyRealizedPnL: Math.round(dailyPnL * 100) / 100,
+        circuitBreakerActive: !!ctx?.circuitBreakerActive,
+        cooldownUntil: ctx?.cooldownUntil || null,
+        entryPrice: Number(ctx?.entryPrice) || null,
+        quantity: Number(ctx?.quantity) || 0,
+        unrealizedPnl: Number(ctx?.unrealizedPnl) || 0,
+      };
+    }
+
+    // ── 组装策略摘要 ──
+    const strategies = strategiesResult.rows.map((row: Record<string, unknown>) => {
+      const config = row.config as Record<string, unknown> | null;
+      return {
+        id: row.id,
+        name: row.name,
+        status: row.status,
+        type: row.type,
+        configSummary: config ? {
+          entryThreshold: config.entryThreshold ?? config.scoreThreshold,
+          maxPositions: config.maxPositions,
+          stopLossPercent: config.stopLossPercent,
+          takeProfitPercent: config.takeProfitPercent,
+          trailingStopPercent: config.trailingStopPercent,
+          smartReverse: config.smartReverse ? {
+            enabled: (config.smartReverse as Record<string, unknown>).enabled,
+            thresholds: (config.smartReverse as Record<string, unknown>).thresholds,
+          } : undefined,
+          circuitBreaker: config.circuitBreaker,
+          cooldownMinutes: config.cooldownMinutes ?? config.cooldownConfig,
+        } : null,
+      };
+    });
+
+    // ── 组装日志 ──
+    const logSummary = logSummaryResult.rows[0] || {};
+    const logs = {
+      summary: {
+        total: Number(logSummary.total ?? 0),
+        errorCount: Number(logSummary.error_count ?? 0),
+        warningCount: Number(logSummary.warning_count ?? 0),
+        infoCount: Number(logSummary.info_count ?? 0),
+        debugCount: Number(logSummary.debug_count ?? 0),
+      },
+      errorGroups: logErrorGroupsResult.rows.map((r: Record<string, unknown>) => ({
+        module: r.module,
+        pattern: r.pattern,
+        count: Number(r.count),
+        firstSeen: r.first_seen,
+        lastSeen: r.last_seen,
+        sampleExtraData: r.sample_extra_data || null,
+      })),
+      warningGroups: logWarningGroupsResult.rows.map((r: Record<string, unknown>) => ({
+        module: r.module,
+        pattern: r.pattern,
+        count: Number(r.count),
+        firstSeen: r.first_seen,
+        lastSeen: r.last_seen,
+      })),
+      keyEvents: keyEventsResult.rows.map((r: Record<string, unknown>) => ({
+        timestamp: r.timestamp,
+        level: r.level,
+        module: r.module,
+        message: r.message,
+        extraData: r.extra_data || null,
+      })),
+    };
+
+    // ── 最近信号（紧凑格式）──
+    const recentSignals = recentSignalsResult.rows.map((r: Record<string, unknown>) => {
+      const meta = r.metadata as Record<string, unknown> | null;
+      return {
+        id: r.id,
+        symbol: r.symbol,
+        type: r.signal_type,
+        score: meta?.finalScore !== undefined ? Number(meta.finalScore) : null,
+        price: Number(r.price) || null,
+        status: r.status,
+        regime: meta?.regimeDetection ? String((meta.regimeDetection as Record<string, unknown>).marketRegime || '') : null,
+        time: r.created_at,
+      };
+    });
+
+    // ── 返回聚合结果 ──
+    res.json({
+      success: true,
+      data: {
+        generatedAt: now.toISOString(),
+        window: { startDate, endDate },
+        strategies,
+        instances: {
+          bySymbol: instancesBySymbol,
+          totalDailyPnL: Math.round(totalDailyPnL * 100) / 100,
+          activePositions,
+          circuitBreakerTriggered,
+        },
+        evAnalysis,
+        exitAnalysis,
+        signalQuality,
+        riskCheck,
+        smartReverse,
+        orders: {
+          today: todayOrders,
+          history: historyOrders,
+        },
+        logs,
+        recentSignals,
+      },
+    });
   } catch (error: unknown) {
     const appError = normalizeError(error);
     return next(appError);

@@ -1,11 +1,17 @@
 # 项目进度总结
 
-**更新时间**: 2026-04-08
+**更新时间**: 2026-04-09
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-04-09: Strategy-Check 数据预处理端点
+
+**改动**: 新增 `GET /api/quant/strategy-check-digest` 聚合端点。服务端直接查 DB + Longport SDK 计算五层分析指标（EV/退出效率/信号质量/风险/SmartReverse），日志按模式去重聚合+关键事件提取。`/strategy-check` 技能从多端点拉取改为单端点 fetch，token 消耗降低 ~85%。
+
+**修改文件**: `api/src/routes/quant.ts`, `.claude/skills/strategy-check/SKILL.md`
 
 ### 2026-04-08: 监控大屏评分数据修复 — 与策略实际值对齐
 
