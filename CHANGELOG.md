@@ -2,6 +2,16 @@
 
 ## 2026-04-10
 
+### fix: 监控大屏阈值/方向改用策略层 + 折线图→柱状图
+
+**问题**: 监控大屏显示推荐层阈值（base=15 × timeFactor），非策略实际入场阈值（base=10 × vixFactor × timeFactor + absoluteScoreFloor）。多标的折线图重叠不可辨。
+
+**修复**: 后端 `/monitor/market-score` 端点从策略 config 计算真实有效阈值 `strategyThreshold`，symbolScores direction 用策略阈值重判。前端折线图替换为柱状图（各标的当前分数对比），阈值参考线用策略层值。
+
+**修改文件**: `quant.ts`, `monitor/page.tsx`
+
+---
+
 ### feat: 新增 absoluteScoreFloor 绝对分数地板 — 动态阈值硬下限过滤低分噪声信号
 
 **问题**: 动态阈值 `base × vixFactor × timeFactor` 在低 VIX + 早盘时可降至 4（10 × 0.5 × 0.85），导致 score=8 的噪声信号入场。数据显示 8-10 分信号 0% 胜率（EV=-$99）。

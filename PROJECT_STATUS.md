@@ -7,6 +7,12 @@
 
 ## 🆕 最近更新
 
+### 2026-04-10: 监控大屏阈值修正 + 柱状图
+
+**改动**: 阈值/方向从推荐层（base=15）改为策略层（含 VIX 因子 + absoluteScoreFloor）。折线图替换为柱状图，直观显示各标的当前分数 vs 入场阈值距离。
+
+**修改文件**: `quant.ts`, `monitor/page.tsx`
+
 ### 2026-04-10: absoluteScoreFloor 绝对分数地板
 
 **改动**: 动态阈值新增硬下限 `absoluteScoreFloor`，计算结果取 `max(floor, dynamicThreshold)`。防止低 VIX + 早盘时噪声信号入场（8-10 分区间 0% 胜率）。前端策略配置新增输入框，回测同步对齐。

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Empty, Statistic, Tooltip } from 'antd'
 import {
-  AreaChart, Area, LineChart, Line, XAxis, YAxis, ResponsiveContainer, ReferenceLine, Tooltip as RechartsTooltip, Legend,
+  BarChart, Bar, Cell, XAxis, YAxis, ResponsiveContainer, ReferenceLine, Tooltip as RechartsTooltip, LabelList,
 } from 'recharts'
 import AppLayout from '@/components/AppLayout'
 import { quantApi } from '@/lib/api'
@@ -32,6 +32,8 @@ interface MarketScoreData {
   timeWindowScore: number
   finalScore: number
   dynamicThreshold: number
+  strategyThreshold?: number
+  vixFactor?: number
   direction: 'CALL' | 'PUT' | 'HOLD'
   confidence: number
   regime: { type: string; confidence: string; label: string }
@@ -61,16 +63,6 @@ interface Signal {
   created_at: string
 }
 
-interface ScoreHistoryPoint {
-  time: number
-  score: number
-  label: string
-}
-
-interface SymbolScoreHistoryPoint {
-  time: number
-  [symbol: string]: number // dynamic keys per symbol
-}
 
 // ============================================
 // Theme constants
@@ -131,13 +123,12 @@ function ScoreGauge({ score }: { score: number }) {
   )
 }
 
-function ScoreTrendChart({ data, symbols, threshold, isMobile }: {
-  data: SymbolScoreHistoryPoint[];
-  symbols: string[];
+function SymbolScoreBarChart({ scores, threshold, isMobile }: {
+  scores: SymbolScore[];
   threshold: number;
   isMobile: boolean;
 }) {
-  if (data.length < 2 || symbols.length === 0) {
+  if (scores.length === 0) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: isMobile ? 120 : 160, color: COLORS.textSecondary, fontSize: 13 }}>
         数据采集中...
@@ -146,31 +137,27 @@ function ScoreTrendChart({ data, symbols, threshold, isMobile }: {
   }
 
   const shortName = (s: string) => s.replace('.US', '')
+  const barData = scores.map(s => ({
+    name: shortName(s.symbol),
+    score: parseFloat(s.finalScore.toFixed(1)),
+    fill: s.finalScore > 0 ? COLORS.positive : s.finalScore < 0 ? COLORS.negative : COLORS.neutral,
+  }))
 
-  // 自适应 Y 轴：基于实际数据范围 + 阈值线 + padding
-  const allValues: number[] = []
-  for (const pt of data) {
-    for (const sym of symbols) {
-      const v = pt[sym]
-      if (typeof v === 'number' && !isNaN(v)) allValues.push(v)
-    }
-  }
-  if (threshold > 0) {
-    allValues.push(threshold, -threshold)
-  }
-  const dataMin = allValues.length > 0 ? Math.min(...allValues) : -100
-  const dataMax = allValues.length > 0 ? Math.max(...allValues) : 100
+  // 自适应 Y 轴
+  const allValues = barData.map(d => d.score)
+  if (threshold > 0) { allValues.push(threshold, -threshold) }
+  const dataMin = Math.min(...allValues, 0)
+  const dataMax = Math.max(...allValues, 0)
   const range = dataMax - dataMin || 20
-  const padding = range * 0.15
-  const yMin = Math.max(-100, Math.floor((dataMin - padding) / 5) * 5)
-  const yMax = Math.min(100, Math.ceil((dataMax + padding) / 5) * 5)
+  const padding = range * 0.2
+  const yMin = Math.floor((dataMin - padding) / 5) * 5
+  const yMax = Math.ceil((dataMax + padding) / 5) * 5
 
   return (
     <ResponsiveContainer width="100%" height={isMobile ? 140 : 180}>
-      <LineChart data={data} margin={{ top: 5, right: 5, bottom: 0, left: -20 }}>
+      <BarChart data={barData} margin={{ top: 15, right: 5, bottom: 0, left: -20 }}>
         <XAxis
-          dataKey="time"
-          tickFormatter={(t: number) => dayjs(t).format('HH:mm')}
+          dataKey="name"
           stroke="#4a5568"
           tick={{ fontSize: 10, fill: COLORS.textSecondary }}
           axisLine={false}
@@ -183,53 +170,37 @@ function ScoreTrendChart({ data, symbols, threshold, isMobile }: {
           axisLine={false}
           tickLine={false}
         />
-        {/* 零线 */}
-        {yMin < 0 && yMax > 0 && (
-          <ReferenceLine y={0} stroke="#4a5568" strokeDasharray="3 3" />
-        )}
-        {/* 动态阈值线 */}
+        <ReferenceLine y={0} stroke="#4a5568" strokeDasharray="3 3" />
         {threshold > 0 && (
           <>
             <ReferenceLine
               y={threshold}
               stroke={COLORS.positive}
               strokeDasharray="6 3"
-              strokeOpacity={0.5}
-              label={{ value: `+${threshold.toFixed(0)}`, position: 'right', fill: COLORS.positive, fontSize: 10 }}
+              strokeOpacity={0.6}
+              label={{ value: `+${threshold}`, position: 'right', fill: COLORS.positive, fontSize: 9 }}
             />
             <ReferenceLine
               y={-threshold}
               stroke={COLORS.negative}
               strokeDasharray="6 3"
-              strokeOpacity={0.5}
-              label={{ value: `-${threshold.toFixed(0)}`, position: 'right', fill: COLORS.negative, fontSize: 10 }}
+              strokeOpacity={0.6}
+              label={{ value: `-${threshold}`, position: 'right', fill: COLORS.negative, fontSize: 9 }}
             />
           </>
         )}
         <RechartsTooltip
           contentStyle={{ background: '#0d1321', border: '1px solid rgba(0,212,255,0.2)', borderRadius: 6, fontSize: 12, color: COLORS.text }}
-          labelFormatter={(t: number) => dayjs(t).format('HH:mm:ss')}
-          formatter={(value: number, name: string) => [`${value > 0 ? '+' : ''}${value.toFixed(1)}`, shortName(name)]}
+          formatter={(value: number) => [`${value > 0 ? '+' : ''}${value.toFixed(1)}`, '分数']}
         />
-        <Legend
-          verticalAlign="top"
-          height={20}
-          formatter={(value: string) => shortName(value)}
-          wrapperStyle={{ fontSize: 11, color: COLORS.textSecondary }}
-        />
-        {symbols.map((symbol, i) => (
-          <Line
-            key={symbol}
-            type="monotone"
-            dataKey={symbol}
-            stroke={SYMBOL_COLORS[i % SYMBOL_COLORS.length]}
-            strokeWidth={2}
-            dot={false}
-            animationDuration={300}
-            connectNulls
-          />
-        ))}
-      </LineChart>
+        <Bar dataKey="score" animationDuration={500} radius={[3, 3, 0, 0]}>
+          {barData.map((entry, i) => (
+            <Cell key={i} fill={entry.fill} fillOpacity={0.85} />
+          ))}
+          <LabelList dataKey="score" position="top" fontSize={10} fill={COLORS.text}
+            formatter={(v: number) => `${v > 0 ? '+' : ''}${v}`} />
+        </Bar>
+      </BarChart>
     </ResponsiveContainer>
   )
 }
@@ -370,9 +341,6 @@ export default function MonitorPage() {
 
   // State
   const [marketScore, setMarketScore] = useState<MarketScoreData | null>(null)
-  const [scoreHistory, setScoreHistory] = useState<ScoreHistoryPoint[]>([])
-  const [symbolScoreHistory, setSymbolScoreHistory] = useState<SymbolScoreHistoryPoint[]>([])
-  const [symbolKeys, setSymbolKeys] = useState<string[]>([])
   const [signals, setSignals] = useState<Signal[]>([])
   const [dashboardStats, setDashboardStats] = useState<{ todayPnl?: number; closedTradesPnl?: number; holdingPnl?: number; todayTrades?: number } | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -390,26 +358,6 @@ export default function MonitorPage() {
       const res = await quantApi.getMonitorMarketScore()
       if (res.success && res.data) {
         setMarketScore(res.data)
-        setScoreHistory(prev => {
-          const next = [...prev, { time: res.data!.timestamp, score: res.data!.finalScore, label: res.data!.scoreLabel }]
-          return next.length > 240 ? next.slice(-240) : next
-        })
-
-        // 更新标的评分历史
-        const symScores = res.data.symbolScores
-        if (symScores && symScores.length > 0) {
-          const keys = symScores.map(s => s.symbol)
-          setSymbolKeys(keys)
-          setSymbolScoreHistory(prev => {
-            const point: SymbolScoreHistoryPoint = { time: res.data!.timestamp }
-            for (const s of symScores) {
-              point[s.symbol] = s.finalScore
-            }
-            const next = [...prev, point]
-            return next.length > 240 ? next.slice(-240) : next
-          })
-        }
-
         setErrors(prev => { const { score, ...rest } = prev; return rest })
       }
     } catch (err: unknown) {
@@ -479,16 +427,23 @@ export default function MonitorPage() {
                         {marketScore.scoreLabel}
                       </div>
 
-                      {/* Direction + confidence */}
-                      <div style={{ marginTop: 8, fontSize: 13, color: COLORS.textSecondary }}>
-                        <span style={{
-                          color: marketScore.direction === 'CALL' ? COLORS.positive : marketScore.direction === 'PUT' ? COLORS.negative : COLORS.neutral,
-                          fontWeight: 600, fontSize: 14,
-                        }}>
-                          {marketScore.direction}
-                        </span>
-                        <span style={{ marginLeft: 8 }}>置信 {marketScore.confidence}%</span>
-                      </div>
+                      {/* Direction + confidence（基于策略层阈值） */}
+                      {(() => {
+                        const st = marketScore.strategyThreshold || 0
+                        const fs = marketScore.finalScore
+                        const dir = fs >= st ? 'CALL' : fs <= -st ? 'PUT' : 'HOLD'
+                        return (
+                          <div style={{ marginTop: 8, fontSize: 13, color: COLORS.textSecondary }}>
+                            <span style={{
+                              color: dir === 'CALL' ? COLORS.positive : dir === 'PUT' ? COLORS.negative : COLORS.neutral,
+                              fontWeight: 600, fontSize: 14,
+                            }}>
+                              {dir}
+                            </span>
+                            <span style={{ marginLeft: 8 }}>置信 {marketScore.confidence}%</span>
+                          </div>
+                        )
+                      })()}
 
                       {/* Regime */}
                       <div style={{ marginTop: 10 }}>
@@ -526,9 +481,9 @@ export default function MonitorPage() {
                           </div>
                         </div>
                         <div style={{ borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: 12 }}>
-                          <div style={{ color: COLORS.textSecondary }}>阈值</div>
+                          <div style={{ color: COLORS.textSecondary }}>入场阈值</div>
                           <div className="monitor-number" style={{ color: COLORS.accent }}>
-                            {'\u00B1'}{marketScore.dynamicThreshold?.toFixed(1) ?? '15.0'}
+                            {'\u00B1'}{marketScore.strategyThreshold ?? marketScore.dynamicThreshold?.toFixed(1) ?? '15'}
                           </div>
                         </div>
                       </div>
@@ -536,7 +491,7 @@ export default function MonitorPage() {
 
                     {/* Right: Trend Chart + Symbol Scores */}
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <ScoreTrendChart data={symbolScoreHistory} symbols={symbolKeys} threshold={marketScore.dynamicThreshold || 0} isMobile={isMobile} />
+                      <SymbolScoreBarChart scores={marketScore.symbolScores || []} threshold={marketScore.strategyThreshold || 0} isMobile={isMobile} />
                       <SymbolScoreCards scores={marketScore.symbolScores || []} isMobile={isMobile} />
                     </div>
                   </div>

@@ -2938,7 +2938,7 @@ quantRouter.get('/monitor/market-score', async (req, res, next) => {
   try {
     const result = await optionRecommendationService.getCurrentMarketScore();
 
-    // 获取运行中策略的标的池，计算各标的评分
+    // 获取运行中策略的标的池 + 策略配置，计算各标的评分
     let symbolScores: Array<{
       symbol: string;
       finalScore: number;
@@ -2946,13 +2946,28 @@ quantRouter.get('/monitor/market-score', async (req, res, next) => {
       confidence: number;
       scoreLabel: string;
     }> = [];
+    let strategyThreshold = 0;
+    let stratVixFactor = 1.0;
     try {
       const strategyResult = await pool.query(
-        `SELECT symbol_pool_config FROM strategies WHERE status = 'RUNNING' LIMIT 1`
+        `SELECT symbol_pool_config, config FROM strategies WHERE status = 'RUNNING' LIMIT 1`
       );
       if (strategyResult.rows.length > 0) {
-        const config = strategyResult.rows[0].symbol_pool_config || {};
-        const symbols = await stockSelector.getSymbolPool(config);
+        const poolConfig = strategyResult.rows[0].symbol_pool_config || {};
+        const stratConfig = strategyResult.rows[0].config || {};
+
+        // 计算策略层有效阈值（对齐 option-intraday-strategy.ts:getThresholds()）
+        const pref = stratConfig.riskPreference || 'CONSERVATIVE';
+        const override = stratConfig.entryThresholdOverride;
+        const baseThreshold = Number(override?.directionalScoreMin) || (pref === 'AGGRESSIVE' ? 5 : 12);
+        const absoluteFloor = Number(override?.absoluteScoreFloor) || 0;
+        const vixValue = result.marketComponents?.vix?.value;
+        stratVixFactor = (vixValue && vixValue > 0) ? Math.max(0.5, Math.min(2.5, vixValue / 20)) : 1.0;
+        const timeFactor = result.dynamicThreshold > 0 ? result.dynamicThreshold / 15 : 1.0;
+        const rawThreshold = Math.round(baseThreshold * stratVixFactor * timeFactor);
+        strategyThreshold = Math.max(absoluteFloor, rawThreshold);
+
+        const symbols = await stockSelector.getSymbolPool(poolConfig);
         const scoreResults = await Promise.all(
           symbols.map(async (symbol: string) => {
             try {
@@ -2963,10 +2978,14 @@ quantRouter.get('/monitor/market-score', async (req, res, next) => {
                 : abs > 20
                   ? (rec.finalScore > 0 ? '温和看涨' : '温和看跌')
                   : '中性震荡';
+              // 用策略层阈值重新判定方向
+              const direction = rec.finalScore >= strategyThreshold ? 'CALL'
+                : rec.finalScore <= -strategyThreshold ? 'PUT'
+                : 'HOLD';
               return {
                 symbol,
                 finalScore: rec.finalScore,
-                direction: rec.direction,
+                direction,
                 confidence: rec.confidence,
                 scoreLabel: label,
               };
@@ -2981,7 +3000,7 @@ quantRouter.get('/monitor/market-score', async (req, res, next) => {
       // 标的评分获取失败不影响核心市场评分
     }
 
-    res.json({ success: true, data: { ...result, symbolScores } });
+    res.json({ success: true, data: { ...result, strategyThreshold, vixFactor: stratVixFactor, symbolScores } });
   } catch (error: unknown) {
     const appError = normalizeError(error);
     return next(appError);
