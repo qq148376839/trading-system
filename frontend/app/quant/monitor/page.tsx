@@ -143,19 +143,28 @@ function SymbolScoreBarChart({ scores, threshold, isMobile }: {
     fill: s.finalScore > 0 ? COLORS.positive : s.finalScore < 0 ? COLORS.negative : COLORS.neutral,
   }))
 
-  // 自适应 Y 轴
-  const allValues = barData.map(d => d.score)
-  if (threshold > 0) { allValues.push(threshold, -threshold) }
-  const dataMin = Math.min(...allValues, 0)
-  const dataMax = Math.max(...allValues, 0)
-  const range = dataMax - dataMin || 20
-  const padding = range * 0.2
-  const yMin = Math.floor((dataMin - padding) / 5) * 5
-  const yMax = Math.ceil((dataMax + padding) / 5) * 5
+  // 自适应 Y 轴：紧贴数据范围，阈值线仅在可见范围内显示
+  const scoreValues = barData.map(d => d.score)
+  const dataMin = Math.min(...scoreValues, 0)
+  const dataMax = Math.max(...scoreValues, 0)
+  const dataRange = Math.max(Math.abs(dataMax), Math.abs(dataMin), 1) // 至少 1 避免全零
+  // 对称 Y 轴：±dataRange，加 30% padding 给 label 留空
+  const yExtent = dataRange * 1.3
+  // 根据数据量级选择 tick 步长
+  const tickStep = yExtent > 30 ? 10 : yExtent > 10 ? 5 : yExtent > 3 ? 1 : 0.5
+  const yMax = Math.ceil(yExtent / tickStep) * tickStep
+  const yMin = -yMax
+  // 生成刻度
+  const ticks: number[] = []
+  for (let t = yMin; t <= yMax; t += tickStep) {
+    ticks.push(parseFloat(t.toFixed(1)))
+  }
+  // 阈值线是否在可见范围内
+  const showThresholdLine = threshold > 0 && threshold <= yMax
 
   return (
     <ResponsiveContainer width="100%" height={isMobile ? 140 : 180}>
-      <BarChart data={barData} margin={{ top: 15, right: 5, bottom: 0, left: -20 }}>
+      <BarChart data={barData} margin={{ top: 15, right: 30, bottom: 0, left: -15 }}>
         <XAxis
           dataKey="name"
           stroke="#4a5568"
@@ -165,13 +174,15 @@ function SymbolScoreBarChart({ scores, threshold, isMobile }: {
         />
         <YAxis
           domain={[yMin, yMax]}
+          ticks={ticks}
           stroke="#4a5568"
           tick={{ fontSize: 10, fill: COLORS.textSecondary }}
           axisLine={false}
           tickLine={false}
+          tickFormatter={(v: number) => v % 1 === 0 ? String(v) : v.toFixed(1)}
         />
         <ReferenceLine y={0} stroke="#4a5568" strokeDasharray="3 3" />
-        {threshold > 0 && (
+        {showThresholdLine && (
           <>
             <ReferenceLine
               y={threshold}
@@ -189,6 +200,14 @@ function SymbolScoreBarChart({ scores, threshold, isMobile }: {
             />
           </>
         )}
+        {/* 阈值超出可见范围时，在图表顶部标注 */}
+        {threshold > 0 && !showThresholdLine && (
+          <ReferenceLine
+            y={yMax * 0.95}
+            stroke="transparent"
+            label={{ value: `入场阈值 \u00B1${threshold}（超出范围）`, position: 'center', fill: COLORS.textSecondary, fontSize: 9 }}
+          />
+        )}
         <RechartsTooltip
           contentStyle={{ background: '#0d1321', border: '1px solid rgba(0,212,255,0.2)', borderRadius: 6, fontSize: 12, color: COLORS.text }}
           formatter={(value: number) => [`${value > 0 ? '+' : ''}${value.toFixed(1)}`, '分数']}
@@ -198,7 +217,7 @@ function SymbolScoreBarChart({ scores, threshold, isMobile }: {
             <Cell key={i} fill={entry.fill} fillOpacity={0.85} />
           ))}
           <LabelList dataKey="score" position="top" fontSize={10} fill={COLORS.text}
-            formatter={(v: number) => `${v > 0 ? '+' : ''}${v}`} />
+            formatter={(v: number) => `${v > 0 ? '+' : ''}${v.toFixed(1)}`} />
         </Bar>
       </BarChart>
     </ResponsiveContainer>
