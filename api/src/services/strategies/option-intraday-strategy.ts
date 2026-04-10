@@ -153,6 +153,7 @@ export interface OptionIntradayStrategyConfig {
   entryThresholdOverride?: {
     directionalScoreMin?: number;  // 覆盖 ENTRY_THRESHOLDS 的 directionalScoreMin
     spreadScoreMin?: number;       // 覆盖 ENTRY_THRESHOLDS 的 spreadScoreMin
+    absoluteScoreFloor?: number;   // 绝对最低分数地板，动态阈值再低也不低于此值（0=不限制）
   };
 
   feeModel?: {
@@ -315,10 +316,15 @@ export class OptionIntradayStrategy extends StrategyBase {
     const vixFactor = this.getVixThresholdFactor(this.currentCycleVix);
     // Phase 3B: 时间阈值修正（开盘0.85降低→更易入场，尾盘递增→更难入场，但不偏向方向）
     const timeFactor = this.currentTimeThresholdFactor;
+    // 绝对分数地板：动态阈值再低也不低于此值（过滤低分噪声信号）
+    const absoluteFloor = Number(override?.absoluteScoreFloor) || 0;
+
+    const rawDirectional = Math.round((override?.directionalScoreMin ?? tableBase.directionalScoreMin) * vixFactor * timeFactor);
+    const rawSpread = Math.round((override?.spreadScoreMin ?? tableBase.spreadScoreMin) * vixFactor * timeFactor);
 
     return {
-      directionalScoreMin: Math.round((override?.directionalScoreMin ?? tableBase.directionalScoreMin) * vixFactor * timeFactor),
-      spreadScoreMin: Math.round((override?.spreadScoreMin ?? tableBase.spreadScoreMin) * vixFactor * timeFactor),
+      directionalScoreMin: Math.max(absoluteFloor, rawDirectional),
+      spreadScoreMin: Math.max(absoluteFloor, rawSpread),
       straddleIvThreshold: tableBase.straddleIvThreshold,
       vixFactor,
       timeFactor,

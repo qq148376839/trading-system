@@ -146,6 +146,7 @@ interface OptionBacktestConfig {
   noNewEntryBeforeCloseMinutes?: number; // 收盘前N分钟禁开新仓, default 180
   forceCloseBeforeCloseMinutes?: number; // 收盘前N分钟强平, default 30
   vixAdjustThreshold?: boolean;         // 是否用VIX动态调整阈值, default true
+  absoluteScoreFloor?: number;          // 绝对最低分数地板，动态阈值再低也不低于此值（0=不限制）
   positionSizing?: {                    // 仓位模式（从策略DB读取）
     mode: 'FIXED_CONTRACTS' | 'MAX_PREMIUM';
     fixedContracts?: number;
@@ -868,6 +869,7 @@ class OptionBacktestService {
    */
   private async resolveStrategyConfig(strategyId: number): Promise<{
     baseThreshold: number;
+    absoluteScoreFloor: number;
     riskPreference: 'AGGRESSIVE' | 'CONSERVATIVE';
     positionContracts: number;
     tradeWindowStartET: number;
@@ -884,6 +886,7 @@ class OptionBacktestService {
   }> {
     const defaults = {
       baseThreshold: 15,
+      absoluteScoreFloor: 0,
       riskPreference: 'CONSERVATIVE' as const,
       positionContracts: 1,
       tradeWindowStartET: 570,
@@ -916,6 +919,7 @@ class OptionBacktestService {
       const tableBase = ENTRY_THRESHOLDS[pref] || ENTRY_THRESHOLDS.CONSERVATIVE;
       const override = stratConfig?.entryThresholdOverride;
       const baseThreshold = override?.directionalScoreMin ?? tableBase.directionalScoreMin;
+      const absoluteScoreFloor = Number(override?.absoluteScoreFloor) || 0;
 
       // 仓位模式
       const sizing = stratConfig?.positionSizing || defaults.positionSizing;
@@ -947,6 +951,7 @@ class OptionBacktestService {
 
       const resolved = {
         baseThreshold,
+        absoluteScoreFloor,
         riskPreference: pref,
         positionContracts: sizing.fixedContracts ?? defaults.positionContracts,
         tradeWindowStartET: defaults.tradeWindowStartET,           // 始终 570
@@ -1037,6 +1042,7 @@ class OptionBacktestService {
       positionSizing: config?.positionSizing ?? resolved.positionSizing,
       feeModel: config?.feeModel ?? resolved.feeModel,
       capitalBudget: config?.capitalBudget ?? resolved.capitalBudget,
+      absoluteScoreFloor: config?.absoluteScoreFloor ?? resolved.absoluteScoreFloor,
     };
 
     // R5v2: 从策略配置构建相关性映射（优先配置，回退默认）
@@ -1315,6 +1321,10 @@ class OptionBacktestService {
             vixFactor = Math.max(0.5, Math.min(2.5, vixBar.close / 20));
             dynamicEntryThreshold = Math.round(cfg.entryThreshold * vixFactor);
           }
+        }
+        // 绝对分数地板：动态阈值再低也不低于此值
+        if (cfg.absoluteScoreFloor > 0) {
+          dynamicEntryThreshold = Math.max(cfg.absoluteScoreFloor, dynamicEntryThreshold);
         }
 
         // 方向判定

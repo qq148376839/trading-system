@@ -1,5 +1,17 @@
 # 更新日志
 
+## 2026-04-10
+
+### feat: 新增 absoluteScoreFloor 绝对分数地板 — 动态阈值硬下限过滤低分噪声信号
+
+**问题**: 动态阈值 `base × vixFactor × timeFactor` 在低 VIX + 早盘时可降至 4（10 × 0.5 × 0.85），导致 score=8 的噪声信号入场。数据显示 8-10 分信号 0% 胜率（EV=-$99）。
+
+**方案**: 新增 `absoluteScoreFloor` 配置项，动态阈值计算结果取 `max(floor, dynamicThreshold)`。与动态因子逻辑完全独立，不改变 VIX/时间因子。前端策略配置新增"绝对最低分数"输入框，默认 0（不限制）。回测同步对齐。
+
+**修改文件**: `option-intraday-strategy.ts`, `option-backtest.service.ts`, `StrategyFormModal.tsx`
+
+---
+
 ## 2026-04-09
 
 ### fix: IRON_DOME 假阳性熔断 — API 失败不再误判为 broker 强平

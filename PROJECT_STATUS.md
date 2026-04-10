@@ -1,11 +1,17 @@
 # 项目进度总结
 
-**更新时间**: 2026-04-09
+**更新时间**: 2026-04-10
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-04-10: absoluteScoreFloor 绝对分数地板
+
+**改动**: 动态阈值新增硬下限 `absoluteScoreFloor`，计算结果取 `max(floor, dynamicThreshold)`。防止低 VIX + 早盘时噪声信号入场（8-10 分区间 0% 胜率）。前端策略配置新增输入框，回测同步对齐。
+
+**修改文件**: `option-intraday-strategy.ts`, `option-backtest.service.ts`, `StrategyFormModal.tsx`
 
 ### 2026-04-09: IRON_DOME 假阳性熔断修复
 

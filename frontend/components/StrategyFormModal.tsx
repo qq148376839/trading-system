@@ -1256,7 +1256,8 @@ export default function StrategyFormModal({
                       <div className="flex items-center gap-2">
                         {presetMode !== 'CUSTOM' && !showEntryParams && (
                           <span className="text-xs text-gray-500">
-                            入场阈值={formData.config.entryThresholdOverride?.directionalScoreMin ?? 8},
+                            入场阈值={formData.config.entryThresholdOverride?.directionalScoreMin ?? 8}
+                            {(formData.config.entryThresholdOverride?.absoluteScoreFloor ?? 0) > 0 && `,地板=${formData.config.entryThresholdOverride.absoluteScoreFloor}`},
                             止盈={formData.config.exitRules?.takeProfitPercent ?? 40}%,
                             止损={formData.config.exitRules?.stopLossPercent ?? 30}%
                           </span>
@@ -1275,6 +1276,11 @@ export default function StrategyFormModal({
                           <label className="block text-xs text-gray-700 mb-1 font-medium">入场得分阈值</label>
                           <input {...numberInputProps('entryDirectionalScoreMin', { path: ['entryThresholdOverride', 'directionalScoreMin'], defaultValue: 8, min: 3, max: 50 })} />
                           <p className="text-xs text-gray-500 mt-1">信号绝对值需达到此阈值才入场</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-700 mb-1 font-medium">绝对最低分数</label>
+                          <input {...numberInputProps('absoluteScoreFloor', { path: ['entryThresholdOverride', 'absoluteScoreFloor'], defaultValue: 0, min: 0, max: 30 })} />
+                          <p className="text-xs text-gray-500 mt-1">动态阈值的硬下限，0=不限制</p>
                         </div>
                         <div>
                           <label className="block text-xs text-gray-700 mb-1 font-medium">方向确认窗口（分钟）</label>
