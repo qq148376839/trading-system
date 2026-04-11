@@ -33,6 +33,38 @@ interface AppLayoutProps {
  * 统一使用 Ant Design Layout，提升导航体验和页面一致性
  * 移动端使用 Drawer 抽屉导航，桌面端保持固定侧边栏
  */
+const TEST_BANNER_HEIGHT = 36
+
+function TestEnvBanner() {
+  if (process.env.NEXT_PUBLIC_ENV_MODE !== 'test') return null
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        height: TEST_BANNER_HEIGHT,
+        background: '#fa8c16',
+        color: '#fff',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontWeight: 700,
+        fontSize: 14,
+        zIndex: 1100,
+        letterSpacing: 2,
+        userSelect: 'none',
+      }}
+    >
+      TEST ENVIRONMENT — PAPER TRADING
+    </div>
+  )
+}
+
+const isTestEnv = process.env.NEXT_PUBLIC_ENV_MODE === 'test'
+const topOffset = isTestEnv ? TEST_BANNER_HEIGHT : 0
+
 export default function AppLayout({ children }: AppLayoutProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -255,7 +287,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
   // 移动端布局
   if (isMobile) {
     return (
-      <Layout style={{ minHeight: '100vh' }}>
+      <Layout style={{ minHeight: '100vh', paddingTop: topOffset }}>
+        <TestEnvBanner />
         <Drawer
           placement="left"
           open={drawerOpen}
@@ -308,7 +341,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
 
   // 桌面端布局（保持原有逻辑不变）
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout style={{ minHeight: '100vh', paddingTop: topOffset }}>
+      <TestEnvBanner />
       <Sider
         collapsible
         collapsed={collapsed}
@@ -316,10 +350,10 @@ export default function AppLayout({ children }: AppLayoutProps) {
         width={200}
         style={{
           overflow: 'auto',
-          height: '100vh',
+          height: `calc(100vh - ${topOffset}px)`,
           position: 'fixed',
           left: 0,
-          top: 0,
+          top: topOffset,
           bottom: 0,
         }}
       >

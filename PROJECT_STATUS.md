@@ -1,11 +1,17 @@
 # 项目进度总结
 
-**更新时间**: 2026-04-10
+**更新时间**: 2026-04-11
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-04-11: 测试环境搭建
+
+**改动**: Docker Compose Override 模式隔离测试环境（独立 DB/端口 3002/容器/volume）。前端 AppLayout 顶部橙色横幅标识测试环境。数据同步脚本 `scripts/sync-test-db.sh` 导出 7 张配置表。
+
+**新增文件**: `docker-compose.test.yml`, `.env.test.example`, `api/.env.test.example`, `scripts/sync-test-db.sh`
 
 ### 2026-04-10: 监控大屏阈值修正 + 柱状图
 

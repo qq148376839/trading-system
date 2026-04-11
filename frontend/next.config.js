@@ -9,6 +9,7 @@ const nextConfig = {
   ...(isDocker || !isWindows ? { output: 'standalone' } : {}),
   env: {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001',
+    NEXT_PUBLIC_ENV_MODE: process.env.NEXT_PUBLIC_ENV_MODE || 'production',
   },
   // Fix for Ant Design module resolution issues
   webpack: (config, { isServer }) => {

@@ -27,7 +27,9 @@ RUN pnpm install --frozen-lockfile
 COPY frontend/ ./
 
 # 构建前端（生产环境使用相对路径 /api）
+ARG NEXT_PUBLIC_ENV_MODE=production
 ENV NEXT_PUBLIC_API_URL=/api
+ENV NEXT_PUBLIC_ENV_MODE=$NEXT_PUBLIC_ENV_MODE
 ENV NODE_ENV=production
 ENV DOCKER_ENV=true
 RUN pnpm run build
