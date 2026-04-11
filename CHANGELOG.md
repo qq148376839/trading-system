@@ -6,7 +6,7 @@
 
 **背景**: 需要一套与生产完全隔离的测试环境，使用模拟盘 API key，避免测试操作影响生产数据。
 
-**方案**: Docker Compose Override 模式，同一份代码通过 `docker-compose.test.yml` 覆盖端口(3002)、容器名、volume、network 实现完全隔离。前端编译时注入 `NEXT_PUBLIC_ENV_MODE=test`，AppLayout 顶部显示橙色 "TEST ENVIRONMENT" 横幅（不可关闭）。
+**方案**: Docker Compose Override 模式，同一份代码通过 `docker-compose.test.yml` 覆盖端口(3003)、容器名、volume、network 实现完全隔离。前端编译时注入 `NEXT_PUBLIC_ENV_MODE=test`，AppLayout 顶部显示橙色 "TEST ENVIRONMENT" 横幅（不可关闭）。
 
 **新增文件**: `docker-compose.test.yml`, `.env.test.example`, `api/.env.test.example`, `scripts/sync-test-db.sh`
 **修改文件**: `Dockerfile`, `frontend/next.config.js`, `frontend/components/AppLayout.tsx`, `.gitignore`

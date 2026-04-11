@@ -33,7 +33,7 @@ services:
       SKIP_LONGPORT_INIT: "true"
       FUTU_BRIDGE_URL: "http://futu-bridge:8765"
     ports:
-      - "3002:3001"
+      - "3003:3001"
     depends_on:
       postgres:
         condition: service_healthy
