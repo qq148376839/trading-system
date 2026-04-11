@@ -1,18 +1,30 @@
-# 测试环境 Docker Compose Override
-# 用法: docker compose -p trading-test -f docker-compose.yml -f docker-compose.test.yml --env-file .env.test up -d --build
+# 测试环境 Docker Compose（独立文件，非 override）
+# 用法: docker compose -p trading-test -f docker-compose.test.yml --env-file .env.test up -d --build
 #
 # 与生产环境完全隔离：独立容器名、端口、数据库 volume、网络
-# futu-bridge 共用生产环境实例（无状态服务）
+# futu-bridge 通过 host network 访问生产实例（192.168.31.18:8765）
 
 services:
+  # PostgreSQL 数据库（测试）
   postgres:
+    image: postgres:16-alpine
     container_name: trading-postgres-test
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-trading_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trading_password}
+      POSTGRES_DB: ${POSTGRES_DB:-trading_db}
     volumes:
       - postgres_data_test:/var/lib/postgresql/data
       - ./api/migrations/000_init_schema.sql:/docker-entrypoint-initdb.d/000_init_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trading_user} -d ${POSTGRES_DB:-trading_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - trading-network-test
 
+  # 统一应用服务（测试）
   app:
     build:
       context: .
@@ -31,7 +43,8 @@ services:
       LONGPORT_ACCESS_TOKEN: ${LONGPORT_ACCESS_TOKEN:-your_access_token}
       LONGPORT_ENABLE_OVERNIGHT: ${LONGPORT_ENABLE_OVERNIGHT:-false}
       SKIP_LONGPORT_INIT: "true"
-      FUTU_BRIDGE_URL: "http://futu-bridge:8765"
+      # futu-bridge 直接访问生产实例（宿主机 IP）
+      FUTU_BRIDGE_URL: "http://192.168.31.18:8765"
     ports:
       - "3003:3001"
     depends_on:
@@ -42,11 +55,13 @@ services:
       - ./logs-test:/app/logs
     networks:
       - trading-network-test
-
-  # 禁用 futu-bridge（共用生产环境实例）
-  futu-bridge:
-    profiles:
-      - disabled
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
 volumes:
   postgres_data_test:
