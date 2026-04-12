@@ -9,11 +9,11 @@
 
 ### 2026-04-12: Schwartz 过滤器合入 Intraday
 
-**改动**: 4 个 Schwartz 独有过滤器（EMA 硬过滤、CHOP 震荡检测、IV Rank、仓位缩减）合入 `option-intraday-strategy.ts`，作为 `schwartzFilters` 配置开关，全部默认关闭。生产零影响，测试环境可启用。
+**改动**: 4 个 Schwartz 独有过滤器合入 `option-intraday-strategy.ts`（配置开关，默认关闭）。前端策略表单新增 Schwartz 过滤器 4 个 checkbox。策略启动新增同类型互斥校验（409 拒绝重复类型）。
 
 **待办**: 停用 OPTION_SCHWARTZ_V1 策略（部署后执行 `POST /strategies/{id}/stop`）
 
-**修改文件**: `api/src/services/strategies/option-intraday-strategy.ts`
+**修改文件**: `option-intraday-strategy.ts`, `quant.ts`, `StrategyFormModal.tsx`
 
 ### 2026-04-11: 测试环境搭建
 

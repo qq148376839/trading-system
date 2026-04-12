@@ -1548,6 +1548,109 @@ export default function StrategyFormModal({
                         </div>
                       </div>
                     </div>
+                    {/* Schwartz 过滤器开关（合并自 OPTION_SCHWARTZ_V1） */}
+                    {formData.type === 'OPTION_INTRADAY_V1' && (
+                    <div className="mt-4 p-3 border rounded bg-green-50 border-green-200">
+                      <div className="mb-2">
+                        <span className="text-xs font-semibold text-gray-700">Schwartz 过滤器</span>
+                        <span className="text-xs text-gray-500 ml-2">合并自舒华兹策略，全部默认关闭，生产环境行为不变</span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.config.schwartzFilters?.emaHardFilter ?? false}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  schwartzFilters: {
+                                    ...(formData.config.schwartzFilters || {}),
+                                    emaHardFilter: e.target.checked,
+                                  },
+                                },
+                              })
+                            }
+                            className="w-4 h-4"
+                          />
+                          <div>
+                            <span className="text-xs text-gray-700 font-medium">EMA 硬过滤</span>
+                            <p className="text-xs text-gray-400">10 EMA 逆趋势一刀切拒绝</p>
+                          </div>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.config.schwartzFilters?.chopDetection ?? false}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  schwartzFilters: {
+                                    ...(formData.config.schwartzFilters || {}),
+                                    chopDetection: e.target.checked,
+                                  },
+                                },
+                              })
+                            }
+                            className="w-4 h-4"
+                          />
+                          <div>
+                            <span className="text-xs text-gray-700 font-medium">CHOP 震荡检测</span>
+                            <p className="text-xs text-gray-400">震荡期入场阈值翻倍</p>
+                          </div>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.config.schwartzFilters?.ivRankFilter ?? false}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  schwartzFilters: {
+                                    ...(formData.config.schwartzFilters || {}),
+                                    ivRankFilter: e.target.checked,
+                                  },
+                                },
+                              })
+                            }
+                            className="w-4 h-4"
+                          />
+                          <div>
+                            <span className="text-xs text-gray-700 font-medium">IV Rank 过滤</span>
+                            <p className="text-xs text-gray-400">高隐含波动率时拒绝买方</p>
+                          </div>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.config.schwartzFilters?.positionReduction ?? false}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                config: {
+                                  ...formData.config,
+                                  schwartzFilters: {
+                                    ...(formData.config.schwartzFilters || {}),
+                                    positionReduction: e.target.checked,
+                                  },
+                                },
+                              })
+                            }
+                            className="w-4 h-4"
+                          />
+                          <div>
+                            <span className="text-xs text-gray-700 font-medium">仓位缩减</span>
+                            <p className="text-xs text-gray-400">大赚/连胜后自动缩减仓位</p>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+                    )}
                     <div className="mt-3 p-2 bg-yellow-100 rounded text-xs text-yellow-800">
                       <strong>强平规则（不可配置）：</strong>0DTE 收盘前180分钟（1:00 PM ET）强平 | 非0DTE 收盘前10分钟强平 | 绝对止损 -40%
                     </div>

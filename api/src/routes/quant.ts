@@ -1151,6 +1151,21 @@ quantRouter.post('/strategies/:id/start', async (req: Request, res: Response, ne
   try {
     const { id } = req.params;
 
+    // 校验同类型策略是否已在运行（防止同类型多实例并发冲突）
+    const sameTypeCheck = await pool.query(
+      `SELECT s2.id, s2.name FROM strategies s1
+       JOIN strategies s2 ON s1.type = s2.type
+       WHERE s1.id = $1 AND s2.id != $1 AND s2.status = 'RUNNING'`,
+      [id]
+    );
+    if (sameTypeCheck.rows.length > 0) {
+      const running = sameTypeCheck.rows[0];
+      return res.status(409).json({
+        success: false,
+        error: { message: `同类型策略 "${running.name}" (ID:${running.id}) 已在运行，不能同时启动多个同类型策略` },
+      });
+    }
+
     // 更新状态为 RUNNING
     await pool.query('UPDATE strategies SET status = $1 WHERE id = $2', ['RUNNING', id]);
 

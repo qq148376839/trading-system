@@ -8,8 +8,9 @@
 
 **方案**: 将 Schwartz 4 个独有过滤器（EMA 硬过滤、CHOP 震荡检测、IV Rank 过滤、仓位缩减）合入 `option-intraday-strategy.ts` 作为可配置开关，全部默认关闭。生产环境行为零变化，测试环境可通过配置启用对比效果。
 
-**修改文件**: `api/src/services/strategies/option-intraday-strategy.ts`
+**修改文件**: `api/src/services/strategies/option-intraday-strategy.ts`, `api/src/routes/quant.ts`, `frontend/components/StrategyFormModal.tsx`
 **新增配置**: `schwartzFilters: { emaHardFilter, chopDetection, ivRankFilter, positionReduction, config }`
+**新增校验**: 策略启动时拒绝同类型策略重复运行（409 Conflict）
 **相关文档**: `docs/features/260412-多策略冲突解决方案.md`, `docs/analysis/260412-多策略深度分析报告.md`
 
 ---
