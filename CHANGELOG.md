@@ -2,6 +2,25 @@
 
 ## 2026-04-12
 
+### feat: 实现正股趋势跟踪策略 TREND_FOLLOWING_V1
+
+**背景**: Robin 交易直觉系统化——MA50/MA200 双均线 + 52W 高点 + RS 排名 + ATR trailing stop。环境信号复用期权策略已验证的 VIX/BTC/USD/温度（零额外 API 调用）。
+
+**新增文件**:
+- `api/src/config/strategy-categories.ts` — 策略类别映射 (STOCK/OPTION)，支持同类别互斥
+- `api/src/services/stock-trend-recommendation.service.ts` — 评分引擎：趋势(40%) + 动量(30%) + 环境(30%) = 百分制
+- `api/src/services/strategies/trend-following-strategy.ts` — 自选股策略类
+
+**修改文件**:
+- `api/src/services/market-data.service.ts` — 新增 `getDailyOHLCV()` 返回完整 OHLCV
+- `api/src/services/strategy-scheduler.service.ts` — 工厂方法 + POSITION_CONTEXT_RESET/CLEANUP 新增 4 字段 + OPENING→HOLDING metadata 提取 + `processTrendFollowingExit()` 退出逻辑
+- `api/src/routes/quant.ts` — 互斥校验从同类型改为同类别 (`s2.type = ANY($2)`)
+- `frontend/components/StrategyFormModal.tsx` — 新增策略类型选项 + 完整配置表单
+
+**相关文档**: `docs/features/260412-正股趋势策略TREND_FOLLOWING_V1.md`
+
+---
+
 ### feat: 合并 Schwartz 过滤器到 Intraday 策略（配置开关，默认关闭）
 
 **背景**: 两个期权策略（INTRADAY + SCHWARTZ）共享同一信号源，Schwartz 仅多 4 个过滤器。并行运行产生跨策略冲突风险。第一性原理重审后决定合并为单一期权策略。

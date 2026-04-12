@@ -11,6 +11,7 @@ import accountBalanceSyncService from '../services/account-balance-sync.service'
 import strategyScheduler from '../services/strategy-scheduler.service';
 import stateManager from '../services/state-manager.service';
 import { ErrorFactory, normalizeError } from '../utils/errors';
+import { getSameCategoryTypes } from '../config/strategy-categories';
 import {
   getPopularInstitutions,
   getInstitutionList,
@@ -1151,18 +1152,27 @@ quantRouter.post('/strategies/:id/start', async (req: Request, res: Response, ne
   try {
     const { id } = req.params;
 
-    // 校验同类型策略是否已在运行（防止同类型多实例并发冲突）
+    // 获取当前策略类型
+    const strategyResult = await pool.query('SELECT type FROM strategies WHERE id = $1', [id]);
+    if (strategyResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: { message: '策略不存在' },
+      });
+    }
+    const sameCategoryTypes = getSameCategoryTypes(strategyResult.rows[0].type);
+
+    // 校验同类别策略是否已在运行（同类别策略共享资源，不能并发）
     const sameTypeCheck = await pool.query(
-      `SELECT s2.id, s2.name FROM strategies s1
-       JOIN strategies s2 ON s1.type = s2.type
-       WHERE s1.id = $1 AND s2.id != $1 AND s2.status = 'RUNNING'`,
-      [id]
+      `SELECT id, name, type FROM strategies
+       WHERE id != $1 AND status = 'RUNNING' AND type = ANY($2)`,
+      [id, sameCategoryTypes]
     );
     if (sameTypeCheck.rows.length > 0) {
       const running = sameTypeCheck.rows[0];
       return res.status(409).json({
         success: false,
-        error: { message: `同类型策略 "${running.name}" (ID:${running.id}) 已在运行，不能同时启动多个同类型策略` },
+        error: { message: `同类别策略 "${running.name}" (类型: ${running.type}, ID:${running.id}) 已在运行，不能同时启动同类别策略` },
       });
     }
 

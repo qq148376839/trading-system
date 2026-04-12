@@ -8,6 +8,9 @@ import { StrategyBase, TradingIntent } from './strategies/strategy-base';
 import { RecommendationStrategy } from './strategies/recommendation-strategy';
 import { OptionIntradayStrategy } from './strategies/option-intraday-strategy';
 import { SchwartzOptionStrategy } from './strategies/schwartz-option-strategy';
+import { TrendFollowingStrategy } from './strategies/trend-following-strategy';
+import { getLatestSMA } from '../utils/ema';
+import { calculateATR } from '../utils/technical-indicators';
 import stockSelector from './stock-selector.service';
 import capitalManager from './capital-manager.service';
 import stateManager from './state-manager.service';
@@ -50,6 +53,11 @@ const POSITION_CONTEXT_RESET = {
   lastBrokerCheckTime: null as null,
   protectionOrderId: null as null,
   takeProfitOrderId: null as null,
+  // TREND_FOLLOWING_V1: ATR trailing stop 字段
+  atrAtEntry: null as null,
+  trailingStopPrice: null as null,
+  maTightenActive: false,
+  initialStopLoss: null as null,
 };
 
 /**
@@ -69,6 +77,11 @@ const POSITION_EXIT_CLEANUP = {
   lastBrokerCheckTime: null as null,
   protectionOrderId: null as null,
   takeProfitOrderId: null as null,
+  // TREND_FOLLOWING_V1: ATR trailing stop 字段
+  atrAtEntry: null as null,
+  trailingStopPrice: null as null,
+  maTightenActive: null as null,
+  initialStopLoss: null as null,
 };
 
 /**
@@ -2573,6 +2586,15 @@ class StrategyScheduler {
             // 期权策略：记录实际交易的期权symbol与必要字段（用于持仓监控/强平）
             tradedSymbol: isOptionStrategy ? intent.symbol : undefined,
             optionMeta: isOptionStrategy ? (intent.metadata || {}) : undefined,
+            // TREND_FOLLOWING_V1: 从 metadata 显式提取 ATR/MA 字段到 HOLDING context
+            // (非期权策略的 metadata 不会自动映射，必须显式提取)
+            ...(strategyInstance instanceof TrendFollowingStrategy && intent.metadata ? {
+              atrAtEntry: intent.metadata.atrAtEntry ?? null,
+              trailingStopPrice: intent.metadata.initialStopLoss ?? null,
+              maTightenActive: false,
+              initialStopLoss: intent.metadata.initialStopLoss ?? null,
+              isLeveraged: intent.metadata.isLeveraged ?? false,
+            } : {}),
           };
 
           await strategyInstance.updateState(symbol, 'HOLDING', holdingContext);
@@ -3874,7 +3896,15 @@ class StrategyScheduler {
         );
       }
 
-      // ========== 股票策略：使用原有止盈止损逻辑 ==========
+      // ========== TREND_FOLLOWING_V1: ATR trailing stop + MA 退出 ==========
+      if (strategyInstance instanceof TrendFollowingStrategy) {
+        return await this.processTrendFollowingExit(
+          strategyInstance, strategyId, symbol,
+          context, currentPrice, entryPrice, quantity, strategyConfig
+        );
+      }
+
+      // ========== 其他股票策略：使用原有止盈止损逻辑 ==========
       // 收盘前强制平仓检查（股票策略通常不需要）
       let forceCloseNow = false;
 
@@ -4087,6 +4117,197 @@ class StrategyScheduler {
       return { actionTaken };
     } catch (error: any) {
       logger.error(`策略 ${strategyId} 处理持仓状态失败 (${symbol}):`, error);
+      return { actionTaken: false };
+    }
+  }
+
+  // TREND_FOLLOWING_V1: MA 缓存 (5min TTL)
+  private trendExitMACache = new Map<string, { ma50: number | null; ma200: number | null; timestamp: number }>();
+
+  /**
+   * TREND_FOLLOWING_V1 退出逻辑:
+   * 优先级: MA200跌破 > ATR trailing stop > 杠杆ETF超时 > MA50跌破(收紧trailing)
+   */
+  private async processTrendFollowingExit(
+    strategyInstance: StrategyBase,
+    strategyId: number,
+    symbol: string,
+    context: any,
+    currentPrice: number,
+    entryPrice: number,
+    quantity: number,
+    strategyConfig: any
+  ): Promise<{ actionTaken: boolean }> {
+    try {
+      const atrAtEntry = Number(context.atrAtEntry) || 0;
+      let trailingStopPrice = Number(context.trailingStopPrice) || 0;
+      let peakPrice = Number(context.peakPrice) || entryPrice;
+      let maTightenActive = context.maTightenActive === true;
+      const isLeveraged = context.isLeveraged === true;
+      const atrTrailingMultiple = Number(strategyConfig.atrTrailingMultiple) || 2.0;
+      const atrTightenMultiple = Number(strategyConfig.atrTightenMultiple) || 1.0;
+      const leveragedMaxDays = Number(strategyConfig.leveragedEtfMaxDays) || 5;
+
+      // 获取 MA50/MA200 (5min 缓存)
+      let ma50: number | null = null;
+      let ma200: number | null = null;
+      const maCached = this.trendExitMACache.get(symbol);
+      if (maCached && Date.now() - maCached.timestamp < 5 * 60 * 1000) {
+        ma50 = maCached.ma50;
+        ma200 = maCached.ma200;
+      } else {
+        try {
+          const dailyData = await marketDataService.getDailyOHLCV(symbol, 250);
+          if (dailyData.length >= 200) {
+            const closes = dailyData.map(d => d.close);
+            ma50 = getLatestSMA(closes, Number(strategyConfig.maFastPeriod) || 50);
+            ma200 = getLatestSMA(closes, Number(strategyConfig.maSlowPeriod) || 200);
+          }
+          this.trendExitMACache.set(symbol, { ma50, ma200, timestamp: Date.now() });
+        } catch {
+          logger.warn(`[TREND] ${symbol} 获取 MA 数据失败, 跳过 MA 退出检查`);
+        }
+      }
+
+      // 更新 peakPrice
+      if (currentPrice > peakPrice) {
+        peakPrice = currentPrice;
+      }
+
+      // 更新 trailing stop
+      const activeMultiple = maTightenActive ? atrTightenMultiple : atrTrailingMultiple;
+      if (atrAtEntry > 0) {
+        const newStop = peakPrice - activeMultiple * atrAtEntry;
+        if (newStop > trailingStopPrice) {
+          trailingStopPrice = newStop;
+        }
+      }
+
+      let shouldSell = false;
+      let exitReason = '';
+
+      // 1. MA200 跌破 → 硬退出
+      if (ma200 !== null && currentPrice < ma200) {
+        shouldSell = true;
+        exitReason = 'MA200_BREAK';
+        logger.log(`[TREND] ${strategyId} ${symbol}: MA200跌破 (price=${currentPrice.toFixed(2)}, MA200=${ma200.toFixed(2)})`);
+      }
+      // 2. ATR trailing stop
+      else if (trailingStopPrice > 0 && currentPrice <= trailingStopPrice) {
+        shouldSell = true;
+        exitReason = 'ATR_TRAILING_STOP';
+        logger.log(`[TREND] ${strategyId} ${symbol}: ATR trailing stop (price=${currentPrice.toFixed(2)}, stop=${trailingStopPrice.toFixed(2)})`);
+      }
+      // 3. 杠杆 ETF 持仓天数限制
+      else if (isLeveraged && context.entryTime) {
+        const holdingDays = (Date.now() - new Date(context.entryTime).getTime()) / (24 * 3600 * 1000);
+        if (holdingDays > leveragedMaxDays) {
+          shouldSell = true;
+          exitReason = 'LEVERAGED_ETF_MAX_DAYS';
+          logger.log(`[TREND] ${strategyId} ${symbol}: 杠杆ETF持仓${holdingDays.toFixed(1)}天 > ${leveragedMaxDays}天`);
+        }
+      }
+
+      // 4. MA50 跌破 → 收紧 trailing stop (不卖出)
+      if (!shouldSell && !maTightenActive && ma50 !== null && currentPrice < ma50) {
+        maTightenActive = true;
+        if (atrAtEntry > 0) {
+          trailingStopPrice = peakPrice - atrTightenMultiple * atrAtEntry;
+        }
+        logger.log(`[TREND] ${strategyId} ${symbol}: MA50跌破, 收紧trailing stop到${atrTightenMultiple}×ATR (stop=${trailingStopPrice.toFixed(2)})`);
+      }
+
+      // 更新 context (每 tick 都保存 peakPrice 和 trailingStopPrice)
+      const updatedContext = {
+        ...context,
+        peakPrice,
+        trailingStopPrice,
+        maTightenActive,
+      };
+
+      if (!shouldSell) {
+        // 不卖出，只更新 context
+        const contextChanged = peakPrice !== Number(context.peakPrice) ||
+          trailingStopPrice !== Number(context.trailingStopPrice) ||
+          maTightenActive !== (context.maTightenActive === true);
+        if (contextChanged) {
+          await strategyInstance.updateState(symbol, 'HOLDING', updatedContext);
+        }
+        return { actionTaken: contextChanged };
+      }
+
+      // ========== 执行卖出 ==========
+      const positionCheck = await this.checkAvailablePosition(strategyId, symbol);
+      if (positionCheck.hasPending) return { actionTaken: false };
+
+      if (positionCheck.availableQuantity !== undefined && positionCheck.availableQuantity <= 0) {
+        // 券商无持仓 → POSITION_EXIT_CLEANUP
+        logger.warn(`[TREND] ${strategyId} ${symbol}: 券商无持仓, 转IDLE`);
+        const prevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
+        const allocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
+        const prevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+        await strategyInstance.updateState(symbol, 'IDLE', {
+          ...POSITION_EXIT_CLEANUP,
+          lastExitTime: new Date().toISOString(),
+          exitReason: 'BROKER_NO_POSITION',
+          dailyTradeCount: prevTradeCount + 1,
+          consecutiveLosses: (parseInt(String(context.consecutiveLosses ?? 0), 10) || 0) + 1,
+          dailyRealizedPnL: prevDailyPnL,
+          cooldownUntil: computeCooldownUntil({ is0DTE: false, dailyTradeCount: prevTradeCount, strategyConfig }),
+        });
+        if (allocAmt > 0) {
+          try { await capitalManager.releaseAllocation(strategyId, allocAmt, symbol); } catch {}
+        }
+        return { actionTaken: true };
+      }
+
+      // 检查是否有 pending sell
+      const dbCheck = await pool.query(
+        `SELECT eo.order_id FROM execution_orders eo WHERE strategy_id = $1 AND symbol = $2 AND side IN ('SELL', 'Sell', '2') AND current_status IN ('SUBMITTED', 'NEW', 'PARTIALLY_FILLED') AND eo.created_at >= NOW() - INTERVAL '1 hour'`,
+        [strategyId, symbol]
+      );
+      if (dbCheck.rows.length > 0) return { actionTaken: false };
+
+      // 转 CLOSING
+      await strategyInstance.updateState(symbol, 'CLOSING', {
+        ...updatedContext,
+        exitReason,
+        exitPrice: currentPrice,
+      });
+
+      // 记录卖出信号
+      const sellSignalId = await this.logSellSignal(
+        strategyId, symbol, currentPrice,
+        `趋势退出: ${exitReason}`,
+        { exitReason, trailingStopPrice, peakPrice, ma50, ma200 }
+      );
+
+      const sellIntent = {
+        action: 'SELL' as const,
+        symbol,
+        entryPrice: entryPrice,
+        sellPrice: currentPrice,
+        quantity,
+        reason: `趋势退出: ${exitReason}`,
+        metadata: { exitReason, signalId: sellSignalId },
+      };
+
+      logger.log(`[TREND] ${strategyId} ${symbol}: 执行卖出 - ${exitReason} (signalId=${sellSignalId})`);
+      const executionResult = await basicExecutionService.executeSellIntent(sellIntent, strategyId);
+
+      if (executionResult.submitted && executionResult.orderId) {
+        this.markOrderSubmitted(strategyId, symbol, 'SELL', executionResult.orderId);
+      }
+
+      if (!executionResult.success && !executionResult.submitted) {
+        // 卖出失败，回滚
+        await strategyInstance.updateState(symbol, 'HOLDING', updatedContext);
+        logger.error(`[TREND] ${strategyId} ${symbol}: 卖出失败: ${executionResult.error}`);
+      }
+
+      return { actionTaken: true };
+    } catch (error: any) {
+      logger.error(`[TREND] ${strategyId} 退出逻辑失败 (${symbol}):`, error);
       return { actionTaken: false };
     }
   }
@@ -5891,6 +6112,8 @@ class StrategyScheduler {
         return new OptionIntradayStrategy(strategyId, config);
       case 'OPTION_SCHWARTZ_V1':
         return new SchwartzOptionStrategy(strategyId, config);
+      case 'TREND_FOLLOWING_V1':
+        return new TrendFollowingStrategy(strategyId, config);
       default:
         throw new Error(`未知的策略类型: ${strategyType}`);
     }

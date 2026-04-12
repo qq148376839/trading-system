@@ -12,7 +12,7 @@ import { retryWithBackoff } from '../utils/longport-rate-limiter';
 import { logger } from '../utils/logger';
 import pool from '../config/database';
 import { toNaiveDateParts } from '../utils/market-time'; // 规则 #17
-import { formatLongbridgeCandlestick } from '../utils/candlestick-formatter';
+import { formatLongbridgeCandlestick, StandardCandlestickData } from '../utils/candlestick-formatter';
 import quoteSubscriptionService from './quote-subscription.service';
 
 interface CandlestickData {
@@ -1557,6 +1557,43 @@ class MarketDataService {
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
       logger.error(`获取 ${symbol} 日K历史失败:`, errMsg);
+      return [];
+    }
+  }
+
+  /**
+   * 获取个股日线完整 OHLCV 数据
+   * 与 getDailyCloseHistory 共享 LongPort candlesticks() 调用，但返回完整 StandardCandlestickData
+   * 用于 ATR / 成交量 / 52W 高点等需要 high/low/volume 的计算
+   */
+  async getDailyOHLCV(symbol: string, count: number = 60): Promise<StandardCandlestickData[]> {
+    try {
+      const quoteCtx = await getQuoteContext();
+      const longport = require('longport');
+      const { Period, AdjustType } = longport;
+
+      let tradeSessionsAll = 100;
+      try {
+        const TradeSessions = (longport as any).TradeSessions;
+        if (TradeSessions && typeof TradeSessions.All === 'number') {
+          tradeSessionsAll = TradeSessions.All;
+        }
+      } catch {
+        // 使用默认值 100
+      }
+
+      const candlesticks = await quoteCtx.candlesticks(
+        symbol,
+        Period.Day,
+        count,
+        AdjustType.NoAdjust,
+        tradeSessionsAll
+      );
+
+      return candlesticks.map((c: any) => formatLongbridgeCandlestick(c));
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      logger.error(`获取 ${symbol} 日线OHLCV失败:`, errMsg);
       return [];
     }
   }

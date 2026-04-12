@@ -99,6 +99,25 @@ const DEFAULT_CONFIGS: Record<string, any> = {
     },
     accelerationBonus: { enabled: true, accelRatioThreshold: 1.15, bonusMultiplier: 5.0, bonusCap: 8.0 },
   },
+  TREND_FOLLOWING_V1: {
+    maFastPeriod: 50,
+    maSlowPeriod: 200,
+    weekHigh52Threshold: 85,
+    rsLookbackDays: 20,
+    volumeConfirmMultiple: 1.5,
+    atrPeriod: 14,
+    atrTrailingMultiple: 2.0,
+    atrTightenMultiple: 1.0,
+    maxConcurrentPositions: 5,
+    maxConcentration: 0.15,
+    leveragedEtfMaxConcentration: 0.10,
+    leveragedEtfMaxDays: 5,
+    dailyLossLimitPct: 2,
+    entryScoreThreshold: 65,
+    absoluteScoreFloor: 45,
+    maxGapUpPct: 2,
+    chopThreshold: 0.5,
+  },
 };
 
 function detectPresetMode(config: Record<string, unknown>): PresetMode {
@@ -547,6 +566,7 @@ export default function StrategyFormModal({
                   <option value="RECOMMENDATION_V1">推荐策略 V1（股票）</option>
                   <option value="OPTION_INTRADAY_V1">期权日内策略 V1（买方）</option>
                   <option value="OPTION_SCHWARTZ_V1">期权-舒华兹趋势 V1</option>
+                  <option value="TREND_FOLLOWING_V1">正股趋势跟踪 V1</option>
                 </select>
               </div>
             )}
@@ -575,6 +595,14 @@ export default function StrategyFormModal({
                         基于马丁·舒华兹 Pit Bull 交易哲学的期权策略。使用 10 日 EMA 硬过滤（逆趋势无例外拒绝）
                         + IV Rank 过滤（高IV拒绝买方）+ 震荡区间检测（MA缠绕时提高门槛2x）+ 大赚后仓位缩减。
                         入场门槛更高，适合趋势明确的市场。
+                      </p>
+                    </>
+                  ) : formData.type === 'TREND_FOLLOWING_V1' ? (
+                    <>
+                      <h3 className="text-sm font-semibold text-gray-900 mb-1">正股趋势跟踪 V1</h3>
+                      <p className="text-xs text-gray-600 leading-relaxed mb-2">
+                        Robin 交易直觉系统化：MA50/MA200 双均线 + 52 周高点 + 相对强度排名 + ATR 追踪止损。
+                        环境信号复用期权策略已验证的 VIX/BTC/USD/市场温度。评分百分制，动态阈值随 VIX 调整。
                       </p>
                     </>
                   ) : (
@@ -878,9 +906,11 @@ export default function StrategyFormModal({
             {/* 策略参数配置 */}
             <div className="mb-4">
               <label className="block text-sm font-medium mb-2">
-                {(formData.type === 'OPTION_INTRADAY_V1' || formData.type === 'OPTION_SCHWARTZ_V1') ? '期权策略参数' : '策略参数配置'}
+                {(formData.type === 'OPTION_INTRADAY_V1' || formData.type === 'OPTION_SCHWARTZ_V1') ? '期权策略参数'
+                  : formData.type === 'TREND_FOLLOWING_V1' ? '趋势跟踪参数' : '策略参数配置'}
                 <span className="text-xs text-gray-500 ml-2">
-                  {(formData.type === 'OPTION_INTRADAY_V1' || formData.type === 'OPTION_SCHWARTZ_V1') ? '' : '（用于计算止损止盈价格）'}
+                  {(formData.type === 'OPTION_INTRADAY_V1' || formData.type === 'OPTION_SCHWARTZ_V1') ? ''
+                    : formData.type === 'TREND_FOLLOWING_V1' ? '（均线/ATR/入场条件）' : '（用于计算止损止盈价格）'}
                 </span>
               </label>
               {(formData.type === 'OPTION_INTRADAY_V1' || formData.type === 'OPTION_SCHWARTZ_V1') ? (
@@ -1806,6 +1836,139 @@ export default function StrategyFormModal({
                       </div>
                     </div>
                   )}
+                </>
+              ) : formData.type === 'TREND_FOLLOWING_V1' ? (
+                <>
+                  <div className="bg-green-50 border border-green-200 rounded p-3 mb-3">
+                    <p className="text-xs text-green-800 mb-2"><strong>评分模型：</strong>趋势分(40%) + 动量分(30%) + 环境分(30%) = 百分制</p>
+                    <p className="text-xs text-green-700">
+                      趋势分: MA系统(20) + 52W高点(10) + SPX一致性(10) |
+                      动量分: RS排名(15) + 成交量(10) + Gap(5) |
+                      环境分: VIX(10) + BTC(5) + USD(5) + 温度(10)
+                    </p>
+                    <p className="text-xs text-green-600 mt-1"><strong>退出：</strong>ATR trailing stop + MA200跌破清仓 + MA50跌破收紧stop</p>
+                  </div>
+                  {/* 均线参数 */}
+                  <p className="text-xs font-semibold text-gray-600 mb-2">均线参数</p>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">MA快线周期</label>
+                      <input type="number" value={formData.config.maFastPeriod ?? 50}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, maFastPeriod: parseInt(e.target.value) || 50 } })}
+                        className="border rounded px-3 py-2 w-full" min="5" max="100" />
+                      <p className="text-xs text-gray-500 mt-1">默认 50</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">MA慢线周期</label>
+                      <input type="number" value={formData.config.maSlowPeriod ?? 200}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, maSlowPeriod: parseInt(e.target.value) || 200 } })}
+                        className="border rounded px-3 py-2 w-full" min="50" max="500" />
+                      <p className="text-xs text-gray-500 mt-1">默认 200</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">52W高点阈值%</label>
+                      <input type="number" value={formData.config.weekHigh52Threshold ?? 85}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, weekHigh52Threshold: parseInt(e.target.value) || 85 } })}
+                        className="border rounded px-3 py-2 w-full" min="50" max="100" />
+                      <p className="text-xs text-gray-500 mt-1">默认 85%</p>
+                    </div>
+                  </div>
+                  {/* 风控参数 */}
+                  <p className="text-xs font-semibold text-gray-600 mb-2">风控参数</p>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">ATR周期</label>
+                      <input type="number" value={formData.config.atrPeriod ?? 14}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, atrPeriod: parseInt(e.target.value) || 14 } })}
+                        className="border rounded px-3 py-2 w-full" min="5" max="50" />
+                      <p className="text-xs text-gray-500 mt-1">默认 14</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">ATR止损倍数</label>
+                      <input type="number" step="0.1" value={formData.config.atrTrailingMultiple ?? 2.0}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, atrTrailingMultiple: parseFloat(e.target.value) || 2.0 } })}
+                        className="border rounded px-3 py-2 w-full" min="0.5" max="5" />
+                      <p className="text-xs text-gray-500 mt-1">默认 2.0</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">MA50收紧倍数</label>
+                      <input type="number" step="0.1" value={formData.config.atrTightenMultiple ?? 1.0}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, atrTightenMultiple: parseFloat(e.target.value) || 1.0 } })}
+                        className="border rounded px-3 py-2 w-full" min="0.5" max="3" />
+                      <p className="text-xs text-gray-500 mt-1">默认 1.0</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">最大持仓数</label>
+                      <input type="number" value={formData.config.maxConcurrentPositions ?? 5}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, maxConcurrentPositions: parseInt(e.target.value) || 5 } })}
+                        className="border rounded px-3 py-2 w-full" min="1" max="20" />
+                      <p className="text-xs text-gray-500 mt-1">默认 5</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">单标的占比%</label>
+                      <input type="number" step="1" value={Math.round((formData.config.maxConcentration ?? 0.15) * 100)}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, maxConcentration: (parseInt(e.target.value) || 15) / 100 } })}
+                        className="border rounded px-3 py-2 w-full" min="5" max="50" />
+                      <p className="text-xs text-gray-500 mt-1">默认 15%</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">日亏损熔断%</label>
+                      <input type="number" step="0.5" value={formData.config.dailyLossLimitPct ?? 2}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, dailyLossLimitPct: parseFloat(e.target.value) || 2 } })}
+                        className="border rounded px-3 py-2 w-full" min="0.5" max="10" />
+                      <p className="text-xs text-gray-500 mt-1">默认 2%</p>
+                    </div>
+                  </div>
+                  {/* 入场参数 */}
+                  <p className="text-xs font-semibold text-gray-600 mb-2">入场参数</p>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">入场阈值(百分制)</label>
+                      <input type="number" value={formData.config.entryScoreThreshold ?? 65}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, entryScoreThreshold: parseInt(e.target.value) || 65 } })}
+                        className="border rounded px-3 py-2 w-full" min="30" max="90" />
+                      <p className="text-xs text-gray-500 mt-1">默认 65</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">绝对地板分</label>
+                      <input type="number" value={formData.config.absoluteScoreFloor ?? 45}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, absoluteScoreFloor: parseInt(e.target.value) || 45 } })}
+                        className="border rounded px-3 py-2 w-full" min="20" max="80" />
+                      <p className="text-xs text-gray-500 mt-1">默认 45</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">最大追涨Gap%</label>
+                      <input type="number" step="0.5" value={formData.config.maxGapUpPct ?? 2}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, maxGapUpPct: parseFloat(e.target.value) || 2 } })}
+                        className="border rounded px-3 py-2 w-full" min="0.5" max="10" />
+                      <p className="text-xs text-gray-500 mt-1">默认 2%</p>
+                    </div>
+                  </div>
+                  {/* 杠杆ETF */}
+                  <p className="text-xs font-semibold text-gray-600 mb-2">杠杆ETF限制</p>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">杠杆ETF占比%</label>
+                      <input type="number" step="1" value={Math.round((formData.config.leveragedEtfMaxConcentration ?? 0.10) * 100)}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, leveragedEtfMaxConcentration: (parseInt(e.target.value) || 10) / 100 } })}
+                        className="border rounded px-3 py-2 w-full" min="5" max="30" />
+                      <p className="text-xs text-gray-500 mt-1">默认 10%</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">杠杆ETF最长天数</label>
+                      <input type="number" value={formData.config.leveragedEtfMaxDays ?? 5}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, leveragedEtfMaxDays: parseInt(e.target.value) || 5 } })}
+                        className="border rounded px-3 py-2 w-full" min="1" max="30" />
+                      <p className="text-xs text-gray-500 mt-1">默认 5 天</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-700 mb-1 font-medium">震荡检测阈值</label>
+                      <input type="number" step="0.1" value={formData.config.chopThreshold ?? 0.5}
+                        onChange={(e) => setFormData({ ...formData, config: { ...formData.config, chopThreshold: parseFloat(e.target.value) || 0.5 } })}
+                        className="border rounded px-3 py-2 w-full" min="0.1" max="3" />
+                      <p className="text-xs text-gray-500 mt-1">默认 0.5</p>
+                    </div>
+                  </div>
                 </>
               ) : (
                 <>

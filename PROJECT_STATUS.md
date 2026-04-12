@@ -7,6 +7,13 @@
 
 ## 🆕 最近更新
 
+### 2026-04-12: 正股趋势跟踪策略 TREND_FOLLOWING_V1
+
+**改动**: 新增正股趋势跟踪策略，评分模型百分制（趋势40%+动量30%+环境30%），ATR trailing stop 退出，同类别互斥校验。新增 `getDailyOHLCV()` 数据方法，scheduler 新增 4 个 context 字段 + 退出逻辑。前端新增完整配置表单。
+
+**新增文件**: `strategy-categories.ts`, `stock-trend-recommendation.service.ts`, `trend-following-strategy.ts`
+**修改文件**: `market-data.service.ts`, `strategy-scheduler.service.ts`, `quant.ts`, `StrategyFormModal.tsx`
+
 ### 2026-04-12: Schwartz 过滤器合入 Intraday
 
 **改动**: 4 个 Schwartz 独有过滤器合入 `option-intraday-strategy.ts`（配置开关，默认关闭）。前端策略表单新增 Schwartz 过滤器 4 个 checkbox。策略启动新增同类型互斥校验（409 拒绝重复类型）。
