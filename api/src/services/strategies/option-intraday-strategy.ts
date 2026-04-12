@@ -19,6 +19,10 @@ import fastMomentumService from '../fast-momentum.service';
 import marketRegimeDetector, { SmartReverseConfig, DEFAULT_SMART_REVERSE_CONFIG, RegimeDetectionResult } from '../market-regime-detector.service';
 import { getQuoteContext } from '../../config/longport';
 import { calculateATR } from '../../utils/technical-indicators';
+import schwartzSignalFilter, {
+  SchwartzFilterConfig,
+  DEFAULT_SCHWARTZ_FILTER_CONFIG,
+} from '../schwartz-signal-filter.service';
 
 // ============================================
 // 策略类型定义
@@ -167,6 +171,15 @@ export interface OptionIntradayStrategyConfig {
   // ===== 智能反向配置（替代 REVERSE_BEAR/BULL_SPREAD）=====
   smartReverse?: SmartReverseConfig;
 
+  // ===== Schwartz 过滤器开关（合并自 OPTION_SCHWARTZ_V1，全部默认关闭） =====
+  schwartzFilters?: {
+    emaHardFilter?: boolean;      // 10 EMA 逆趋势一刀切拒绝
+    chopDetection?: boolean;      // 震荡区间阈值 2x
+    ivRankFilter?: boolean;       // 高 IV 拒买方
+    positionReduction?: boolean;  // 大赚后缩仓
+    config?: Partial<SchwartzFilterConfig>; // 过滤器参数微调
+  };
+
   // ===== 动量加速度 bonus 配置（Phase 4）=====
   accelerationBonus?: {
     /** 总开关（默认 true） */
@@ -276,11 +289,19 @@ export class OptionIntradayStrategy extends StrategyBase {
   private currentCycleVix?: number;
   // Phase 3B: 时间阈值修正系数（由推荐服务传入）
   private currentTimeThresholdFactor = 1.0;
+  // Schwartz 过滤器配置（合并后复用）
+  private schwartzFilterCfg: SchwartzFilterConfig;
+  // CHOP 震荡检测乘数（每周期重置，CHOP 时 2x 抬高阈值）
+  private currentChopMultiplier = 1.0;
 
   constructor(strategyId: number, config: OptionIntradayStrategyConfig = {}) {
     super(strategyId, config as any);
     // 合并默认配置
     this.cfg = { ...DEFAULT_OPTION_STRATEGY_CONFIG, ...config };
+    this.schwartzFilterCfg = {
+      ...DEFAULT_SCHWARTZ_FILTER_CONFIG,
+      ...(config.schwartzFilters?.config || {}),
+    };
   }
 
   /**
@@ -319,8 +340,10 @@ export class OptionIntradayStrategy extends StrategyBase {
     // 绝对分数地板：动态阈值再低也不低于此值（过滤低分噪声信号）
     const absoluteFloor = Number(override?.absoluteScoreFloor) || 0;
 
-    const rawDirectional = Math.round((override?.directionalScoreMin ?? tableBase.directionalScoreMin) * vixFactor * timeFactor);
-    const rawSpread = Math.round((override?.spreadScoreMin ?? tableBase.spreadScoreMin) * vixFactor * timeFactor);
+    // Schwartz CHOP 震荡检测乘数（默认 1.0，CHOP 时 2.0 抬高阈值）
+    const chopFactor = this.currentChopMultiplier;
+    const rawDirectional = Math.round((override?.directionalScoreMin ?? tableBase.directionalScoreMin) * vixFactor * timeFactor * chopFactor);
+    const rawSpread = Math.round((override?.spreadScoreMin ?? tableBase.spreadScoreMin) * vixFactor * timeFactor * chopFactor);
 
     return {
       directionalScoreMin: Math.max(absoluteFloor, rawDirectional),
@@ -328,6 +351,7 @@ export class OptionIntradayStrategy extends StrategyBase {
       straddleIvThreshold: tableBase.straddleIvThreshold,
       vixFactor,
       timeFactor,
+      chopFactor,
     };
   }
 
@@ -668,6 +692,37 @@ export class OptionIntradayStrategy extends StrategyBase {
         return null;
       }
 
+      // 3.1) 【Schwartz 过滤层】EMA 硬过滤（可选，默认关闭）
+      this.currentChopMultiplier = 1.0; // 每周期重置
+      if (this.cfg.schwartzFilters?.emaHardFilter && optionRec.finalScore !== 0) {
+        const sfDirection: 'CALL' | 'PUT' = optionRec.finalScore > 0 ? 'CALL' : 'PUT';
+        const emaResult = await schwartzSignalFilter.checkEMAFilter(symbol, sfDirection, this.schwartzFilterCfg);
+        if (!emaResult.pass) {
+          logger.info(`[${symbol}] Schwartz EMA过滤: ✗ ${emaResult.reason}`, {
+            module: 'OptionStrategy.SchwartzFilter', strategyId: this.strategyId,
+          });
+          logData.finalResult = 'NO_SIGNAL';
+          logData.rejectionReason = `Schwartz EMA过滤: ${emaResult.reason}`;
+          logData.rejectionCheckpoint = 'schwartz_ema';
+          this.logDecision(logData);
+          return null;
+        }
+        logger.info(`[${symbol}] Schwartz EMA过滤: ✓ ${emaResult.reason}`, {
+          module: 'OptionStrategy.SchwartzFilter', strategyId: this.strategyId,
+        });
+      }
+
+      // 3.2) 【Schwartz 过滤层】CHOP 震荡检测（可选，默认关闭）
+      if (this.cfg.schwartzFilters?.chopDetection) {
+        const chopResult = await schwartzSignalFilter.checkChopFilter(symbol, this.schwartzFilterCfg);
+        if (!chopResult.pass) {
+          this.currentChopMultiplier = 2.0; // CHOP 时阈值翻倍
+          logger.info(`[${symbol}] Schwartz CHOP检测: 震荡期，阈值×2 (偏离=${chopResult.deviation?.toFixed(3) ?? 'N/A'})`, {
+            module: 'OptionStrategy.SchwartzFilter', strategyId: this.strategyId,
+          });
+        }
+      }
+
       // 3.5) 市场状态判别（智能反向）
       // 时间窗口由 tradeWindow.noNewEntryBeforeCloseMinutes 控制，regime detection 不重复检查
       const smartReverseConfig: SmartReverseConfig = {
@@ -920,6 +975,27 @@ export class OptionIntradayStrategy extends StrategyBase {
         return null;
       }
 
+      // 6.7) 【Schwartz 过滤层】IV Rank 过滤（可选，默认关闭）
+      if (this.cfg.schwartzFilters?.ivRankFilter) {
+        const contractIV = Number(selected.impliedVolatility) || 0;
+        const vixValue = optionRec.currentVix || 0;
+        const ivResult = await schwartzSignalFilter.checkIVFilter(symbol, contractIV, vixValue, this.schwartzFilterCfg);
+        if (!ivResult.pass) {
+          logger.info(`[${symbol}] Schwartz IV过滤: ✗ ${ivResult.reason} (mode=${ivResult.mode})`, {
+            module: 'OptionStrategy.SchwartzFilter', strategyId: this.strategyId,
+          });
+          logData.finalResult = 'NO_SIGNAL';
+          logData.rejectionReason = `Schwartz IV过滤: ${ivResult.reason}`;
+          logData.rejectionCheckpoint = 'schwartz_iv';
+          this.logDecision(logData);
+          return null;
+        }
+        // 异步记录 IV 历史
+        if (contractIV > 0 && vixValue > 0) {
+          schwartzSignalFilter.recordDailyIV(symbol, contractIV, vixValue).catch(() => {});
+        }
+      }
+
       // 7) 确定入场价格
       const entryPriceMode = this.cfg.entryPriceMode || 'ASK';
       const premium = entryPriceMode === 'MID'
@@ -992,6 +1068,27 @@ export class OptionIntradayStrategy extends StrategyBase {
           }
           contracts = n - 1;
           logger.debug(`[${symbol}仓位] 预算=${budget.toFixed(2)}, 权利金=${premium.toFixed(2)}, 计算合约数=${contracts}`);
+        }
+      }
+
+      // 8.1) 【Schwartz 过滤层】仓位缩减（可选，默认关闭）
+      if (this.cfg.schwartzFilters?.positionReduction) {
+        try {
+          const instance = await this.stateManager.getInstanceState(this.strategyId, symbol);
+          const ctx = instance?.context || {};
+          const lastPnLPercent = Number(ctx.lastTradePnLPercent) || 0;
+          const consecutiveWins = Number(ctx.consecutiveWins) || 0;
+          const sizeResult = schwartzSignalFilter.calculatePositionSize(
+            contracts, lastPnLPercent, consecutiveWins, this.schwartzFilterCfg,
+          );
+          if (sizeResult.contracts !== contracts) {
+            logger.info(`[${symbol}] Schwartz仓位缩减: ${contracts}→${sizeResult.contracts} ${sizeResult.reason}`, {
+              module: 'OptionStrategy.SchwartzFilter', strategyId: this.strategyId,
+            });
+            contracts = sizeResult.contracts;
+          }
+        } catch {
+          // 获取上笔信息失败，保持原始仓位
         }
       }
 

@@ -1,5 +1,19 @@
 # 更新日志
 
+## 2026-04-12
+
+### feat: 合并 Schwartz 过滤器到 Intraday 策略（配置开关，默认关闭）
+
+**背景**: 两个期权策略（INTRADAY + SCHWARTZ）共享同一信号源，Schwartz 仅多 4 个过滤器。并行运行产生跨策略冲突风险。第一性原理重审后决定合并为单一期权策略。
+
+**方案**: 将 Schwartz 4 个独有过滤器（EMA 硬过滤、CHOP 震荡检测、IV Rank 过滤、仓位缩减）合入 `option-intraday-strategy.ts` 作为可配置开关，全部默认关闭。生产环境行为零变化，测试环境可通过配置启用对比效果。
+
+**修改文件**: `api/src/services/strategies/option-intraday-strategy.ts`
+**新增配置**: `schwartzFilters: { emaHardFilter, chopDetection, ivRankFilter, positionReduction, config }`
+**相关文档**: `docs/features/260412-多策略冲突解决方案.md`, `docs/analysis/260412-多策略深度分析报告.md`
+
+---
+
 ## 2026-04-11
 
 ### feat: 测试环境搭建 — Docker Compose Override + 前端环境标识

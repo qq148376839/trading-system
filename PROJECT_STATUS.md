@@ -1,11 +1,19 @@
 # 项目进度总结
 
-**更新时间**: 2026-04-11
+**更新时间**: 2026-04-12
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-04-12: Schwartz 过滤器合入 Intraday
+
+**改动**: 4 个 Schwartz 独有过滤器（EMA 硬过滤、CHOP 震荡检测、IV Rank、仓位缩减）合入 `option-intraday-strategy.ts`，作为 `schwartzFilters` 配置开关，全部默认关闭。生产零影响，测试环境可启用。
+
+**待办**: 停用 OPTION_SCHWARTZ_V1 策略（部署后执行 `POST /strategies/{id}/stop`）
+
+**修改文件**: `api/src/services/strategies/option-intraday-strategy.ts`
 
 ### 2026-04-11: 测试环境搭建
 
