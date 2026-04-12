@@ -2,7 +2,7 @@
 # 用法: docker compose -p trading-test -f docker-compose.test.yml --env-file .env.test up -d --build
 #
 # 与生产环境完全隔离：独立容器名、端口、数据库 volume、网络
-# futu-bridge 通过 host network 访问生产实例（192.168.31.18:8765）
+# FutuOpenD 不配置（避免与生产争抢 quota，Futu 请求会超时降级到 LongPort/Moomoo）
 
 services:
   # PostgreSQL 数据库（测试）
@@ -43,8 +43,7 @@ services:
       LONGPORT_ACCESS_TOKEN: ${LONGPORT_ACCESS_TOKEN:-your_access_token}
       LONGPORT_ENABLE_OVERNIGHT: ${LONGPORT_ENABLE_OVERNIGHT:-false}
       SKIP_LONGPORT_INIT: "true"
-      # futu-bridge 直接访问生产实例（宿主机 IP）
-      FUTU_BRIDGE_URL: "http://192.168.31.18:8765"
+      # 不配置 FUTU_BRIDGE_URL — 测试环境禁用 FutuOpenD（默认值指向不存在的容器名，自动超时降级）
     ports:
       - "3003:3001"
     depends_on:
