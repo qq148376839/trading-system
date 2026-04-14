@@ -31,12 +31,14 @@ interface CandlestickBar {
 // LongPort SDK 枚举——延迟 require 避免模块加载顺序问题
 let SubType: { Quote: number };
 let Period: { Min_1: number };
+let TradeSessions: { Intraday: number; All: number };
 
 function ensureLongportEnums(): void {
   if (!SubType) {
     const longport = require('longport');
     SubType = longport.SubType;
     Period = longport.Period;
+    TradeSessions = longport.TradeSessions ?? { Intraday: 0, All: 1 };
   }
 }
 
@@ -210,7 +212,7 @@ class QuoteSubscriptionService {
     // 订阅 1 分钟 K 线（逐个，API 限制）
     for (const sym of newCandleSymbols) {
       try {
-        await this.quoteCtx.subscribeCandlesticks(sym, Period.Min_1);
+        await this.quoteCtx.subscribeCandlesticks(sym, Period.Min_1, TradeSessions.Intraday);
         this.subscribedCandlestickSymbols.add(sym);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -534,7 +536,7 @@ class QuoteSubscriptionService {
         if (allSymbols.length > 0) {
           await this.quoteCtx.subscribe(allSymbols, [SubType.Quote], true);
           for (const sym of this.subscribedCandlestickSymbols) {
-            await this.quoteCtx.subscribeCandlesticks(sym, Period.Min_1);
+            await this.quoteCtx.subscribeCandlesticks(sym, Period.Min_1, TradeSessions.Intraday);
           }
         }
 
@@ -668,7 +670,7 @@ class QuoteSubscriptionService {
     for (const sym of MARKET_INDEX_SYMBOLS) {
       if (!this.subscribedCandlestickSymbols.has(sym)) {
         try {
-          await this.quoteCtx.subscribeCandlesticks(sym, Period.Min_1);
+          await this.quoteCtx.subscribeCandlesticks(sym, Period.Min_1, TradeSessions.Intraday);
           this.subscribedCandlestickSymbols.add(sym);
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -692,7 +694,7 @@ class QuoteSubscriptionService {
     // 2. VIX：尝试 K 线订阅，失败降级到报价订阅
     if (!this.subscribedCandlestickSymbols.has(VIX_SYMBOL) && !this.subscribedQuoteSymbols.has(VIX_SYMBOL)) {
       try {
-        await this.quoteCtx.subscribeCandlesticks(VIX_SYMBOL, Period.Min_1);
+        await this.quoteCtx.subscribeCandlesticks(VIX_SYMBOL, Period.Min_1, TradeSessions.Intraday);
         this.subscribedCandlestickSymbols.add(VIX_SYMBOL);
         logger.info('[QuoteSub] VIX K 线订阅成功');
       } catch (err: unknown) {
