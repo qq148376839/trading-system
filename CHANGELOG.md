@@ -1,5 +1,21 @@
 # 更新日志
 
+## 2026-04-15
+
+### perf: HOLDING/订单监控价格获取优先 WebSocket 订阅缓存
+
+**背景**: 系统已有 WebSocket 实时订阅通道（`quote-subscription.service.ts`），但 HOLDING 阶段和订单监控仍每个周期无条件调用 `quoteCtx.quote()` API。IDLE 阶段已做了 WebSocket-aware 优化（先检查 `isWebSocketActive()`），本次将同一模式推广到其他调用点。
+
+**优化点**（均在 `strategy-scheduler.service.ts`）:
+1. **HOLDING 正股价格获取** — 先查 `quoteSubscriptionService.getPrice()`，miss 才降级 API
+2. **订单监控行情获取** — 批量先查 `getPriceMap()`，缺失标的才调 API
+3. **卖空持仓价格检查** — 同模式，缓存优先
+4. **costPrice 回退查询** — 同模式，缓存优先
+
+**效果**: 减少冗余 API 调用（期权 5s/正股 60s 周期），每次读到 WebSocket 最新推送值（毫秒级新鲜度）而非上一周期 API 返回值。
+
+---
+
 ## 2026-04-12
 
 ### feat: 实现正股趋势跟踪策略 TREND_FOLLOWING_V1

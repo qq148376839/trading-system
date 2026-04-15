@@ -1899,14 +1899,33 @@ class StrategyScheduler {
       }
 
       // 7. 获取当前行情并评估是否需要调整订单价格
-      const { getQuoteContext } = await import('../config/longport');
-      const quoteCtx = await getQuoteContext();
+      // 优先从 WebSocket 订阅缓存批量取价，缺失部分降级 API
       const symbols = pendingOrders.map((row: any) => row.symbol);
-      const quotes = await quoteCtx.quote(symbols);
-
+      const subPriceMap = quoteSubscriptionService.getPriceMap();
       const quoteMap = new Map<string, any>();
-      for (const quote of quotes) {
-        quoteMap.set(quote.symbol, quote);
+      const missingSymbols: string[] = [];
+
+      for (const sym of symbols) {
+        const cached = subPriceMap.get(sym);
+        if (cached && cached > 0) {
+          quoteMap.set(sym, { symbol: sym, lastDone: cached });
+        } else {
+          missingSymbols.push(sym);
+        }
+      }
+
+      // 降级：缓存未命中的标的走 API
+      if (missingSymbols.length > 0) {
+        try {
+          const { getQuoteContext } = await import('../config/longport');
+          const quoteCtx = await getQuoteContext();
+          const quotes = await quoteCtx.quote(missingSymbols);
+          for (const quote of quotes) {
+            quoteMap.set(quote.symbol, quote);
+          }
+        } catch (error: any) {
+          logger.warn(`策略 ${strategyId} 订单监控: 行情API降级失败: ${error.message}`);
+        }
       }
 
       // 处理每个订单
@@ -3523,37 +3542,45 @@ class StrategyScheduler {
         }
       }
 
-      // 非期权策略或期权服务未返回价格：LongPort实时行情API
+      // 非期权策略或期权服务未返回价格：优先 WebSocket 订阅缓存 → 降级 LongPort API
       if (currentPrice <= 0 && !isOptionStrategy) {
-        try {
-          const { getQuoteContext } = await import('../config/longport');
-          const quoteCtx = await getQuoteContext();
-          const quotes = await quoteCtx.quote([effectiveSymbol]);
-          if (quotes && quotes.length > 0) {
-            const q = quotes[0];
-            let price = parseFloat(q.lastDone?.toString() || q.last_done?.toString() || '0');
-            let src = 'longport-lastDone';
-            if (price <= 0) {
-              const bid = parseFloat(q.bidPrice?.toString() || '0');
-              const ask = parseFloat(q.askPrice?.toString() || '0');
-              if (bid > 0 && ask > 0) {
-                price = (bid + ask) / 2;
-                src = 'longport-mid';
-              } else if (ask > 0) {
-                price = ask;
-                src = 'longport-ask';
-              } else if (bid > 0) {
-                price = bid;
-                src = 'longport-bid';
+        // 第一层：WebSocket 订阅缓存（微秒级，无网络开销）
+        const cachedPrice = quoteSubscriptionService.getPrice(effectiveSymbol);
+        if (cachedPrice && cachedPrice > 0) {
+          currentPrice = cachedPrice;
+          priceSource = 'ws-subscription';
+        } else {
+          // 第二层：降级到 LongPort API 轮询
+          try {
+            const { getQuoteContext } = await import('../config/longport');
+            const quoteCtx = await getQuoteContext();
+            const quotes = await quoteCtx.quote([effectiveSymbol]);
+            if (quotes && quotes.length > 0) {
+              const q = quotes[0];
+              let price = parseFloat(q.lastDone?.toString() || q.last_done?.toString() || '0');
+              let src = 'longport-lastDone';
+              if (price <= 0) {
+                const bid = parseFloat(q.bidPrice?.toString() || '0');
+                const ask = parseFloat(q.askPrice?.toString() || '0');
+                if (bid > 0 && ask > 0) {
+                  price = (bid + ask) / 2;
+                  src = 'longport-mid';
+                } else if (ask > 0) {
+                  price = ask;
+                  src = 'longport-ask';
+                } else if (bid > 0) {
+                  price = bid;
+                  src = 'longport-bid';
+                }
+              }
+              if (price > 0) {
+                currentPrice = price;
+                priceSource = src;
               }
             }
-            if (price > 0) {
-              currentPrice = price;
-              priceSource = src;
-            }
+          } catch (error: any) {
+            logger.warn(`策略 ${strategyId} 标的 ${effectiveSymbol}: LongPort行情获取失败: ${error.message}`);
           }
-        } catch (error: any) {
-          logger.warn(`策略 ${strategyId} 标的 ${effectiveSymbol}: LongPort行情获取失败: ${error.message}`);
         }
       }
 
@@ -5202,18 +5229,23 @@ class StrategyScheduler {
         return { actionTaken: false };
       }
 
-      // 2. 获取当前价格
+      // 2. 获取当前价格（优先 WebSocket 缓存 → 降级 API）
       let currentPrice = 0;
-      try {
-        const { getQuoteContext } = await import('../config/longport');
-        const quoteCtx = await getQuoteContext();
-        const quotes = await quoteCtx.quote([symbol]);
-        if (quotes && quotes.length > 0) {
-          const price = parseFloat(quotes[0].lastDone?.toString() || quotes[0].last_done?.toString() || '0');
-          if (price > 0) currentPrice = price;
+      const cachedShortPrice = quoteSubscriptionService.getPrice(symbol);
+      if (cachedShortPrice && cachedShortPrice > 0) {
+        currentPrice = cachedShortPrice;
+      } else {
+        try {
+          const { getQuoteContext } = await import('../config/longport');
+          const quoteCtx = await getQuoteContext();
+          const quotes = await quoteCtx.quote([symbol]);
+          if (quotes && quotes.length > 0) {
+            const price = parseFloat(quotes[0].lastDone?.toString() || quotes[0].last_done?.toString() || '0');
+            if (price > 0) currentPrice = price;
+          }
+        } catch (error: any) {
+          // 忽略错误
         }
-      } catch (error: any) {
-        // 忽略错误
       }
 
       if (currentPrice <= 0) {
@@ -5508,15 +5540,21 @@ class StrategyScheduler {
       let costPrice = parseFloat(actualPosition.costPrice?.toString() || actualPosition.cost_price?.toString() || '0');
       
       if (costPrice <= 0) {
-        try {
-          const { getQuoteContext } = await import('../config/longport');
-          const quoteCtx = await getQuoteContext();
-          const quotes = await quoteCtx.quote([symbol]);
-          if (quotes && quotes.length > 0) {
-            costPrice = parseFloat(quotes[0].lastDone?.toString() || quotes[0].last_done?.toString() || '0');
+        // 优先 WebSocket 缓存
+        const cachedCostPrice = quoteSubscriptionService.getPrice(symbol);
+        if (cachedCostPrice && cachedCostPrice > 0) {
+          costPrice = cachedCostPrice;
+        } else {
+          try {
+            const { getQuoteContext } = await import('../config/longport');
+            const quoteCtx = await getQuoteContext();
+            const quotes = await quoteCtx.quote([symbol]);
+            if (quotes && quotes.length > 0) {
+              costPrice = parseFloat(quotes[0].lastDone?.toString() || quotes[0].last_done?.toString() || '0');
+            }
+          } catch (error) {
+            costPrice = 0;
           }
-        } catch (error) {
-          costPrice = 0;
         }
       }
 

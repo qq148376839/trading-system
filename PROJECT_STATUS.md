@@ -1,11 +1,17 @@
 # 项目进度总结
 
-**更新时间**: 2026-04-12
+**更新时间**: 2026-04-15
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-04-15: HOLDING/订单监控价格获取优先 WebSocket 订阅缓存
+
+**改动**: 4 处价格获取点改为"先查 WebSocket 订阅缓存（`getPrice()`/`getPriceMap()`）→ miss 才降级 LongPort API"，与 IDLE 阶段已有的 WebSocket-aware 模式统一。减少冗余 API 调用，数据新鲜度从周期级提升到毫秒级。
+
+**修改文件**: `strategy-scheduler.service.ts`
 
 ### 2026-04-12: 正股趋势跟踪策略 TREND_FOLLOWING_V1
 
