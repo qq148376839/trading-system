@@ -276,9 +276,16 @@ class OrderSubmissionService {
         orderOptions.limitOffset = new Decimal(params.limit_offset);
       }
 
-      // 8. 添加过期日期（GTD订单需要）
+      // 8. 添加过期日期（GTD订单需要，使用 LongPort NaiveDate）
       if (params.expire_date && timeInForceEnum === TimeInForceType.GoodTilDate) {
-        orderOptions.expireDate = new Date(params.expire_date);
+        const longport = require('longport');
+        const { NaiveDate } = longport;
+        const dateParts = params.expire_date.split('-');
+        orderOptions.expireDate = new NaiveDate(
+          parseInt(dateParts[0], 10),
+          parseInt(dateParts[1], 10),
+          parseInt(dateParts[2], 10)
+        );
       }
 
       // 9. 添加盘前盘后选项（美股订单需要）
