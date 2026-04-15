@@ -1,5 +1,26 @@
 # 更新日志
 
+## 2026-04-16
+
+### feat: 动态冷却机制修订 — 4原子全量上线
+
+**背景**: 实盘数据(4/6-4/15, 37笔交易)证明固定时间冷却有三个核心缺陷：2连亏后继续入场9笔avg -9.3%(-$883)；TAKE_PROFIT后重入7笔avg -6.5%；>15min重入9笔avg -6.0%（时间到但市场没变）。
+
+**改造内容**（4个独立可回滚的原子）:
+
+1. **A1: 2连亏硬门控** — `consecutiveLosses >= 2 && consecutiveLossPctSum <= -25%` 时标的当天禁入。新增 `consecutiveLossPctSum` context字段追踪累计亏损百分比。日志标记 `CONSEC_LOSS_GATE`。
+2. **A2: 退出原因感知冷却** — `computeCooldownUntil` 根据退出原因乘以不同系数（TRAILING_STOP=1.0x, STOP_LOSS=1.5x, TAKE_PROFIT/EMERGENCY=2.0x）。`GroupExitRecord` 新增 `exitReason` + `exitPrice` 字段，所有10个 `recordSymbolExit` 调用点传入退出原因。
+3. **A3: 价格变化因子 + ATR动态阈值** — `calculateReentryReadiness` 从5因子扩展为6因子，新增 f6 价格变化因子(权重0.25)。满分阈值使用标的14日ATR%（每日缓存），fallback 0.5%。权重重分配：f1=0.25, f2=0.20, f3=0.10(大幅降低), f4=0.15, f5=0.05, f6=0.25。`baseCooldownMinutes` 从硬编码8改为策略配置项。
+4. **A4: 跨标的冲动门控** — 任意标的退出后2min内全组禁入（堵04/13 TSLA→QQQ 0.6min跨组入场漏洞）。日志标记 `GLOBAL_IMPULSE_GATE`。
+
+**新增方法**: `fast-momentum.service.ts` 新增 `getLatestPrice()` 从WebSocket缓冲区读取最新价格。
+
+**配置**: `TradeWindowConfig` 新增 `reentryReadinessBaseCooldownMinutes` 可选字段。
+
+**修改文件**: `strategy-scheduler.service.ts`, `fast-momentum.service.ts`, `option-intraday-strategy.ts`
+
+---
+
 ## 2026-04-15
 
 ### perf: HOLDING/订单监控价格获取优先 WebSocket 订阅缓存

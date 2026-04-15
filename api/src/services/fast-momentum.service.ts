@@ -417,6 +417,18 @@ class FastMomentumService {
     };
   }
 
+  /** A3: 获取标的最新价格（从短 buffer 读取） */
+  getLatestPrice(symbol: string): number | null {
+    const buf = this.buffers.get(symbol);
+    if (!buf || buf.size() === 0) return null;
+    const all = buf.getAll();
+    if (all.length === 0) return null;
+    const latest = all[all.length - 1];
+    // 数据新鲜度：超过 30 秒认为过期
+    if (Date.now() - latest.timestamp > 30_000) return null;
+    return latest.price;
+  }
+
   /** 停止跟踪某个标的 */
   removeSymbol(symbol: string): void {
     this.buffers.delete(symbol);

@@ -1,11 +1,19 @@
 # 项目进度总结
 
-**更新时间**: 2026-04-15
+**更新时间**: 2026-04-16
 **项目状态**: ✅ **正常运行**
 
 ---
 
 ## 🆕 最近更新
+
+### 2026-04-16: 动态冷却机制修订 — 4原子全量上线
+
+**改动**: 冷却从"定时闹钟"变为"条件门"。A1=2连亏硬门控(consecutiveLosses>=2且累计<=-25%)；A2=退出原因感知(TP/SL/TS不同冷却倍数)；A3=价格变化因子(ATR%动态阈值)+6因子readiness模型；A4=跨标的2min冲动门控。全部独立可回滚。
+
+**修改文件**: `strategy-scheduler.service.ts`, `fast-momentum.service.ts`, `option-intraday-strategy.ts`
+
+**监控**: 日志搜 `CONSEC_LOSS_GATE`(预期0-2/天)、`GLOBAL_IMPULSE_GATE`(预期0-3/天)。入场频率下降>30%检查是否过激。
 
 ### 2026-04-15: HOLDING/订单监控价格获取优先 WebSocket 订阅缓存
 

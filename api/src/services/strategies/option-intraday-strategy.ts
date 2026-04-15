@@ -88,6 +88,7 @@ export interface TradeWindowConfig {
     filterActiveMinutes: number;      // 生效窗口：开盘后 N 分钟内检查（默认 30）
     scoreOverrideMultiplier: number;  // 超强信号覆盖倍数：absScore >= scoreMin * 此值时放行（默认 2.0）
   };
+  reentryReadinessBaseCooldownMinutes?: number;  // A3: readiness模型基础冷却分钟数（默认8）
 }
 
 // ============================================

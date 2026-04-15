@@ -82,29 +82,51 @@ const POSITION_EXIT_CLEANUP = {
   trailingStopPrice: null as null,
   maTightenActive: null as null,
   initialStopLoss: null as null,
+  // A1: 2连亏门控 — 清除累计亏损百分比
+  consecutiveLossPctSum: null as null,
 };
+
+/**
+ * 退出原因 → 冷却时间乘数
+ * 数据支撑(4/6-4/15): TAKE_PROFIT后7笔avg -6.5%, STOP_LOSS后9笔avg -2.8%, TRAILING_STOP后9笔avg +3.3%
+ */
+function getExitReasonMultiplier(exitReason: string | null | undefined): number {
+  if (!exitReason) return 1.0;
+  switch (exitReason) {
+    case 'TRAILING_STOP': return 1.0;
+    case 'STOP_LOSS': return 1.5;
+    case 'TAKE_PROFIT': return 2.0;
+    case 'EMERGENCY_STOP_LOSS':
+    case 'EMERGENCY_CLOSE':
+    case 'FORCED_CLOSE_BEFORE_MARKET_CLOSE': return 2.0;
+    default: return 1.0;
+  }
+}
 
 /**
  * 退出时计算冷却截止时间戳 — 入场时只需比较 now < cooldownUntil
  * 规则 #14: Math.max(1, ...) 保证 0DTE 非首笔 >= 1 分钟
+ * A2: 退出原因感知 — 不同退出原因乘以不同冷却系数
  */
 function computeCooldownUntil(params: {
   is0DTE: boolean;
   dailyTradeCount: number;
   strategyConfig: Record<string, unknown>;
+  exitReason?: string | null;
 }): string | null {
-  const { is0DTE, dailyTradeCount, strategyConfig } = params;
+  const { is0DTE, dailyTradeCount, strategyConfig, exitReason } = params;
   const tradeWindow = strategyConfig?.tradeWindow as Record<string, unknown> | undefined;
   const cfgMin = Number(tradeWindow?.reentryCooldownMinutes);
   const configMinutes = !isNaN(cfgMin) && cfgMin >= 0 ? cfgMin : undefined;
 
-  let cooldownMinutes: number;
+  let baseCooldownMinutes: number;
   if (is0DTE) {
-    cooldownMinutes = dailyTradeCount === 0 ? 0 : Math.max(1, configMinutes ?? 1);
+    baseCooldownMinutes = dailyTradeCount === 0 ? 0 : Math.max(1, configMinutes ?? 1);
   } else {
-    cooldownMinutes = configMinutes ?? 10;
+    baseCooldownMinutes = configMinutes ?? 10;
   }
-  if (cooldownMinutes <= 0) return null;
+  if (baseCooldownMinutes <= 0) return null;
+  const cooldownMinutes = baseCooldownMinutes * getExitReasonMultiplier(exitReason);
   return new Date(Date.now() + cooldownMinutes * 60000).toISOString();
 }
 
@@ -117,6 +139,8 @@ interface GroupExitRecord {
   exitTime: number;                  // 退出时间戳(ms)
   consecutiveSameDirection: number;  // 该组连续同方向退出次数
   group: string;                     // 缓存的相关组名
+  exitReason: string | null;         // A2: 退出原因（STOP_LOSS/TAKE_PROFIT/TRAILING_STOP等）
+  exitPrice: number;                 // A3: 退出时标的价格（用于价格变化因子）
 }
 
 /** 方向感知动态冷却：计算重入准备度 (0~1) */
@@ -125,8 +149,10 @@ function calculateReentryReadiness(params: {
   currentFinalScore: number;
   exitRecord: GroupExitRecord;
   baseCooldownMinutes: number;
+  currentUlPrice?: number | null;   // A3: 当前标的价格
+  atrPct?: number | null;           // A3: ATR% = ATR/价格*100
 }): number {
-  const { currentDirection, currentFinalScore, exitRecord, baseCooldownMinutes } = params;
+  const { currentDirection, currentFinalScore, exitRecord, baseCooldownMinutes, currentUlPrice, atrPct } = params;
   const now = Date.now();
 
   // 硬底线：退出后 2 分钟内一律阻止（防止边缘抖动）
@@ -134,21 +160,21 @@ function calculateReentryReadiness(params: {
     return 0;
   }
 
-  // 因子 1: 方向变化 (权重 0.35)
+  // 因子 1: 方向变化 (权重 0.25, 原 0.35)
   const directionChanged = currentDirection !== null
     && exitRecord.exitDirection !== null
     && currentDirection !== exitRecord.exitDirection;
   const f1 = directionChanged ? 1.0 : 0.0;
 
-  // 因子 2: 分数变化 (权重 0.25)
+  // 因子 2: 分数变化 (权重 0.20, 原 0.25)
   const scoreDelta = Math.abs(currentFinalScore - exitRecord.exitFinalScore);
   const f2 = Math.min(1.0, scoreDelta / 5.0);
 
-  // 因子 3: 时间衰减 (权重 0.20)
+  // 因子 3: 时间衰减 (权重 0.10, 原 0.20 — 大幅降低，数据证明时间不可靠)
   const minutesSinceExit = (now - exitRecord.exitTime) / 60_000;
   const f3 = Math.min(1.0, minutesSinceExit / baseCooldownMinutes);
 
-  // 因子 4: 盈亏×方向交互 (权重 0.12)
+  // 因子 4: 盈亏×方向交互 (权重 0.15, 原 0.12)
   const wasProfit = exitRecord.exitPnL >= 0;
   let f4: number;
   if (directionChanged && !wasProfit) f4 = 0.9;       // 方向变+亏损 → 高准备度
@@ -156,10 +182,19 @@ function calculateReentryReadiness(params: {
   else if (!directionChanged && wasProfit) f4 = 0.7;   // 同向+盈利 → 较高
   else f4 = 0.1;                                        // 同向+亏损 → 低
 
-  // 因子 5: 连续同向惩罚 (权重 0.08)
+  // 因子 5: 连续同向惩罚 (权重 0.05, 原 0.08)
   const f5 = Math.max(0, 1.0 - 0.35 * exitRecord.consecutiveSameDirection);
 
-  return 0.35 * f1 + 0.25 * f2 + 0.20 * f3 + 0.12 * f4 + 0.08 * f5;
+  // 因子 6: 价格变化 (权重 0.25, 新增 — 回答"市场变了吗")
+  // ATR% 作为动态满分阈值：高波动标的需要更大价格变化才算"市场重新定价"
+  let f6 = 0.5; // 数据缺失时中性值（fail-open）
+  if (currentUlPrice != null && exitRecord.exitPrice > 0) {
+    const priceChangePct = Math.abs(currentUlPrice - exitRecord.exitPrice) / exitRecord.exitPrice * 100;
+    const threshold = (atrPct != null && atrPct > 0) ? atrPct : 0.5;
+    f6 = Math.min(1.0, priceChangePct / threshold);
+  }
+
+  return 0.25 * f1 + 0.20 * f2 + 0.10 * f3 + 0.15 * f4 + 0.05 * f5 + 0.25 * f6;
 }
 
 // R5v2: 默认相关性分组（策略无配置时的回退）
@@ -211,6 +246,8 @@ class StrategyScheduler {
   private lastReconcileTime: number = 0;
   private static readonly RECONCILE_INTERVAL_MS = 60_000;
   private postCloseCleanupDone: boolean = false;
+  // A3: ATR% 缓存（symbol → atrPct），由 ATR 加载逻辑填充
+  private atrPctCache = new Map<string, number>();
   // R5v2: 跨标的入场保护状态（策略级共享内存）
   private crossSymbolState = new Map<number, {
     activeEntries: Map<string, number>;          // symbol → entry timestamp (Date.now())
@@ -251,6 +288,8 @@ class StrategyScheduler {
       finalScore: number;
       pnl: number;
       group: string;
+      exitReason?: string | null;
+      exitPrice?: number;
     }
   ): void {
     const crossState = this.getCrossSymbolState(strategyId);
@@ -282,6 +321,8 @@ class StrategyScheduler {
           ? prevConsecutive + 1
           : 0,
         group: exitGroup,
+        exitReason: exitInfo?.exitReason ?? null,
+        exitPrice: exitInfo?.exitPrice ?? 0,
       };
       crossState.recentExits.set(symbol, record);
     }
@@ -644,6 +685,7 @@ class StrategyScheduler {
                 dailyTradeCount: 0,
                 dailyRealizedPnL: 0,
                 consecutiveLosses: 0,
+                consecutiveLossPctSum: 0,
                 lastTradeDirection: null,
                 lastTradePnL: 0,
                 circuitBreakerActive: false,
@@ -657,6 +699,7 @@ class StrategyScheduler {
         this.protectionFailureCount.set(strategyId, 0);
         this.crossSymbolState.delete(strategyId); // R5: 新交易日重置跨标的保护状态
         fastMomentumService.reset(); // 新交易日重置快动量缓冲区
+        this.atrPctCache.clear(); // A3: 新交易日重置ATR缓存
         this.postCloseCleanupDone = false; // 新交易日重置收盘清理标记
       }
     }
@@ -790,6 +833,27 @@ class StrategyScheduler {
       // 260331 Fix: 缓存 correlationMap 到 crossSymbolState，确保退出路径使用与入场一致的 group 映射
       this.getCrossSymbolState(strategyId).correlationMap = correlationMap;
 
+      // A3: 每日加载 ATR% 缓存（用于 reentryReadiness 的价格变化因子动态阈值）
+      if (this.atrPctCache.size === 0) {
+        for (const sym of effectiveSymbols) {
+          try {
+            const dailyData = await marketDataService.getDailyOHLCV(sym, 20);
+            if (dailyData && dailyData.length >= 14) {
+              const atr14 = calculateATR(dailyData, 14);
+              const lastClose = dailyData[dailyData.length - 1]?.close;
+              if (atr14 > 0 && lastClose && lastClose > 0) {
+                this.atrPctCache.set(sym, (atr14 / lastClose) * 100);
+              }
+            }
+          } catch {
+            // ATR 获取失败不阻塞，scoringAuction 会 fallback 到 0.5%
+          }
+        }
+        if (this.atrPctCache.size > 0) {
+          logger.info(`[ATR_CACHE] 策略 ${strategyId}: 加载 ${this.atrPctCache.size}/${effectiveSymbols.length} 个标的 ATR%`);
+        }
+      }
+
       // Phase A: 状态分类 — 区分 IDLE 和非 IDLE 标的
       const stateChecks = await Promise.all(
         effectiveSymbols.map(async (sym) => ({
@@ -866,7 +930,7 @@ class StrategyScheduler {
       } else {
         logger.debug(phaseBMsg);
       }
-      const winners = this.scoringAuction(strategyId, candidates, correlationMap);
+      const winners = this.scoringAuction(strategyId, candidates, correlationMap, strategyConfig);
 
       // 竞价淘汰者标记为 FILTERED（区分于 PENDING，减少监控噪音）
       const winnerSymbols = new Set(winners.map(w => w.symbol));
@@ -1497,6 +1561,15 @@ class StrategyScheduler {
                   const prevDailyPnL = isNaN(rawPrevPnL) ? 0 : rawPrevPnL;
                   const newDailyPnL = Math.round((prevDailyPnL + tradePnL) * 100) / 100;
 
+                  // A1: 累计连续亏损百分比 — 亏损时累加PnL%，盈利时清零
+                  const rawAllocAmt = Number(context.allocationAmount || 0);
+                  const mitAllocAmt = isNaN(rawAllocAmt) || rawAllocAmt <= 0 ? 0 : rawAllocAmt;
+                  const mitTradePnLPct = mitAllocAmt > 0 ? (tradePnL / mitAllocAmt * 100) : 0;
+                  const prevConsecLossPctSum = parseFloat(String(context.consecutiveLossPctSum ?? 0)) || 0;
+                  const newConsecLossPctSum = tradePnL < 0
+                    ? Math.round((prevConsecLossPctSum + mitTradePnLPct) * 100) / 100
+                    : 0;  // 盈利清零
+
                   // 提取交易方向（CALL/PUT）
                   const tradeDirection = context.optionMeta?.optionDirection
                     || context.optionMeta?.optionType
@@ -1522,10 +1595,12 @@ class StrategyScheduler {
 
                   // 260225 Fix B: protectionOrderId 无条件清除（不再依赖 isTslpFill 条件分支）
                   // 260228 Fix: 清除所有持仓级字段，防止 JSONB || 合并导致下一笔交易继承旧值
+                  const mitExitReason = isSLFill ? 'PROTECTION_MIT_SL_FILLED' : (isTPFill ? 'PROTECTION_MIT_TP_FILLED' : 'PROTECTION_MIT_FILLED');
                   const mitCooldown = computeCooldownUntil({
                     is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
                     dailyTradeCount: prevDailyTradeCount,
                     strategyConfig: strategyConfig || {},
+                    exitReason: mitExitReason,
                   });
                   // 260317 Fix: MIT 回调也必须清除 activeEntries + 写入 recentExits（之前遗漏）
                   this.recordSymbolExit(strategyId, instanceKeySymbol, mitCooldown, {
@@ -1533,6 +1608,8 @@ class StrategyScheduler {
                     finalScore: Number(context.optionMeta?.finalScore ?? 0),
                     pnl: tradePnL,
                     group: getCorrelationGroup(instanceKeySymbol),
+                    exitReason: mitExitReason,
+                    exitPrice: avgPrice,
                   });
                   await strategyInstance.updateState(instanceKeySymbol, 'IDLE', {
                     lastExitTime: new Date().toISOString(),
@@ -1540,6 +1617,7 @@ class StrategyScheduler {
                     // 日内 PnL 追踪
                     dailyRealizedPnL: newDailyPnL,
                     consecutiveLosses: newConsecutiveLosses,
+                    consecutiveLossPctSum: newConsecLossPctSum,
                     lastTradeDirection: tradeDirection,
                     lastTradePnL: tradePnL,
                     takeProfitOrderId: null,
@@ -2294,6 +2372,7 @@ class StrategyScheduler {
               dailyTradeCount: 0,
               dailyRealizedPnL: 0,
               consecutiveLosses: 0,
+              consecutiveLossPctSum: 0,
               lastTradeDirection: null,
               lastTradePnL: 0,
               circuitBreakerActive: false,
@@ -2315,12 +2394,33 @@ class StrategyScheduler {
           return;
         }
 
+        // A4: 跨标的冲动门控 — 任意标的退出后2min内全组禁入
+        {
+          const crossState = this.getCrossSymbolState(strategyId);
+          for (const [, exitRec] of crossState.recentExits) {
+            if (Date.now() - exitRec.exitTime < 2 * 60_000) {
+              summary.idle.push(`${symbol}(GLOBAL_IMPULSE_GATE)`);
+              return;
+            }
+          }
+        }
+
         // 冷却期检查 — 退出时已计算 cooldownUntil
         if (cancelCtx?.cooldownUntil) {
           const cooldownEnd = new Date(cancelCtx.cooldownUntil).getTime();
           if (!isNaN(cooldownEnd) && Date.now() < cooldownEnd) {
             const remainMin = Math.ceil((cooldownEnd - Date.now()) / 60000);
             summary.idle.push(`${symbol}(COOLDOWN_${remainMin}m)`);
+            return;
+          }
+        }
+
+        // A1: 2连亏硬门控 — consecutiveLosses >= 2 且累计亏损 <= -25% → 该标的当天禁入
+        {
+          const consecLosses = parseInt(String(cancelCtx?.consecutiveLosses ?? 0), 10) || 0;
+          const consecLossPctSum = parseFloat(String(cancelCtx?.consecutiveLossPctSum ?? 0)) || 0;
+          if (consecLosses >= 2 && consecLossPctSum <= -25) {
+            summary.idle.push(`${symbol}(CONSEC_LOSS_GATE:${consecLosses}x/${consecLossPctSum.toFixed(0)}%)`);
             return;
           }
         }
@@ -2737,6 +2837,7 @@ class StrategyScheduler {
             dailyTradeCount: 0,
             dailyRealizedPnL: 0,
             consecutiveLosses: 0,
+            consecutiveLossPctSum: 0,
             lastTradeDirection: null,
             lastTradePnL: 0,
             circuitBreakerActive: false,
@@ -2757,12 +2858,34 @@ class StrategyScheduler {
         return null;
       }
 
+      // A4: 跨标的冲动门控 — 任意标的退出后2min内全组禁入
+      {
+        const crossStateImpulse = this.getCrossSymbolState(strategyId);
+        for (const [, exitRec] of crossStateImpulse.recentExits) {
+          if (Date.now() - exitRec.exitTime < 2 * 60_000) {
+            summary.idle.push(`${symbol}(GLOBAL_IMPULSE_GATE)`);
+            return null;
+          }
+        }
+      }
+
       // 冷却期检查 — 退出时已计算 cooldownUntil
       if (cancelCtx?.cooldownUntil) {
         const cooldownEnd = new Date(cancelCtx.cooldownUntil).getTime();
         if (!isNaN(cooldownEnd) && Date.now() < cooldownEnd) {
           const remainMin = Math.ceil((cooldownEnd - Date.now()) / 60000);
           summary.idle.push(`${symbol}(COOLDOWN_${remainMin}m)`);
+          return null;
+        }
+      }
+
+      // A1: 2连亏硬门控 — consecutiveLosses >= 2 且累计亏损 <= -25% → 该标的当天禁入
+      {
+        const consecLosses = parseInt(String(cancelCtx?.consecutiveLosses ?? 0), 10) || 0;
+        const consecLossPctSum = parseFloat(String(cancelCtx?.consecutiveLossPctSum ?? 0)) || 0;
+        if (consecLosses >= 2 && consecLossPctSum <= -25) {
+          logger.info(`[CONSEC_LOSS_GATE] 策略 ${strategyId} ${symbol}: ${consecLosses}连亏累计${consecLossPctSum.toFixed(1)}% <= -25%，当天禁入`);
+          summary.idle.push(`${symbol}(CONSEC_LOSS_GATE:${consecLosses}x/${consecLossPctSum.toFixed(0)}%)`);
           return null;
         }
       }
@@ -2884,7 +3007,8 @@ class StrategyScheduler {
   private scoringAuction(
     strategyId: number,
     candidates: Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string; groupExitRecord: GroupExitRecord | null }>,
-    correlationMap?: Record<string, string>
+    correlationMap?: Record<string, string>,
+    strategyConfig?: Record<string, unknown>
   ): Array<{ symbol: string; intent: TradingIntent; finalScore: number; group: string; groupExitRecord: GroupExitRecord | null }> {
     if (candidates.length === 0) {
       logger.debug(`[R5v2_AUCTION] 策略 ${strategyId}: 无候选，跳过竞价`);
@@ -2916,11 +3040,15 @@ class StrategyScheduler {
           break;
         }
         const currentDirection = (candidate.intent.metadata as Record<string, unknown>)?.optionDirection as string | null ?? null;
+        const cfgBaseCooldown = Number(strategyConfig?.tradeWindow && typeof strategyConfig.tradeWindow === 'object'
+          ? (strategyConfig.tradeWindow as Record<string, unknown>).reentryReadinessBaseCooldownMinutes : undefined);
         const readiness = calculateReentryReadiness({
           currentDirection,
           currentFinalScore: candidate.finalScore,
           exitRecord: candidate.groupExitRecord,
-          baseCooldownMinutes: 8,
+          baseCooldownMinutes: (!isNaN(cfgBaseCooldown) && cfgBaseCooldown > 0) ? cfgBaseCooldown : 8,
+          currentUlPrice: fastMomentumService.getLatestPrice(candidate.symbol) ?? undefined,
+          atrPct: this.atrPctCache.get(candidate.symbol) ?? undefined,
         });
         if (readiness >= 0.50) {
           logger.info(
@@ -3828,16 +3956,20 @@ class StrategyScheduler {
               const expNpPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
               const expNpAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
               const expNpPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+              const expNpPrevConsecLossPctSum = parseFloat(String(context.consecutiveLossPctSum ?? 0)) || 0;
               const expNpCooldown = computeCooldownUntil({
                 is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
                 dailyTradeCount: expNpPrevTradeCount,
                 strategyConfig,
+                exitReason: 'OPTION_EXPIRED',
               });
               this.recordSymbolExit(strategyId, symbol, expNpCooldown, {
                 direction: context.optionMeta?.optionDirection || context.lastTradeDirection || null,
                 finalScore: Number(context.optionMeta?.finalScore ?? 0),
                 pnl: expNpAllocAmt > 0 ? -expNpAllocAmt : 0,
                 group: getCorrelationGroup(symbol),
+                exitReason: 'OPTION_EXPIRED',
+                exitPrice: 0,
               });
               await strategyInstance.updateState(symbol, 'IDLE', {
                 ...POSITION_EXIT_CLEANUP,
@@ -3847,6 +3979,7 @@ class StrategyScheduler {
                 previousState: 'HOLDING',
                 dailyTradeCount: expNpPrevTradeCount + 1,
                 consecutiveLosses: expNpPrevConsecLosses + 1,
+                consecutiveLossPctSum: Math.round((expNpPrevConsecLossPctSum + -100) * 100) / 100,  // 过期=全损
                 dailyRealizedPnL: expNpPrevDailyPnL + (expNpAllocAmt > 0 ? -expNpAllocAmt : 0),
                 lastTradePnL: expNpAllocAmt > 0 ? -expNpAllocAmt : 0,
                 cooldownUntil: expNpCooldown,
@@ -4043,6 +4176,7 @@ class StrategyScheduler {
           const stockBpzPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
           const stockBpzAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
           const stockBpzPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+          const stockBpzPrevConsecLossPctSum = parseFloat(String(context.consecutiveLossPctSum ?? 0)) || 0;
           await strategyInstance.updateState(symbol, 'IDLE', {
             ...POSITION_EXIT_CLEANUP,
             lastExitTime: new Date().toISOString(),
@@ -4050,11 +4184,13 @@ class StrategyScheduler {
             exitReasonDetail: `股票路径卖出时券商报告availableQuantity=${positionCheck.availableQuantity}`,
             dailyTradeCount: stockBpzPrevTradeCount + 1,
             consecutiveLosses: stockBpzPrevConsecLosses + 1, // 无法确认盈亏，视为亏损
+            consecutiveLossPctSum: Math.round((stockBpzPrevConsecLossPctSum + -100) * 100) / 100,  // 无法确认PnL，假设全损
             dailyRealizedPnL: stockBpzPrevDailyPnL,
             cooldownUntil: computeCooldownUntil({
               is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
               dailyTradeCount: stockBpzPrevTradeCount,
               strategyConfig,
+              exitReason: 'BROKER_NO_POSITION',
             }),
           });
           // 释放资金
@@ -4070,12 +4206,15 @@ class StrategyScheduler {
             is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
             dailyTradeCount: stockBpzPrevTradeCount,
             strategyConfig,
+            exitReason: 'BROKER_NO_POSITION',
           });
           this.recordSymbolExit(strategyId, symbol, stockBpzCooldown, {
             direction: context.optionMeta?.optionDirection || context.lastTradeDirection || null,
             finalScore: Number(context.optionMeta?.finalScore ?? 0),
             pnl: 0, // 券商无持仓，无法确认盈亏
             group: getCorrelationGroup(symbol),
+            exitReason: 'BROKER_NO_POSITION',
+            exitPrice: 0,
           });
           return { actionTaken: true };
         }
@@ -4273,14 +4412,16 @@ class StrategyScheduler {
         const prevTradeCount = parseInt(String(context.dailyTradeCount ?? 0), 10) || 0;
         const allocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
         const prevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+        const trendBpzPrevConsecLossPctSum = parseFloat(String(context.consecutiveLossPctSum ?? 0)) || 0;
         await strategyInstance.updateState(symbol, 'IDLE', {
           ...POSITION_EXIT_CLEANUP,
           lastExitTime: new Date().toISOString(),
           exitReason: 'BROKER_NO_POSITION',
           dailyTradeCount: prevTradeCount + 1,
           consecutiveLosses: (parseInt(String(context.consecutiveLosses ?? 0), 10) || 0) + 1,
+          consecutiveLossPctSum: Math.round((trendBpzPrevConsecLossPctSum + -100) * 100) / 100,
           dailyRealizedPnL: prevDailyPnL,
-          cooldownUntil: computeCooldownUntil({ is0DTE: false, dailyTradeCount: prevTradeCount, strategyConfig }),
+          cooldownUntil: computeCooldownUntil({ is0DTE: false, dailyTradeCount: prevTradeCount, strategyConfig, exitReason: 'BROKER_NO_POSITION' }),
         });
         if (allocAmt > 0) {
           try { await capitalManager.releaseAllocation(strategyId, allocAmt, symbol); } catch {}
@@ -4395,12 +4536,14 @@ class StrategyScheduler {
               exitReasonDetail: `MIT${tag}保护单${orderId}已触发`,
               dailyTradeCount: protPrevTradeCount + 1,
               consecutiveLosses: protPrevConsecLosses,  // 保护单无法判断盈亏，保持现有值
+              consecutiveLossPctSum: parseFloat(String(context.consecutiveLossPctSum ?? 0)) || 0,  // 保持现有值
               dailyRealizedPnL: protPrevDailyPnL,       // 实际 PnL 由订单回调更新
               lastTradeDirection: context.optionMeta?.optionDirection || context.intent?.metadata?.optionDirection || null,
               cooldownUntil: computeCooldownUntil({
                 is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
                 dailyTradeCount: protPrevTradeCount,
                 strategyConfig,
+                exitReason,
               }),
             });
             // R5: 清除跨标的入场状态（联动同组冷却）
@@ -4408,12 +4551,15 @@ class StrategyScheduler {
               is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
               dailyTradeCount: protPrevTradeCount,
               strategyConfig,
+              exitReason,
             });
             this.recordSymbolExit(strategyId, symbol, protCooldown, {
               direction: context.optionMeta?.optionDirection || context.intent?.metadata?.optionDirection || null,
               finalScore: Number(context.optionMeta?.finalScore ?? 0),
               pnl: 0, // 保护单无法判断盈亏
               group: getCorrelationGroup(symbol),
+              exitReason,
+              exitPrice: 0,
             });
             // 释放资金
             if (context.allocationAmount) {
@@ -4644,16 +4790,20 @@ class StrategyScheduler {
           const expPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
           const expAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
           const expPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+          const expPrevConsecLossPctSum = parseFloat(String(context.consecutiveLossPctSum ?? 0)) || 0;
           const expCooldown = computeCooldownUntil({
             is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
             dailyTradeCount: expPrevTradeCount,
             strategyConfig,
+            exitReason: 'OPTION_EXPIRED',
           });
           this.recordSymbolExit(strategyId, symbol, expCooldown, {
             direction: context.optionMeta?.optionDirection || context.lastTradeDirection || null,
             finalScore: Number(context.optionMeta?.finalScore ?? 0),
             pnl: expAllocAmt > 0 ? -expAllocAmt : 0,
             group: getCorrelationGroup(symbol),
+            exitReason: 'OPTION_EXPIRED',
+            exitPrice: 0,
           });
           await strategyInstance.updateState(symbol, 'IDLE', {
             ...POSITION_EXIT_CLEANUP,
@@ -4663,6 +4813,7 @@ class StrategyScheduler {
             previousState: 'HOLDING',
             dailyTradeCount: expPrevTradeCount + 1,
             consecutiveLosses: expPrevConsecLosses + 1,
+            consecutiveLossPctSum: Math.round((expPrevConsecLossPctSum + -100) * 100) / 100,
             dailyRealizedPnL: expPrevDailyPnL + (expAllocAmt > 0 ? -expAllocAmt : 0),
             lastTradePnL: expAllocAmt > 0 ? -expAllocAmt : 0,
             cooldownUntil: expCooldown,
@@ -4836,16 +4987,20 @@ class StrategyScheduler {
           const bpzPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
           const bpzAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
           const bpzPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+          const bpzPrevConsecLossPctSum = parseFloat(String(context.consecutiveLossPctSum ?? 0)) || 0;
           const bpzCooldown = computeCooldownUntil({
             is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
             dailyTradeCount: bpzPrevTradeCount,
             strategyConfig,
+            exitReason: 'BROKER_NO_POSITION',
           });
           this.recordSymbolExit(strategyId, symbol, bpzCooldown, {
             direction: context.optionMeta?.optionDirection || context.lastTradeDirection || null,
             finalScore: Number(context.optionMeta?.finalScore ?? 0),
             pnl: bpzAllocAmt > 0 ? -bpzAllocAmt : 0,
             group: getCorrelationGroup(symbol),
+            exitReason: 'BROKER_NO_POSITION',
+            exitPrice: 0,
           });
           await strategyInstance.updateState(symbol, 'IDLE', {
             ...POSITION_EXIT_CLEANUP,
@@ -4855,6 +5010,7 @@ class StrategyScheduler {
             previousState: 'HOLDING',
             dailyTradeCount: bpzPrevTradeCount + 1,
             consecutiveLosses: bpzPrevConsecLosses + 1,
+            consecutiveLossPctSum: Math.round((bpzPrevConsecLossPctSum + -100) * 100) / 100,
             dailyRealizedPnL: bpzPrevDailyPnL + (bpzAllocAmt > 0 ? -bpzAllocAmt : 0),
             lastTradePnL: bpzAllocAmt > 0 ? -bpzAllocAmt : 0,
             cooldownUntil: bpzCooldown,
@@ -4907,6 +5063,7 @@ class StrategyScheduler {
             is0DTE,
             dailyTradeCount: parseInt(String(context.dailyTradeCount ?? 0), 10) || 0,
             strategyConfig,
+            exitReason: exitTag || action,
           }),
         });
 
@@ -4916,12 +5073,15 @@ class StrategyScheduler {
             is0DTE,
             dailyTradeCount: parseInt(String(context.dailyTradeCount ?? 0), 10) || 0,
             strategyConfig,
+            exitReason: exitTag || action,
           });
           this.recordSymbolExit(strategyId, symbol, dynExitCooldown, {
             direction: context.optionMeta?.optionDirection || context.lastTradeDirection || null,
             finalScore: Number(context.optionMeta?.finalScore ?? 0),
             pnl: pnl.netPnL,
             group: getCorrelationGroup(symbol),
+            exitReason: exitTag || action,
+            exitPrice: currentPrice,
           });
         }
 
@@ -5029,16 +5189,20 @@ class StrategyScheduler {
           const bpzpPrevConsecLosses = parseInt(String(context.consecutiveLosses ?? 0), 10) || 0;
           const bpzpAllocAmt = parseFloat(String(context.allocationAmount ?? 0)) || 0;
           const bpzpPrevDailyPnL = parseFloat(String(context.dailyRealizedPnL ?? 0)) || 0;
+          const bpzpPrevConsecLossPctSum = parseFloat(String(context.consecutiveLossPctSum ?? 0)) || 0;
           const bpzpCooldown = computeCooldownUntil({
             is0DTE: context.optionMeta?.expirationMode === '0DTE' || context.is0DTE === true,
             dailyTradeCount: bpzpPrevTradeCount,
             strategyConfig,
+            exitReason: 'BROKER_NO_POSITION',
           });
           this.recordSymbolExit(strategyId, symbol, bpzpCooldown, {
             direction: context.optionMeta?.optionDirection || context.lastTradeDirection || null,
             finalScore: Number(context.optionMeta?.finalScore ?? 0),
             pnl: bpzpAllocAmt > 0 ? -bpzpAllocAmt : 0,
             group: getCorrelationGroup(symbol),
+            exitReason: 'BROKER_NO_POSITION',
+            exitPrice: 0,
           });
           await strategyInstance.updateState(symbol, 'IDLE', {
             ...POSITION_EXIT_CLEANUP,
@@ -5048,6 +5212,7 @@ class StrategyScheduler {
             previousState: 'HOLDING',
             dailyTradeCount: bpzpPrevTradeCount + 1,
             consecutiveLosses: bpzpPrevConsecLosses + 1,
+            consecutiveLossPctSum: Math.round((bpzpPrevConsecLossPctSum + -100) * 100) / 100,
             dailyRealizedPnL: bpzpPrevDailyPnL + (bpzpAllocAmt > 0 ? -bpzpAllocAmt : 0),
             lastTradePnL: bpzpAllocAmt > 0 ? -bpzpAllocAmt : 0,
             cooldownUntil: bpzpCooldown,
@@ -5914,12 +6079,15 @@ class StrategyScheduler {
             is0DTE: ctx.optionMeta?.expirationMode === '0DTE' || ctx.is0DTE === true,
             dailyTradeCount: parseInt(String(ctx.dailyTradeCount ?? 0), 10) || 0,
             strategyConfig: {},
+            exitReason: 'BROKER_TERMINATED',
           });
           this.recordSymbolExit(strategyId, row.symbol, brokerTermCooldown, {
             direction: ctx.optionMeta?.optionDirection || ctx.lastTradeDirection || null,
             finalScore: Number(ctx.optionMeta?.finalScore ?? 0),
             pnl: 0,  // 不写估算值，等回调用实际 PnL 填充
             group: getCorrelationGroup(row.symbol),
+            exitReason: 'BROKER_TERMINATED',
+            exitPrice: 0,
           });
           // 260331 Fix: IRON_DOME 不写 dailyRealizedPnL/dailyTradeCount/lastTradePnL
           // 只做状态清理 + 释放资金，PnL 统计由订单回调独占写入，消除竞态
