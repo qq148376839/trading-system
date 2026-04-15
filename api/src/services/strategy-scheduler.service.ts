@@ -4443,6 +4443,7 @@ class StrategyScheduler {
             const params = context.protectionRetryParams || context.tslpRetryParams;
             if (params) {
               const retryEntryPrice = params.entryPrice || 0;
+              // retryParams 中已含 buffer（submitProtectionAfterBuy 计算时加了 5%）
               const retryStopLossPct = params.stopLossPct || 50;
               const retryTakeProfitPct = params.takeProfitPct || 50;
 
@@ -5987,12 +5988,13 @@ class StrategyScheduler {
     try {
       const expDate = trailingStopProtectionService.extractOptionExpireDate(tradedSymbol, optionMeta);
 
-      // 从 exitRules 读取止损止盈百分比，fallback 50
+      // MIT 保护单 = 策略配置止损/止盈 + 5% buffer（兜底，避免与软件监控竞争）
+      const MIT_BUFFER_PCT = 5;
       const exitRules = optionMeta?.exitRules as Record<string, unknown> | undefined;
       const rawSLPct = Number(exitRules?.stopLossPercent);
-      const stopLossPct = (!isNaN(rawSLPct) && rawSLPct > 0) ? rawSLPct : 50;
+      const stopLossPct = (!isNaN(rawSLPct) && rawSLPct > 0) ? rawSLPct + MIT_BUFFER_PCT : 50;
       const rawTPPct = Number(exitRules?.takeProfitPercent);
-      const takeProfitPct = (!isNaN(rawTPPct) && rawTPPct > 0) ? rawTPPct : 50;
+      const takeProfitPct = (!isNaN(rawTPPct) && rawTPPct > 0) ? rawTPPct + MIT_BUFFER_PCT : 50;
 
       // 1. 提交止损 MIT
       const slResult = await trailingStopProtectionService.submitStopLossProtection(
