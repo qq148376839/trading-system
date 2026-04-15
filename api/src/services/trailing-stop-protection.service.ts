@@ -11,7 +11,7 @@
  * 4. 查询保护单状态
  */
 
-import { getTradeContext, OrderType, OrderSide, TimeInForceType, Decimal } from '../config/longport';
+import { getTradeContext, OrderType, OrderSide, TimeInForceType, Decimal, OutsideRTH } from '../config/longport';
 import { longportRateLimiter, retryWithBackoff } from '../utils/longport-rate-limiter';
 import { logger } from '../utils/logger';
 import pool from '../config/database';
@@ -115,6 +115,7 @@ class TrailingStopProtectionService {
         triggerPrice: new Decimal(triggerPrice.toFixed(2)),
         timeInForce: TimeInForceType.GoodTilDate,
         expireDate: expireNaiveDate,
+        outsideRth: OutsideRTH.RTHOnly,
         remark: 'SL_MIT_AUTO',
       };
 
@@ -362,6 +363,7 @@ class TrailingStopProtectionService {
         triggerPrice: new Decimal(triggerPrice.toFixed(2)),
         timeInForce: TimeInForceType.GoodTilDate,
         expireDate: expireNaiveDate,
+        outsideRth: OutsideRTH.RTHOnly,
         remark: 'TP_MIT_AUTO',
       };
 
