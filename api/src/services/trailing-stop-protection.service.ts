@@ -84,28 +84,9 @@ class TrailingStopProtectionService {
 
       const tradeCtx = await getTradeContext();
 
-      const longport = require('longport');
-      const { NaiveDate } = longport;
-
-      // 券商要求 expireDate 必须在今天之后
-      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-      let effectiveExpireDate = expireDate;
-      if (expireDate <= today) {
-        const tomorrow = new Date();
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        effectiveExpireDate = tomorrow.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-        logger.log(
-          `${PROTECTION_TAG} ${symbol}: 期权到期日${expireDate}不晚于今天${today}，` +
-          `止损单到期日调整为${effectiveExpireDate}`
-        );
-      }
-
-      const dateParts = effectiveExpireDate.split('-'); // YYYY-MM-DD
-      const expireNaiveDate = new NaiveDate(
-        parseInt(dateParts[0], 10),
-        parseInt(dateParts[1], 10),
-        parseInt(dateParts[2], 10)
-      );
+      // 0DTE（当天到期）用 Day 有效期，非 0DTE 用 GoodTilDate
+      // LongPort 不允许 GTD expire_date 超过期权到期日
+      const { timeInForce: tif, expireDateOption } = this.buildTimeInForce(expireDate, symbol);
 
       const orderOptions: Record<string, unknown> = {
         symbol,
@@ -113,8 +94,8 @@ class TrailingStopProtectionService {
         side: OrderSide.Sell,
         submittedQuantity: new Decimal(quantity.toString()),
         triggerPrice: new Decimal(triggerPrice.toFixed(2)),
-        timeInForce: TimeInForceType.GoodTilDate,
-        expireDate: expireNaiveDate,
+        timeInForce: tif,
+        ...expireDateOption,
         outsideRth: OutsideRTH.RTHOnly,
         remark: 'SL_MIT_AUTO',
       };
@@ -336,24 +317,8 @@ class TrailingStopProtectionService {
 
       const tradeCtx = await getTradeContext();
 
-      const longport = require('longport');
-      const { NaiveDate } = longport;
-
-      // 到期日处理
-      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-      let effectiveExpireDate = expireDate;
-      if (expireDate <= today) {
-        const tomorrow = new Date();
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        effectiveExpireDate = tomorrow.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-      }
-
-      const dateParts = effectiveExpireDate.split('-');
-      const expireNaiveDate = new NaiveDate(
-        parseInt(dateParts[0], 10),
-        parseInt(dateParts[1], 10),
-        parseInt(dateParts[2], 10)
-      );
+      // 0DTE（当天到期）用 Day 有效期，非 0DTE 用 GoodTilDate
+      const { timeInForce: tif, expireDateOption } = this.buildTimeInForce(expireDate, symbol);
 
       const orderOptions: Record<string, unknown> = {
         symbol,
@@ -361,8 +326,8 @@ class TrailingStopProtectionService {
         side: OrderSide.Sell,
         submittedQuantity: new Decimal(quantity.toString()),
         triggerPrice: new Decimal(triggerPrice.toFixed(2)),
-        timeInForce: TimeInForceType.GoodTilDate,
-        expireDate: expireNaiveDate,
+        timeInForce: tif,
+        ...expireDateOption,
         outsideRth: OutsideRTH.RTHOnly,
         remark: 'TP_MIT_AUTO',
       };
@@ -427,6 +392,43 @@ class TrailingStopProtectionService {
   // ============================================
   // 内部辅助
   // ============================================
+
+  /**
+   * 0DTE（当天到期）→ Day 有效期（不需要 expireDate）
+   * 非 0DTE → GoodTilDate + expireDate
+   *
+   * LongPort 不允许 GTD 的 expireDate 超过期权到期日，
+   * 0DTE 当天到期无法设 GTD（今天不行、明天超期），用 Day 解决。
+   */
+  private buildTimeInForce(expireDate: string, symbol: string): {
+    timeInForce: typeof TimeInForceType[keyof typeof TimeInForceType];
+    expireDateOption: Record<string, unknown>;
+  } {
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    const is0DTE = expireDate <= today;
+
+    if (is0DTE) {
+      logger.log(`${PROTECTION_TAG} ${symbol}: 0DTE(到期日${expireDate})，MIT用Day有效期`);
+      return {
+        timeInForce: TimeInForceType.Day,
+        expireDateOption: {},
+      };
+    }
+
+    // 非 0DTE：用期权到期日作为 GTD expire
+    const longport = require('longport');
+    const { NaiveDate } = longport;
+    const dateParts = expireDate.split('-');
+    const expireNaiveDate = new NaiveDate(
+      parseInt(dateParts[0], 10),
+      parseInt(dateParts[1], 10),
+      parseInt(dateParts[2], 10)
+    );
+    return {
+      timeInForce: TimeInForceType.GoodTilDate,
+      expireDateOption: { expireDate: expireNaiveDate },
+    };
+  }
 
   private normalizeOrderStatus(status: any): ProtectionStatus {
     if (!status) return 'unknown';
