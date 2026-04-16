@@ -2,6 +2,16 @@
 
 ## 2026-04-16
 
+### fix: 动态冷却审查修复 — 3个bug
+
+1. **POSITION_EXIT_CLEANUP 数据不一致**: 从 POSITION_EXIT_CLEANUP 移除 `consecutiveLossPctSum`，避免 IRON_DOME/CROSS_STRATEGY 等清理型路径将该字段 null 掉导致与 `consecutiveLosses` 不一致。知PnL路径已有显式写入，不知PnL路径保留旧值。
+2. **ATR 缓存部分加载不重试**: 改为逐个补充缺失标的，避免首次部分加载成功后永不重试失败标的。
+3. **A4 注释修正**: "全组禁入"改为"全策略禁入（不限同组）"，与实际行为一致。
+
+**修改文件**: `strategy-scheduler.service.ts`
+
+---
+
 ### feat: 动态冷却机制修订 — 4原子全量上线
 
 **背景**: 实盘数据(4/6-4/15, 37笔交易)证明固定时间冷却有三个核心缺陷：2连亏后继续入场9笔avg -9.3%(-$883)；TAKE_PROFIT后重入7笔avg -6.5%；>15min重入9笔avg -6.0%（时间到但市场没变）。

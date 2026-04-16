@@ -82,8 +82,9 @@ const POSITION_EXIT_CLEANUP = {
   trailingStopPrice: null as null,
   maTightenActive: null as null,
   initialStopLoss: null as null,
-  // A1: 2连亏门控 — 清除累计亏损百分比
-  consecutiveLossPctSum: null as null,
+  // 注意: consecutiveLossPctSum 不在此处清除
+  // 该字段只在明确知道 PnL 的退出路径中写入（MIT回调/过期/BPZ等）
+  // IRON_DOME/CROSS_STRATEGY 等"清理型"路径不应覆盖它，否则与 consecutiveLosses 不一致
 };
 
 /**
@@ -834,23 +835,29 @@ class StrategyScheduler {
       this.getCrossSymbolState(strategyId).correlationMap = correlationMap;
 
       // A3: 每日加载 ATR% 缓存（用于 reentryReadiness 的价格变化因子动态阈值）
-      if (this.atrPctCache.size === 0) {
-        for (const sym of effectiveSymbols) {
-          try {
-            const dailyData = await marketDataService.getDailyOHLCV(sym, 20);
-            if (dailyData && dailyData.length >= 14) {
-              const atr14 = calculateATR(dailyData, 14);
-              const lastClose = dailyData[dailyData.length - 1]?.close;
-              if (atr14 > 0 && lastClose && lastClose > 0) {
-                this.atrPctCache.set(sym, (atr14 / lastClose) * 100);
+      // 逐个补充缺失标的，避免部分加载后永不重试
+      {
+        const missing = effectiveSymbols.filter(sym => !this.atrPctCache.has(sym));
+        if (missing.length > 0) {
+          let loaded = 0;
+          for (const sym of missing) {
+            try {
+              const dailyData = await marketDataService.getDailyOHLCV(sym, 20);
+              if (dailyData && dailyData.length >= 14) {
+                const atr14 = calculateATR(dailyData, 14);
+                const lastClose = dailyData[dailyData.length - 1]?.close;
+                if (atr14 > 0 && lastClose && lastClose > 0) {
+                  this.atrPctCache.set(sym, (atr14 / lastClose) * 100);
+                  loaded++;
+                }
               }
+            } catch {
+              // ATR 获取失败不阻塞，scoringAuction 会 fallback 到 0.5%
             }
-          } catch {
-            // ATR 获取失败不阻塞，scoringAuction 会 fallback 到 0.5%
           }
-        }
-        if (this.atrPctCache.size > 0) {
-          logger.info(`[ATR_CACHE] 策略 ${strategyId}: 加载 ${this.atrPctCache.size}/${effectiveSymbols.length} 个标的 ATR%`);
+          if (loaded > 0) {
+            logger.info(`[ATR_CACHE] 策略 ${strategyId}: 补充加载 ${loaded}/${missing.length} 个标的 ATR%（总计 ${this.atrPctCache.size}）`);
+          }
         }
       }
 
@@ -2394,7 +2401,7 @@ class StrategyScheduler {
           return;
         }
 
-        // A4: 跨标的冲动门控 — 任意标的退出后2min内全组禁入
+        // A4: 跨标的冲动门控 — 任意标的退出后2min内全策略禁入（不限同组）
         {
           const crossState = this.getCrossSymbolState(strategyId);
           for (const [, exitRec] of crossState.recentExits) {
@@ -2858,7 +2865,7 @@ class StrategyScheduler {
         return null;
       }
 
-      // A4: 跨标的冲动门控 — 任意标的退出后2min内全组禁入
+      // A4: 跨标的冲动门控 — 任意标的退出后2min内全策略禁入（不限同组）
       {
         const crossStateImpulse = this.getCrossSymbolState(strategyId);
         for (const [, exitRec] of crossStateImpulse.recentExits) {
