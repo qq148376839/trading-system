@@ -141,7 +141,8 @@ interface GroupExitRecord {
   consecutiveSameDirection: number;  // 该组连续同方向退出次数
   group: string;                     // 缓存的相关组名
   exitReason: string | null;         // A2: 退出原因（STOP_LOSS/TAKE_PROFIT/TRAILING_STOP等）
-  exitPrice: number;                 // A3: 退出时标的价格（用于价格变化因子）
+  exitPrice: number;                 // 退出时期权合约价格（用于 PnL 等）
+  exitUnderlyingPrice: number;       // A3: 退出时正股价格（用于价格变化因子 f6）
 }
 
 /** 方向感知动态冷却：计算重入准备度 (0~1) */
@@ -188,9 +189,10 @@ function calculateReentryReadiness(params: {
 
   // 因子 6: 价格变化 (权重 0.25, 新增 — 回答"市场变了吗")
   // ATR% 作为动态满分阈值：高波动标的需要更大价格变化才算"市场重新定价"
+  // 注意：exitUnderlyingPrice 是正股价，currentUlPrice 也是正股价，单位一致
   let f6 = 0.5; // 数据缺失时中性值（fail-open）
-  if (currentUlPrice != null && exitRecord.exitPrice > 0) {
-    const priceChangePct = Math.abs(currentUlPrice - exitRecord.exitPrice) / exitRecord.exitPrice * 100;
+  if (currentUlPrice != null && exitRecord.exitUnderlyingPrice > 0) {
+    const priceChangePct = Math.abs(currentUlPrice - exitRecord.exitUnderlyingPrice) / exitRecord.exitUnderlyingPrice * 100;
     const threshold = (atrPct != null && atrPct > 0) ? atrPct : 0.5;
     f6 = Math.min(1.0, priceChangePct / threshold);
   }
@@ -324,9 +326,35 @@ class StrategyScheduler {
         group: exitGroup,
         exitReason: exitInfo?.exitReason ?? null,
         exitPrice: exitInfo?.exitPrice ?? 0,
+        exitUnderlyingPrice: fastMomentumService.getLatestPrice(symbol) ?? 0,
       };
       crossState.recentExits.set(symbol, record);
     }
+  }
+
+  /** A4: 同组止损冲动门控 — STOP_LOSS 退出后同 correlation group 2min 禁入 */
+  private checkGroupLossImpulseGate(strategyId: number, symbol: string): string | null {
+    const crossState = this.getCrossSymbolState(strategyId);
+    const currentGroup = getCorrelationGroup(symbol, crossState.correlationMap);
+    for (const [, exitRec] of crossState.recentExits) {
+      if (Date.now() - exitRec.exitTime < 2 * 60_000
+        && exitRec.group === currentGroup
+        && exitRec.exitReason === 'STOP_LOSS') {
+        return `${symbol}(GROUP_LOSS_IMPULSE_GATE)`;
+      }
+    }
+    return null;
+  }
+
+  /** A1: 2连亏硬门控 — consecutiveLosses >= 2 且累计亏损 <= -25% → 该标的当天禁入 */
+  private checkConsecLossGate(strategyId: number, symbol: string, cancelCtx: Record<string, unknown> | undefined): string | null {
+    const consecLosses = parseInt(String(cancelCtx?.consecutiveLosses ?? 0), 10) || 0;
+    const consecLossPctSum = parseFloat(String(cancelCtx?.consecutiveLossPctSum ?? 0)) || 0;
+    if (consecLosses >= 2 && consecLossPctSum <= -25) {
+      logger.info(`[CONSEC_LOSS_GATE] 策略 ${strategyId} ${symbol}: ${consecLosses}连亏累计${consecLossPctSum.toFixed(1)}% <= -25%，当天禁入`);
+      return `${symbol}(CONSEC_LOSS_GATE:${consecLosses}x/${consecLossPctSum.toFixed(0)}%)`;
+    }
+    return null;
   }
 
   /**
@@ -2401,16 +2429,8 @@ class StrategyScheduler {
           return;
         }
 
-        // A4: 跨标的冲动门控 — 任意标的退出后2min内全策略禁入（不限同组）
-        {
-          const crossState = this.getCrossSymbolState(strategyId);
-          for (const [, exitRec] of crossState.recentExits) {
-            if (Date.now() - exitRec.exitTime < 2 * 60_000) {
-              summary.idle.push(`${symbol}(GLOBAL_IMPULSE_GATE)`);
-              return;
-            }
-          }
-        }
+        // A4: 同组止损冲动门控
+        { const gate = this.checkGroupLossImpulseGate(strategyId, symbol); if (gate) { summary.idle.push(gate); return; } }
 
         // 冷却期检查 — 退出时已计算 cooldownUntil
         if (cancelCtx?.cooldownUntil) {
@@ -2422,15 +2442,8 @@ class StrategyScheduler {
           }
         }
 
-        // A1: 2连亏硬门控 — consecutiveLosses >= 2 且累计亏损 <= -25% → 该标的当天禁入
-        {
-          const consecLosses = parseInt(String(cancelCtx?.consecutiveLosses ?? 0), 10) || 0;
-          const consecLossPctSum = parseFloat(String(cancelCtx?.consecutiveLossPctSum ?? 0)) || 0;
-          if (consecLosses >= 2 && consecLossPctSum <= -25) {
-            summary.idle.push(`${symbol}(CONSEC_LOSS_GATE:${consecLosses}x/${consecLossPctSum.toFixed(0)}%)`);
-            return;
-          }
-        }
+        // A1: 2连亏硬门控
+        { const gate = this.checkConsecLossGate(strategyId, symbol, cancelCtx); if (gate) { summary.idle.push(gate); return; } }
       }
 
       // 检查是否已有持仓（避免重复买入）
@@ -2865,16 +2878,8 @@ class StrategyScheduler {
         return null;
       }
 
-      // A4: 跨标的冲动门控 — 任意标的退出后2min内全策略禁入（不限同组）
-      {
-        const crossStateImpulse = this.getCrossSymbolState(strategyId);
-        for (const [, exitRec] of crossStateImpulse.recentExits) {
-          if (Date.now() - exitRec.exitTime < 2 * 60_000) {
-            summary.idle.push(`${symbol}(GLOBAL_IMPULSE_GATE)`);
-            return null;
-          }
-        }
-      }
+      // A4: 同组止损冲动门控
+      { const gate = this.checkGroupLossImpulseGate(strategyId, symbol); if (gate) { summary.idle.push(gate); return null; } }
 
       // 冷却期检查 — 退出时已计算 cooldownUntil
       if (cancelCtx?.cooldownUntil) {
@@ -2886,16 +2891,8 @@ class StrategyScheduler {
         }
       }
 
-      // A1: 2连亏硬门控 — consecutiveLosses >= 2 且累计亏损 <= -25% → 该标的当天禁入
-      {
-        const consecLosses = parseInt(String(cancelCtx?.consecutiveLosses ?? 0), 10) || 0;
-        const consecLossPctSum = parseFloat(String(cancelCtx?.consecutiveLossPctSum ?? 0)) || 0;
-        if (consecLosses >= 2 && consecLossPctSum <= -25) {
-          logger.info(`[CONSEC_LOSS_GATE] 策略 ${strategyId} ${symbol}: ${consecLosses}连亏累计${consecLossPctSum.toFixed(1)}% <= -25%，当天禁入`);
-          summary.idle.push(`${symbol}(CONSEC_LOSS_GATE:${consecLosses}x/${consecLossPctSum.toFixed(0)}%)`);
-          return null;
-        }
-      }
+      // A1: 2连亏硬门控
+      { const gate = this.checkConsecLossGate(strategyId, symbol, cancelCtx); if (gate) { summary.idle.push(gate); return null; } }
 
       // 每标的每日交易次数限制（配置 riskLimits.maxDailyTradesPerUnderlying）
       const riskLimits = strategyConfig?.riskLimits as Record<string, unknown> | undefined;
