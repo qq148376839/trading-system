@@ -3364,6 +3364,39 @@ quantRouter.get('/strategy-check-digest', async (req: Request, res: Response, ne
     const bySymbol: Record<string, TradeRow[]> = {};
     const byRegime: Record<string, TradeRow[]> = {};
     const byScoreBucket: Record<string, TradeRow[]> = { '8-10': [], '10-12': [], '12-15': [], '15+': [] };
+    // 多维分桶 — adjustedFinalScore / 时段 / VIX / accelBonus / 交叉分析
+    const byAdjustedScoreBucket: Record<string, TradeRow[]> = { '8-10': [], '10-12': [], '12-15': [], '15+': [] };
+    const byTimePeriod: Record<string, TradeRow[]> = { OPENING: [], MORNING: [], MIDDAY: [], LATE: [] };
+    const byVixLevel: Record<string, TradeRow[]> = { LOW: [], NORMAL: [], HIGH: [], UNKNOWN: [] };
+    const byAccelBonus: Record<string, TradeRow[]> = { NO_BOOST: [], BOOSTED: [] };
+    const crossScoreByTime: Record<string, TradeRow[]> = {};
+    const crossScoreByVix: Record<string, TradeRow[]> = {};
+
+    // 辅助: open_time (UTC) → ET 小时 (EDT = UTC-4, 4月份生效)
+    function getETHour(openTime: string): number {
+      const utcMs = new Date(openTime).getTime();
+      return new Date(utcMs - 4 * 3600_000).getUTCHours() + new Date(utcMs - 4 * 3600_000).getUTCMinutes() / 60;
+    }
+    function getTimePeriod(openTime: string): string {
+      const etHour = getETHour(openTime);
+      if (etHour < 10.5) return 'OPENING';   // 9:30-10:30
+      if (etHour < 12) return 'MORNING';      // 10:30-12:00
+      if (etHour < 14) return 'MIDDAY';       // 12:00-14:00
+      return 'LATE';                           // 14:00+
+    }
+    function getVixLevel(vix: number | null | undefined): string {
+      if (vix == null || vix <= 0) return 'UNKNOWN';
+      if (vix < 18) return 'LOW';
+      if (vix <= 25) return 'NORMAL';
+      return 'HIGH';
+    }
+    function getScoreBucketKey(score: number): string | null {
+      if (score >= 15) return '15+';
+      if (score >= 12) return '12-15';
+      if (score >= 10) return '10-12';
+      if (score >= 8) return '8-10';
+      return null;
+    }
 
     for (const t of trades) {
       // bySymbol
@@ -3376,12 +3409,45 @@ quantRouter.get('/strategy-check-digest', async (req: Request, res: Response, ne
       if (!byRegime[regimeType]) byRegime[regimeType] = [];
       byRegime[regimeType].push(t);
 
-      // byScoreBucket
+      // byScoreBucket (原始 finalScore，保持向后兼容)
       const score = Number(t.buy_metadata?.finalScore ?? 0);
       if (score >= 15) byScoreBucket['15+'].push(t);
       else if (score >= 12) byScoreBucket['12-15'].push(t);
       else if (score >= 10) byScoreBucket['10-12'].push(t);
       else if (score >= 8) byScoreBucket['8-10'].push(t);
+
+      // byAdjustedScoreBucket (实际入场分数)
+      const adjScore = Number(t.buy_metadata?.adjustedFinalScore ?? t.buy_metadata?.finalScore ?? 0);
+      const adjBucket = getScoreBucketKey(adjScore);
+      if (adjBucket) byAdjustedScoreBucket[adjBucket].push(t);
+
+      // byTimePeriod
+      if (t.open_time) {
+        const period = getTimePeriod(t.open_time);
+        byTimePeriod[period].push(t);
+      }
+
+      // byVixLevel
+      const entryVix = t.buy_metadata?.entryVix != null ? Number(t.buy_metadata.entryVix) : null;
+      const vixLevel = getVixLevel(entryVix);
+      byVixLevel[vixLevel].push(t);
+
+      // byAccelBonus
+      const bonus = Number(t.buy_metadata?.accelBonus ?? 0);
+      byAccelBonus[bonus !== 0 ? 'BOOSTED' : 'NO_BOOST'].push(t);
+
+      // 交叉分析: adjustedScore × time, adjustedScore × vix
+      if (adjBucket && t.open_time) {
+        const period = getTimePeriod(t.open_time);
+        const timeKey = `${period}|${adjBucket}`;
+        if (!crossScoreByTime[timeKey]) crossScoreByTime[timeKey] = [];
+        crossScoreByTime[timeKey].push(t);
+      }
+      if (adjBucket && vixLevel !== 'UNKNOWN') {
+        const vixKey = `${vixLevel}|${adjBucket}`;
+        if (!crossScoreByVix[vixKey]) crossScoreByVix[vixKey] = [];
+        crossScoreByVix[vixKey].push(t);
+      }
     }
 
     const evAnalysis = {
@@ -3389,6 +3455,15 @@ quantRouter.get('/strategy-check-digest', async (req: Request, res: Response, ne
       bySymbol: Object.fromEntries(Object.entries(bySymbol).map(([k, v]) => [k, computeEV(v)])),
       byRegime: Object.fromEntries(Object.entries(byRegime).map(([k, v]) => [k, computeEV(v)])),
       byScoreBucket: Object.fromEntries(Object.entries(byScoreBucket).map(([k, v]) => [k, computeEV(v)])),
+      // 多维分桶
+      byAdjustedScoreBucket: Object.fromEntries(Object.entries(byAdjustedScoreBucket).map(([k, v]) => [k, computeEV(v)])),
+      byTimePeriod: Object.fromEntries(Object.entries(byTimePeriod).map(([k, v]) => [k, computeEV(v)])),
+      byVixLevel: Object.fromEntries(Object.entries(byVixLevel).map(([k, v]) => [k, computeEV(v)])),
+      byAccelBonus: Object.fromEntries(Object.entries(byAccelBonus).map(([k, v]) => [k, computeEV(v)])),
+      crossAnalysis: {
+        scoreByTime: Object.fromEntries(Object.entries(crossScoreByTime).map(([k, v]) => [k, computeEV(v)])),
+        scoreByVix: Object.fromEntries(Object.entries(crossScoreByVix).map(([k, v]) => [k, computeEV(v)])),
+      },
     };
 
     // ── 层级2: 退出效率 ──

@@ -1148,6 +1148,11 @@ export class OptionIntradayStrategy extends StrategyBase {
           adjustedFinalScore,
           marketScore: optionRec.marketScore,
           intradayScore: optionRec.intradayScore,
+          // 入场环境快照 — 用于多维诊断分析
+          entryVix: this.currentCycleVix ?? null,
+          entryVixFactor: this.getVixThresholdFactor(this.currentCycleVix),
+          entryTimeFactor: this.currentTimeThresholdFactor,
+          entryThreshold: this.getThresholds().directionalScoreMin,
           // 智能反向: regime detection 结果
           regimeDetection: {
             regime: regimeResult.regime,
